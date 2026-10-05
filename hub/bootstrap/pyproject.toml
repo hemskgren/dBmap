@@ -1,0 +1,28 @@
+[project]
+name = "dbmap-hub-bootstrap"
+version = "0.1.0"
+description = "dBmap hub-bootstrap: identity, provisioning, desired/reported state"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.32.1",
+    "sqlalchemy==2.0.36",
+    "paho-mqtt==2.1.0",
+    "pydantic-settings==2.6.1",
+    "python-multipart==0.0.17",
+]
+
+[project.optional-dependencies]
+dev = [
+    "anyio==4.14.0",
+    "httpx==0.27.2",
+    "pytest==8.3.4",
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]

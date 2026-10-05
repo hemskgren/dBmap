@@ -1,0 +1,67 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:latest@sha256:38c0da4f2ef84284d47b3b3eeea1cb3bdeabe81ee10caf0cd5c5ff61ee3ea408
+    platform: linux/amd64
+    restart: unless-stopped
+    ports:
+      - "${DBMAP_LAN_IP:?Set DBMAP_LAN_IP in .env}:8883:8883"
+    environment:
+      MOSQUITTO_DYNSEC_PASSWORD: ${DBMAP_DYNSEC_ADMIN_PASSWORD:?Set DBMAP_DYNSEC_ADMIN_PASSWORD in .env}
+    volumes:
+      - ./mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mqtt/docker-entrypoint.sh:/docker-entrypoint.sh:ro
+      - ./mqtt/certs:/mosquitto/certs:ro
+      - mosquitto-data:/mosquitto/data
+    entrypoint: ["/bin/sh", "/docker-entrypoint.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_ctrl -o /mosquitto/data/mosquitto-health.options dynsec getClient admin >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  hub-bootstrap:
+    build:
+      context: ./hub/bootstrap
+    platform: linux/amd64
+    restart: unless-stopped
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    ports:
+      - "${DBMAP_LAN_IP:?Set DBMAP_LAN_IP in .env}:8443:8443"
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8443"
+      - --ssl-certfile
+      - /certs/server.crt
+      - --ssl-keyfile
+      - /certs/server.key
+    environment:
+      DBMAP_ADMIN_TOKEN: ${DBMAP_ADMIN_TOKEN:?Set DBMAP_ADMIN_TOKEN in .env}
+      DBMAP_MQTT_HOST: mosquitto
+      DBMAP_MQTT_PORT: "8883"
+      DBMAP_MQTT_CA_FILE: /certs/ca.crt
+      DBMAP_MQTT_USERNAME: hub-bootstrap
+      DBMAP_MQTT_PASSWORD: ${DBMAP_MQTT_HUB_PASSWORD:?Set DBMAP_MQTT_HUB_PASSWORD in .env}
+      DBMAP_MQTT_ADMIN_USERNAME: admin
+      DBMAP_MQTT_ADMIN_PASSWORD: ${DBMAP_DYNSEC_ADMIN_PASSWORD:?Set DBMAP_DYNSEC_ADMIN_PASSWORD in .env}
+      DBMAP_ADVERTISED_MQTT_HOST: ${DBMAP_ADVERTISED_MQTT_HOST:-hub.local}
+      DBMAP_ADVERTISED_MQTT_PORT: ${DBMAP_ADVERTISED_MQTT_PORT:-8883}
+      DBMAP_ADVERTISED_MQTT_USE_TLS: "true"
+      DBMAP_DATABASE_URL: sqlite:////data/bootstrap.db
+    volumes:
+      - bootstrap-data:/data
+      - ./mqtt/certs:/certs:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import ssl, urllib.request; urllib.request.urlopen('https://localhost:8443/health', context=ssl.create_default_context(cafile='/certs/ca.crt'))"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  mosquitto-data:
+  bootstrap-data:
