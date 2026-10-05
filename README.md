@@ -203,6 +203,29 @@ curl -sS --cacert mqtt/certs/ca.crt \
 
 Replace `<node-id-from-simulator>` with the `SIM-EAR-*` node ID printed by the simulator. The response contains the validated protocol envelope, observation and hub `received_time_utc`. Each observation includes a UUID, sequence number, timezone-aware event timestamp, monotonic capture timestamp, timing-quality and uncertainty fields; classification hints, confidence, bearing, signal level, and duration are also supported. Repeating publication with the same observation ID is deduplicated. To retry a publish after an error without provisioning another test node, run the command again with `--credentials-file /tmp/dbmap-ear-simulator-credentials.json --reuse-credentials`. Keep that file private; delete it when the simulator credentials are no longer needed.
 
+To simulate several observations from the same synthetic vehicle, use a finite count. Each observation gets a new UUID and increasing sequence number; all share the supplied synthetic source ID. The default delay between publications is 15 seconds:
+
+```bash
+uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
+  --hub-host "$DBMAP_LAN_IP" \
+  --credentials-file /tmp/dbmap-ear-simulator-credentials.json \
+  --reuse-credentials \
+  --count 4 \
+  --interval-seconds 15 \
+  --vehicle-id SIM-VEHICLE-001
+```
+
+The single-observation default remains an idempotent retry using the saved observation ID. Multi-observation mode advances and persists its sequence number after each successful publish, so rerunning it starts new observations. The stable synthetic source ID is only a test correlation hint; it does not simulate or establish real acoustic identity.
+
+For an authenticated summary of nodes and the latest 500 observations, run:
+
+```bash
+uv run --project hub/bootstrap python simulator/ear/hub_summary.py \
+  --hub-host "$DBMAP_LAN_IP"
+```
+
+Add `--watch` to print a summary once and then report new observations and node-state changes every 15 seconds; use `--interval-seconds 30` to change the interval. Stop watch mode with `Ctrl+C`.
+
 To send an Output command from the hub, use the authenticated TLS broker account:
 
 Replace `out-xxx` with the actual node ID from the API response, written in lowercase.
@@ -247,3 +270,5 @@ cd hub/bootstrap
 uv sync --extra dev
 uv run pytest
 ```
+
+The hub container currently uses Python 3.12, the runtime used by the deployed local hub and the verified test environment. Although the package metadata allows Python 3.11 and later, a test run on Python 3.14.4 currently fails during SQLAlchemy 2.0.36 ORM model initialization, before test collection completes. Keep the container on 3.12 until the ORM dependency is upgraded and the full suite and container build pass on a newer runtime.

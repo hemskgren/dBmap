@@ -94,7 +94,9 @@ observation returned by its API.
 
 Retained observations are rejected. Duplicate deliveries are safe when the
 same observation ID is used. The simulator uses the same envelope and topic
-as a registered Ear.
+as a registered Ear. Repeated-vehicle simulator scenarios assign a stable
+`classification_hints.simulated_source_id` across distinct observations; this
+is test metadata, not a real-world identity or an event/track identifier.
 
 ### Existing Output and state messages
 
