@@ -18,9 +18,30 @@ SCENARIO = {
     "scenario_id": "test-pass",
     "source_id": "SIM-VEHICLE-TEST",
     "observations": [
-        {"at_seconds": 0, "ear": "ear_a", "bearing_deg": 10, "signal_level_dbfs": -30},
-        {"at_seconds": 2, "ear": "ear_b", "bearing_deg": 200, "signal_level_dbfs": -38},
-        {"at_seconds": 5, "ear": "ear_a", "bearing_deg": 5, "signal_level_dbfs": -32},
+        {
+            "at_seconds": 0,
+            "ear": "ear_a",
+            "bearing_deg": 10,
+            "bearing_confidence": 0.6,
+            "classification_confidence": 0.7,
+            "signal_level_dbfs": -30,
+        },
+        {
+            "at_seconds": 2,
+            "ear": "ear_b",
+            "bearing_deg": 200,
+            "bearing_confidence": 0.8,
+            "classification_confidence": 0.9,
+            "signal_level_dbfs": -38,
+        },
+        {
+            "at_seconds": 5,
+            "ear": "ear_a",
+            "bearing_deg": 5,
+            "bearing_confidence": 0.4,
+            "classification_confidence": 0.55,
+            "signal_level_dbfs": -32,
+        },
     ],
 }
 
@@ -49,6 +70,26 @@ def test_scenario_validation_rejects_non_finite_or_out_of_range_values(tmp_path)
     ]
     path.write_text(json.dumps(invalid))
     with pytest.raises(simulate_scenario.ScenarioError, match="must be finite"):
+        simulate_scenario.load_scenario(path)
+
+    invalid["observations"] = [
+        {**SCENARIO["observations"][0], "classification_confidence": 1.1}
+    ]
+    path.write_text(json.dumps(invalid))
+    with pytest.raises(
+        simulate_scenario.ScenarioError,
+        match="classification_confidence must be at most 1",
+    ):
+        simulate_scenario.load_scenario(path)
+
+    invalid["observations"] = [
+        {**SCENARIO["observations"][0], "bearing_confidence": -0.1}
+    ]
+    path.write_text(json.dumps(invalid))
+    with pytest.raises(
+        simulate_scenario.ScenarioError,
+        match="bearing_confidence must be at least 0",
+    ):
         simulate_scenario.load_scenario(path)
 
 
@@ -124,6 +165,12 @@ def test_scenario_builds_protocol_observations_with_per_ear_sequences_and_timeli
         "SIM-EAR-002",
         "SIM-EAR-001",
     ]
+    assert [item["classification"]["confidence"] for item in published] == [
+        0.7,
+        0.9,
+        0.55,
+    ]
+    assert [item["bearing"]["confidence"] for item in published] == [0.6, 0.8, 0.4]
     assert [item["sequence_number"] for item in published] == [3, 8, 4]
     assert [item["event_time_utc"] for item in published] == [
         "2026-10-05T18:00:00+00:00",

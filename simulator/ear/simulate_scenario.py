@@ -35,6 +35,8 @@ _OBSERVATION_FIELDS = {
     "at_seconds",
     "ear",
     "bearing_deg",
+    "bearing_confidence",
+    "classification_confidence",
     "signal_level_dbfs",
     "duration_ms",
 }
@@ -79,6 +81,12 @@ def load_scenario(path: Path) -> dict[str, Any]:
             raise ScenarioError(f"observations[{index}] must be an object")
         unexpected = set(observation) - _OBSERVATION_FIELDS
         missing = {"at_seconds", "ear"} - set(observation)
+        if "classification_confidence" not in observation:
+            missing.add("classification_confidence")
+        if "bearing_deg" in observation and "bearing_confidence" not in observation:
+            missing.add("bearing_confidence")
+        if "bearing_confidence" in observation and "bearing_deg" not in observation:
+            unexpected.add("bearing_confidence")
         if unexpected or missing:
             raise ScenarioError(
                 f"observations[{index}] fields mismatch; "
@@ -96,6 +104,16 @@ def load_scenario(path: Path) -> dict[str, Any]:
         if not isinstance(ear, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", ear):
             raise ScenarioError(f"observations[{index}].ear must be a valid Ear alias")
         item = {"at_seconds": at_seconds, "ear": ear}
+        classification_confidence = _finite_number(
+            observation["classification_confidence"],
+            f"observations[{index}].classification_confidence",
+            minimum=0,
+        )
+        if classification_confidence > 1:
+            raise ScenarioError(
+                f"observations[{index}].classification_confidence must be at most 1"
+            )
+        item["classification_confidence"] = classification_confidence
         if "bearing_deg" in observation:
             bearing = _finite_number(
                 observation["bearing_deg"],
@@ -104,6 +122,16 @@ def load_scenario(path: Path) -> dict[str, Any]:
             if not 0 <= bearing < 360:
                 raise ScenarioError(f"observations[{index}].bearing_deg must be in [0, 360)")
             item["bearing_deg"] = bearing
+            bearing_confidence = _finite_number(
+                observation["bearing_confidence"],
+                f"observations[{index}].bearing_confidence",
+                minimum=0,
+            )
+            if bearing_confidence > 1:
+                raise ScenarioError(
+                    f"observations[{index}].bearing_confidence must be at most 1"
+                )
+            item["bearing_confidence"] = bearing_confidence
         if "signal_level_dbfs" in observation:
             signal_level = _finite_number(
                 observation["signal_level_dbfs"],
@@ -246,7 +274,7 @@ def make_scenario_observation(
         "timestamp_uncertainty_ms": 10.0,
         "classification": {
             "source_family": "vehicle",
-            "confidence": 0.72,
+            "confidence": event["classification_confidence"],
             "hints": {"simulated_source_id": source_id},
         },
         "duration_ms": event.get("duration_ms", 850.0),
@@ -255,7 +283,7 @@ def make_scenario_observation(
         payload["bearing"] = {
             "deg": event["bearing_deg"],
             "reference": "node",
-            "confidence": 0.61,
+            "confidence": event["bearing_confidence"],
         }
     if "signal_level_dbfs" in event:
         payload["signal_level_dbfs"] = event["signal_level_dbfs"]
@@ -341,7 +369,9 @@ def print_schedule(scenario: dict[str, Any]) -> None:
     for index, event in enumerate(scenario["observations"], start=1):
         print(
             f"{index:02d}  t={event['at_seconds']:g}s  Ear={event['ear']}  "
-            f"bearing={event.get('bearing_deg', 'not set')}  "
+            f"bearing={event.get('bearing_deg', 'not set')} "
+            f"(confidence={event.get('bearing_confidence', 'not set')})  "
+            f"classification confidence={event['classification_confidence']}  "
             f"level={event.get('signal_level_dbfs', 'not set')} dBFS  "
             f"duration={event.get('duration_ms', 850.0):g}ms"
         )

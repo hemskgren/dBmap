@@ -6,6 +6,8 @@
       "at_seconds": 0,
       "ear": "ear_a",
       "bearing_deg": 24,
+      "bearing_confidence": 0.61,
+      "classification_confidence": 0.72,
       "signal_level_dbfs": -34,
       "duration_ms": 850
     },
@@ -13,6 +15,8 @@
       "at_seconds": 2,
       "ear": "ear_a",
       "bearing_deg": 18,
+      "bearing_confidence": 0.67,
+      "classification_confidence": 0.75,
       "signal_level_dbfs": -31,
       "duration_ms": 900
     },
@@ -20,6 +24,8 @@
       "at_seconds": 4,
       "ear": "ear_b",
       "bearing_deg": 226,
+      "bearing_confidence": 0.55,
+      "classification_confidence": 0.68,
       "signal_level_dbfs": -37,
       "duration_ms": 700
     },
@@ -27,6 +33,8 @@
       "at_seconds": 6,
       "ear": "ear_a",
       "bearing_deg": 8,
+      "bearing_confidence": 0.73,
+      "classification_confidence": 0.81,
       "signal_level_dbfs": -33,
       "duration_ms": 800
     },
@@ -34,6 +42,8 @@
       "at_seconds": 15,
       "ear": "ear_b",
       "bearing_deg": 241,
+      "bearing_confidence": 0.49,
+      "classification_confidence": 0.63,
       "signal_level_dbfs": -40,
       "duration_ms": 650
     }
