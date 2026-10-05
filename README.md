@@ -217,6 +217,64 @@ uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
 
 The single-observation default remains an idempotent retry using the saved observation ID. Multi-observation mode advances and persists its sequence number after each successful publish, so rerunning it starts new observations. The stable synthetic source ID is only a test correlation hint; it does not simulate or establish real acoustic identity.
 
+### Run a time-ordered Ear scenario
+
+For repeatable observation timing and multiple simulated Ears, use `simulator/ear/simulate_scenario.py`. The scenario file defines **only Ear observations**. It does not create Events or Tracks, and it does not assert that a simulator source hint is a real identity. Each observation has its own ID and per-Ear sequence number. Set `classification_confidence` on every observation and `bearing_confidence` when a `bearing_deg` is present; both values must be between 0 and 1 and are copied into that observation's protocol payload. `event_time_utc` and monotonic capture time follow the scenario's logical timeline; `received_time_utc` remains the Hub's actual receive time. `--time-scale` changes only wall-clock delays, so `0.1` runs a 15-second scenario gap in 1.5 seconds without compressing its event timestamps.
+
+The example scenario has observations at t=0, 2, 4, 6, and 15 seconds, with no observation at t=9. It uses two aliases, `ear_a` and `ear_b`. First, create or reuse one provisioned simulator credentials file per alias. If you do not already have two, create them with distinct paths (each command registers/provisions an Ear and publishes one initial test observation):
+
+```bash
+uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
+  --hub-host "$DBMAP_LAN_IP" \
+  --credentials-file /tmp/dbmap-ear-a.json
+
+uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
+  --hub-host "$DBMAP_LAN_IP" \
+  --credentials-file /tmp/dbmap-ear-b.json
+```
+
+The MQTT host is saved in each credentials file when that Ear is provisioned. Set `DBMAP_ADVERTISED_MQTT_HOST` in `.env` to a host/IP reachable from the machine running this scenario before provisioning; existing credentials are not updated when `.env` changes.
+
+Validate the scenario and credentials aliases locally before publishing. Dry-run does not need the Hub token, CA, broker, or credentials file contents:
+
+```bash
+uv run --project hub/bootstrap python simulator/ear/simulate_scenario.py \
+  --scenario-file simulator/ear/scenarios/vehicle_passes.json \
+  --ear ear_a=/tmp/dbmap-ear-a.json \
+  --ear ear_b=/tmp/dbmap-ear-b.json \
+  --dry-run
+```
+
+Publish it to the already-running Hub over TLS MQTT, accelerated to 10% of wall-clock time:
+
+```bash
+uv run --project hub/bootstrap python simulator/ear/simulate_scenario.py \
+  --scenario-file simulator/ear/scenarios/vehicle_passes.json \
+  --ear ear_a=/tmp/dbmap-ear-a.json \
+  --ear ear_b=/tmp/dbmap-ear-b.json \
+  --time-scale 0.1
+```
+
+If a publish fails or the run is interrupted, the credentials file preserves the exact in-flight observation. Resolve that observation with the same scenario and alias mappings before starting another run:
+
+```bash
+uv run --project hub/bootstrap python simulator/ear/simulate_scenario.py \
+  --scenario-file simulator/ear/scenarios/vehicle_passes.json \
+  --ear ear_a=/tmp/dbmap-ear-a.json \
+  --ear ear_b=/tmp/dbmap-ear-b.json \
+  --retry-pending
+```
+
+Inspect the resulting records with the existing read-only explorer:
+
+```bash
+uv run --project hub/bootstrap python scripts/hub_event_track.py \
+  --hub-host "$DBMAP_LAN_IP" \
+  --watch
+```
+
+This lets us exercise observation ingestion and inspect the existing simulator hint before developing Hub event/track logic. It does not change or require rebuilding the Hub container.
+
 Before deploying the revised version-1 observation shape, clear the local hub database. This removes all node registrations, installation metadata, desired/reported state, bootstrap tokens, hub-side MQTT credentials, and observations. It does not remove Mosquitto's dynamic-security users or the TLS certificates. Run these commands from a shell with Docker access (for example, after `newgrp docker`); the one-off container only deletes rows from the existing `bootstrap-data` volume:
 
 ```bash

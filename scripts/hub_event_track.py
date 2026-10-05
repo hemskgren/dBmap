@@ -81,9 +81,24 @@ def format_observation(observation: dict[str, Any]) -> str:
     node_id = observation.get("node_id", "unknown-node")
     event_time = observation.get("event_time_utc", "unknown-time")
     details = []
+    classification = observation.get("classification")
+    if isinstance(classification, dict):
+        source_family = classification.get("source_family")
+        confidence = classification.get("confidence")
+        if isinstance(source_family, str):
+            classification_detail = f"classification={source_family}"
+            if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+                classification_detail += f" (confidence={confidence:g})"
+            details.append(classification_detail)
+
     bearing = observation.get("bearing")
     if isinstance(bearing, dict) and isinstance(bearing.get("deg"), (int, float)):
-        details.append(f"node-relative bearing={bearing['deg']} deg")
+        bearing_detail = f"node-relative bearing={bearing['deg']} deg"
+        confidence = bearing.get("confidence")
+        if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+            bearing_detail += f" (confidence={confidence:g})"
+        details.append(bearing_detail)
+
     signal = observation.get("signal_level_dbfs")
     if isinstance(signal, (int, float)):
         details.append(f"level={signal} dBFS")

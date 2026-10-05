@@ -94,7 +94,14 @@ and registration as an Ear before persistence.
 }
 ```
 
-`event_time_utc` must include a timezone; the hub normalizes it to UTC.
+`event_time_utc` must include a timezone and marks the beginning of the
+observation interval; the hub normalizes it to UTC. `duration_ms` is the
+interval length, so the observation covers
+`[event_time_utc, event_time_utc + duration_ms)`. Ending that interval means
+only that this Ear no longer observed that signal; it does not mean the
+physical source disappeared. A later detection is a new observation with its
+own ID and sequence number. Ears report observations and do not claim that
+separate observations came from the same physical source.
 `timing_quality` is `synchronized`, `estimated`, or `unsynchronized`.
 `classification` and `bearing` may be `null` when no result is available.
 Classification confidence describes confidence in `source_family`; bearing
