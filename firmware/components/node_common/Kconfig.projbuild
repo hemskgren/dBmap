@@ -1,0 +1,31 @@
+menu "dBmap node"
+
+    config DBMAP_WIFI_SSID
+        string "Wi-Fi SSID"
+        default ""
+
+    config DBMAP_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+
+    config DBMAP_HUB_HTTP_URL
+        string "Hub bootstrap base URL"
+        default "https://hub.local:8443"
+
+    config DBMAP_BOOTSTRAP_TOKEN
+        string "One-time bootstrap token (required for first provisioning)"
+        default ""
+
+    config DBMAP_HARDWARE_REVISION
+        string "Hardware revision"
+        default "OUTPUT-DEV-V1"
+
+    config DBMAP_FIRMWARE_VERSION
+        string "Firmware version"
+        default "0.1.0"
+
+    config DBMAP_NODE_TYPE_OUTPUT
+        bool "This firmware is ESP-Output"
+        default y
+
+endmenu
