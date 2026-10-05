@@ -1,0 +1,41 @@
+{
+  "scenario_id": "vehicle_passes",
+  "source_id": "SIM-VEHICLE-001",
+  "observations": [
+    {
+      "at_seconds": 0,
+      "ear": "ear_a",
+      "bearing_deg": 24,
+      "signal_level_dbfs": -34,
+      "duration_ms": 850
+    },
+    {
+      "at_seconds": 2,
+      "ear": "ear_a",
+      "bearing_deg": 18,
+      "signal_level_dbfs": -31,
+      "duration_ms": 900
+    },
+    {
+      "at_seconds": 4,
+      "ear": "ear_b",
+      "bearing_deg": 226,
+      "signal_level_dbfs": -37,
+      "duration_ms": 700
+    },
+    {
+      "at_seconds": 6,
+      "ear": "ear_a",
+      "bearing_deg": 8,
+      "signal_level_dbfs": -33,
+      "duration_ms": 800
+    },
+    {
+      "at_seconds": 15,
+      "ear": "ear_b",
+      "bearing_deg": 241,
+      "signal_level_dbfs": -40,
+      "duration_ms": 650
+    }
+  ]
+}
