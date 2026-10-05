@@ -50,16 +50,19 @@ def test_report_disclaims_event_track_and_geographic_position_inference() -> Non
                 "node_id": "SIM-EAR-001",
                 "event_time_utc": "2026-10-05T18:00:00Z",
                 "classification": {
+                    "source_family": "vehicle",
+                    "confidence": 0.72,
                     "hints": {"simulated_source_id": "SIM-VEHICLE-001"}
                 },
-                "bearing": {"deg": 180.0, "reference": "node"},
+                "bearing": {"deg": 180.0, "reference": "node", "confidence": 0.61},
             }
         ]
     )
 
     output = "\n".join(lines)
     assert "SIM-VEHICLE-001: 1 observations across 1 Ear(s)" in output
-    assert "node-relative bearing=180.0 deg" in output
+    assert "classification=vehicle (confidence=0.72)" in output
+    assert "node-relative bearing=180.0 deg (confidence=0.61)" in output
     assert "not events or tracks" in output
     assert "No event/track identity or geographic source position is inferred" in output
 
