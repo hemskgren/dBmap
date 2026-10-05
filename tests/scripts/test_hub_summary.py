@@ -5,7 +5,7 @@ import pytest
 
 spec = spec_from_file_location(
     "dbmap_hub_summary",
-    Path(__file__).with_name("hub_summary.py"),
+    Path(__file__).parents[2] / "scripts" / "hub_summary.py",
 )
 assert spec is not None and spec.loader is not None
 hub_summary = module_from_spec(spec)

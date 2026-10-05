@@ -242,6 +242,17 @@ uv run --project hub/bootstrap python scripts/hub_summary.py \
 
 Add `--watch` to print a summary once and then report new observations and node-state changes every 15 seconds; use `--interval-seconds 30` to change the interval. Stop watch mode with `Ctrl+C`.
 
+### Explore observation source hints
+
+`scripts/hub_event_track.py` is a read-only exploration helper, not an event/track engine or API. It groups observations only when they share the simulator's `classification.hints.simulated_source_id`. That value is test metadata, not verified physical identity. The script reports newly received observation records in watch mode; it does not infer events, tracks, or geographic source positions. Bearing, if present, is shown in the Ear's node-relative frame.
+
+```bash
+uv run --project hub/bootstrap python scripts/hub_event_track.py \
+  --hub-host "$DBMAP_LAN_IP"
+```
+
+To monitor for new observation records every 15 seconds, add `--watch`; customize the interval with `--interval-seconds 30`. To inspect one Ear only, add `--node-id SIM-EAR-001`. The script fetches at most the latest 500 observations per poll.
+
 ### Administer Hub nodes
 
 The authenticated admin CLI lists and inspects nodes, updates desired state or installation metadata, and reversibly deactivates/reactivates a node without deleting its observations or MQTT account. While deactivated, the Hub rejects new observations and refuses provisioning, and the node's MQTT role ACLs are suspended; reactivation restores the role ACLs without changing the account or password. A broker ACL failure returns HTTP 503. If reactivation reports that Hub state is active while broker access remains suspended, retry the `reactivate` command after fixing broker access.
@@ -302,6 +313,8 @@ hub/bootstrap                         Local Hub identity + desired/reported stat
 mqtt                                  Mosquitto config, Dynamic Security, local TLS
 firmware/components/node_common      Shared Ear/Output client
 firmware/esp-output                  First L0 firmware
+scripts                               Local Hub summary, admin, and observation exploration tools
+tests                                 Tests for repository scripts and simulator
 compose.yaml                         LOCAL_MEDIUM stack
 ```
 
@@ -312,7 +325,7 @@ Not in this slice: `hub-event`, rules, Ear DSP, Home Assistant, Regional Hub.
 ```bash
 cd hub/bootstrap
 uv sync --extra dev
-uv run pytest tests ../../simulator/ear ../../scripts
+uv run pytest tests ../../tests
 ```
 
 The hub container currently uses Python 3.12, the runtime used by the deployed local hub and the verified test environment. Although the package metadata allows Python 3.11 and later, a test run on Python 3.14.4 currently fails during SQLAlchemy 2.0.36 ORM model initialization, before test collection completes. Keep the container on 3.12 until the ORM dependency is upgraded and the full suite and container build pass on a newer runtime.

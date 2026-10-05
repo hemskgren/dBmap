@@ -1,9 +1,17 @@
 from argparse import Namespace
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
-import hub_admin
+spec = spec_from_file_location(
+    "dbmap_hub_admin",
+    Path(__file__).parents[2] / "scripts" / "hub_admin.py",
+)
+assert spec is not None and spec.loader is not None
+hub_admin = module_from_spec(spec)
+spec.loader.exec_module(hub_admin)
 
 
 def test_set_desired_preserves_fields_not_explicitly_changed(monkeypatch) -> None:

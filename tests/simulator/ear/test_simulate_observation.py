@@ -6,7 +6,7 @@ import pytest
 
 spec = spec_from_file_location(
     "dbmap_ear_simulator",
-    Path(__file__).with_name("simulate_observation.py"),
+    Path(__file__).parents[3] / "simulator" / "ear" / "simulate_observation.py",
 )
 assert spec is not None and spec.loader is not None
 simulate_observation = module_from_spec(spec)
