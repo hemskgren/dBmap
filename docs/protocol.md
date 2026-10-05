@@ -127,6 +127,12 @@ deploying this schema revision. See the simulator cleanup instructions in the
 README. New MQTT observations must use this structured form; legacy fields
 are rejected rather than silently discarded.
 
+`scripts/hub_event_track.py` is a read-only exploratory report. It groups
+observations by the simulator-only `simulated_source_id` hint and can print
+new observation records while polling. It does not create persistent Event or
+Track entities, correlate real-world sources, or infer source positions.
+Event/track APIs and the correlation engine remain unimplemented.
+
 ### Existing Output and state messages
 
 The current ESP-Output sends JSON state on `hello`, `health`, and
