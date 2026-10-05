@@ -71,7 +71,7 @@ def test_observation_batch_uses_unique_ids_and_monotonic_sequences(monkeypatch, 
     assert len(set(ids)) == 3
     assert [item["sequence_number"] for item in published] == [1, 2, 3]
     assert {
-        item["classification_hints"]["simulated_source_id"] for item in published
+        item["classification"]["hints"]["simulated_source_id"] for item in published
     } == {"SIM-VEHICLE-77"}
     assert sleeps == [15, 15]
     assert credentials["next_sequence_number"] == 4

@@ -16,6 +16,15 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
+    node_columns = {column["name"] for column in inspect(engine).get_columns("nodes")}
+    if "lifecycle_state" not in node_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE nodes ADD COLUMN lifecycle_state "
+                    "VARCHAR(16) NOT NULL DEFAULT 'active'"
+                )
+            )
     columns = {column["name"] for column in inspect(engine).get_columns("node_credentials")}
     if "mqtt_password_plain_once" in columns:
         with engine.begin() as connection:

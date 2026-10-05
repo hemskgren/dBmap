@@ -57,12 +57,13 @@ def summarize(snapshot: dict[str, Any]) -> dict[str, Any]:
     nodes = snapshot["nodes"]
     observations = snapshot["observations"]
     node_types = Counter(node.get("node_type", "unknown") for node in nodes)
+    lifecycle_states = Counter(node.get("lifecycle_state", "active") for node in nodes)
     node_states = Counter(node.get("availability", "unknown") for node in nodes)
     observations_by_node = Counter(
         observation.get("node_id", "unknown") for observation in observations
     )
     observations_by_source = Counter(
-        observation.get("classification_hints", {}).get("simulated_source_id", "unlabelled")
+        _simulated_source_id(observation) or "unlabelled"
         for observation in observations
     )
     latest_received = max(
@@ -72,6 +73,7 @@ def summarize(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {
         "node_count": len(nodes),
         "nodes_by_type": dict(sorted(node_types.items())),
+        "nodes_by_lifecycle_state": dict(sorted(lifecycle_states.items())),
         "nodes_by_availability": dict(sorted(node_states.items())),
         "observation_count": len(observations),
         "observations_by_node": dict(sorted(observations_by_node.items())),
@@ -86,6 +88,7 @@ def node_signature(node: dict[str, Any]) -> tuple[Any, ...]:
         node.get("node_type"),
         node.get("hardware_revision"),
         node.get("provisioning_state"),
+        node.get("lifecycle_state", "active"),
         node.get("availability"),
         node.get("pending_configuration_change"),
         node.get("desired"),
@@ -94,6 +97,17 @@ def node_signature(node: dict[str, Any]) -> tuple[Any, ...]:
         node.get("reported", {}).get("calibration_version"),
         node.get("reported", {}).get("classifier_version"),
     )
+
+
+def _simulated_source_id(observation: dict[str, Any]) -> str | None:
+    classification = observation.get("classification")
+    if not isinstance(classification, dict):
+        return None
+    hints = classification.get("hints")
+    if not isinstance(hints, dict):
+        return None
+    source_id = hints.get("simulated_source_id")
+    return source_id if isinstance(source_id, str) else None
 
 
 def snapshot_diff(previous: dict[str, Any], current: dict[str, Any]) -> list[str]:
@@ -123,7 +137,7 @@ def snapshot_diff(previous: dict[str, Any], current: dict[str, Any]) -> list[str
         summary = ", ".join(f"{node_id}: +{count}" for node_id, count in sorted(by_node.items()))
         changes.append(f"New observations: {len(new_observations)} ({summary})")
         for observation in new_observations[:5]:
-            source_id = observation.get("classification_hints", {}).get("simulated_source_id")
+            source_id = _simulated_source_id(observation)
             source = f", source={source_id}" if source_id else ""
             changes.append(
                 f"  {observation.get('observation_id')} from "
@@ -144,6 +158,7 @@ def print_summary(snapshot: dict[str, Any]) -> None:
     summary = summarize(snapshot)
     print(f"Hub summary at {datetime.now(timezone.utc).isoformat()}")
     print(f"Nodes: {summary['node_count']} ({summary['nodes_by_type'] or 'none'})")
+    print(f"Lifecycle: {summary['nodes_by_lifecycle_state'] or 'none'}")
     print(f"Availability: {summary['nodes_by_availability'] or 'none'}")
     print(
         f"Observations in latest {summary['observation_limit']}: "

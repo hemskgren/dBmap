@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class CreateNodeRequest(BaseModel):
@@ -66,6 +66,12 @@ class DesiredStateBody(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class NodeLifecycleBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lifecycle_state: Literal["active", "deactivated"]
+
+
 class InstallationMetadataBody(BaseModel):
     latitude: float = Field(ge=-90, le=90, description="WGS84 latitude in decimal degrees")
     longitude: float = Field(ge=-180, le=180, description="WGS84 longitude in decimal degrees")
@@ -74,10 +80,33 @@ class InstallationMetadataBody(BaseModel):
     height_accuracy_m: float | None = Field(default=None, ge=0)
     mount_type: str | None = Field(default=None, max_length=64)
     environment: str | None = Field(default=None, max_length=64)
-    orientation_deg: float | None = Field(default=None, ge=0, lt=360)
+    orientation_deg: float | None = Field(
+        default=None,
+        ge=0,
+        lt=360,
+        description="Clockwise from geographic true north to the node reference axis",
+    )
+
+
+class ObservationClassification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_family: str | None = Field(default=None, min_length=1, max_length=64)
+    confidence: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    hints: dict[str, Any] = Field(default_factory=dict)
+
+
+class ObservationBearing(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    deg: float = Field(ge=0, lt=360, allow_inf_nan=False)
+    reference: Literal["node"] = "node"
+    confidence: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
 
 
 class ObservationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     protocol_version: Literal[1]
     message_type: Literal["observation"]
     observation_id: UUID
@@ -88,9 +117,8 @@ class ObservationBody(BaseModel):
     timing_quality: Literal["synchronized", "estimated", "unsynchronized"]
     clock_offset_ms: float | None = Field(default=None, allow_inf_nan=False)
     timestamp_uncertainty_ms: float = Field(ge=0, allow_inf_nan=False)
-    classification_hints: dict[str, Any] = Field(default_factory=dict)
-    confidence: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
-    bearing_deg: float | None = Field(default=None, ge=0, lt=360, allow_inf_nan=False)
+    classification: ObservationClassification | None = None
+    bearing: ObservationBearing | None = None
     signal_level_dbfs: float | None = Field(default=None, le=0, allow_inf_nan=False)
     duration_ms: float = Field(ge=0, allow_inf_nan=False)
 
@@ -111,6 +139,7 @@ class NodeView(BaseModel):
     node_type: str
     hardware_revision: str
     provisioning_state: str
+    lifecycle_state: Literal["active", "deactivated"]
     availability: str
     pending_configuration_change: bool
     desired: dict[str, Any]

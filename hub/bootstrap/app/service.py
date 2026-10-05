@@ -15,13 +15,14 @@ from app.models import (
     Observation,
     ReportedState,
 )
-from app.mqtt_security import ensure_node_security
+from app.mqtt_security import ensure_node_security, set_node_security_active
 from app.schemas import (
     CreateNodeRequest,
     CreateNodeResponse,
     DesiredStateBody,
     InstallationMetadataBody,
     MqttEndpoint,
+    NodeLifecycleBody,
     NodeView,
     ObservationBody,
     ObservationView,
@@ -76,6 +77,8 @@ def provision(db: Session, body: ProvisionRequest) -> ProvisionResponse:
     node = db.get(Node, row.node_id)
     if node is None:
         raise ValueError("node missing")
+    if node.lifecycle_state != "active":
+        raise ValueError("node is deactivated")
 
     password = new_token()
     username = node.node_id.lower()
@@ -146,6 +149,27 @@ def set_desired(db: Session, node_id: str, body: DesiredStateBody) -> NodeView:
     return node_view(db, node)
 
 
+def set_node_lifecycle(
+    db: Session,
+    node_id: str,
+    body: NodeLifecycleBody,
+) -> NodeView:
+    node = db.get(Node, node_id.upper())
+    if node is None:
+        raise KeyError(node_id)
+
+    if body.lifecycle_state == "deactivated" and settings.mqtt_enabled:
+        set_node_security_active(node.node_type, node.node_id, active=False)
+
+    node.lifecycle_state = body.lifecycle_state
+    db.commit()
+
+    if body.lifecycle_state == "active" and settings.mqtt_enabled:
+        set_node_security_active(node.node_type, node.node_id, active=True)
+
+    return node_view(db, node)
+
+
 def set_installation(db: Session, node_id: str, body: InstallationMetadataBody) -> NodeView:
     node = db.get(Node, node_id.upper())
     if node is None:
@@ -168,6 +192,8 @@ def ingest_observation(db: Session, topic_node_id: str, body: ObservationBody) -
     node = db.get(Node, node_id)
     if node is None or node.node_type != "ear":
         raise ValueError("observation topic does not belong to a registered Ear")
+    if node.lifecycle_state != "active":
+        raise ValueError("node is deactivated")
     body.node_id = node_id
 
     observation_id = str(body.observation_id)
@@ -281,6 +307,7 @@ def node_view(db: Session, node: Node) -> NodeView:
         node_type=node.node_type,
         hardware_revision=node.hardware_revision,
         provisioning_state=node.provisioning_state,
+        lifecycle_state=node.lifecycle_state,
         availability=node.availability,
         pending_configuration_change=pending,
         desired=desired_dict,

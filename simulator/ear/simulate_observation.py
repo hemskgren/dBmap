@@ -95,12 +95,16 @@ def make_observation(
         "timing_quality": "estimated",
         "clock_offset_ms": None,
         "timestamp_uncertainty_ms": 10.0,
-        "classification_hints": {
+        "classification": {
             "source_family": "vehicle",
-            "simulated_source_id": vehicle_id,
+            "confidence": 0.72,
+            "hints": {"simulated_source_id": vehicle_id},
         },
-        "confidence": 0.72,
-        "bearing_deg": 180.0,
+        "bearing": {
+            "deg": 180.0,
+            "reference": "node",
+            "confidence": 0.61,
+        },
         "signal_level_dbfs": -34.0,
         "duration_ms": 850.0,
     }
@@ -233,7 +237,7 @@ def publish_observation_batch(
                 time.sleep(interval_seconds)
             sequence = credentials["next_sequence_number"]
             pending = make_observation(credentials["node_id"], sequence, vehicle_id)
-        pending["classification_hints"]["simulated_source_id"] = vehicle_id
+        pending["classification"]["hints"]["simulated_source_id"] = vehicle_id
         credentials["pending_observation"] = pending
         save_credentials(credentials_path, credentials)
 

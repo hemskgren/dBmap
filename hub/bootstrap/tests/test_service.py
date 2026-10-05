@@ -2,6 +2,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
@@ -20,8 +21,10 @@ from app.models import Node, NodeCredential  # noqa: E402
 from app.models import Base  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app import mqtt_listener  # noqa: E402
-from app.schemas import ObservationBody  # noqa: E402
+from app.mqtt_security import MqttSecurityError  # noqa: E402
+from app.schemas import ObservationBearing, ObservationBody, ObservationClassification  # noqa: E402
 from app.service import ingest_observation, list_observations  # noqa: E402
+from app import service  # noqa: E402
 from app.topics import parse_observation_topic  # noqa: E402
 
 
@@ -42,9 +45,12 @@ def valid_observation_payload(node_id: str = "SIM-EAR-001") -> dict:
         "timing_quality": "estimated",
         "clock_offset_ms": None,
         "timestamp_uncertainty_ms": 10.0,
-        "classification_hints": {"source_family": "vehicle"},
-        "confidence": 0.72,
-        "bearing_deg": 180.0,
+        "classification": {
+            "source_family": "vehicle",
+            "confidence": 0.72,
+            "hints": {"simulated_source_id": "SIM-VEHICLE-001"},
+        },
+        "bearing": {"deg": 180.0, "reference": "node", "confidence": 0.61},
         "signal_level_dbfs": -34.0,
         "duration_ms": 850.0,
     }
@@ -98,6 +104,122 @@ def test_init_db_drops_legacy_plaintext_password_column() -> None:
 
     columns = {column["name"] for column in inspect(engine).get_columns("node_credentials")}
     assert "mqtt_password_plain_once" not in columns
+
+
+def test_init_db_adds_lifecycle_state_to_existing_nodes() -> None:
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE nodes DROP COLUMN lifecycle_state"))
+        connection.execute(
+            text(
+                "INSERT INTO nodes (node_id, node_type, hardware_revision, "
+                "provisioning_state, availability, created_at, updated_at) "
+                "VALUES ('LEGACY-EAR-001', 'ear', 'unknown', 'pending', 'SERVICE', "
+                "'2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')"
+            )
+        )
+
+    init_db()
+
+    with engine.connect() as connection:
+        lifecycle_state = connection.execute(
+            text("SELECT lifecycle_state FROM nodes WHERE node_id = 'LEGACY-EAR-001'")
+        ).scalar_one()
+    assert lifecycle_state == "active"
+
+
+def test_deactivated_node_blocks_provisioning_and_observations_until_reactivated() -> None:
+    client = TestClient(create_app())
+    headers = {"Authorization": "Bearer test-admin"}
+    created = client.post(
+        "/api/v1/nodes",
+        json={"node_type": "ear", "hardware_revision": "EAR-DEV-V1"},
+        headers={"Authorization": f"Bearer {settings.admin_token}"},
+    )
+    assert created.status_code == 200, created.text
+    node_id = created.json()["node_id"]
+    bootstrap_token = created.json()["bootstrap_token"]
+
+    headers = {"Authorization": f"Bearer {settings.admin_token}"}
+    deactivated = client.put(
+        f"/api/v1/nodes/{node_id}/lifecycle",
+        json={"lifecycle_state": "deactivated"},
+        headers=headers,
+    )
+    assert deactivated.status_code == 200, deactivated.text
+    assert deactivated.json()["lifecycle_state"] == "deactivated"
+    assert client.post(
+        "/api/v1/provision",
+        json={"bootstrap_token": bootstrap_token, "hardware_revision": "EAR-DEV-V1"},
+    ).status_code == 400
+
+    reactivated = client.put(
+        f"/api/v1/nodes/{node_id}/lifecycle",
+        json={"lifecycle_state": "active"},
+        headers=headers,
+    )
+    assert reactivated.status_code == 200, reactivated.text
+    assert reactivated.json()["lifecycle_state"] == "active"
+    provisioned = client.post(
+        "/api/v1/provision",
+        json={"bootstrap_token": bootstrap_token, "hardware_revision": "EAR-DEV-V1"},
+    )
+    assert provisioned.status_code == 200, provisioned.text
+
+    deactivated_again = client.put(
+        f"/api/v1/nodes/{node_id}/lifecycle",
+        json={"lifecycle_state": "deactivated"},
+        headers=headers,
+    )
+    assert deactivated_again.status_code == 200
+    body = ObservationBody.model_validate(valid_observation_payload(node_id))
+    db = SessionLocal()
+    try:
+        with pytest.raises(ValueError, match="node is deactivated"):
+            ingest_observation(db, node_id, body)
+    finally:
+        db.close()
+
+    reactivated_again = client.put(
+        f"/api/v1/nodes/{node_id}/lifecycle",
+        json={"lifecycle_state": "active"},
+        headers=headers,
+    )
+    assert reactivated_again.status_code == 200
+    db = SessionLocal()
+    try:
+        assert ingest_observation(db, node_id, body) is True
+    finally:
+        db.close()
+
+
+def test_node_deactivation_reports_broker_acl_failure_without_changing_state(monkeypatch) -> None:
+    client = TestClient(create_app())
+    headers = {"Authorization": f"Bearer {settings.admin_token}"}
+    created = client.post(
+        "/api/v1/nodes",
+        json={"node_type": "output", "hardware_revision": "OUTPUT-DEV-V1"},
+        headers=headers,
+    )
+    assert created.status_code == 200, created.text
+    node_id = created.json()["node_id"]
+
+    monkeypatch.setattr(settings, "mqtt_enabled", True)
+    monkeypatch.setattr(
+        service,
+        "set_node_security_active",
+        Mock(side_effect=MqttSecurityError("test failure")),
+    )
+    response = client.put(
+        f"/api/v1/nodes/{node_id}/lifecycle",
+        json={"lifecycle_state": "deactivated"},
+        headers=headers,
+    )
+
+    assert response.status_code == 503
+    assert "node remains active" in response.json()["detail"]
+    fetched = client.get(f"/api/v1/nodes/{node_id}", headers=headers)
+    assert fetched.status_code == 200
+    assert fetched.json()["lifecycle_state"] == "active"
 
 
 def test_installation_requires_geographic_position_and_is_returned_by_node_api() -> None:
@@ -162,9 +284,16 @@ def test_observations_are_validated_deduplicated_and_listed() -> None:
         capture_timestamp_monotonic_us=123456,
         timing_quality="estimated",
         timestamp_uncertainty_ms=10,
-        classification_hints={"source_family": "vehicle"},
-        confidence=0.72,
-        bearing_deg=180,
+        classification=ObservationClassification(
+            source_family="vehicle",
+            confidence=0.72,
+            hints={"simulated_source_id": "SIM-VEHICLE-001"},
+        ),
+        bearing=ObservationBearing(
+            deg=180,
+            reference="node",
+            confidence=0.61,
+        ),
         signal_level_dbfs=-34,
         duration_ms=850,
     )
@@ -186,12 +315,20 @@ def test_observations_are_validated_deduplicated_and_listed() -> None:
         assert len(observations) == 1
         assert str(observations[0].observation_id) == str(observation_id)
         assert observations[0].node_id == "EAR-007"
-        assert observations[0].classification_hints == {"source_family": "vehicle"}
+        assert observations[0].classification is not None
+        assert observations[0].classification.source_family == "vehicle"
+        assert observations[0].classification.confidence == 0.72
+        assert observations[0].classification.hints == {"simulated_source_id": "SIM-VEHICLE-001"}
+        assert observations[0].bearing is not None
+        assert observations[0].bearing.deg == 180
+        assert observations[0].bearing.reference == "node"
+        assert observations[0].bearing.confidence == 0.61
 
         with pytest.raises(ValueError, match="does not match topic"):
             ingest_observation(db, "EAR-008", body)
         with pytest.raises(ValueError, match="registered Ear"):
             ingest_observation(db, "OUT-003", body.model_copy(update={"node_id": "OUT-003"}))
+
     finally:
         db.close()
 
@@ -202,7 +339,7 @@ def test_observations_are_validated_deduplicated_and_listed() -> None:
     )
     assert response.status_code == 200
     assert len(response.json()) == 1
-    assert response.json()[0]["node_id"] == "EAR-007"
+    assert all(item["node_id"] == "EAR-007" for item in response.json())
 
     unauthorized = client.get("/api/v1/observations")
     assert unauthorized.status_code == 401
@@ -220,19 +357,41 @@ def test_observation_requires_timezone_and_valid_bearing() -> None:
         "timing_quality": "estimated",
         "timestamp_uncertainty_ms": 10,
         "duration_ms": 100,
-        "bearing_deg": 180,
+        "bearing": {"deg": 180, "reference": "node", "confidence": 0.5},
     }
     with pytest.raises(ValueError):
         ObservationBody.model_validate(payload)
 
     payload["event_time_utc"] = "2026-10-04T20:00:00+02:00"
-    payload["bearing_deg"] = 360
+    payload["bearing"]["deg"] = 360
     with pytest.raises(ValueError):
         ObservationBody.model_validate(payload)
 
-    payload["bearing_deg"] = 359.9
+    payload["bearing"]["deg"] = 359.9
     body = ObservationBody.model_validate(payload)
     assert body.event_time_utc.isoformat() == "2026-10-04T18:00:00+00:00"
+
+
+def test_observation_rejects_out_of_range_confidences_and_legacy_shape() -> None:
+    payload = valid_observation_payload()
+    payload["classification"]["confidence"] = 1.1
+    with pytest.raises(ValueError):
+        ObservationBody.model_validate(payload)
+
+    payload = valid_observation_payload()
+    payload["bearing"]["confidence"] = -0.1
+    with pytest.raises(ValueError):
+        ObservationBody.model_validate(payload)
+
+    payload = valid_observation_payload()
+    payload["confidence"] = 0.72
+    with pytest.raises(ValueError):
+        ObservationBody.model_validate(payload)
+
+    payload = valid_observation_payload()
+    payload["bearing_deg"] = payload.pop("bearing")["deg"]
+    with pytest.raises(ValueError):
+        ObservationBody.model_validate(payload)
 
 
 @pytest.mark.parametrize(
@@ -326,6 +485,10 @@ def test_simulator_observation_round_trips_through_hub_protocol() -> None:
     assert listed[0].protocol_version == 1
     assert listed[0].message_type == "observation"
     assert listed[0].node_id == "SIM-EAR-001"
+    assert listed[0].classification is not None
+    assert listed[0].classification.confidence == 0.72
+    assert listed[0].bearing is not None
+    assert listed[0].bearing.deg == 180
 
 
 def test_observation_topic_parser_requires_exact_ear_topic_shape() -> None:
