@@ -9,6 +9,7 @@ from app.schemas import (
     CreateNodeResponse,
     DesiredStateBody,
     InstallationMetadataBody,
+    NodeLifecycleBody,
     NodeView,
     ObservationView,
     ProvisionRequest,
@@ -55,6 +56,31 @@ def put_desired(node_id: str, body: DesiredStateBody, db: Session = Depends(get_
         return service.set_desired(db, node_id, body)
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown node") from None
+
+
+@router.put(
+    "/api/v1/nodes/{node_id}/lifecycle",
+    response_model=NodeView,
+    dependencies=[Depends(require_admin)],
+)
+def put_node_lifecycle(
+    node_id: str,
+    body: NodeLifecycleBody,
+    db: Session = Depends(get_db),
+) -> NodeView:
+    try:
+        return service.set_node_lifecycle(db, node_id, body)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="unknown node") from None
+    except MqttSecurityError as exc:
+        if body.lifecycle_state == "active":
+            detail = (
+                "MQTT ACL restore failed; the node is active in Hub state but broker "
+                "access remains suspended. Retry reactivation."
+            )
+        else:
+            detail = "MQTT ACL suspension failed; the node remains active in Hub state."
+        raise HTTPException(status_code=503, detail=detail) from exc
 
 
 @router.put(

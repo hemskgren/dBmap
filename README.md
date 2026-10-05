@@ -201,7 +201,74 @@ curl -sS --cacert mqtt/certs/ca.crt \
   "https://${DBMAP_LAN_IP}:8443/api/v1/observations?node_id=<node-id-from-simulator>"
 ```
 
-Replace `<node-id-from-simulator>` with the `SIM-EAR-*` node ID printed by the simulator. The response contains the validated protocol envelope, observation and hub `received_time_utc`. Each observation includes a UUID, sequence number, timezone-aware event timestamp, monotonic capture timestamp, timing-quality and uncertainty fields; classification hints, confidence, bearing, signal level, and duration are also supported. Repeating publication with the same observation ID is deduplicated. To retry a publish after an error without provisioning another test node, run the command again with `--credentials-file /tmp/dbmap-ear-simulator-credentials.json --reuse-credentials`. Keep that file private; delete it when the simulator credentials are no longer needed.
+Replace `<node-id-from-simulator>` with the `SIM-EAR-*` node ID printed by the simulator. The response contains the validated protocol envelope, observation and hub `received_time_utc`. Classification and bearing have separate confidence values. Bearing is relative to the node reference axis, not a compass direction; the hub does not yet convert it using installation orientation. `signal_level_dbfs` is digital full-scale, not dB SPL. Each observation also includes a UUID, sequence number, timezone-aware event timestamp, monotonic capture timestamp, and timing-quality and uncertainty fields. Repeating publication with the same observation ID is deduplicated. To retry a publish after an error without provisioning another test node, run the command again with `--credentials-file /tmp/dbmap-ear-simulator-credentials.json --reuse-credentials`. Keep that file private; delete it when the simulator credentials are no longer needed.
+
+To simulate several observations from the same synthetic vehicle, use a finite count. Each observation gets a new UUID and increasing sequence number; all share the supplied synthetic source ID. The default delay between publications is 15 seconds:
+
+```bash
+uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
+  --hub-host "$DBMAP_LAN_IP" \
+  --credentials-file /tmp/dbmap-ear-simulator-credentials.json \
+  --reuse-credentials \
+  --count 4 \
+  --interval-seconds 15 \
+  --vehicle-id SIM-VEHICLE-001
+```
+
+The single-observation default remains an idempotent retry using the saved observation ID. Multi-observation mode advances and persists its sequence number after each successful publish, so rerunning it starts new observations. The stable synthetic source ID is only a test correlation hint; it does not simulate or establish real acoustic identity.
+
+Before deploying the revised version-1 observation shape, clear the local hub database. This removes all node registrations, installation metadata, desired/reported state, bootstrap tokens, hub-side MQTT credentials, and observations. It does not remove Mosquitto's dynamic-security users or the TLS certificates. Run these commands from a shell with Docker access (for example, after `newgrp docker`); the one-off container only deletes rows from the existing `bootstrap-data` volume:
+
+```bash
+docker compose stop hub-bootstrap
+docker compose run --rm --no-deps --entrypoint python hub-bootstrap -c 'import os,sqlite3; p="/data/bootstrap.db"; assert os.path.isfile(p), "Hub database not found"; db=sqlite3.connect(p); db.executescript("BEGIN IMMEDIATE; DELETE FROM observations; DELETE FROM installation_metadata; DELETE FROM bootstrap_tokens; DELETE FROM node_credentials; DELETE FROM desired_state; DELETE FROM reported_state; DELETE FROM nodes; COMMIT;"); tables=("observations","installation_metadata","bootstrap_tokens","node_credentials","desired_state","reported_state","nodes"); print({table: db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in tables}); db.close()'
+docker compose up --build -d hub-bootstrap
+```
+
+Do this only when you intend to discard all local hub test data. Then use a new credentials file to create and provision a fresh simulated Ear; the first observation will use the revised structure:
+
+```bash
+uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
+  --hub-host "$DBMAP_LAN_IP" \
+  --credentials-file /tmp/dbmap-ear-simulator-v1.json
+```
+
+For an authenticated summary of nodes and the latest 500 observations, run:
+
+```bash
+uv run --project hub/bootstrap python scripts/hub_summary.py \
+  --hub-host "$DBMAP_LAN_IP"
+```
+
+Add `--watch` to print a summary once and then report new observations and node-state changes every 15 seconds; use `--interval-seconds 30` to change the interval. Stop watch mode with `Ctrl+C`.
+
+### Administer Hub nodes
+
+The authenticated admin CLI lists and inspects nodes, updates desired state or installation metadata, and reversibly deactivates/reactivates a node without deleting its observations or MQTT account. While deactivated, the Hub rejects new observations and refuses provisioning, and the node's MQTT role ACLs are suspended; reactivation restores the role ACLs without changing the account or password. A broker ACL failure returns HTTP 503. If reactivation reports that Hub state is active while broker access remains suspended, retry the `reactivate` command after fixing broker access.
+
+Load the admin token from the private `.env` file, then use `scripts/hub_admin.py`:
+
+```bash
+set -a
+. ./.env
+set +a
+
+uv run --project hub/bootstrap python scripts/hub_admin.py \
+  --hub-host "$DBMAP_LAN_IP" list
+uv run --project hub/bootstrap python scripts/hub_admin.py \
+  --hub-host "$DBMAP_LAN_IP" show SIM-EAR-001
+uv run --project hub/bootstrap python scripts/hub_admin.py \
+  --hub-host "$DBMAP_LAN_IP" set-desired SIM-EAR-001 --config-version 2
+uv run --project hub/bootstrap python scripts/hub_admin.py \
+  --hub-host "$DBMAP_LAN_IP" set-installation SIM-EAR-001 \
+  --latitude 59.91 --longitude 10.75 --orientation-deg 180
+uv run --project hub/bootstrap python scripts/hub_admin.py \
+  --hub-host "$DBMAP_LAN_IP" deactivate SIM-EAR-001
+uv run --project hub/bootstrap python scripts/hub_admin.py \
+  --hub-host "$DBMAP_LAN_IP" reactivate SIM-EAR-001
+```
+
+Installation updates preserve fields not supplied on the command line; latitude and longitude must already exist or be supplied together. Desired-state updates likewise preserve fields that are not explicitly changed. Both commands validate the resulting complete object through the Hub API. Keep `.env` and the local CA private.
 
 To send an Output command from the hub, use the authenticated TLS broker account:
 
@@ -245,5 +312,7 @@ Not in this slice: `hub-event`, rules, Ear DSP, Home Assistant, Regional Hub.
 ```bash
 cd hub/bootstrap
 uv sync --extra dev
-uv run pytest
+uv run pytest tests ../../simulator/ear ../../scripts
 ```
+
+The hub container currently uses Python 3.12, the runtime used by the deployed local hub and the verified test environment. Although the package metadata allows Python 3.11 and later, a test run on Python 3.14.4 currently fails during SQLAlchemy 2.0.36 ORM model initialization, before test collection completes. Keep the container on 3.12 until the ORM dependency is upgraded and the full suite and container build pass on a newer runtime.

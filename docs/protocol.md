@@ -77,9 +77,18 @@ and registration as an Ear before persistence.
   "timing_quality": "estimated",
   "clock_offset_ms": null,
   "timestamp_uncertainty_ms": 10.0,
-  "classification_hints": {},
-  "confidence": null,
-  "bearing_deg": null,
+  "classification": {
+    "source_family": "vehicle",
+    "confidence": 0.72,
+    "hints": {
+      "simulated_source_id": "SIM-VEHICLE-001"
+    }
+  },
+  "bearing": {
+    "deg": 180.0,
+    "reference": "node",
+    "confidence": 0.61
+  },
   "signal_level_dbfs": -34.0,
   "duration_ms": 850.0
 }
@@ -87,14 +96,36 @@ and registration as an Ear before persistence.
 
 `event_time_utc` must include a timezone; the hub normalizes it to UTC.
 `timing_quality` is `synchronized`, `estimated`, or `unsynchronized`.
-Optional measurements may be `null`. Values such as confidence are bounded
-from 0 to 1, bearing is in `[0, 360)`, and durations and timestamp
-uncertainties must be non-negative. The hub adds `received_time_utc` to the
-observation returned by its API.
+`classification` and `bearing` may be `null` when no result is available.
+Classification confidence describes confidence in `source_family`; bearing
+confidence describes confidence in the direction estimate. Both are bounded
+from 0 to 1. A bearing's `deg` is in `[0, 360)`, `reference` is currently
+`node`, and its angle is clockwise from the Ear's configured forward/reference
+axis: `0` is that axis, `90` is clockwise from it, `180` is behind it, and
+`270` is counter-clockwise from it. It is not itself a geographic or magnetic
+compass bearing. Installation `orientation_deg`, when present, is clockwise
+from geographic true north and defines the node's forward/reference axis.
+Combining installation orientation and node-relative bearing yields a
+geographic bearing modulo 360; the hub does not yet calculate or return that
+conversion.
+
+`signal_level_dbfs` is a digital signal level relative to the audio chain's
+full-scale value. It is not dB SPL and is not comparable as an absolute
+acoustic pressure level without hardware-chain calibration. Optional
+measurements may be `null`; durations and timestamp uncertainties must be
+non-negative. The hub adds `received_time_utc` to the observation returned by
+its API.
 
 Retained observations are rejected. Duplicate deliveries are safe when the
 same observation ID is used. The simulator uses the same envelope and topic
-as a registered Ear.
+as a registered Ear. Repeated-vehicle simulator scenarios assign a stable
+`classification.hints.simulated_source_id` across distinct observations;
+this is test metadata, not a real-world identity or an event/track identifier.
+Previously stored observations using the earlier flat `confidence`,
+`bearing_deg`, and `classification_hints` fields must be cleared before
+deploying this schema revision. See the simulator cleanup instructions in the
+README. New MQTT observations must use this structured form; legacy fields
+are rejected rather than silently discarded.
 
 ### Existing Output and state messages
 

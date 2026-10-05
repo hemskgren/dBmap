@@ -19,6 +19,7 @@ class Node(Base):
     node_type: Mapped[str] = mapped_column(String(16))  # ear | output
     hardware_revision: Mapped[str] = mapped_column(String(64), default="unknown")
     provisioning_state: Mapped[str] = mapped_column(String(32), default="pending")
+    lifecycle_state: Mapped[str] = mapped_column(String(16), default="active")
     availability: Mapped[str] = mapped_column(String(32), default="SERVICE")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

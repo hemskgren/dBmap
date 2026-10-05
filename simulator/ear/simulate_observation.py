@@ -78,22 +78,33 @@ def save_credentials(path: Path, credentials: dict, *, create: bool = False) -> 
     os.replace(temporary_path, path)
 
 
-def make_observation(node_id: str) -> dict[str, Any]:
+def make_observation(
+    node_id: str,
+    sequence_number: int = 1,
+    vehicle_id: str = "SIM-VEHICLE-001",
+) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     return {
         "protocol_version": 1,
         "message_type": "observation",
         "observation_id": str(uuid4()),
         "node_id": node_id,
-        "sequence_number": 1,
+        "sequence_number": sequence_number,
         "event_time_utc": now.isoformat(),
         "capture_timestamp_monotonic_us": time.monotonic_ns() // 1000,
         "timing_quality": "estimated",
         "clock_offset_ms": None,
         "timestamp_uncertainty_ms": 10.0,
-        "classification_hints": {"source_family": "vehicle"},
-        "confidence": 0.72,
-        "bearing_deg": 180.0,
+        "classification": {
+            "source_family": "vehicle",
+            "confidence": 0.72,
+            "hints": {"simulated_source_id": vehicle_id},
+        },
+        "bearing": {
+            "deg": 180.0,
+            "reference": "node",
+            "confidence": 0.61,
+        },
         "signal_level_dbfs": -34.0,
         "duration_ms": 850.0,
     }
@@ -129,6 +140,8 @@ def finish_provisioning(args: argparse.Namespace, record: dict, admin_token: str
         "mqtt": mqtt_endpoint,
         "topics": provisioned["topics"],
         "observation": observation,
+        "next_sequence_number": 1,
+        "pending_observation": observation,
     }
     save_credentials(Path(args.credentials_file), result)
     return result
@@ -144,6 +157,10 @@ def load_or_provision(args: argparse.Namespace, admin_token: str) -> dict:
         if record.get("state") == "pending":
             return finish_provisioning(args, record, admin_token)
         if record.get("state") == "provisioned":
+            record.setdefault(
+                "next_sequence_number",
+                record["observation"]["sequence_number"] + 1,
+            )
             return record
         raise ValueError("credentials file is not resumable; it has no saved bootstrap token")
     if credentials_path.exists():
@@ -175,9 +192,12 @@ def load_or_provision(args: argparse.Namespace, admin_token: str) -> dict:
 
 
 def publish_observation(credentials: dict, ca_file: str) -> str:
+    return publish_payload(credentials, credentials["observation"], ca_file)
+
+
+def publish_payload(credentials: dict, payload: dict, ca_file: str) -> str:
     endpoint = credentials["mqtt"]
     topic = credentials["topics"]["observation"]
-    payload = credentials["observation"]
     ObservationBody.model_validate(payload)
 
     client = mqtt.Client(
@@ -201,6 +221,37 @@ def publish_observation(credentials: dict, ca_file: str) -> str:
     return payload["observation_id"]
 
 
+def publish_observation_batch(
+    credentials: dict,
+    ca_file: str,
+    credentials_path: Path,
+    count: int,
+    interval_seconds: float,
+    vehicle_id: str,
+) -> list[str]:
+    published_ids = []
+    for index in range(count):
+        pending = credentials.get("pending_observation")
+        if pending is None:
+            if index > 0:
+                time.sleep(interval_seconds)
+            sequence = credentials["next_sequence_number"]
+            pending = make_observation(credentials["node_id"], sequence, vehicle_id)
+        pending["classification"]["hints"]["simulated_source_id"] = vehicle_id
+        credentials["pending_observation"] = pending
+        save_credentials(credentials_path, credentials)
+
+        observation_id = publish_payload(credentials, pending, ca_file)
+        published_ids.append(observation_id)
+        credentials["next_sequence_number"] = max(
+            credentials["next_sequence_number"],
+            pending["sequence_number"] + 1,
+        )
+        credentials.pop("pending_observation", None)
+        save_credentials(credentials_path, credentials)
+    return published_ids
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Create a simulated Ear and publish one protocol-validated TLS observation."
@@ -217,7 +268,30 @@ def main() -> int:
         action="store_true",
         help="Republish using an existing credentials file instead of creating another Ear",
     )
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=1,
+        help="Number of observations to publish; 1 republishes the saved observation",
+    )
+    parser.add_argument(
+        "--interval-seconds",
+        type=float,
+        default=15,
+        help="Delay between observations when --count is greater than 1 (default: 15)",
+    )
+    parser.add_argument(
+        "--vehicle-id",
+        default="SIM-VEHICLE-001",
+        help="Stable synthetic source ID shared by a simulated vehicle's observations",
+    )
     args = parser.parse_args()
+    if args.count < 1:
+        parser.error("--count must be at least 1")
+    if args.interval_seconds < 0:
+        parser.error("--interval-seconds cannot be negative")
+    if not args.vehicle_id.strip():
+        parser.error("--vehicle-id cannot be empty")
 
     admin_token = os.environ.get("DBMAP_ADMIN_TOKEN", "")
     if len(admin_token) < 32:
@@ -226,9 +300,27 @@ def main() -> int:
         parser.error(f"CA file does not exist: {args.ca}")
 
     args.api_url = f"https://{args.hub_host}:8443"
+    credentials_path = Path(args.credentials_file)
     try:
         credentials = load_or_provision(args, admin_token)
-        observation_id = publish_observation(credentials, args.ca)
+        if args.count == 1:
+            observation_id = publish_observation(credentials, args.ca)
+            credentials["next_sequence_number"] = max(
+                credentials.get("next_sequence_number", 1),
+                credentials["observation"]["sequence_number"] + 1,
+            )
+            credentials.pop("pending_observation", None)
+            save_credentials(credentials_path, credentials)
+            published_ids = [observation_id]
+        else:
+            published_ids = publish_observation_batch(
+                credentials,
+                args.ca,
+                credentials_path,
+                args.count,
+                args.interval_seconds,
+                args.vehicle_id,
+            )
     except UnsupportedSimulatorIdentity as exc:
         print(f"Simulator setup failed: {exc}", file=sys.stderr)
         print(
@@ -250,7 +342,8 @@ def main() -> int:
         )
         return 1
 
-    print(f"Published observation {observation_id} from {credentials['node_id']}.")
+    for observation_id in published_ids:
+        print(f"Published observation {observation_id} from {credentials['node_id']}.")
     print(f"Credentials are stored in {args.credentials_file} (mode 0600); keep it private.")
     print(
         f'Verify with: curl --cacert {args.ca} -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" '

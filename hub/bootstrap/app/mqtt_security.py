@@ -156,8 +156,19 @@ def ensure_broker_security() -> None:
 
 
 def ensure_node_security(node_type: str, node_id: str, password: str) -> None:
-    root = topic_root(node_type, node_id)
     role = f"node-{node_id.lower()}"
+    _ensure_role(role, _node_acls(node_type, node_id))
+    _ensure_client(node_id.lower(), password, role)
+
+
+def set_node_security_active(node_type: str, node_id: str, active: bool) -> None:
+    role = f"node-{node_id.lower()}"
+    acls = _node_acls(node_type, node_id) if active else []
+    _ensure_role(role, acls)
+
+
+def _node_acls(node_type: str, node_id: str) -> list[dict[str, Any]]:
+    root = topic_root(node_type, node_id)
     acls = [
         {"acltype": "publishClientSend", "topic": f"{root}/{name}", "allow": True}
         for name in ("hello", "keepalive", "health", "status", "ack")
@@ -177,5 +188,4 @@ def ensure_node_security(node_type: str, node_id: str, password: str) -> None:
             "topic": f"{root}/observation",
             "allow": True,
         })
-    _ensure_role(role, acls)
-    _ensure_client(node_id.lower(), password, role)
+    return acls

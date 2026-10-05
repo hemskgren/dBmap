@@ -66,6 +66,46 @@ def test_ear_role_can_publish_observations_on_its_own_topic(monkeypatch) -> None
     )
 
 
+def test_node_lifecycle_suspends_and_restores_acls_without_changing_client(monkeypatch) -> None:
+    commands = []
+
+    def command(body):
+        commands.append(body)
+        if body["command"] == "getRole":
+            return {"command": "getRole"}
+        return {"command": body["command"]}
+
+    monkeypatch.setattr(mqtt_security, "_command", command)
+    mqtt_security.set_node_security_active("output", "OUT-001", active=False)
+
+    suspended = next(body for body in commands if body["command"] == "modifyRole")
+    assert suspended["rolename"] == "node-out-001"
+    assert suspended["acls"] == []
+    assert all(
+        body["command"] not in {"getClient", "modifyClient", "deleteClient"}
+        for body in commands
+    )
+
+    commands.clear()
+    mqtt_security.set_node_security_active("output", "OUT-001", active=True)
+
+    restored = next(body for body in commands if body["command"] == "modifyRole")
+    assert restored["rolename"] == "node-out-001"
+    assert {acl["topic"] for acl in restored["acls"]} == {
+        "esp-output/local/out-001/hello",
+        "esp-output/local/out-001/keepalive",
+        "esp-output/local/out-001/health",
+        "esp-output/local/out-001/status",
+        "esp-output/local/out-001/ack",
+        "esp-output/local/out-001/command",
+        "esp-output/local/out-001/config",
+    }
+    assert all(
+        body["command"] not in {"getClient", "modifyClient", "deleteClient"}
+        for body in commands
+    )
+
+
 def test_hub_defaults_deny_and_scope_access_to_dbmap_topics(monkeypatch) -> None:
     commands = []
 
