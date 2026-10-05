@@ -1,0 +1,197 @@
+# dBmap Protocol Contract
+
+This document describes the contract between dBmap nodes, simulators, the
+Local Hub, and the MQTT broker. It records implemented behavior separately
+from planned behavior. It is not an implementation guide.
+
+## Status and compatibility
+
+The current observation message protocol is version 1. The fields
+`protocol_version` and `message_type` are required on observations. The hub
+rejects unsupported versions and message types.
+
+Other MQTT messages from the existing ESP-Output firmware predate this
+versioned envelope and do not yet carry `protocol_version` or `message_type`.
+Do not assume those messages follow the observation envelope until a
+versioned upgrade is specified and deployed.
+
+Incompatible changes require a new protocol version. Receivers must reject
+unknown versions rather than silently interpreting them as version 1.
+
+## Identifiers
+
+| Identifier | Current contract |
+| --- | --- |
+| Node ID | Assigned by the hub. Physical Outputs use `OUT-<sequence>`, physical Ears use `EAR-<sequence>`, and simulated Ears use `SIM-EAR-<sequence>` (for example `SIM-EAR-001`). The sequence is at least three digits and may grow. IDs are case-insensitive for API lookup; MQTT topic node slugs are lowercase. |
+| Observation ID | UUID. It identifies one observation and is the hub's deduplication key. Re-publishing the same observation ID from the same Ear does not create another record. Reusing it from a different node is rejected. |
+| Event ID | Reserved for a future hub-correlated event. No event message, allocation rule, or API is currently implemented. |
+| Track ID | Reserved for a future source track. No track message, allocation rule, or API is currently implemented. |
+
+Simulator identities are deliberately separate from physical Ear identities.
+Only simulated Ear registrations may request a `SIM-EAR-*` identity; Output
+nodes cannot be registered as simulated.
+
+## MQTT topics
+
+Node topic roots are:
+
+```text
+esp-output/local/<lowercase-node-id>/
+esp-ear/local/<lowercase-node-id>/
+```
+
+The hub returns the provisioned topics in the provisioning response. The
+current topic names are:
+
+| Suffix | Direction | Current purpose |
+| --- | --- | --- |
+| `hello` | Node to hub | Announces/re-announces node state. |
+| `keepalive` | Node to hub | Periodic liveness and reported state. |
+| `health` | Node to hub | Periodic health and reported state. |
+| `status` | Node to hub | State/status updates; Output command handling currently publishes here. |
+| `ack` | Node to hub | Output command acknowledgement. |
+| `command` | Hub to node | Commands. The current Output firmware subscribes here. |
+| `config` | Hub to node | Reserved for configuration delivery. The current broker ACL allows it, but configuration delivery is not implemented. |
+| `observation` | Ear to hub | Ear observation messages. The hub accepts messages only on the sending registered Ear's own topic. |
+
+Node clients may publish only to their own node topics. They may subscribe
+only to their own `command` and `config` topics. The hub uses a separate
+broker identity with broader access. Broker ACLs default to deny.
+
+## Message formats
+
+### Observation — protocol version 1
+
+An observation is UTF-8 JSON. The hub validates its fields, the node identity,
+and registration as an Ear before persistence.
+
+```json
+{
+  "protocol_version": 1,
+  "message_type": "observation",
+  "observation_id": "00000000-0000-0000-0000-000000000001",
+  "node_id": "SIM-EAR-001",
+  "sequence_number": 1,
+  "event_time_utc": "2026-10-05T15:00:00Z",
+  "capture_timestamp_monotonic_us": 123456789,
+  "timing_quality": "estimated",
+  "clock_offset_ms": null,
+  "timestamp_uncertainty_ms": 10.0,
+  "classification_hints": {},
+  "confidence": null,
+  "bearing_deg": null,
+  "signal_level_dbfs": -34.0,
+  "duration_ms": 850.0
+}
+```
+
+`event_time_utc` must include a timezone; the hub normalizes it to UTC.
+`timing_quality` is `synchronized`, `estimated`, or `unsynchronized`.
+Optional measurements may be `null`. Values such as confidence are bounded
+from 0 to 1, bearing is in `[0, 360)`, and durations and timestamp
+uncertainties must be non-negative. The hub adds `received_time_utc` to the
+observation returned by its API.
+
+Retained observations are rejected. Duplicate deliveries are safe when the
+same observation ID is used. The simulator uses the same envelope and topic
+as a registered Ear.
+
+### Existing Output and state messages
+
+The current ESP-Output sends JSON state on `hello`, `health`, and
+`keepalive`, including `node_id`, `firmware_version`, `hardware_revision`,
+`config_version`, `calibration_version`, `classifier_version`, `uptime_s`,
+and `pending_configuration_change`. These existing messages are not yet
+wrapped in the version-1 observation envelope.
+
+The current Output command example is:
+
+```json
+{"action": "RELAY_1_ON", "duration_s": 5}
+```
+
+The current firmware logs the action and returns a simple acknowledgement
+and status payload:
+
+```json
+{"node_id": "OUT-001", "action": "RELAY_1_ON", "result": "accepted"}
+```
+
+Relays remain a firmware stub; `accepted` does not confirm physical switching.
+Command, acknowledgement, and status payloads do not yet have a stable,
+versioned schema.
+
+## Delivery and timing
+
+MQTT uses MQTT 3.1.1 over TLS. The current QoS behavior is:
+
+| Message | QoS |
+| --- | --- |
+| `hello` | 1 |
+| Output `health` and `keepalive` | 0 |
+| Output `status` | 1 |
+| Output command subscription | 1 |
+| Ear observation publication and hub subscription | 1 |
+| `ack` | 1 in the current Output firmware |
+
+The hub does not rely on retained observation messages and rejects them.
+Health/status messages are not a durable history; QoS 0 messages may be lost.
+QoS 1 may deliver duplicates, so consumers of durable observations must
+deduplicate by observation ID.
+
+MQTT clients currently negotiate a 30-second keepalive. The existing
+ESP-Output publishes hello and health/keepalive at approximately 30-second
+intervals. An Ear duty-cycle/poll schedule, including the previously
+considered 24-hour poll, is not implemented and remains to be specified with
+the Ear firmware.
+
+## Transport and authentication
+
+- The broker accepts MQTT over TLS on port `8883`. The broker certificate is
+  validated against the local CA by firmware and clients.
+- Broker client certificates are not required. Current MQTT authentication is
+  per-node username/password, not mutual TLS (mTLS).
+- Node credentials are issued during HTTPS provisioning and scoped by broker
+  ACL to that node's topics.
+- The bootstrap API uses HTTPS on port `8443`. Administrative API routes
+  require `Authorization: Bearer <admin-token>`. Initial provisioning uses a
+  one-time bootstrap token; the hub stores its hash and consumes it once.
+- Never commit private CA keys, device credentials, bootstrap tokens, or local
+  Wi-Fi secrets. See [Security Policy](../SECURITY.md).
+
+## Configuration versions and state
+
+The hub stores desired state and reported state separately.
+
+| Version/state field | Meaning |
+| --- | --- |
+| `firmware_version` | Desired or reported firmware release identifier. |
+| `config_version` | Desired or reported configuration revision. |
+| `calibration_version` | Desired or reported calibration revision. |
+| `classifier_version` | Desired or reported classifier revision. |
+| `payload` | Extension object for desired or reported data. |
+
+An administrator updates desired state with
+`PUT /api/v1/nodes/{node_id}/desired`; node APIs return both `desired` and
+`reported` state and calculate `pending_configuration_change` by comparing
+the version fields. Nodes currently report versions in their periodic
+messages. Desired configuration is stored by the hub but is not yet delivered
+over MQTT, and firmware does not yet apply or acknowledge configuration
+revisions. That synchronization behavior must be defined before configuration
+delivery is treated as operational.
+
+## Hub API surface
+
+The current relevant HTTPS API endpoints are:
+
+| Endpoint | Purpose | Authentication |
+| --- | --- | --- |
+| `POST /api/v1/nodes` | Create a node and issue its one-time bootstrap token. | Admin bearer token |
+| `POST /api/v1/provision` | Consume the bootstrap token and issue per-node MQTT credentials and topics. | One-time bootstrap token |
+| `GET /api/v1/nodes` and `GET /api/v1/nodes/{node_id}` | Read node identity and desired/reported state. | Admin bearer token |
+| `PUT /api/v1/nodes/{node_id}/desired` | Replace desired configuration/version fields. | Admin bearer token |
+| `PUT /api/v1/nodes/{node_id}/installation` | Store mandatory WGS84 latitude/longitude and optional placement metadata. | Admin bearer token |
+| `GET /api/v1/observations` | Read persisted observations, optionally filtered by `node_id`. | Admin bearer token |
+
+Event and track APIs, a general node polling endpoint, and configuration
+delivery are not implemented.
