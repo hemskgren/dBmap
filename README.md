@@ -302,14 +302,16 @@ Add `--watch` to print a summary once and then report new observations and node-
 
 ### Explore observation source hints
 
-`scripts/hub_event_track.py` is a read-only exploration helper, not an event/track engine or API. It groups observations only when they share the simulator's `classification.hints.simulated_source_id`. That value is test metadata, not verified physical identity. The script reports newly received observation records in watch mode; it does not infer events, tracks, or geographic source positions. Bearing, if present, is shown in the Ear's node-relative frame.
+`scripts/hub_event_track.py` is a read-only exploration helper, not an event/track engine or API. It fetches node installation metadata as well as observations and prints each observed Ear's site coordinates, mount height, mount type, environment, and orientation when available. It prints Candidate Groups based only on the simulator's `classification.hints.simulated_source_id`; unhinted observations remain separate. That value is test metadata, not verified physical identity. Within a multi-Ear candidate, it reports pairwise installation distance. As an initial plausibility hint, `vehicle` and `animal` are treated as local ground sources; if their Ears are more than 500 m apart, one shared local source is marked less plausible. `aircraft` and `drone` are treated as airborne, for which distance alone does not rule out a shared source. This is only a provisional source-family mapping, not a conclusion about identity; unknown or mixed families remain neutral. The radius can be changed with `--local-source-radius-m`.
+
+It also prints provisional Event-shaped time episodes. The default 15-second inactivity window closes an episode only after that much silence following an observation interval (`event_time_utc + duration_ms`). This is a time boundary, not evidence that observations inside the episode came from the same source; simultaneous sources can still be distinct. The episode is only printed, never persisted or used to control a node. The tool does not create Tracks or infer geographic source positions from bearing. Watch mode re-fetches observations and node metadata, then reprints the analysis when new observations arrive.
 
 ```bash
 uv run --project hub/bootstrap python scripts/hub_event_track.py \
   --hub-host "$DBMAP_LAN_IP"
 ```
 
-To monitor for new observation records every 15 seconds, add `--watch`; customize the interval with `--interval-seconds 30`. To inspect one Ear only, add `--node-id SIM-EAR-001`. The script fetches at most the latest 500 observations per poll.
+To monitor and recalculate the proposals every 15 seconds, add `--watch`; customize the polling interval with `--interval-seconds 30`. To experiment with a 20-second inactivity window or a 300 m local-source radius, add `--event-gap-seconds 20 --local-source-radius-m 300`. To inspect one Ear only, add `--node-id SIM-EAR-001`. The script fetches at most the latest 500 observations per poll.
 
 ### Administer Hub nodes
 
