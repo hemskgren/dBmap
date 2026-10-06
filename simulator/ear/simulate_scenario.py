@@ -30,11 +30,14 @@ class ScenarioError(ValueError):
     pass
 
 
-_SCENARIO_FIELDS = {"scenario_id", "source_id", "observations"}
+_SCENARIO_FIELDS = {"scenario_id", "source", "ears", "observations"}
+_SOURCE_FIELDS = {"ground_truth_id", "source_family", "movement"}
+_MOVEMENT_FIELDS = {"start", "end", "speed_m_s"}
+_POINT_FIELDS = {"latitude", "longitude"}
+_EAR_FIELDS = {"latitude", "longitude", "orientation_deg"}
 _OBSERVATION_FIELDS = {
     "at_seconds",
     "ear",
-    "bearing_deg",
     "bearing_confidence",
     "classification_confidence",
     "signal_level_dbfs",
@@ -53,6 +56,78 @@ def _finite_number(value: Any, field: str, *, minimum: float | None = None) -> f
     return number
 
 
+def _validate_point(value: Any, field: str) -> dict[str, float]:
+    if not isinstance(value, dict) or set(value) != _POINT_FIELDS:
+        raise ScenarioError(f"{field} must contain exactly latitude and longitude")
+    latitude = _finite_number(value["latitude"], f"{field}.latitude")
+    longitude = _finite_number(value["longitude"], f"{field}.longitude")
+    if not -90 <= latitude <= 90:
+        raise ScenarioError(f"{field}.latitude must be in [-90, 90]")
+    if not -180 <= longitude <= 180:
+        raise ScenarioError(f"{field}.longitude must be in [-180, 180]")
+    return {"latitude": latitude, "longitude": longitude}
+
+
+def _distance_m(first: dict[str, float], second: dict[str, float]) -> float:
+    lat1 = math.radians(first["latitude"])
+    lat2 = math.radians(second["latitude"])
+    lat_delta = lat2 - lat1
+    lon_delta = math.radians(second["longitude"] - first["longitude"])
+    haversine = (
+        math.sin(lat_delta / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin(lon_delta / 2) ** 2
+    )
+    return 6_371_000 * 2 * math.asin(math.sqrt(min(1.0, haversine)))
+
+
+def _position_on_route(
+    start: dict[str, float],
+    end: dict[str, float],
+    fraction: float,
+) -> dict[str, float]:
+    start_lat = math.radians(start["latitude"])
+    start_lon = math.radians(start["longitude"])
+    end_lat = math.radians(end["latitude"])
+    end_lon = math.radians(end["longitude"])
+    start_vector = (
+        math.cos(start_lat) * math.cos(start_lon),
+        math.cos(start_lat) * math.sin(start_lon),
+        math.sin(start_lat),
+    )
+    end_vector = (
+        math.cos(end_lat) * math.cos(end_lon),
+        math.cos(end_lat) * math.sin(end_lon),
+        math.sin(end_lat),
+    )
+    dot = max(-1.0, min(1.0, sum(a * b for a, b in zip(start_vector, end_vector))))
+    angle = math.acos(dot)
+    if angle < 1e-12:
+        return dict(start)
+    sine = math.sin(angle)
+    first_weight = math.sin((1 - fraction) * angle) / sine
+    second_weight = math.sin(fraction * angle) / sine
+    x, y, z = (
+        first_weight * start_vector[index] + second_weight * end_vector[index]
+        for index in range(3)
+    )
+    return {
+        "latitude": math.degrees(math.atan2(z, math.hypot(x, y))),
+        "longitude": math.degrees(math.atan2(y, x)),
+    }
+
+
+def _bearing_deg(first: dict[str, float], second: dict[str, float]) -> float:
+    lat1 = math.radians(first["latitude"])
+    lat2 = math.radians(second["latitude"])
+    lon_delta = math.radians(second["longitude"] - first["longitude"])
+    y = math.sin(lon_delta) * math.cos(lat2)
+    x = (
+        math.cos(lat1) * math.sin(lat2)
+        - math.sin(lat1) * math.cos(lat2) * math.cos(lon_delta)
+    )
+    return math.degrees(math.atan2(y, x)) % 360
+
+
 def load_scenario(path: Path) -> dict[str, Any]:
     try:
         scenario = json.loads(path.read_text(encoding="utf-8"))
@@ -66,10 +141,58 @@ def load_scenario(path: Path) -> dict[str, Any]:
         raise ScenarioError(
             f"scenario fields mismatch; missing={sorted(missing)}, unexpected={sorted(unexpected)}"
         )
-    for field in ("scenario_id", "source_id"):
-        value = scenario[field]
-        if not isinstance(value, str) or not value.strip() or len(value) > 64:
-            raise ScenarioError(f"{field} must be a non-empty string of at most 64 characters")
+    scenario_id = scenario["scenario_id"]
+    if not isinstance(scenario_id, str) or not scenario_id.strip() or len(scenario_id) > 64:
+        raise ScenarioError("scenario_id must be a non-empty string of at most 64 characters")
+
+    source = scenario["source"]
+    if not isinstance(source, dict) or set(source) != _SOURCE_FIELDS:
+        raise ScenarioError(
+            f"source must contain exactly {sorted(_SOURCE_FIELDS)}"
+        )
+    source_id = source["ground_truth_id"]
+    source_family = source["source_family"]
+    if not isinstance(source_id, str) or not source_id.strip() or len(source_id) > 64:
+        raise ScenarioError("source.ground_truth_id must be a non-empty string of at most 64 characters")
+    if not isinstance(source_family, str) or not source_family.strip() or len(source_family) > 64:
+        raise ScenarioError("source.source_family must be a non-empty string of at most 64 characters")
+    movement = source["movement"]
+    if not isinstance(movement, dict) or set(movement) != _MOVEMENT_FIELDS:
+        raise ScenarioError(
+            f"source.movement must contain exactly {sorted(_MOVEMENT_FIELDS)}"
+        )
+    start = _validate_point(movement["start"], "source.movement.start")
+    end = _validate_point(movement["end"], "source.movement.end")
+    speed = _finite_number(movement["speed_m_s"], "source.movement.speed_m_s", minimum=0)
+    if speed == 0:
+        raise ScenarioError("source.movement.speed_m_s must be greater than zero")
+    route_distance_m = _distance_m(start, end)
+    if route_distance_m <= 0:
+        raise ScenarioError("source movement start and end positions must be different")
+    route_duration_seconds = route_distance_m / speed
+
+    ears_raw = scenario["ears"]
+    if not isinstance(ears_raw, dict) or not ears_raw:
+        raise ScenarioError("ears must be a non-empty object keyed by scenario alias")
+    ears: dict[str, dict[str, float]] = {}
+    for alias, ear_raw in ears_raw.items():
+        if not isinstance(alias, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", alias):
+            raise ScenarioError(f"invalid Ear alias in ears: {alias!r}")
+        if not isinstance(ear_raw, dict) or set(ear_raw) != _EAR_FIELDS:
+            raise ScenarioError(
+                f"ears.{alias} must contain exactly {sorted(_EAR_FIELDS)}"
+            )
+        point = _validate_point(
+            {"latitude": ear_raw["latitude"], "longitude": ear_raw["longitude"]},
+            f"ears.{alias}",
+        )
+        orientation = _finite_number(
+            ear_raw["orientation_deg"],
+            f"ears.{alias}.orientation_deg",
+        )
+        if not 0 <= orientation < 360:
+            raise ScenarioError(f"ears.{alias}.orientation_deg must be in [0, 360)")
+        ears[alias] = {**point, "orientation_deg": orientation}
 
     observations = scenario["observations"]
     if not isinstance(observations, list) or not observations:
@@ -80,13 +203,9 @@ def load_scenario(path: Path) -> dict[str, Any]:
         if not isinstance(observation, dict):
             raise ScenarioError(f"observations[{index}] must be an object")
         unexpected = set(observation) - _OBSERVATION_FIELDS
-        missing = {"at_seconds", "ear"} - set(observation)
-        if "classification_confidence" not in observation:
-            missing.add("classification_confidence")
-        if "bearing_deg" in observation and "bearing_confidence" not in observation:
-            missing.add("bearing_confidence")
-        if "bearing_confidence" in observation and "bearing_deg" not in observation:
-            unexpected.add("bearing_confidence")
+        missing = {"at_seconds", "ear", "bearing_confidence", "classification_confidence"} - set(
+            observation
+        )
         if unexpected or missing:
             raise ScenarioError(
                 f"observations[{index}] fields mismatch; "
@@ -103,7 +222,15 @@ def load_scenario(path: Path) -> dict[str, Any]:
         ear = observation["ear"]
         if not isinstance(ear, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", ear):
             raise ScenarioError(f"observations[{index}].ear must be a valid Ear alias")
+        if ear not in ears:
+            raise ScenarioError(f"observations[{index}].ear is not declared in ears")
+        if at_seconds > route_duration_seconds:
+            raise ScenarioError(
+                f"observations[{index}].at_seconds exceeds source movement duration "
+                f"({route_duration_seconds:.3f}s)"
+            )
         item = {"at_seconds": at_seconds, "ear": ear}
+        item["source_family"] = source_family
         classification_confidence = _finite_number(
             observation["classification_confidence"],
             f"observations[{index}].classification_confidence",
@@ -114,24 +241,31 @@ def load_scenario(path: Path) -> dict[str, Any]:
                 f"observations[{index}].classification_confidence must be at most 1"
             )
         item["classification_confidence"] = classification_confidence
-        if "bearing_deg" in observation:
-            bearing = _finite_number(
-                observation["bearing_deg"],
-                f"observations[{index}].bearing_deg",
+        bearing_confidence = _finite_number(
+            observation["bearing_confidence"],
+            f"observations[{index}].bearing_confidence",
+            minimum=0,
+        )
+        if bearing_confidence > 1:
+            raise ScenarioError(
+                f"observations[{index}].bearing_confidence must be at most 1"
             )
-            if not 0 <= bearing < 360:
-                raise ScenarioError(f"observations[{index}].bearing_deg must be in [0, 360)")
-            item["bearing_deg"] = bearing
-            bearing_confidence = _finite_number(
-                observation["bearing_confidence"],
-                f"observations[{index}].bearing_confidence",
-                minimum=0,
+        item["bearing_confidence"] = bearing_confidence
+        source_position = _position_on_route(
+            start,
+            end,
+            at_seconds / route_duration_seconds,
+        )
+        ear_position = ears[ear]
+        distance_m = _distance_m(ear_position, source_position)
+        if distance_m <= 1e-6:
+            raise ScenarioError(
+                f"observations[{index}] source position coincides with Ear position; "
+                "bearing is undefined"
             )
-            if bearing_confidence > 1:
-                raise ScenarioError(
-                    f"observations[{index}].bearing_confidence must be at most 1"
-                )
-            item["bearing_confidence"] = bearing_confidence
+        true_bearing = _bearing_deg(ear_position, source_position)
+        item["bearing_deg"] = (true_bearing - ear_position["orientation_deg"]) % 360
+        item["source_distance_m"] = distance_m
         if "signal_level_dbfs" in observation:
             signal_level = _finite_number(
                 observation["signal_level_dbfs"],
@@ -150,8 +284,17 @@ def load_scenario(path: Path) -> dict[str, Any]:
             )
         normalized.append(item)
     return {
-        "scenario_id": scenario["scenario_id"],
-        "source_id": scenario["source_id"],
+        "scenario_id": scenario_id,
+        "source_id": source_id,
+        "source_family": source_family,
+        "movement": {
+            "start": start,
+            "end": end,
+            "speed_m_s": speed,
+            "distance_m": route_distance_m,
+            "duration_seconds": route_duration_seconds,
+        },
+        "ears": ears,
         "observations": normalized,
     }
 
@@ -273,7 +416,7 @@ def make_scenario_observation(
         "clock_offset_ms": None,
         "timestamp_uncertainty_ms": 10.0,
         "classification": {
-            "source_family": "vehicle",
+            "source_family": event.get("source_family", "vehicle"),
             "confidence": event["classification_confidence"],
             "hints": {"simulated_source_id": source_id},
         },
@@ -364,14 +507,23 @@ def print_schedule(scenario: dict[str, Any]) -> None:
         )
         sequences[alias] = sequence + 1
     print(f"Scenario: {scenario['scenario_id']}")
-    print(f"Simulated source hint: {scenario['source_id']}")
+    print(
+        f"Ground truth source: {scenario['source_id']} "
+        f"({scenario['source_family']}; test metadata only)"
+    )
+    movement = scenario["movement"]
+    print(
+        f"Movement: {movement['distance_m']:.1f}m at {movement['speed_m_s']:g}m/s "
+        f"({movement['duration_seconds']:.1f}s)"
+    )
     print("No Hub event, track, or geographic position is generated.")
     for index, event in enumerate(scenario["observations"], start=1):
         print(
             f"{index:02d}  t={event['at_seconds']:g}s  Ear={event['ear']}  "
-            f"bearing={event.get('bearing_deg', 'not set')} "
+            f"bearing={event['bearing_deg']:.1f} deg "
             f"(confidence={event.get('bearing_confidence', 'not set')})  "
             f"classification confidence={event['classification_confidence']}  "
+            f"ground-truth distance={event['source_distance_m']:.1f}m  "
             f"level={event.get('signal_level_dbfs', 'not set')} dBFS  "
             f"duration={event.get('duration_ms', 850.0):g}ms"
         )

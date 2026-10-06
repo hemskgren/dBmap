@@ -17,8 +17,6 @@ from typing import Any
 
 
 EARTH_RADIUS_M = 6_371_000
-LOCAL_SOURCE_FAMILIES = {"vehicle", "animal"}
-AIRBORNE_SOURCE_FAMILIES = {"aircraft", "drone"}
 
 
 class HubApiError(RuntimeError):
@@ -98,31 +96,6 @@ def fetch_nodes(
     return {node["node_id"]: node for node in nodes}
 
 
-def simulated_source_id(observation: dict[str, Any]) -> str | None:
-    classification = observation.get("classification")
-    if not isinstance(classification, dict):
-        return None
-    hints = classification.get("hints")
-    if not isinstance(hints, dict):
-        return None
-    source_id = hints.get("simulated_source_id")
-    return source_id if isinstance(source_id, str) and source_id else None
-
-
-def group_by_simulated_source(
-    observations: list[dict[str, Any]],
-) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    ungrouped = []
-    for observation in observations:
-        source_id = simulated_source_id(observation)
-        if source_id is None:
-            ungrouped.append(observation)
-        else:
-            grouped[source_id].append(observation)
-    return dict(sorted(grouped.items())), ungrouped
-
-
 def observation_time(observation: dict[str, Any]) -> datetime | None:
     value = observation.get("event_time_utc")
     if not isinstance(value, str):
@@ -149,13 +122,7 @@ def sort_observations(observations: list[dict[str, Any]]) -> list[dict[str, Any]
 def candidate_groups(
     observations: list[dict[str, Any]],
 ) -> list[tuple[str | None, list[dict[str, Any]]]]:
-    groups, ungrouped = group_by_simulated_source(observations)
-    candidates = [
-        (source_id, sort_observations(items))
-        for source_id, items in groups.items()
-    ]
-    candidates.extend((None, [item]) for item in sort_observations(ungrouped))
-    return candidates
+    return [(None, [item]) for item in sort_observations(observations)]
 
 
 def installation_distance_m(
@@ -213,24 +180,9 @@ def format_installation(node_id: str, node: dict[str, Any] | None) -> str:
     return f"{node_id}: " + ", ".join(fields)
 
 
-def source_family_assessment(observations: list[dict[str, Any]]) -> str:
-    families = {
-        classification.get("source_family")
-        for item in observations
-        if isinstance((classification := item.get("classification")), dict)
-        and isinstance(classification.get("source_family"), str)
-    }
-    if families and families <= LOCAL_SOURCE_FAMILIES:
-        return "local-ground"
-    if families and families <= AIRBORNE_SOURCE_FAMILIES:
-        return "airborne"
-    return "unknown-or-mixed"
-
-
-def assess_candidate_installations(
+def report_site_distances(
     observations: list[dict[str, Any]],
     nodes: dict[str, dict[str, Any]],
-    local_radius_m: float,
 ) -> list[str]:
     node_ids = sorted(
         {
@@ -242,8 +194,7 @@ def assess_candidate_installations(
     if len(node_ids) < 2:
         return []
 
-    category = source_family_assessment(observations)
-    lines = [f"    spatial assessment ({category}; local radius {local_radius_m:g}m):"]
+    lines = ["Ear installation distances (site context only; not source associations):"]
     for first_id, second_id in combinations(node_ids, 2):
         first_node = nodes.get(first_id)
         second_node = nodes.get(second_id)
@@ -267,17 +218,7 @@ def assess_candidate_installations(
         if distance is None:
             lines.append(f"      {first_id} ↔ {second_id}: invalid installation coordinates")
             continue
-        if category == "local-ground" and distance > local_radius_m:
-            assessment = (
-                "beyond local radius; one shared local ground source is less plausible"
-            )
-        elif category == "airborne" and distance > local_radius_m:
-            assessment = "beyond local radius; distance alone does not exclude an airborne source"
-        elif distance <= local_radius_m:
-            assessment = "within local radius; spatially plausible, not proof of identity"
-        else:
-            assessment = "beyond local radius; source-family assessment is unknown or mixed"
-        lines.append(f"      {first_id} ↔ {second_id}: {distance:.0f}m — {assessment}")
+        lines.append(f"      {first_id} ↔ {second_id}: {distance:.0f}m")
     return lines
 
 
@@ -366,15 +307,14 @@ def report(
     observations: list[dict[str, Any]],
     event_gap_seconds: float = 15,
     nodes: dict[str, dict[str, Any]] | None = None,
-    local_radius_m: float = 500,
 ) -> list[str]:
     parse_positive_interval(event_gap_seconds)
-    parse_positive_interval(local_radius_m)
     nodes = nodes or {}
     lines = [
         f"Observation analysis at {datetime.now(timezone.utc).isoformat()}",
         f"Observations fetched (maximum 500): {len(observations)}",
-        "Candidate grouping: shared simulator source hint only; unhinted observations stay separate.",
+        "Detection candidates: each observation stays separate. "
+        "Ground-truth simulator IDs are not used for grouping or correlation.",
     ]
     candidates = candidate_groups(observations)
     observed_node_ids = sorted(
@@ -389,39 +329,41 @@ def report(
         for node_id in observed_node_ids:
             lines.append(f"  {format_installation(node_id, nodes.get(node_id))}")
     if candidates:
-        for index, (source_id, items) in enumerate(candidates, start=1):
+        for index, (_, items) in enumerate(candidates, start=1):
             candidate_node_ids = sorted(
                 {str(item.get("node_id", "unknown-node")) for item in items}
             )
-            label = f"simulator hint {source_id}" if source_id else "no simulator hint"
             lines.append(
-                f"  Candidate C{index}: {label}; {len(items)} observation(s), "
+                f"  Candidate C{index}: {len(items)} independent observation(s), "
                 f"{len(candidate_node_ids)} Ear(s) ({', '.join(candidate_node_ids)})"
             )
             for item in items:
                 lines.append(f"    {format_observation(item)}")
-            lines.extend(assess_candidate_installations(items, nodes, local_radius_m))
     else:
         lines.append("  none")
+    lines.extend(report_site_distances(observations, nodes))
 
     lines.append(
-        f"Event-shaped inactivity episodes (not event correlation or persisted Events): "
-        f"{event_gap_seconds:g}s of silence after interval end closes an episode. "
-        "This is only a temporal boundary; it does not mean observations inside "
-        "an episode share one source."
+        f"Per-Ear activity episodes (not Events): {event_gap_seconds:g}s of silence "
+        "after interval end closes an episode. This temporal grouping does not "
+        "mean observations inside an episode share one source."
     )
-    proposal_number = 0
-    for candidate_number, (_, items) in enumerate(candidates, start=1):
-        proposals = proposed_event_groups(items, event_gap_seconds)
-        for candidate_events, reason in proposals:
-            proposal_number += 1
-            event_times = [observation_time(item) for item in candidate_events]
-            known_times = [item for item in event_times if item is not None]
+    observations_by_ear: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in observations:
+        node_id = item.get("node_id")
+        if isinstance(node_id, str):
+            observations_by_ear[node_id].append(item)
+    episode_number = 0
+    for node_id, ear_observations in sorted(observations_by_ear.items()):
+        for episode, reason in proposed_event_groups(ear_observations, event_gap_seconds):
+            episode_number += 1
+            episode_times = [observation_time(item) for item in episode]
+            known_times = [item for item in episode_times if item is not None]
             start_text = min(known_times).isoformat() if known_times else "unknown"
             end_text = "unknown"
             if known_times:
                 last_observation = max(
-                    candidate_events,
+                    episode,
                     key=lambda item: observation_time(item)
                     or datetime.min.replace(tzinfo=timezone.utc),
                 )
@@ -437,21 +379,18 @@ def report(
                     end_text = (
                         last_time + timedelta(milliseconds=max(duration_ms, 0))
                     ).isoformat()
-            event_node_ids = sorted(
-                {str(item.get("node_id", "unknown-node")) for item in candidate_events}
-            )
             observation_ids = [
-                str(item.get("observation_id", "unknown-id")) for item in candidate_events
+                str(item.get("observation_id", "unknown-id")) for item in episode
             ]
             lines.append(
-                f"  Event proposal E{proposal_number} from Candidate C{candidate_number}: "
-                f"{len(candidate_events)} observation(s), Ear(s) {', '.join(event_node_ids)}, "
+                f"  Ear activity episode A{episode_number} for {node_id}: "
+                f"{len(episode)} observation(s), "
                 f"interval {start_text} to {end_text}; {reason}"
             )
             lines.append(f"    observations: {', '.join(observation_ids)}")
     lines.append(
-        "These are exploratory groupings, not persistent Events or Tracks; "
-        "the simulator hint is test metadata and bearings are node-relative."
+        "No Event or Track association is attempted. Classification, bearing, "
+        "time, and site distances are analysis inputs; simulator ground truth is excluded."
     )
     return lines
 
@@ -483,8 +422,8 @@ def parse_positive_interval(value: float) -> float:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Explore candidate groups and print Event proposals from Ear observations; "
-            "nothing is created or persisted."
+            "Print independent Ear observations, site metadata, and per-Ear inactivity summaries; "
+            "ground-truth simulator IDs are not used for association."
         )
     )
     parser.add_argument("--hub-host", required=True, help="Hub LAN IP or certificate-valid hostname")
@@ -510,17 +449,10 @@ def main() -> int:
             "not a source-correlation threshold (default: 15)"
         ),
     )
-    parser.add_argument(
-        "--local-source-radius-m",
-        type=float,
-        default=500,
-        help="Distance beyond which a shared local ground source is less plausible (default: 500)",
-    )
     args = parser.parse_args()
     for label, value in (
         ("watch interval", args.interval_seconds),
         ("event gap", args.event_gap_seconds),
-        ("local source radius", args.local_source_radius_m),
     ):
         try:
             parse_positive_interval(value)
@@ -540,7 +472,6 @@ def main() -> int:
             observations,
             args.event_gap_seconds,
             nodes,
-            args.local_source_radius_m,
         ):
             print(line)
         known_ids = {
@@ -564,7 +495,6 @@ def main() -> int:
                 current,
                 args.event_gap_seconds,
                 nodes,
-                args.local_source_radius_m,
             ):
                 print(line)
     except KeyboardInterrupt:

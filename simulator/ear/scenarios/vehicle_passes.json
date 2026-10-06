@@ -1,11 +1,36 @@
 {
-  "scenario_id": "vehicle_passes",
-  "source_id": "SIM-VEHICLE-001",
+  "scenario_id": "vehicle_pass_01",
+  "source": {
+    "ground_truth_id": "SIM-VEHICLE-001",
+    "source_family": "vehicle",
+    "movement": {
+      "start": {
+        "latitude": 59.91,
+        "longitude": 10.75
+      },
+      "end": {
+        "latitude": 59.9145,
+        "longitude": 10.75
+      },
+      "speed_m_s": 12
+    }
+  },
+  "ears": {
+    "ear_a": {
+      "latitude": 59.909,
+      "longitude": 10.75,
+      "orientation_deg": 0
+    },
+    "ear_b": {
+      "latitude": 59.9125,
+      "longitude": 10.752,
+      "orientation_deg": 270
+    }
+  },
   "observations": [
     {
       "at_seconds": 0,
       "ear": "ear_a",
-      "bearing_deg": 24,
       "bearing_confidence": 0.61,
       "classification_confidence": 0.72,
       "signal_level_dbfs": -34,
@@ -14,7 +39,6 @@
     {
       "at_seconds": 2,
       "ear": "ear_a",
-      "bearing_deg": 18,
       "bearing_confidence": 0.67,
       "classification_confidence": 0.75,
       "signal_level_dbfs": -31,
@@ -23,7 +47,6 @@
     {
       "at_seconds": 4,
       "ear": "ear_b",
-      "bearing_deg": 226,
       "bearing_confidence": 0.55,
       "classification_confidence": 0.68,
       "signal_level_dbfs": -37,
@@ -32,7 +55,6 @@
     {
       "at_seconds": 6,
       "ear": "ear_a",
-      "bearing_deg": 8,
       "bearing_confidence": 0.73,
       "classification_confidence": 0.81,
       "signal_level_dbfs": -33,
@@ -41,7 +63,6 @@
     {
       "at_seconds": 15,
       "ear": "ear_b",
-      "bearing_deg": 241,
       "bearing_confidence": 0.49,
       "classification_confidence": 0.63,
       "signal_level_dbfs": -40,

@@ -125,32 +125,31 @@ its API.
 
 Retained observations are rejected. Duplicate deliveries are safe when the
 same observation ID is used. The simulator uses the same envelope and topic
-as a registered Ear. Repeated-vehicle simulator scenarios assign a stable
-`classification.hints.simulated_source_id` across distinct observations;
-this is test metadata, not a real-world identity or an event/track identifier.
+as a registered Ear. Scenario simulator observations may carry
+`classification.hints.simulated_source_id` as test-only ground truth, not as a
+real-world identity or an event/track identifier. Tracker analysis must not
+consume that hint for association.
 Previously stored observations using the earlier flat `confidence`,
 `bearing_deg`, and `classification_hints` fields must be cleared before
 deploying this schema revision. See the simulator cleanup instructions in the
 README. New MQTT observations must use this structured form; legacy fields
 are rejected rather than silently discarded.
 
-`scripts/hub_event_track.py` is a read-only exploratory report. It also fetches
-node installation metadata and prints it alongside the observations. Candidate
-Groups currently use only the simulator-only `simulated_source_id` hint;
-unhinted observations remain separate. For multi-Ear candidates it reports
-pairwise installation distance. Its provisional plausibility rules treat
-`vehicle` and `animal` as local ground source families (default radius 500 m)
-and `aircraft` and `drone` as airborne, where distance alone is not used to
-reject a shared source. Unknown or mixed families are left neutral. These
-heuristics are configurable/experimental and do not establish source identity.
+`scripts/hub_event_track.py` is a read-only exploratory report. It fetches node
+installation metadata, prints each observation independently, and reports
+pairwise Ear site distances as context. It deliberately does not read
+`classification.hints.simulated_source_id` for grouping or correlation.
+Per-Ear inactivity episodes are time summaries only, not Events or claims that
+the observations share a source. The tracker does not yet produce predicted
+cross-Ear associations or Tracks. Watch mode re-fetches observations and node
+metadata and recalculates the report when new observations arrive.
 
-The report prints Event-shaped time episodes using a default 15-second
-inactivity timeout measured after each observation interval. This timeout is a
-closure boundary only, not evidence that observations in the same episode came
-from one source. Episodes are not persisted. Watch mode re-fetches observations
-and node metadata and recalculates the report when new observations arrive.
-The script does not create persistent Event or Track entities or infer source
-positions. Event/track APIs and the correlation engine remain unimplemented.
+The scenario simulator keeps ground-truth source movement in the scenario
+definition and may attach the scenario's ID to observations as test-only
+metadata. Tracker logic must not consume that ID. It is reserved for
+after-the-fact evaluation once the tracker produces predicted associations.
+Event/track APIs, association logic, and the truth-versus-prediction evaluator
+remain unimplemented.
 
 ### Existing Output and state messages
 

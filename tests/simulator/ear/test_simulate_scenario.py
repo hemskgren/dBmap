@@ -16,12 +16,23 @@ spec.loader.exec_module(simulate_scenario)
 
 SCENARIO = {
     "scenario_id": "test-pass",
-    "source_id": "SIM-VEHICLE-TEST",
+    "source": {
+        "ground_truth_id": "SIM-VEHICLE-TEST",
+        "source_family": "vehicle",
+        "movement": {
+            "start": {"latitude": 0, "longitude": 0},
+            "end": {"latitude": 0, "longitude": 0.01},
+            "speed_m_s": 12,
+        },
+    },
+    "ears": {
+        "ear_a": {"latitude": 0.001, "longitude": 0, "orientation_deg": 90},
+        "ear_b": {"latitude": 0.001, "longitude": 0.004, "orientation_deg": 270},
+    },
     "observations": [
         {
             "at_seconds": 0,
             "ear": "ear_a",
-            "bearing_deg": 10,
             "bearing_confidence": 0.6,
             "classification_confidence": 0.7,
             "signal_level_dbfs": -30,
@@ -29,7 +40,6 @@ SCENARIO = {
         {
             "at_seconds": 2,
             "ear": "ear_b",
-            "bearing_deg": 200,
             "bearing_confidence": 0.8,
             "classification_confidence": 0.9,
             "signal_level_dbfs": -38,
@@ -37,13 +47,18 @@ SCENARIO = {
         {
             "at_seconds": 5,
             "ear": "ear_a",
-            "bearing_deg": 5,
             "bearing_confidence": 0.4,
             "classification_confidence": 0.55,
             "signal_level_dbfs": -32,
         },
     ],
 }
+
+
+def load_test_scenario(tmp_path):
+    path = tmp_path / "scenario.json"
+    path.write_text(json.dumps(SCENARIO))
+    return simulate_scenario.load_scenario(path)
 
 
 def test_load_scenario_rejects_out_of_order_observations(tmp_path) -> None:
@@ -57,17 +72,26 @@ def test_load_scenario_rejects_out_of_order_observations(tmp_path) -> None:
 def test_scenario_validation_rejects_non_finite_or_out_of_range_values(tmp_path) -> None:
     invalid = {
         **SCENARIO,
-        "observations": [{**SCENARIO["observations"][0], "bearing_deg": 360}],
+        "ears": {
+            **SCENARIO["ears"],
+            "ear_a": {**SCENARIO["ears"]["ear_a"], "orientation_deg": 360},
+        },
     }
     path = tmp_path / "scenario.json"
     path.write_text(json.dumps(invalid))
 
-    with pytest.raises(simulate_scenario.ScenarioError, match=r"\[0, 360\)"):
+    with pytest.raises(
+        simulate_scenario.ScenarioError,
+        match=r"orientation_deg must be in \[0, 360\)",
+    ):
         simulate_scenario.load_scenario(path)
 
-    invalid["observations"] = [
-        {**SCENARIO["observations"][0], "signal_level_dbfs": float("nan")}
-    ]
+    invalid = {
+        **SCENARIO,
+        "observations": [
+            {**SCENARIO["observations"][0], "signal_level_dbfs": float("nan")}
+        ],
+    }
     path.write_text(json.dumps(invalid))
     with pytest.raises(simulate_scenario.ScenarioError, match="must be finite"):
         simulate_scenario.load_scenario(path)
@@ -122,7 +146,8 @@ def test_ear_credentials_require_private_file_and_distinct_simulated_nodes(tmp_p
         simulate_scenario.load_ear_credentials({"ear_b": second})
 
 
-def test_scenario_builds_protocol_observations_with_per_ear_sequences_and_timeline() -> None:
+def test_scenario_builds_protocol_observations_with_per_ear_sequences_and_timeline(tmp_path) -> None:
+    scenario = load_test_scenario(tmp_path)
     started_at = datetime(2026, 10, 5, 18, 0, tzinfo=timezone.utc)
     credentials = {
         "ear_a": {"node_id": "SIM-EAR-001", "next_sequence_number": 3},
@@ -145,7 +170,7 @@ def test_scenario_builds_protocol_observations_with_per_ear_sequences_and_timeli
         return payload["observation_id"]
 
     ids = simulate_scenario.run_scenario(
-        SCENARIO,
+        scenario,
         credentials,
         {"ear_a": Path("a.json"), "ear_b": Path("b.json")},
         "ca.crt",
@@ -170,7 +195,17 @@ def test_scenario_builds_protocol_observations_with_per_ear_sequences_and_timeli
         0.9,
         0.55,
     ]
+    assert [item["classification"]["source_family"] for item in published] == [
+        "vehicle",
+        "vehicle",
+        "vehicle",
+    ]
     assert [item["bearing"]["confidence"] for item in published] == [0.6, 0.8, 0.4]
+    assert published[0]["bearing"]["deg"] != published[2]["bearing"]["deg"]
+    assert all(0 <= item["bearing"]["deg"] < 360 for item in published)
+    assert published[0]["bearing"]["deg"] == pytest.approx(90, abs=0.01)
+    assert scenario["observations"][0]["source_distance_m"] == pytest.approx(111.2, abs=1)
+    assert scenario["movement"]["speed_m_s"] == 12
     assert [item["sequence_number"] for item in published] == [3, 8, 4]
     assert [item["event_time_utc"] for item in published] == [
         "2026-10-05T18:00:00+00:00",
@@ -192,12 +227,13 @@ def test_scenario_builds_protocol_observations_with_per_ear_sequences_and_timeli
     assert credentials["ear_b"]["next_sequence_number"] == 9
 
 
-def test_retry_pending_reuses_same_observation_id_and_advances_sequence() -> None:
+def test_retry_pending_reuses_same_observation_id_and_advances_sequence(tmp_path) -> None:
+    scenario = load_test_scenario(tmp_path)
     pending = simulate_scenario.make_scenario_observation(
         "SIM-EAR-001",
         4,
-        SCENARIO["source_id"],
-        SCENARIO["observations"][0],
+        scenario["source_id"],
+        scenario["observations"][0],
         datetime(2026, 10, 5, 18, 0, tzinfo=timezone.utc),
         1_000_000,
     )
@@ -206,14 +242,14 @@ def test_retry_pending_reuses_same_observation_id_and_advances_sequence() -> Non
             "node_id": "SIM-EAR-001",
             "next_sequence_number": 4,
             "pending_observation": pending,
-            "pending_scenario_id": SCENARIO["scenario_id"],
+            "pending_scenario_id": scenario["scenario_id"],
         }
     }
     saved = []
     published = []
 
     ids = simulate_scenario.retry_pending_observations(
-        SCENARIO,
+        scenario,
         credentials,
         {"ear_a": Path("ear-a.json")},
         "ca.crt",
@@ -228,7 +264,8 @@ def test_retry_pending_reuses_same_observation_id_and_advances_sequence() -> Non
     assert saved[0][0] == Path("ear-a.json")
 
 
-def test_retry_pending_rejects_pending_observation_from_different_scenario() -> None:
+def test_retry_pending_rejects_pending_observation_from_different_scenario(tmp_path) -> None:
+    scenario = load_test_scenario(tmp_path)
     credentials = {
         "ear_a": {
             "pending_observation": {"observation_id": "saved"},
@@ -238,7 +275,7 @@ def test_retry_pending_rejects_pending_observation_from_different_scenario() -> 
     }
     with pytest.raises(simulate_scenario.ScenarioError, match="belongs to another scenario"):
         simulate_scenario.retry_pending_observations(
-            SCENARIO,
+            scenario,
             credentials,
             {"ear_a": Path("ear-a.json")},
             "ca.crt",
@@ -246,12 +283,13 @@ def test_retry_pending_rejects_pending_observation_from_different_scenario() -> 
         )
 
 
-def test_retry_pending_rejects_observation_for_a_different_ear() -> None:
+def test_retry_pending_rejects_observation_for_a_different_ear(tmp_path) -> None:
+    scenario = load_test_scenario(tmp_path)
     pending = simulate_scenario.make_scenario_observation(
         "SIM-EAR-001",
         4,
-        SCENARIO["source_id"],
-        SCENARIO["observations"][0],
+        scenario["source_id"],
+        scenario["observations"][0],
         datetime(2026, 10, 5, 18, 0, tzinfo=timezone.utc),
         1_000_000,
     )
@@ -260,13 +298,13 @@ def test_retry_pending_rejects_observation_for_a_different_ear() -> None:
             "node_id": "SIM-EAR-002",
             "next_sequence_number": 4,
             "pending_observation": pending,
-            "pending_scenario_id": SCENARIO["scenario_id"],
+            "pending_scenario_id": scenario["scenario_id"],
         }
     }
 
     with pytest.raises(simulate_scenario.ScenarioError, match="belongs to another Ear"):
         simulate_scenario.retry_pending_observations(
-            SCENARIO,
+            scenario,
             credentials,
             {"ear_a": Path("ear-a.json")},
             "ca.crt",
