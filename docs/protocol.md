@@ -125,20 +125,31 @@ its API.
 
 Retained observations are rejected. Duplicate deliveries are safe when the
 same observation ID is used. The simulator uses the same envelope and topic
-as a registered Ear. Repeated-vehicle simulator scenarios assign a stable
-`classification.hints.simulated_source_id` across distinct observations;
-this is test metadata, not a real-world identity or an event/track identifier.
+as a registered Ear. Scenario simulator observations may carry
+`classification.hints.simulated_source_id` as test-only ground truth, not as a
+real-world identity or an event/track identifier. Tracker analysis must not
+consume that hint for association.
 Previously stored observations using the earlier flat `confidence`,
 `bearing_deg`, and `classification_hints` fields must be cleared before
 deploying this schema revision. See the simulator cleanup instructions in the
 README. New MQTT observations must use this structured form; legacy fields
 are rejected rather than silently discarded.
 
-`scripts/hub_event_track.py` is a read-only exploratory report. It groups
-observations by the simulator-only `simulated_source_id` hint and can print
-new observation records while polling. It does not create persistent Event or
-Track entities, correlate real-world sources, or infer source positions.
-Event/track APIs and the correlation engine remain unimplemented.
+`scripts/hub_event_track.py` is a read-only exploratory report. It fetches node
+installation metadata, prints each observation independently, and reports
+pairwise Ear site distances as context. It deliberately does not read
+`classification.hints.simulated_source_id` for grouping or correlation.
+Per-Ear inactivity episodes are time summaries only, not Events or claims that
+the observations share a source. The tracker does not yet produce predicted
+cross-Ear associations or Tracks. Watch mode re-fetches observations and node
+metadata and recalculates the report when new observations arrive.
+
+The scenario simulator keeps ground-truth source movement in the scenario
+definition and may attach the scenario's ID to observations as test-only
+metadata. Tracker logic must not consume that ID. It is reserved for
+after-the-fact evaluation once the tracker produces predicted associations.
+Event/track APIs, association logic, and the truth-versus-prediction evaluator
+remain unimplemented.
 
 ### Existing Output and state messages
 
@@ -148,14 +159,28 @@ The current ESP-Output sends JSON state on `hello`, `health`, and
 and `pending_configuration_change`. These existing messages are not yet
 wrapped in the version-1 observation envelope.
 
-The current Output command example is:
+The Output command contract is not yet implemented as a stable, versioned
+schema. Commands that are defined for implementation must include an absolute
+`expires_at_utc` timestamp:
 
 ```json
-{"action": "RELAY_1_ON", "duration_s": 5}
+{
+  "action": "RELAY_1_ON",
+  "duration_s": 5,
+  "expires_at_utc": "2026-10-06T10:05:00Z"
+}
 ```
 
-The current firmware logs the action and returns a simple acknowledgement
-and status payload:
+`expires_at_utc` is the semantic validity deadline, independent of transport.
+It must be an ISO 8601 timestamp with an explicit timezone. Output must check
+the deadline itself immediately before performing an action and reject the
+command when its current UTC time is at or past the deadline. If Output cannot
+establish a trustworthy UTC time, it must fail closed and reject the command;
+it must not execute based only on MQTT delivery. This device-side check is
+required even when the broker can discard expired messages.
+
+The current firmware does not yet validate `expires_at_utc`: it only logs the
+action and returns a simple acknowledgement and status payload:
 
 ```json
 {"node_id": "OUT-001", "action": "RELAY_1_ON", "result": "accepted"}
@@ -163,7 +188,8 @@ and status payload:
 
 Relays remain a firmware stub; `accepted` does not confirm physical switching.
 Command, acknowledgement, and status payloads do not yet have a stable,
-versioned schema.
+versioned schema. Once expiry handling is implemented, acknowledgements should
+distinguish an expired command from one accepted for execution.
 
 ## Delivery and timing
 
@@ -179,9 +205,18 @@ MQTT uses MQTT 3.1.1 over TLS. The current QoS behavior is:
 | `ack` | 1 in the current Output firmware |
 
 The hub does not rely on retained observation messages and rejects them.
-Health/status messages are not a durable history; QoS 0 messages may be lost.
-QoS 1 may deliver duplicates, so consumers of durable observations must
-deduplicate by observation ID.
+Commands must not be retained. Health/status messages are not a durable
+history; QoS 0 messages may be lost. QoS 1 may deliver duplicates, so
+consumers of durable observations must deduplicate by observation ID.
+
+MQTT QoS describes delivery assurance; it does not describe whether a command
+is still semantically valid. The command's `expires_at_utc` remains
+authoritative for every transport. The current broker connection uses MQTT
+3.1.1 and therefore has no MQTT 5 Message Expiry Interval. If the transport is
+later upgraded to MQTT 5, the hub may additionally set Message Expiry Interval
+from the command's remaining lifetime when publishing. Broker expiry is
+defense in depth only: Output must still check `expires_at_utc`, since queued
+or duplicated delivery must never make an expired command executable.
 
 MQTT clients currently negotiate a 30-second keepalive. The existing
 ESP-Output publishes hello and health/keepalive at approximately 30-second

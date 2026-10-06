@@ -215,13 +215,13 @@ uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
   --vehicle-id SIM-VEHICLE-001
 ```
 
-The single-observation default remains an idempotent retry using the saved observation ID. Multi-observation mode advances and persists its sequence number after each successful publish, so rerunning it starts new observations. The stable synthetic source ID is only a test correlation hint; it does not simulate or establish real acoustic identity.
+The single-observation default remains an idempotent retry using the saved observation ID. Multi-observation mode advances and persists its sequence number after each successful publish, so rerunning it starts new observations. The synthetic source ID is ground truth for later evaluation only; it is not a real acoustic identity and the tracker must not use it for association.
 
 ### Run a time-ordered Ear scenario
 
-For repeatable observation timing and multiple simulated Ears, use `simulator/ear/simulate_scenario.py`. The scenario file defines **only Ear observations**. It does not create Events or Tracks, and it does not assert that a simulator source hint is a real identity. Each observation has its own ID and per-Ear sequence number. Set `classification_confidence` on every observation and `bearing_confidence` when a `bearing_deg` is present; both values must be between 0 and 1 and are copied into that observation's protocol payload. `event_time_utc` and monotonic capture time follow the scenario's logical timeline; `received_time_utc` remains the Hub's actual receive time. `--time-scale` changes only wall-clock delays, so `0.1` runs a 15-second scenario gap in 1.5 seconds without compressing its event timestamps.
+For repeatable tests, `simulator/ear/simulate_scenario.py` loads a **Scenario** describing one ground-truth source moving along a route, Ear site coordinates/orientations, and explicit observation times/Ear aliases. The source follows a constant-speed great-circle path between start and end. For each scheduled detection, the simulator calculates source position, source-to-Ear distance, and node-relative bearing; no acoustic propagation or audibility model is implied. Classification/bearing confidence and signal level remain explicit per-observation scenario inputs. Each generated message uses the same version-1 Observation envelope as an Ear and has its own ID and per-Ear sequence number. `ground_truth_id` is included in the observation only as a test hint; the tracker must not read it or use it for candidate grouping. It is available for a separate after-the-fact comparison once a tracker produces predicted associations. `--time-scale` changes only wall-clock delays; logical observation times still follow the scenario timeline.
 
-The example scenario has observations at t=0, 2, 4, 6, and 15 seconds, with no observation at t=9. It uses two aliases, `ear_a` and `ear_b`. First, create or reuse one provisioned simulator credentials file per alias. If you do not already have two, create them with distinct paths (each command registers/provisions an Ear and publishes one initial test observation):
+The example `vehicle_pass_01` has a 500 m route at 12 m/s and observations at t=0, 2, 4, 6, and 15 seconds. Its two scenario Ear positions should match the registered nodes' installation coordinates and orientations in the Hub; set those installation records before using spatial tracker analysis. The aliases `ear_a` and `ear_b` map to credentials files. First, create or reuse one provisioned simulator credentials file per alias. If you do not already have two, create them with distinct paths (each command registers/provisions an Ear and publishes one initial test observation):
 
 ```bash
 uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
@@ -273,7 +273,7 @@ uv run --project hub/bootstrap python scripts/hub_event_track.py \
   --watch
 ```
 
-This lets us exercise observation ingestion and inspect the existing simulator hint before developing Hub event/track logic. It does not change or require rebuilding the Hub container.
+This lets us exercise observation ingestion, review the independent tracker input, and compare it with scenario ground truth only after the tracker has produced predictions. It does not change or require rebuilding the Hub container.
 
 Before deploying the revised version-1 observation shape, clear the local hub database. This removes all node registrations, installation metadata, desired/reported state, bootstrap tokens, hub-side MQTT credentials, and observations. It does not remove Mosquitto's dynamic-security users or the TLS certificates. Run these commands from a shell with Docker access (for example, after `newgrp docker`); the one-off container only deletes rows from the existing `bootstrap-data` volume:
 
@@ -302,14 +302,16 @@ Add `--watch` to print a summary once and then report new observations and node-
 
 ### Explore observation source hints
 
-`scripts/hub_event_track.py` is a read-only exploration helper, not an event/track engine or API. It groups observations only when they share the simulator's `classification.hints.simulated_source_id`. That value is test metadata, not verified physical identity. The script reports newly received observation records in watch mode; it does not infer events, tracks, or geographic source positions. Bearing, if present, is shown in the Ear's node-relative frame.
+`scripts/hub_event_track.py` is a read-only observation/site report, not an event/track engine or API. It fetches node installation metadata, prints each observation independently, and reports pairwise Ear site distances as context. It deliberately does **not** read `classification.hints.simulated_source_id` for grouping or correlation; candidate output currently keeps each observation separate. Per-Ear inactivity episodes are only time summaries and do not assert common source identity. The tracker does not yet produce predicted cross-Ear associations or Tracks.
+
+The default 15-second inactivity window closes a per-Ear activity summary only after that much silence following an observation interval (`event_time_utc + duration_ms`). This is a time boundary, not evidence that observations inside the episode came from the same source; simultaneous sources can still be distinct. The summary is only printed, never persisted or used to control a node. The tool does not create Events/Tracks or infer geographic source positions from bearing. Watch mode re-fetches observations and node metadata, then reprints the analysis when new observations arrive.
 
 ```bash
 uv run --project hub/bootstrap python scripts/hub_event_track.py \
   --hub-host "$DBMAP_LAN_IP"
 ```
 
-To monitor for new observation records every 15 seconds, add `--watch`; customize the interval with `--interval-seconds 30`. To inspect one Ear only, add `--node-id SIM-EAR-001`. The script fetches at most the latest 500 observations per poll.
+To monitor and recalculate the report every 15 seconds, add `--watch`; customize the polling interval with `--interval-seconds 30`. Change the per-Ear inactivity summary window with `--event-gap-seconds 20`. To inspect one Ear only, add `--node-id SIM-EAR-001`. The script fetches at most the latest 500 observations per poll.
 
 ### Administer Hub nodes
 
