@@ -141,8 +141,20 @@ class NodeView(BaseModel):
     provisioning_state: str
     lifecycle_state: Literal["active", "deactivated"]
     availability: str
+    status: Literal["online", "offline"]
     pending_configuration_change: bool
     desired: dict[str, Any]
     reported: dict[str, Any]
+    last_seen_at: str | None
+    installation: InstallationMetadataBody | None = None
+
+
+class DeviceSummaryView(BaseModel):
+    node_id: str
+    node_type: str
+    hardware_revision: str
+    provisioning_state: str
+    lifecycle_state: Literal["active", "deactivated"]
+    status: Literal["online", "offline"]
     last_seen_at: str | None
     installation: InstallationMetadataBody | None = None

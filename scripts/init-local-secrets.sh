@@ -18,6 +18,7 @@ umask 077
 cat > "$ENV_FILE" <<EOF
 DBMAP_LAN_IP=$LAN_IP
 DBMAP_ADMIN_TOKEN=$(openssl rand -hex 32)
+DBMAP_VIEWER_TOKEN=$(openssl rand -hex 32)
 DBMAP_MQTT_HUB_PASSWORD=$(openssl rand -hex 32)
 DBMAP_DYNSEC_ADMIN_PASSWORD=$(openssl rand -hex 32)
 DBMAP_ADVERTISED_MQTT_HOST=hub.local

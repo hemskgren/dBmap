@@ -14,6 +14,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 def _validate_security_settings() -> None:
     required_secrets = {
         "DBMAP_ADMIN_TOKEN": settings.admin_token,
+        "DBMAP_VIEWER_TOKEN": settings.viewer_token,
         "DBMAP_MQTT_PASSWORD": settings.mqtt_password,
         "DBMAP_MQTT_ADMIN_PASSWORD": settings.mqtt_admin_password,
     }

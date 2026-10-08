@@ -39,13 +39,14 @@ Do **not** run `init-local-secrets.sh`; it creates `.env` only when the file doe
 ```dotenv
 DBMAP_LAN_IP=<mini-PC-LAN-IP>
 DBMAP_ADMIN_TOKEN=<random-secret-1>
-DBMAP_MQTT_HUB_PASSWORD=<random-secret-2>
-DBMAP_DYNSEC_ADMIN_PASSWORD=<random-secret-3>
+DBMAP_VIEWER_TOKEN=<random-secret-2>
+DBMAP_MQTT_HUB_PASSWORD=<random-secret-3>
+DBMAP_DYNSEC_ADMIN_PASSWORD=<random-secret-4>
 DBMAP_ADVERTISED_MQTT_HOST=hub.local
 DBMAP_ADVERTISED_MQTT_PORT=8883
 ```
 
-Replace the angle-bracket values with real values (do not type the brackets). Set `DBMAP_LAN_IP` to the NUC's address. Generate a separate secret for each of the other three entries by running `openssl rand -hex 32` three times. In particular, do not keep the earlier `change-me-admin-token` value or reuse the old shared MQTT password. Keep `.env` private; it should have mode `0600`:
+Replace the angle-bracket values with real values (do not type the brackets). Set `DBMAP_LAN_IP` to the NUC's address. Generate a separate secret for each of the four token/password entries by running `openssl rand -hex 32` four times. Keep admin and viewer tokens distinct; do not keep the earlier `change-me-admin-token` value or reuse the old shared MQTT password. Keep `.env` private; it should have mode `0600`:
 
 ```bash
 chmod 600 .env
@@ -53,7 +54,7 @@ chmod 600 .env
 
 ### If `.env` does not exist
 
-Create it once with the script; this generates the three secrets and sets restrictive file permissions:
+Create it once with the script; this generates four independent secrets and sets restrictive file permissions:
 
 ```bash
 ./scripts/init-local-secrets.sh <mini-PC-LAN-IP>
@@ -98,6 +99,8 @@ curl -sS -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
   -d '{"node_type":"output","hardware_revision":"OUTPUT-DEV-V1"}' \
   "https://${DBMAP_LAN_IP}:8443/api/v1/nodes"
 ```
+
+The browser UI at `https://hub.local/` accepts either `DBMAP_ADMIN_TOKEN` or `DBMAP_VIEWER_TOKEN`. The viewer token grants read-only access to basic device summaries and the local coordinate plot; the admin token additionally enables device creation and lifecycle actions. Tokens are held in browser memory only and cleared on sign-out. The browser is not the security boundary: the API independently checks the token and role. Device status is online when the Hub received a keepalive within the previous 90 seconds; otherwise it is offline.
 
 The bootstrap token is returned only once; the hub stores its hash, so it cannot be displayed again. Save the returned token privately before continuing. If it is lost, repeat the node-creation request to get a new node ID and token; the old pending node can be left unused. Do not post the token in chat or logs. Before building firmware, embed the local CA so the ESP32 can verify HTTPS and MQTT server certificates:
 

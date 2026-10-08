@@ -1,31 +1,41 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
+from app.config import settings
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect, text
 
-from app.config import settings
-
 settings.database_url = "sqlite:///" + str(Path("/tmp/dbmap-bootstrap-test.db"))
 settings.admin_token = "test-admin"
+settings.viewer_token = "test-viewer"
 settings.mqtt_enabled = False
 settings.mqtt_host = "127.0.0.1"
 
-from app.db import SessionLocal, engine, init_db  # noqa: E402
-from app.models import Node, NodeCredential  # noqa: E402
-from app.models import Base  # noqa: E402
-from app.main import create_app  # noqa: E402
-from app import mqtt_listener  # noqa: E402
-from app.mqtt_security import MqttSecurityError  # noqa: E402
-from app.schemas import ObservationBearing, ObservationBody, ObservationClassification  # noqa: E402
-from app.service import ingest_observation, list_observations  # noqa: E402
-from app import service  # noqa: E402
-from app.topics import parse_observation_topic  # noqa: E402
+from app import (
+    mqtt_listener,
+    service,
+)
+from app.db import SessionLocal, engine, init_db
+from app.main import create_app
+from app.models import (
+    Base,
+    Node,
+    NodeCredential,
+    ReportedState,
+)
+from app.mqtt_security import MqttSecurityError
+from app.schemas import (
+    ObservationBearing,
+    ObservationBody,
+    ObservationClassification,
+)
+from app.service import ingest_observation, list_observations
+from app.topics import parse_observation_topic
 
 
 def setup_module() -> None:
@@ -92,6 +102,80 @@ def test_create_provision_and_desired_state() -> None:
     )
     assert desired.status_code == 200
     assert desired.json()["pending_configuration_change"] is True
+
+
+def test_viewer_can_read_device_summaries_but_not_admin_api() -> None:
+    client = TestClient(create_app())
+    admin_headers = {"Authorization": f"Bearer {settings.admin_token}"}
+    viewer_headers = {"Authorization": f"Bearer {settings.viewer_token}"}
+    created = client.post(
+        "/api/v1/nodes",
+        json={"node_type": "ear", "hardware_revision": "EAR-DEV-V1"},
+        headers=admin_headers,
+    )
+    assert created.status_code == 200, created.text
+
+    assert client.get("/api/v1/session").status_code == 401
+    viewer_session = client.get("/api/v1/session", headers=viewer_headers)
+    assert viewer_session.status_code == 200
+    assert viewer_session.json() == {"role": "viewer"}
+    admin_session = client.get("/api/v1/session", headers=admin_headers)
+    assert admin_session.status_code == 200
+    assert admin_session.json() == {"role": "admin"}
+
+    devices = client.get("/api/v1/devices", headers=viewer_headers)
+    assert devices.status_code == 200, devices.text
+    device = next(item for item in devices.json() if item["node_id"] == created.json()["node_id"])
+    assert device["status"] == "offline"
+    assert device["hardware_revision"] == "EAR-DEV-V1"
+    assert "desired" not in device
+    assert "reported" not in device
+    assert client.get("/api/v1/nodes", headers=viewer_headers).status_code == 403
+    assert client.post(
+        "/api/v1/nodes",
+        json={"node_type": "ear"},
+        headers=viewer_headers,
+    ).status_code == 403
+
+
+def test_device_summary_status_uses_recent_keepalive() -> None:
+    client = TestClient(create_app())
+    created = client.post(
+        "/api/v1/nodes",
+        json={"node_type": "ear"},
+        headers={"Authorization": f"Bearer {settings.admin_token}"},
+    )
+    assert created.status_code == 200, created.text
+    node_id = created.json()["node_id"]
+
+    db = SessionLocal()
+    try:
+        service.apply_reported(db, node_id, {})
+    finally:
+        db.close()
+
+    response = client.get(
+        "/api/v1/devices",
+        headers={"Authorization": f"Bearer {settings.viewer_token}"},
+    )
+    device = next(item for item in response.json() if item["node_id"] == node_id)
+    assert device["status"] == "online"
+
+    db = SessionLocal()
+    try:
+        reported = db.get(ReportedState, node_id)
+        assert reported is not None
+        reported.last_seen_at = datetime.now(timezone.utc) - timedelta(seconds=91)
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/api/v1/devices",
+        headers={"Authorization": f"Bearer {settings.viewer_token}"},
+    )
+    device = next(item for item in response.json() if item["node_id"] == node_id)
+    assert device["status"] == "offline"
 
 
 def test_init_db_drops_legacy_plaintext_password_column() -> None:

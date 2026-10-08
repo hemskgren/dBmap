@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -37,6 +37,8 @@ from app.schemas import (
     Topics,
 )
 from app.topics import topics_for
+
+DEVICE_ONLINE_WINDOW = timedelta(seconds=90)
 
 
 def _next_sequence(db: Session, node_type: str, simulated: bool = False) -> int:
@@ -308,6 +310,13 @@ def node_view(db: Session, node: Node) -> NodeView:
         "payload": json.loads(reported.payload_json) if reported and reported.payload_json else {},
     }
     pending = pending_configuration_change(reported_dict, desired_dict)
+    last_seen_at = reported.last_seen_at if reported else None
+    if last_seen_at is not None and last_seen_at.tzinfo is None:
+        last_seen_at = last_seen_at.replace(tzinfo=timezone.utc)
+    is_online = (
+        last_seen_at is not None
+        and datetime.now(timezone.utc) - last_seen_at <= DEVICE_ONLINE_WINDOW
+    )
     return NodeView(
         node_id=node.node_id,
         node_type=node.node_type,
@@ -315,6 +324,7 @@ def node_view(db: Session, node: Node) -> NodeView:
         provisioning_state=node.provisioning_state,
         lifecycle_state=node.lifecycle_state,
         availability=node.availability,
+        status="online" if is_online else "offline",
         pending_configuration_change=pending,
         desired=desired_dict,
         reported=reported_dict,

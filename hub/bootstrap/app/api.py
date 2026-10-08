@@ -10,6 +10,7 @@ from app.schemas import (
     CreateNodeRequest,
     CreateNodeResponse,
     DesiredStateBody,
+    DeviceSummaryView,
     InstallationMetadataBody,
     NodeLifecycleBody,
     NodeView,
@@ -22,14 +23,56 @@ router = APIRouter()
 
 
 def require_admin(authorization: str | None = Header(default=None)) -> None:
-    expected = f"Bearer {settings.admin_token}"
-    if authorization is None or not timing_safe_eq(authorization, expected):
-        raise HTTPException(status_code=401, detail="admin token required")
+    role = _user_role(authorization)
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="admin access required")
 
 
 @router.get("/health")
 def health() -> dict:
     return {"status": "ok", "service": "hub-bootstrap"}
+
+
+def _user_role(authorization: str | None) -> str:
+    if authorization is not None:
+        scheme, separator, token = authorization.partition(" ")
+        if separator and scheme.lower() == "bearer":
+            if settings.admin_token and timing_safe_eq(token, settings.admin_token):
+                return "admin"
+            if settings.viewer_token and timing_safe_eq(token, settings.viewer_token):
+                return "viewer"
+    raise HTTPException(status_code=401, detail="valid local access token required")
+
+
+def require_viewer(authorization: str | None = Header(default=None)) -> None:
+    _user_role(authorization)
+
+
+@router.get("/api/v1/session", dependencies=[Depends(require_viewer)])
+def get_session(authorization: str | None = Header(default=None)) -> dict[str, str]:
+    return {"role": _user_role(authorization)}
+
+
+@router.get(
+    "/api/v1/devices",
+    response_model=list[DeviceSummaryView],
+    dependencies=[Depends(require_viewer)],
+)
+def list_devices(db: Session = Depends(get_db)) -> list[DeviceSummaryView]:
+    nodes = service.list_nodes(db)
+    return [
+        DeviceSummaryView(
+            node_id=node.node_id,
+            node_type=node.node_type,
+            hardware_revision=node.hardware_revision,
+            provisioning_state=node.provisioning_state,
+            lifecycle_state=node.lifecycle_state,
+            status=node.status,
+            last_seen_at=node.last_seen_at,
+            installation=node.installation,
+        )
+        for node in nodes
+    ]
 
 
 @router.post("/api/v1/nodes", response_model=CreateNodeResponse, dependencies=[Depends(require_admin)])
