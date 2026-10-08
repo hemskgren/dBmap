@@ -5,7 +5,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.ids import allocate_node_id, isoformat, new_token, pending_configuration_change, token_hash
+from app.ids import (
+    allocate_node_id,
+    isoformat,
+    new_token,
+    pending_configuration_change,
+    token_hash,
+)
 from app.models import (
     BootstrapToken,
     DesiredState,

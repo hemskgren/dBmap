@@ -19,6 +19,34 @@ services:
       timeout: 5s
       retries: 5
 
+  dbmap-web:
+    build:
+      context: ./web
+    platform: linux/amd64
+    restart: unless-stopped
+    expose:
+      - "80"
+
+  nginx:
+    build:
+      context: ./nginx
+    platform: linux/amd64
+    restart: unless-stopped
+    depends_on:
+      dbmap-web:
+        condition: service_started
+      hub-bootstrap:
+        condition: service_started
+    ports:
+      - "${DBMAP_LAN_IP:?Set DBMAP_LAN_IP in .env}:443:443"
+    volumes:
+      - ./mqtt/certs:/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null https://localhost/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   hub-bootstrap:
     build:
       context: ./hub/bootstrap
