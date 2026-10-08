@@ -24,6 +24,7 @@ The local deployment now includes a minimal edge proxy and web frontend as part 
 - `https://<hub-host>/api/...` proxies to the Hub bootstrap API
 - the underlying API still retains the original HTTPS endpoint on port `8443`
 - authorization is still enforced by the backend API; the browser UI is not a trust boundary
+- Nginx verifies the Hub's upstream TLS certificate using the stable `hub.local` certificate name, regardless of whether clients connect to the proxy by IP or hostname
 
 See the [security policy](../SECURITY.md) for private vulnerability reporting and secret-handling guidance.
 
