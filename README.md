@@ -392,6 +392,7 @@ Not in this slice: `hub-event`, rules, Ear DSP, Home Assistant, Regional Hub.
 ```bash
 cd hub/bootstrap
 uv sync --extra dev
+uv run ruff check app
 uv run pytest tests ../../tests
 ```
 
