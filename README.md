@@ -18,6 +18,13 @@ ESP-Output firmware supports NVS identity/configuration, Wi-Fi STA, HTTPS provis
 
 The broker is TLS-only on port `8883`; the bootstrap API is HTTPS on port `8443`. Each provisioned node gets a unique MQTT login and topic-scoped permissions. Hub services use a separate broker identity. The local CA is trusted by firmware and clients; keep its private key and `.env` secrets private.
 
+The local deployment now includes a minimal edge proxy and web frontend as part of the Phase A architecture refactor:
+
+- `https://<hub-host>/` serves the lightweight dBmap web UI
+- `https://<hub-host>/api/...` proxies to the Hub bootstrap API
+- the underlying API still retains the original HTTPS endpoint on port `8443`
+- authorization is still enforced by the backend API; the browser UI is not a trust boundary
+
 See the [security policy](SECURITY.md) for private vulnerability reporting and secret-handling guidance.
 
 ## Mini-PC bring-up
