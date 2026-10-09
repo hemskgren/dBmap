@@ -27,6 +27,16 @@ services:
     expose:
       - "80"
 
+  opa:
+    image: openpolicyagent/opa:1.21.1
+    platform: linux/amd64
+    restart: unless-stopped
+    command: ["run", "--server", "--addr=0.0.0.0:8181", "/policies"]
+    expose:
+      - "8181"
+    volumes:
+      - ./policy:/policies:ro
+
   nginx:
     build:
       context: ./nginx
@@ -55,6 +65,8 @@ services:
     depends_on:
       mosquitto:
         condition: service_healthy
+      opa:
+        condition: service_started
     ports:
       - "${DBMAP_LAN_IP:?Set DBMAP_LAN_IP in .env}:8443:8443"
     command:
@@ -71,6 +83,7 @@ services:
     environment:
       DBMAP_ADMIN_TOKEN: ${DBMAP_ADMIN_TOKEN:?Set DBMAP_ADMIN_TOKEN in .env}
       DBMAP_VIEWER_TOKEN: ${DBMAP_VIEWER_TOKEN:?Set DBMAP_VIEWER_TOKEN in .env}
+      DBMAP_OPA_DECISION_URL: ${DBMAP_OPA_DECISION_URL:-http://opa:8181/v1/data/dbmap/authz/allow}
       DBMAP_MQTT_HOST: mosquitto
       DBMAP_MQTT_PORT: "8883"
       DBMAP_MQTT_CA_FILE: /certs/ca.crt

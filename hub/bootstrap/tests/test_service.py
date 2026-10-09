@@ -18,6 +18,7 @@ settings.mqtt_host = "127.0.0.1"
 
 from app import (
     mqtt_listener,
+    policy,
     service,
 )
 from app.db import SessionLocal, engine, init_db
@@ -29,6 +30,7 @@ from app.models import (
     ReportedState,
 )
 from app.mqtt_security import MqttSecurityError
+from app.policy import PolicyUnavailable
 from app.schemas import (
     ObservationBearing,
     ObservationBody,
@@ -131,11 +133,36 @@ def test_viewer_can_read_device_summaries_but_not_admin_api() -> None:
     assert "desired" not in device
     assert "reported" not in device
     assert client.get("/api/v1/nodes", headers=viewer_headers).status_code == 403
+    assert client.get(
+        f"/api/v1/nodes/{created.json()['node_id']}", headers=viewer_headers
+    ).status_code == 403
+    assert client.put(
+        f"/api/v1/nodes/{created.json()['node_id']}/installation",
+        json={"latitude": 59.9, "longitude": 10.7},
+        headers=viewer_headers,
+    ).status_code == 403
     assert client.post(
         "/api/v1/nodes",
         json={"node_type": "ear"},
         headers=viewer_headers,
     ).status_code == 403
+
+
+def test_api_fails_closed_when_policy_service_is_unavailable(monkeypatch) -> None:
+    client = TestClient(create_app())
+    monkeypatch.setattr(
+        policy,
+        "evaluate",
+        Mock(side_effect=PolicyUnavailable("authorization policy service is unavailable")),
+    )
+
+    response = client.get(
+        "/api/v1/session",
+        headers={"Authorization": f"Bearer {settings.admin_token}"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "authorization policy service is unavailable"
 
 
 def test_device_summary_status_uses_recent_keepalive() -> None:

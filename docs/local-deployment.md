@@ -26,6 +26,14 @@ The local deployment now includes a minimal edge proxy and web frontend as part 
 - authorization is still enforced by the backend API; the browser UI is not a trust boundary
 - Nginx verifies the Hub's upstream TLS certificate using the stable `hub.local` certificate name, regardless of whether clients connect to the proxy by IP or hostname
 
+The Hub API delegates role and action decisions to OPA, which is available only on the internal Compose network. The default decision URL is `http://opa:8181/v1/data/dbmap/authz/allow`; deployments can override it with `DBMAP_OPA_DECISION_URL`. If OPA is unavailable or returns no boolean decision, protected API requests return HTTP 503 rather than being allowed. The Rego policy is mounted read-only from `policy/`.
+
+Run the policy unit tests from the repository root with:
+
+```bash
+sh scripts/test-policy.sh
+```
+
 See the [security policy](../SECURITY.md) for private vulnerability reporting and secret-handling guidance.
 
 ## Mini-PC bring-up

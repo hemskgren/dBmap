@@ -1,11 +1,14 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from dataclasses import dataclass
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
-from app import service
+from app import policy, service
 from app.config import settings
 from app.db import get_db
 from app.ids import timing_safe_eq
 from app.mqtt_security import MqttSecurityError
+from app.policy import PolicyUnavailable
 from app.schemas import (
     CreateNodeRequest,
     CreateNodeResponse,
@@ -22,10 +25,10 @@ from app.schemas import (
 router = APIRouter()
 
 
-def require_admin(authorization: str | None = Header(default=None)) -> None:
-    role = _user_role(authorization)
-    if role != "admin":
-        raise HTTPException(status_code=403, detail="admin access required")
+@dataclass(frozen=True)
+class Principal:
+    subject_id: str
+    role: str
 
 
 @router.get("/health")
@@ -33,30 +36,57 @@ def health() -> dict:
     return {"status": "ok", "service": "hub-bootstrap"}
 
 
-def _user_role(authorization: str | None) -> str:
+def _authenticate(authorization: str | None) -> Principal:
     if authorization is not None:
         scheme, separator, token = authorization.partition(" ")
         if separator and scheme.lower() == "bearer":
             if settings.admin_token and timing_safe_eq(token, settings.admin_token):
-                return "admin"
+                return Principal(subject_id="local-admin", role="admin")
             if settings.viewer_token and timing_safe_eq(token, settings.viewer_token):
-                return "viewer"
+                return Principal(subject_id="local-viewer", role="viewer")
     raise HTTPException(status_code=401, detail="valid local access token required")
 
 
-def require_viewer(authorization: str | None = Header(default=None)) -> None:
-    _user_role(authorization)
+def require_policy(action: str, resource_type: str):
+    def dependency(
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> Principal:
+        principal = _authenticate(authorization)
+        resource = {"type": resource_type}
+        resource_id = request.path_params.get("node_id")
+        if resource_id is not None:
+            resource["id"] = resource_id
+        decision_input = {
+            "subject": {
+                "id": principal.subject_id,
+                "role": principal.role,
+                "authenticated": True,
+            },
+            "action": action,
+            "resource": resource,
+            "context": {},
+        }
+        try:
+            allowed = policy.evaluate(decision_input)
+        except PolicyUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if not allowed:
+            raise HTTPException(status_code=403, detail="access denied by policy")
+        return principal
+
+    return dependency
 
 
-@router.get("/api/v1/session", dependencies=[Depends(require_viewer)])
-def get_session(authorization: str | None = Header(default=None)) -> dict[str, str]:
-    return {"role": _user_role(authorization)}
+@router.get("/api/v1/session")
+def get_session(principal: Principal = Depends(require_policy("session.read", "session"))) -> dict[str, str]:
+    return {"role": principal.role}
 
 
 @router.get(
     "/api/v1/devices",
     response_model=list[DeviceSummaryView],
-    dependencies=[Depends(require_viewer)],
+    dependencies=[Depends(require_policy("devices.list_summary", "device_summaries"))],
 )
 def list_devices(db: Session = Depends(get_db)) -> list[DeviceSummaryView]:
     nodes = service.list_nodes(db)
@@ -75,17 +105,17 @@ def list_devices(db: Session = Depends(get_db)) -> list[DeviceSummaryView]:
     ]
 
 
-@router.post("/api/v1/nodes", response_model=CreateNodeResponse, dependencies=[Depends(require_admin)])
+@router.post("/api/v1/nodes", response_model=CreateNodeResponse, dependencies=[Depends(require_policy("nodes.create", "nodes"))])
 def create_node(body: CreateNodeRequest, db: Session = Depends(get_db)) -> CreateNodeResponse:
     return service.create_node(db, body)
 
 
-@router.get("/api/v1/nodes", response_model=list[NodeView], dependencies=[Depends(require_admin)])
+@router.get("/api/v1/nodes", response_model=list[NodeView], dependencies=[Depends(require_policy("nodes.list", "nodes"))])
 def list_nodes(db: Session = Depends(get_db)) -> list[NodeView]:
     return service.list_nodes(db)
 
 
-@router.get("/api/v1/nodes/{node_id}", response_model=NodeView, dependencies=[Depends(require_admin)])
+@router.get("/api/v1/nodes/{node_id}", response_model=NodeView, dependencies=[Depends(require_policy("nodes.read_detail", "nodes"))])
 def get_node(node_id: str, db: Session = Depends(get_db)) -> NodeView:
     try:
         return service.get_node(db, node_id)
@@ -93,7 +123,7 @@ def get_node(node_id: str, db: Session = Depends(get_db)) -> NodeView:
         raise HTTPException(status_code=404, detail="unknown node") from None
 
 
-@router.put("/api/v1/nodes/{node_id}/desired", response_model=NodeView, dependencies=[Depends(require_admin)])
+@router.put("/api/v1/nodes/{node_id}/desired", response_model=NodeView, dependencies=[Depends(require_policy("nodes.update_desired", "nodes"))])
 def put_desired(node_id: str, body: DesiredStateBody, db: Session = Depends(get_db)) -> NodeView:
     try:
         return service.set_desired(db, node_id, body)
@@ -104,7 +134,7 @@ def put_desired(node_id: str, body: DesiredStateBody, db: Session = Depends(get_
 @router.put(
     "/api/v1/nodes/{node_id}/lifecycle",
     response_model=NodeView,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_policy("nodes.update_lifecycle", "nodes"))],
 )
 def put_node_lifecycle(
     node_id: str,
@@ -129,7 +159,7 @@ def put_node_lifecycle(
 @router.put(
     "/api/v1/nodes/{node_id}/installation",
     response_model=NodeView,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_policy("nodes.update_installation", "nodes"))],
 )
 def put_installation(
     node_id: str,
@@ -145,7 +175,7 @@ def put_installation(
 @router.get(
     "/api/v1/observations",
     response_model=list[ObservationView],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_policy("observations.read", "observations"))],
 )
 def list_observations(
     node_id: str | None = None,
