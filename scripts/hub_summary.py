@@ -174,6 +174,12 @@ def main() -> int:
         description="Summarize node and observation state from the authenticated hub API."
     )
     parser.add_argument("--hub-host", required=True, help="Hub LAN IP or certificate-valid hostname")
+    parser.add_argument("--hub-port", type=int, default=8443, help="HTTPS listener port (default: 8443)")
+    parser.add_argument(
+        "--base-path",
+        default=os.environ.get("DBMAP_PUBLIC_BASE_PATH", ""),
+        help="Optional public path prefix, for example /dbmap",
+    )
     parser.add_argument("--ca", default="mqtt/certs/ca.crt", help="Path to the local hub CA")
     parser.add_argument("--watch", action="store_true", help="Poll repeatedly and report differences")
     parser.add_argument(
@@ -183,6 +189,13 @@ def main() -> int:
         help="Polling interval when --watch is set (default: 15)",
     )
     args = parser.parse_args()
+    args.base_path = args.base_path.rstrip("/")
+    if args.base_path and (
+        not args.base_path.startswith("/")
+        or "//" in args.base_path
+        or any(part in {".", ".."} for part in args.base_path.split("/"))
+    ):
+        parser.error("--base-path must be empty or a normalized absolute path")
     try:
         parse_watch_interval(args.interval_seconds)
     except ValueError as exc:
@@ -193,7 +206,7 @@ def main() -> int:
     if not Path(args.ca).is_file():
         parser.error(f"CA file does not exist: {args.ca}")
 
-    base_url = f"https://{args.hub_host}:8443"
+    base_url = f"https://{args.hub_host}:{args.hub_port}{args.base_path}"
     try:
         previous = fetch_snapshot(base_url, args.ca, admin_token)
         print_summary(previous)

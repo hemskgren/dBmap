@@ -1,6 +1,7 @@
 FROM nginx:1.27-alpine
 
-COPY default.conf /etc/nginx/conf.d/default.conf
+COPY default.conf.template /etc/nginx/templates/default.conf.template
+COPY 10-validate-deployment-env.sh /docker-entrypoint.d/10-validate-deployment-env.sh
 
-EXPOSE 443
+EXPOSE 8443
 CMD ["nginx", "-g", "daemon off;"]

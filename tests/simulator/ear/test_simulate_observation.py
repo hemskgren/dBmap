@@ -29,7 +29,7 @@ def test_old_hub_identity_is_rejected_before_consuming_bootstrap_token(monkeypat
         "api_request",
         lambda *args, **kwargs: pytest.fail("provision endpoint must not be called"),
     )
-    args = SimpleNamespace(api_url="https://hub.example:8443", ca="ca.crt")
+    args = SimpleNamespace(api_url="https://hub.example", ca="ca.crt")
 
     with pytest.raises(simulate_observation.UnsupportedSimulatorIdentity):
         simulate_observation.finish_provisioning(

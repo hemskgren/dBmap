@@ -232,7 +232,7 @@ the Ear firmware.
   per-node username/password, not mutual TLS (mTLS).
 - Node credentials are issued during HTTPS provisioning and scoped by broker
   ACL to that node's topics.
-- The bootstrap API uses HTTPS on port `8443`. Administrative API routes
+- The bootstrap API is reached through Nginx over HTTPS on port `8443` by default. Administrative API routes
   require `Authorization: Bearer <admin-token>`. Initial provisioning uses a
   one-time bootstrap token; the hub stores its hash and consumes it once.
 - Never commit private CA keys, device credentials, bootstrap tokens, or local

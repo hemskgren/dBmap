@@ -7,6 +7,9 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:////data/bootstrap.db"
     admin_token: str = ""
     viewer_token: str = ""
+    opa_decision_url: str = "https://opa:8181/v1/data/dbmap/authz/allow"
+    opa_ca_file: str = "/certs/ca.crt"
+    opa_timeout_s: float = 2.0
 
     mqtt_host: str = "mosquitto"
     mqtt_port: int = 8883

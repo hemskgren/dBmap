@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-from itertools import combinations
 import json
 import math
 import os
@@ -12,9 +11,9 @@ import urllib.parse
 import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from itertools import combinations
 from pathlib import Path
 from typing import Any
-
 
 EARTH_RADIUS_M = 6_371_000
 
@@ -313,8 +312,8 @@ def report(
     lines = [
         f"Observation analysis at {datetime.now(timezone.utc).isoformat()}",
         f"Observations fetched (maximum 500): {len(observations)}",
-        "Detection candidates: each observation stays separate. "
-        "Ground-truth simulator IDs are not used for grouping or correlation.",
+        ("Detection candidates: each observation stays separate. "
+        "Ground-truth simulator IDs are not used for grouping or correlation."),
     ]
     candidates = candidate_groups(observations)
     observed_node_ids = sorted(
@@ -427,6 +426,12 @@ def main() -> int:
         )
     )
     parser.add_argument("--hub-host", required=True, help="Hub LAN IP or certificate-valid hostname")
+    parser.add_argument("--hub-port", type=int, default=8443, help="HTTPS listener port (default: 8443)")
+    parser.add_argument(
+        "--base-path",
+        default=os.environ.get("DBMAP_PUBLIC_BASE_PATH", ""),
+        help="Optional public path prefix, for example /dbmap",
+    )
     parser.add_argument("--ca", default="mqtt/certs/ca.crt", help="Path to the local hub CA")
     parser.add_argument("--node-id", help="Optionally restrict observations to one Ear")
     parser.add_argument(
@@ -450,6 +455,13 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+    args.base_path = args.base_path.rstrip("/")
+    if args.base_path and (
+        not args.base_path.startswith("/")
+        or "//" in args.base_path
+        or any(part in {".", ".."} for part in args.base_path.split("/"))
+    ):
+        parser.error("--base-path must be empty or a normalized absolute path")
     for label, value in (
         ("watch interval", args.interval_seconds),
         ("event gap", args.event_gap_seconds),
@@ -464,7 +476,7 @@ def main() -> int:
     if not Path(args.ca).is_file():
         parser.error(f"CA file does not exist: {args.ca}")
 
-    base_url = f"https://{args.hub_host}:8443"
+    base_url = f"https://{args.hub_host}:{args.hub_port}{args.base_path}"
     try:
         observations = fetch_observations(base_url, args.ca, admin_token, args.node_id)
         nodes = fetch_nodes(base_url, args.ca, admin_token)

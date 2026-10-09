@@ -5,10 +5,11 @@ import math
 import re
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from uuid import uuid4
 
 from app.schemas import ObservationBody

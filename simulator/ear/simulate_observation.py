@@ -13,7 +13,6 @@ from typing import Any
 from uuid import uuid4
 
 import paho.mqtt.client as mqtt
-
 from app.schemas import ObservationBody
 
 
@@ -257,6 +256,12 @@ def main() -> int:
         description="Create a simulated Ear and publish one protocol-validated TLS observation."
     )
     parser.add_argument("--hub-host", required=True, help="Hub LAN IP or certificate-valid hostname")
+    parser.add_argument("--hub-port", type=int, default=8443, help="HTTPS listener port (default: 8443)")
+    parser.add_argument(
+        "--base-path",
+        default=os.environ.get("DBMAP_PUBLIC_BASE_PATH", ""),
+        help="Optional public path prefix, for example /dbmap",
+    )
     parser.add_argument("--ca", default="mqtt/certs/ca.crt", help="Path to the local hub CA")
     parser.add_argument(
         "--credentials-file",
@@ -286,6 +291,13 @@ def main() -> int:
         help="Stable synthetic source ID shared by a simulated vehicle's observations",
     )
     args = parser.parse_args()
+    args.base_path = args.base_path.rstrip("/")
+    if args.base_path and (
+        not args.base_path.startswith("/")
+        or "//" in args.base_path
+        or any(part in {".", ".."} for part in args.base_path.split("/"))
+    ):
+        parser.error("--base-path must be empty or a normalized absolute path")
     if args.count < 1:
         parser.error("--count must be at least 1")
     if args.interval_seconds < 0:
@@ -299,7 +311,7 @@ def main() -> int:
     if not Path(args.ca).is_file():
         parser.error(f"CA file does not exist: {args.ca}")
 
-    args.api_url = f"https://{args.hub_host}:8443"
+    args.api_url = f"https://{args.hub_host}:{args.hub_port}{args.base_path}"
     credentials_path = Path(args.credentials_file)
     try:
         credentials = load_or_provision(args, admin_token)
