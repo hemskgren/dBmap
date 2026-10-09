@@ -15,7 +15,6 @@ Distributed acoustic sensing, built around **hub-bootstrap** and **ESP-Output**.
 
 - [Local deployment and operations](docs/local-deployment.md): mini-PC setup, certificates, ESP-IDF setup, node administration, simulators, and local workflows.
 - [Protocol reference](docs/protocol.md): device and Hub API message formats.
-- [Web architecture implementation brief](docs/dBmap_web_architecture_ai_instruction.md): draft direction for future web, identity, policy, and provisioning work.
 - [Authorization policy](docs/authorization.md): OPA actions, current local roles, future owner/quota inputs, and policy test instructions.
 - [Security policy](SECURITY.md): secret handling and private vulnerability reporting.
 
