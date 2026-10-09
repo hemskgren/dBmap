@@ -6,6 +6,7 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite:////data/bootstrap.db"
     admin_token: str = ""
+    viewer_token: str = ""
 
     mqtt_host: str = "mosquitto"
     mqtt_port: int = 8883

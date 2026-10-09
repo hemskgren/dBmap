@@ -3,100 +3,460 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>dBmap</title>
+    <title>dBmap devices</title>
     <style>
       :root {
-        color-scheme: light dark;
+        color-scheme: light;
         font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background: #0f172a;
-        color: #e2e8f0;
+        color: #172033;
+        background: #f3f6fa;
       }
-      body {
-        margin: 0;
-        min-height: 100vh;
-        display: grid;
-        place-items: center;
-        background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 1rem max(1.25rem, calc((100vw - 1100px) / 2));
+        color: #f8fafc;
+        background: #14223b;
       }
-      main {
-        width: min(860px, calc(100vw - 2rem));
-        padding: 2rem;
-        border: 1px solid rgba(148, 163, 184, 0.38);
-        border-radius: 16px;
-        background: rgba(15, 23, 42, 0.82);
-        box-shadow: 0 12px 48px rgba(15, 23, 42, 0.45);
+      header h1 { margin: 0; font-size: 1.35rem; }
+      header p { margin: 0.2rem 0 0; color: #cbd5e1; font-size: 0.9rem; }
+      main { width: min(1100px, calc(100vw - 2rem)); margin: 2rem auto; }
+      section, article {
+        border: 1px solid #d8e0eb;
+        border-radius: 12px;
+        background: #fff;
+        box-shadow: 0 4px 16px rgb(15 23 42 / 5%);
       }
-      h1 {
-        margin: 0 0 0.75rem;
-        font-size: clamp(2rem, 4vw, 3rem);
+      .login { width: min(480px, 100%); margin: 8vh auto; padding: 1.5rem; }
+      .login h2, section h2 { margin-top: 0; }
+      label { display: block; margin: 0.8rem 0 0.35rem; font-weight: 600; }
+      input, select, button { font: inherit; }
+      input, select {
+        width: 100%; padding: 0.65rem 0.75rem; border: 1px solid #aab7c9; border-radius: 7px;
       }
-      p {
-        margin: 0.5rem 0;
-        color: #cbd5e1;
+      button {
+        border: 0; border-radius: 7px; padding: 0.62rem 0.9rem; cursor: pointer;
+        color: #fff; background: #2457a7; font-weight: 600;
       }
-      .status {
-        display: inline-block;
-        margin: 1rem 0 0.5rem;
-        padding: 0.5rem 0.9rem;
-        border-radius: 999px;
-        font-weight: 600;
-        background: rgba(34, 197, 94, 0.15);
-        color: #bbf7d0;
-        border: 1px solid rgba(34, 197, 94, 0.35);
-      }
-      .status.error {
-        background: rgba(248, 113, 113, 0.12);
-        color: #fecaca;
-        border-color: rgba(248, 113, 113, 0.35);
-      }
-      code {
-        font-family: "SFMono-Regular", ui-monospace, monospace;
-      }
-      ul {
-        margin: 1rem 0 0;
-        padding-left: 1.2rem;
-        color: #cbd5e1;
-      }
-      li + li {
-        margin-top: 0.5rem;
+      button.secondary { color: #183153; background: #e6edf7; }
+      button.danger { background: #a83232; }
+      button:disabled { cursor: wait; opacity: 0.65; }
+      .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+      .toolbar h2 { margin: 0; }
+      section { padding: 1.25rem; min-width: 0; }
+      .table-wrap { overflow-x: auto; }
+      table { width: 100%; border-collapse: collapse; text-align: left; }
+      th, td { padding: 0.75rem 0.6rem; border-bottom: 1px solid #e3e9f1; vertical-align: middle; }
+      th { color: #526078; font-size: 0.88rem; }
+      tbody tr:last-child td { border-bottom: 0; }
+      .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem 0.75rem; margin: 0; }
+      .meta dt { color: #526078; }
+      .meta dd { margin: 0; overflow-wrap: anywhere; }
+      .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+      .detail-grid h3 { margin-top: 0; }
+      pre { overflow: auto; padding: 0.8rem; border-radius: 7px; background: #f3f6fa; font-size: 0.85rem; }
+      .online { color: #157347; font-weight: 700; }
+      .offline { color: #a83232; font-weight: 700; }
+      .actions { display: flex; gap: 0.5rem; margin-top: 0.85rem; }
+      .notice { min-height: 1.5rem; margin: 0.6rem 0; color: #526078; }
+      .error { color: #a83232; }
+      #create-panel { display: flex; align-items: end; gap: 0.6rem; margin: 1rem 0; }
+      #create-panel label { flex: 1; margin: 0; }
+      #created-token { padding: 0.8rem; border-radius: 7px; background: #fff7d6; overflow-wrap: anywhere; }
+      #installation-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 0.8rem; }
+      #installation-form .actions { grid-column: 1 / -1; }
+      [hidden] { display: none !important; }
+      @media (max-width: 760px) {
+        .detail-grid, #installation-form { grid-template-columns: 1fr; }
+        #installation-form .actions { grid-column: auto; }
+        .toolbar { align-items: flex-start; }
+        #create-panel { align-items: stretch; flex-direction: column; }
+        header { padding: 1rem; }
       }
     </style>
   </head>
   <body>
+    <header>
+      <div>
+        <h1>dBmap</h1>
+        <p>Local device overview</p>
+      </div>
+      <div id="user-controls" hidden>
+        <span id="role-label"></span>
+        <button id="logout" class="secondary" type="button">Sign out</button>
+      </div>
+    </header>
     <main>
-      <h1>dBmap</h1>
-      <p>Minimal web UI for the local deployment.</p>
-      <div id="status" class="status">Checking backend status…</div>
-      <p id="detail">The edge proxy routes browser traffic to this UI and forwards API traffic to the Hub API.</p>
-      <ul>
-        <li>Frontend routes: <code>/</code></li>
-        <li>API routes: <code>/api/…</code></li>
-        <li>Authorization remains enforced by the backend API.</li>
-      </ul>
+      <section id="login-panel" class="login">
+        <h2>Local access</h2>
+        <p>Enter the access token supplied by your dBmap administrator.</p>
+        <form id="login-form">
+          <label for="access-token">Access token</label>
+          <input id="access-token" type="password" autocomplete="current-password" required />
+          <p id="login-message" class="notice" role="status"></p>
+          <button type="submit">Sign in</button>
+        </form>
+      </section>
+      <div id="dashboard" hidden>
+        <div class="toolbar">
+          <div>
+            <h2>Devices</h2>
+            <p id="refresh-status" class="notice" aria-live="polite"></p>
+          </div>
+          <button id="refresh" class="secondary" type="button">Refresh</button>
+        </div>
+        <section id="admin-panel" hidden>
+          <h2>Local administration</h2>
+          <form id="create-panel">
+            <label for="node-type">Register device
+              <select id="node-type">
+                <option value="ear">Ear</option>
+                <option value="output">Output</option>
+              </select>
+            </label>
+            <button type="submit">Create device</button>
+          </form>
+          <div id="created-token" hidden role="status"></div>
+        </section>
+        <section>
+          <h2>Device list</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Device</th><th>Type</th><th>Status</th><th>Lifecycle</th><th>Location</th><th></th></tr></thead>
+              <tbody id="device-list" aria-live="polite"></tbody>
+            </table>
+          </div>
+        </section>
+        <section id="device-detail" hidden aria-live="polite"></section>
+      </div>
     </main>
     <script>
-      async function refreshStatus() {
-        const statusNode = document.getElementById('status');
-        const detailNode = document.getElementById('detail');
+      const authToken = { value: '' };
+      let currentRole = '';
+      let refreshTimer;
+      let selectedDeviceId = '';
 
-        try {
-          const response = await fetch('/health', { cache: 'no-store' });
-          const payload = await response.json();
-          if (!response.ok) {
-            throw new Error(payload.detail || 'The Hub API is not reachable.');
+      async function api(path, options = {}) {
+        const headers = new Headers(options.headers || {});
+        headers.set('Authorization', `Bearer ${authToken.value}`);
+        if (options.body) headers.set('Content-Type', 'application/json');
+        const response = await fetch(path, { ...options, headers, cache: 'no-store' });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.detail || `Request failed (${response.status}).`);
+        return body;
+      }
+
+      function el(tag, text, className) {
+        const node = document.createElement(tag);
+        if (text !== undefined) node.textContent = text;
+        if (className) node.className = className;
+        return node;
+      }
+
+      function formatSeen(value) {
+        if (!value) return 'Never';
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? 'Unknown' : date.toLocaleString();
+      }
+
+      function renderDevices(devices) {
+        const list = document.getElementById('device-list');
+        list.replaceChildren();
+        if (!devices.length) {
+          const row = el('tr');
+          const cell = el('td', 'No devices are registered yet.');
+          cell.colSpan = 6;
+          row.append(cell);
+          list.append(row);
+        }
+
+        for (const device of devices) {
+          const row = el('tr');
+          row.append(el('td', device.node_id), el('td', device.node_type.toUpperCase()));
+          row.append(el('td', device.status, device.status));
+          row.append(el('td', device.lifecycle_state));
+          row.append(el('td', device.installation
+            ? `${device.installation.latitude}, ${device.installation.longitude}`
+            : 'Not set'));
+          const actionCell = el('td');
+          const view = el('button', 'Show device', 'secondary');
+          view.type = 'button';
+          view.addEventListener('click', () => showDevice(device));
+          actionCell.append(view);
+          if (currentRole === 'admin') {
+            const toggle = el('button', device.lifecycle_state === 'active' ? 'Deactivate' : 'Reactivate');
+            toggle.type = 'button';
+            toggle.className = device.lifecycle_state === 'active' ? 'danger' : 'secondary';
+            toggle.addEventListener('click', async () => {
+              toggle.disabled = true;
+              try {
+                const lifecycle_state = device.lifecycle_state === 'active' ? 'deactivated' : 'active';
+                await api(`/api/v1/nodes/${encodeURIComponent(device.node_id)}/lifecycle`, {
+                  method: 'PUT',
+                  body: JSON.stringify({ lifecycle_state }),
+                });
+                await refreshDevices();
+                if (selectedDeviceId === device.node_id) await loadDeviceDetail(device.node_id);
+              } catch (error) {
+                showStatus(error.message, true);
+              } finally {
+                toggle.disabled = false;
+              }
+            });
+            actionCell.append(toggle);
           }
-
-          statusNode.textContent = `API online: ${payload.status}`;
-          statusNode.classList.remove('error');
-          detailNode.textContent = `Service: ${payload.service}`;
-        } catch (error) {
-          statusNode.textContent = 'Backend unavailable';
-          statusNode.classList.add('error');
-          detailNode.textContent = error.message || 'The dBmap API is not responding through the proxy.';
+          row.append(actionCell);
+          list.append(row);
+        }
+        if (selectedDeviceId && !devices.some((device) => device.node_id === selectedDeviceId)) {
+          selectedDeviceId = '';
+          document.getElementById('device-detail').hidden = true;
         }
       }
 
-      refreshStatus();
+      const installationFields = [
+        ['latitude', 'Latitude', 'number', '0.000001'],
+        ['longitude', 'Longitude', 'number', '0.000001'],
+        ['floor', 'Floor', 'number', '1'],
+        ['height_m', 'Height (m)', 'number', '0.1'],
+        ['height_accuracy_m', 'Height accuracy (m)', 'number', '0.1'],
+        ['mount_type', 'Mount type', 'text'],
+        ['environment', 'Environment', 'text'],
+        ['orientation_deg', 'Orientation (°)', 'number', '0.1'],
+      ];
+
+      function addDetailField(container, label, value) {
+        container.append(el('dt', label), el('dd', value === null || value === undefined || value === '' ? 'Not set' : String(value)));
+      }
+
+      async function loadDeviceDetail(nodeId) {
+        const detail = document.getElementById('device-detail');
+        detail.hidden = false;
+        detail.replaceChildren(el('p', 'Loading device…', 'notice'));
+        try {
+          const device = currentRole === 'admin'
+            ? await api(`/api/v1/nodes/${encodeURIComponent(nodeId)}`)
+            : await api('/api/v1/devices').then((devices) => devices.find((item) => item.node_id === nodeId));
+          if (!device) throw new Error('Device is no longer registered.');
+          renderDeviceDetail(device);
+        } catch (error) {
+          detail.replaceChildren(el('p', error.message, 'notice error'));
+        }
+      }
+
+      function renderDeviceDetail(device) {
+        const detail = document.getElementById('device-detail');
+        selectedDeviceId = device.node_id;
+        detail.replaceChildren();
+        const heading = el('div', undefined, 'toolbar');
+        heading.append(el('h2', `${device.node_id} · ${device.node_type.toUpperCase()}`));
+        const close = el('button', 'Close', 'secondary');
+        close.type = 'button';
+        close.addEventListener('click', () => {
+          detail.hidden = true;
+          selectedDeviceId = '';
+        });
+        heading.append(close);
+        detail.append(heading);
+
+        const grid = el('div', undefined, 'detail-grid');
+        const summary = el('section');
+        summary.append(el('h3', 'Device information'));
+        const metadata = el('dl', undefined, 'meta');
+        for (const [label, value] of [
+          ['Type', device.node_type], ['Hardware revision', device.hardware_revision],
+          ['Provisioning', device.provisioning_state], ['Lifecycle', device.lifecycle_state],
+          ['Availability', device.availability || 'Unknown'], ['Status', device.status],
+          ['Last seen', formatSeen(device.last_seen_at)],
+          ['Pending configuration change', device.pending_configuration_change === undefined ? 'Not available' : String(device.pending_configuration_change)],
+        ]) addDetailField(metadata, label, value);
+        summary.append(metadata);
+        grid.append(summary);
+
+        if (currentRole === 'admin') {
+          for (const [title, key] of [['Desired state', 'desired'], ['Reported state', 'reported']]) {
+            const panel = el('section');
+            panel.append(el('h3', title));
+            const data = el('pre', JSON.stringify(device[key] || {}, null, 2));
+            panel.append(data);
+            grid.append(panel);
+          }
+        }
+        const installation = el('section');
+        installation.append(el('h3', 'Installation'));
+        const installationMeta = el('dl', undefined, 'meta');
+        for (const [field, label] of installationFields) {
+          addDetailField(installationMeta, label, device.installation?.[field]);
+        }
+        installation.append(installationMeta);
+        grid.append(installation);
+        detail.append(grid);
+
+        if (currentRole === 'admin') {
+          const editor = el('section');
+          editor.append(el('h3', 'Edit installation'));
+          const form = el('form');
+          form.id = 'installation-form';
+          for (const [field, label, type, step] of installationFields) {
+            const wrapper = el('div');
+            const inputId = `installation-${field}`;
+            const inputLabel = el('label', label);
+            inputLabel.htmlFor = inputId;
+            const input = document.createElement('input');
+            input.id = inputId;
+            input.name = field;
+            input.type = type;
+            if (step) input.step = step;
+            if (field === 'latitude') { input.min = '-90'; input.max = '90'; }
+            if (field === 'longitude') { input.min = '-180'; input.max = '180'; }
+            if (field === 'height_m' || field === 'height_accuracy_m') input.min = '0';
+            if (field === 'orientation_deg') { input.min = '0'; input.max = '359.999999'; }
+            const value = device.installation?.[field];
+            input.value = value === null || value === undefined ? '' : String(value);
+            if (field === 'latitude' || field === 'longitude') input.required = true;
+            wrapper.append(inputLabel, input);
+            form.append(wrapper);
+          }
+          const actions = el('div', undefined, 'actions');
+          const save = el('button', 'Save installation');
+          save.type = 'submit';
+          const message = el('span', '', 'notice');
+          message.setAttribute('role', 'status');
+          actions.append(save, message);
+          form.append(actions);
+          form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            save.disabled = true;
+            message.textContent = 'Saving…';
+            message.className = 'notice';
+            const values = {};
+            for (const [field, , type] of installationFields) {
+              const raw = form.elements.namedItem(field).value.trim();
+              values[field] = raw === '' ? null : (type === 'number' ? Number(raw) : raw);
+            }
+            try {
+              const updated = await api(`/api/v1/nodes/${encodeURIComponent(device.node_id)}/installation`, {
+                method: 'PUT', body: JSON.stringify(values),
+              });
+              renderDeviceDetail(updated);
+              await refreshDevices();
+              showStatus(`Installation updated for ${device.node_id}`);
+            } catch (error) {
+              message.textContent = error.message;
+              message.className = 'notice error';
+            } finally {
+              save.disabled = false;
+            }
+          });
+          editor.append(form);
+          detail.append(editor);
+        }
+      }
+
+      function showDevice(device) {
+        selectedDeviceId = device.node_id;
+        loadDeviceDetail(device.node_id);
+        document.getElementById('device-detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+
+      function showStatus(message, isError = false) {
+        const status = document.getElementById('refresh-status');
+        status.textContent = message;
+        status.className = isError ? 'notice error' : 'notice';
+      }
+
+      async function refreshDevices() {
+        try {
+          const devices = await api('/api/v1/devices');
+          renderDevices(devices);
+          showStatus(`Updated ${new Date().toLocaleTimeString()}`);
+        } catch (error) {
+          showStatus(error.message, true);
+        }
+      }
+
+      function showDashboard(role) {
+        currentRole = role;
+        document.getElementById('login-panel').hidden = true;
+        document.getElementById('dashboard').hidden = false;
+        document.getElementById('user-controls').hidden = false;
+        document.getElementById('admin-panel').hidden = role !== 'admin';
+        document.getElementById('role-label').textContent = `${role} access`;
+        selectedDeviceId = '';
+        document.getElementById('device-detail').hidden = true;
+        refreshDevices();
+        refreshTimer = window.setInterval(refreshDevices, 30000);
+      }
+
+      document.getElementById('login-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const message = document.getElementById('login-message');
+        const submit = event.currentTarget.querySelector('button[type="submit"]');
+        authToken.value = document.getElementById('access-token').value;
+        submit.disabled = true;
+        message.textContent = 'Checking access…';
+        message.className = 'notice';
+        try {
+          const session = await api('/api/v1/session');
+          document.getElementById('access-token').value = '';
+          showDashboard(session.role);
+        } catch (error) {
+          authToken.value = '';
+          message.textContent = error.message;
+          message.className = 'notice error';
+        } finally {
+          submit.disabled = false;
+        }
+      });
+
+      document.getElementById('create-panel').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const submit = event.currentTarget.querySelector('button[type="submit"]');
+        const tokenBox = document.getElementById('created-token');
+        submit.disabled = true;
+        tokenBox.hidden = true;
+        try {
+          const created = await api('/api/v1/nodes', {
+            method: 'POST',
+            body: JSON.stringify({
+              node_type: document.getElementById('node-type').value,
+              hardware_revision: 'unknown',
+            }),
+          });
+          tokenBox.replaceChildren(
+            el('strong', `Created ${created.node_id}. Save this one-time bootstrap token now: `),
+            el('code', created.bootstrap_token),
+          );
+          tokenBox.hidden = false;
+          await refreshDevices();
+        } catch (error) {
+          showStatus(error.message, true);
+        } finally {
+          submit.disabled = false;
+        }
+      });
+
+      document.getElementById('refresh').addEventListener('click', refreshDevices);
+      document.getElementById('logout').addEventListener('click', () => {
+        window.clearInterval(refreshTimer);
+        authToken.value = '';
+        currentRole = '';
+        document.getElementById('dashboard').hidden = true;
+        document.getElementById('admin-panel').hidden = true;
+        document.getElementById('user-controls').hidden = true;
+        const createdToken = document.getElementById('created-token');
+        createdToken.hidden = true;
+        createdToken.replaceChildren();
+        document.getElementById('device-list').replaceChildren();
+        document.getElementById('device-detail').replaceChildren();
+        document.getElementById('device-detail').hidden = true;
+        selectedDeviceId = '';
+        document.getElementById('login-panel').hidden = false;
+      });
     </script>
   </body>
 </html>

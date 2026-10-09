@@ -265,12 +265,21 @@ The current relevant HTTPS API endpoints are:
 
 | Endpoint | Purpose | Authentication |
 | --- | --- | --- |
+| `GET /api/v1/session` | Identify the role associated with a local access token. | Admin or viewer access token |
+| `GET /api/v1/devices` | Read basic device status and installation summaries. | Admin or viewer access token |
 | `POST /api/v1/nodes` | Create a node and issue its one-time bootstrap token. | Admin bearer token |
 | `POST /api/v1/provision` | Consume the bootstrap token and issue per-node MQTT credentials and topics. | One-time bootstrap token |
 | `GET /api/v1/nodes` and `GET /api/v1/nodes/{node_id}` | Read node identity and desired/reported state. | Admin bearer token |
 | `PUT /api/v1/nodes/{node_id}/desired` | Replace desired configuration/version fields. | Admin bearer token |
 | `PUT /api/v1/nodes/{node_id}/installation` | Store mandatory WGS84 latitude/longitude and optional placement metadata. | Admin bearer token |
 | `GET /api/v1/observations` | Read persisted observations, optionally filtered by `node_id`. | Admin bearer token |
+
+The local web UI accepts an admin or viewer bearer token. Viewer access is
+limited to `/api/v1/session` and `/api/v1/devices`, which returns only the
+device summary rather than desired/reported configuration. Device status is
+derived from the most recent Hub keepalive: online within 90 seconds,
+otherwise offline. See the [local deployment guide](./local-deployment.md)
+for configuring the two local tokens.
 
 Event and track APIs, a general node polling endpoint, and configuration
 delivery are not implemented.

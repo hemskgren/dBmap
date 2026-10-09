@@ -70,6 +70,7 @@ services:
       - /certs/server.key
     environment:
       DBMAP_ADMIN_TOKEN: ${DBMAP_ADMIN_TOKEN:?Set DBMAP_ADMIN_TOKEN in .env}
+      DBMAP_VIEWER_TOKEN: ${DBMAP_VIEWER_TOKEN:?Set DBMAP_VIEWER_TOKEN in .env}
       DBMAP_MQTT_HOST: mosquitto
       DBMAP_MQTT_PORT: "8883"
       DBMAP_MQTT_CA_FILE: /certs/ca.crt
