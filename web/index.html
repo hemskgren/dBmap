@@ -47,33 +47,32 @@
       button:disabled { cursor: wait; opacity: 0.65; }
       .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
       .toolbar h2 { margin: 0; }
-      .grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr); gap: 1rem; }
       section { padding: 1.25rem; min-width: 0; }
-      #device-list { display: grid; gap: 0.75rem; }
-      article { padding: 1rem; box-shadow: none; }
-      article h3 { margin: 0 0 0.5rem; }
+      .table-wrap { overflow-x: auto; }
+      table { width: 100%; border-collapse: collapse; text-align: left; }
+      th, td { padding: 0.75rem 0.6rem; border-bottom: 1px solid #e3e9f1; vertical-align: middle; }
+      th { color: #526078; font-size: 0.88rem; }
+      tbody tr:last-child td { border-bottom: 0; }
       .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem 0.75rem; margin: 0; }
       .meta dt { color: #526078; }
       .meta dd { margin: 0; overflow-wrap: anywhere; }
+      .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+      .detail-grid h3 { margin-top: 0; }
+      pre { overflow: auto; padding: 0.8rem; border-radius: 7px; background: #f3f6fa; font-size: 0.85rem; }
       .online { color: #157347; font-weight: 700; }
       .offline { color: #a83232; font-weight: 700; }
       .actions { display: flex; gap: 0.5rem; margin-top: 0.85rem; }
       .notice { min-height: 1.5rem; margin: 0.6rem 0; color: #526078; }
       .error { color: #a83232; }
-      #map {
-        display: block; width: 100%; min-height: 280px; border-radius: 8px;
-        background: linear-gradient(#f8fafc, #edf3f9); border: 1px solid #d8e0eb;
-      }
-      #map text { font: 12px system-ui, sans-serif; fill: #526078; }
-      #map circle { fill: #2457a7; stroke: #fff; stroke-width: 3; }
-      #map circle.offline-marker { fill: #a83232; }
-      .map-note { color: #526078; font-size: 0.88rem; }
       #create-panel { display: flex; align-items: end; gap: 0.6rem; margin: 1rem 0; }
       #create-panel label { flex: 1; margin: 0; }
       #created-token { padding: 0.8rem; border-radius: 7px; background: #fff7d6; overflow-wrap: anywhere; }
+      #installation-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 0.8rem; }
+      #installation-form .actions { grid-column: 1 / -1; }
       [hidden] { display: none !important; }
       @media (max-width: 760px) {
-        .grid { grid-template-columns: 1fr; }
+        .detail-grid, #installation-form { grid-template-columns: 1fr; }
+        #installation-form .actions { grid-column: auto; }
         .toolbar { align-items: flex-start; }
         #create-panel { align-items: stretch; flex-direction: column; }
         header { padding: 1rem; }
@@ -123,24 +122,23 @@
           </form>
           <div id="created-token" hidden role="status"></div>
         </section>
-        <div class="grid">
-          <section>
-            <h2>Device list</h2>
-            <div id="device-list" aria-live="polite"></div>
-          </section>
-          <section>
-            <h2>Site map</h2>
-            <svg id="map" viewBox="0 0 800 400" role="img" aria-label="Map of device installation positions"></svg>
-            <p class="map-note">Installation coordinates are plotted from WGS84 latitude and longitude. No external map service is used.</p>
-          </section>
-        </div>
+        <section>
+          <h2>Device list</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Device</th><th>Type</th><th>Status</th><th>Lifecycle</th><th>Location</th><th></th></tr></thead>
+              <tbody id="device-list" aria-live="polite"></tbody>
+            </table>
+          </div>
+        </section>
+        <section id="device-detail" hidden aria-live="polite"></section>
       </div>
     </main>
     <script>
       const authToken = { value: '' };
       let currentRole = '';
       let refreshTimer;
-      const svgNamespace = 'http://www.w3.org/2000/svg';
+      let selectedDeviceId = '';
 
       async function api(path, options = {}) {
         const headers = new Headers(options.headers || {});
@@ -165,96 +163,34 @@
         return Number.isNaN(date.getTime()) ? 'Unknown' : date.toLocaleString();
       }
 
-      function drawMap(devices) {
-        const map = document.getElementById('map');
-        map.replaceChildren();
-        const positions = devices.filter((device) => device.installation);
-        if (!positions.length) {
-          const message = document.createElementNS(svgNamespace, 'text');
-          message.setAttribute('x', '400');
-          message.setAttribute('y', '205');
-          message.setAttribute('text-anchor', 'middle');
-          message.textContent = 'No devices have installation coordinates';
-          map.append(message);
-          return;
-        }
-
-        const latitudes = positions.map((device) => device.installation.latitude);
-        const longitudes = positions.map((device) => device.installation.longitude);
-        const latRange = Math.max(Math.max(...latitudes) - Math.min(...latitudes), 0.02);
-        const lonRange = Math.max(Math.max(...longitudes) - Math.min(...longitudes), 0.02);
-        const latMin = Math.min(...latitudes) - latRange * 0.1;
-        const lonMin = Math.min(...longitudes) - lonRange * 0.1;
-        const latMax = Math.max(...latitudes) + latRange * 0.1;
-        const lonMax = Math.max(...longitudes) + lonRange * 0.1;
-
-        for (let i = 0; i < 5; i += 1) {
-          const y = 45 + i * 75;
-          const x = 50 + i * 175;
-          const horizontal = document.createElementNS(svgNamespace, 'line');
-          horizontal.setAttribute('x1', '50');
-          horizontal.setAttribute('x2', '750');
-          horizontal.setAttribute('y1', String(y));
-          horizontal.setAttribute('y2', String(y));
-          horizontal.setAttribute('stroke', '#d8e0eb');
-          map.append(horizontal);
-          const vertical = document.createElementNS(svgNamespace, 'line');
-          vertical.setAttribute('x1', String(x));
-          vertical.setAttribute('x2', String(x));
-          vertical.setAttribute('y1', '45');
-          vertical.setAttribute('y2', '345');
-          vertical.setAttribute('stroke', '#d8e0eb');
-          map.append(vertical);
-        }
-
-        for (const device of positions) {
-          const x = 75 + ((device.installation.longitude - lonMin) / (lonMax - lonMin)) * 650;
-          const y = 335 - ((device.installation.latitude - latMin) / (latMax - latMin)) * 280;
-          const marker = document.createElementNS(svgNamespace, 'circle');
-          marker.setAttribute('cx', String(x));
-          marker.setAttribute('cy', String(y));
-          marker.setAttribute('r', '9');
-          marker.setAttribute('class', device.status === 'online' ? '' : 'offline-marker');
-          map.append(marker);
-          const label = document.createElementNS(svgNamespace, 'text');
-          label.setAttribute('x', String(x + 12));
-          label.setAttribute('y', String(y + 4));
-          label.textContent = device.node_id;
-          map.append(label);
-        }
-      }
-
       function renderDevices(devices) {
         const list = document.getElementById('device-list');
         list.replaceChildren();
         if (!devices.length) {
-          list.append(el('p', 'No devices are registered yet.'));
+          const row = el('tr');
+          const cell = el('td', 'No devices are registered yet.');
+          cell.colSpan = 6;
+          row.append(cell);
+          list.append(row);
         }
 
         for (const device of devices) {
-          const card = el('article');
-          card.append(el('h3', `${device.node_id} · ${device.node_type.toUpperCase()}`));
-          const details = el('dl', undefined, 'meta');
-          const fields = [
-            ['Status', device.status, device.status],
-            ['Lifecycle', device.lifecycle_state],
-            ['Provisioning', device.provisioning_state],
-            ['Hardware', device.hardware_revision],
-            ['Last seen', formatSeen(device.last_seen_at)],
-            ['Location', device.installation
-              ? `${device.installation.latitude}, ${device.installation.longitude}`
-              : 'Not set'],
-          ];
-          for (const [label, value, statusClass] of fields) {
-            details.append(el('dt', label));
-            details.append(el('dd', value, statusClass === 'online' || statusClass === 'offline' ? statusClass : ''));
-          }
-          card.append(details);
+          const row = el('tr');
+          row.append(el('td', device.node_id), el('td', device.node_type.toUpperCase()));
+          row.append(el('td', device.status, device.status));
+          row.append(el('td', device.lifecycle_state));
+          row.append(el('td', device.installation
+            ? `${device.installation.latitude}, ${device.installation.longitude}`
+            : 'Not set'));
+          const actionCell = el('td');
+          const view = el('button', 'Show device', 'secondary');
+          view.type = 'button';
+          view.addEventListener('click', () => showDevice(device));
+          actionCell.append(view);
           if (currentRole === 'admin') {
-            const actions = el('div', undefined, 'actions');
             const toggle = el('button', device.lifecycle_state === 'active' ? 'Deactivate' : 'Reactivate');
             toggle.type = 'button';
-            if (device.lifecycle_state === 'active') toggle.className = 'danger';
+            toggle.className = device.lifecycle_state === 'active' ? 'danger' : 'secondary';
             toggle.addEventListener('click', async () => {
               toggle.disabled = true;
               try {
@@ -264,18 +200,167 @@
                   body: JSON.stringify({ lifecycle_state }),
                 });
                 await refreshDevices();
+                if (selectedDeviceId === device.node_id) await loadDeviceDetail(device.node_id);
               } catch (error) {
                 showStatus(error.message, true);
               } finally {
                 toggle.disabled = false;
               }
             });
-            actions.append(toggle);
-            card.append(actions);
+            actionCell.append(toggle);
           }
-          list.append(card);
+          row.append(actionCell);
+          list.append(row);
         }
-        drawMap(devices);
+        if (selectedDeviceId && !devices.some((device) => device.node_id === selectedDeviceId)) {
+          selectedDeviceId = '';
+          document.getElementById('device-detail').hidden = true;
+        }
+      }
+
+      const installationFields = [
+        ['latitude', 'Latitude', 'number', '0.000001'],
+        ['longitude', 'Longitude', 'number', '0.000001'],
+        ['floor', 'Floor', 'number', '1'],
+        ['height_m', 'Height (m)', 'number', '0.1'],
+        ['height_accuracy_m', 'Height accuracy (m)', 'number', '0.1'],
+        ['mount_type', 'Mount type', 'text'],
+        ['environment', 'Environment', 'text'],
+        ['orientation_deg', 'Orientation (°)', 'number', '0.1'],
+      ];
+
+      function addDetailField(container, label, value) {
+        container.append(el('dt', label), el('dd', value === null || value === undefined || value === '' ? 'Not set' : String(value)));
+      }
+
+      async function loadDeviceDetail(nodeId) {
+        const detail = document.getElementById('device-detail');
+        detail.hidden = false;
+        detail.replaceChildren(el('p', 'Loading device…', 'notice'));
+        try {
+          const device = currentRole === 'admin'
+            ? await api(`/api/v1/nodes/${encodeURIComponent(nodeId)}`)
+            : await api('/api/v1/devices').then((devices) => devices.find((item) => item.node_id === nodeId));
+          if (!device) throw new Error('Device is no longer registered.');
+          renderDeviceDetail(device);
+        } catch (error) {
+          detail.replaceChildren(el('p', error.message, 'notice error'));
+        }
+      }
+
+      function renderDeviceDetail(device) {
+        const detail = document.getElementById('device-detail');
+        selectedDeviceId = device.node_id;
+        detail.replaceChildren();
+        const heading = el('div', undefined, 'toolbar');
+        heading.append(el('h2', `${device.node_id} · ${device.node_type.toUpperCase()}`));
+        const close = el('button', 'Close', 'secondary');
+        close.type = 'button';
+        close.addEventListener('click', () => {
+          detail.hidden = true;
+          selectedDeviceId = '';
+        });
+        heading.append(close);
+        detail.append(heading);
+
+        const grid = el('div', undefined, 'detail-grid');
+        const summary = el('section');
+        summary.append(el('h3', 'Device information'));
+        const metadata = el('dl', undefined, 'meta');
+        for (const [label, value] of [
+          ['Type', device.node_type], ['Hardware revision', device.hardware_revision],
+          ['Provisioning', device.provisioning_state], ['Lifecycle', device.lifecycle_state],
+          ['Availability', device.availability || 'Unknown'], ['Status', device.status],
+          ['Last seen', formatSeen(device.last_seen_at)],
+          ['Pending configuration change', device.pending_configuration_change === undefined ? 'Not available' : String(device.pending_configuration_change)],
+        ]) addDetailField(metadata, label, value);
+        summary.append(metadata);
+        grid.append(summary);
+
+        if (currentRole === 'admin') {
+          for (const [title, key] of [['Desired state', 'desired'], ['Reported state', 'reported']]) {
+            const panel = el('section');
+            panel.append(el('h3', title));
+            const data = el('pre', JSON.stringify(device[key] || {}, null, 2));
+            panel.append(data);
+            grid.append(panel);
+          }
+        }
+        const installation = el('section');
+        installation.append(el('h3', 'Installation'));
+        const installationMeta = el('dl', undefined, 'meta');
+        for (const [field, label] of installationFields) {
+          addDetailField(installationMeta, label, device.installation?.[field]);
+        }
+        installation.append(installationMeta);
+        grid.append(installation);
+        detail.append(grid);
+
+        if (currentRole === 'admin') {
+          const editor = el('section');
+          editor.append(el('h3', 'Edit installation'));
+          const form = el('form');
+          form.id = 'installation-form';
+          for (const [field, label, type, step] of installationFields) {
+            const wrapper = el('div');
+            const inputId = `installation-${field}`;
+            const inputLabel = el('label', label);
+            inputLabel.htmlFor = inputId;
+            const input = document.createElement('input');
+            input.id = inputId;
+            input.name = field;
+            input.type = type;
+            if (step) input.step = step;
+            if (field === 'latitude') { input.min = '-90'; input.max = '90'; }
+            if (field === 'longitude') { input.min = '-180'; input.max = '180'; }
+            if (field === 'height_m' || field === 'height_accuracy_m') input.min = '0';
+            if (field === 'orientation_deg') { input.min = '0'; input.max = '359.999999'; }
+            const value = device.installation?.[field];
+            input.value = value === null || value === undefined ? '' : String(value);
+            if (field === 'latitude' || field === 'longitude') input.required = true;
+            wrapper.append(inputLabel, input);
+            form.append(wrapper);
+          }
+          const actions = el('div', undefined, 'actions');
+          const save = el('button', 'Save installation');
+          save.type = 'submit';
+          const message = el('span', '', 'notice');
+          message.setAttribute('role', 'status');
+          actions.append(save, message);
+          form.append(actions);
+          form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            save.disabled = true;
+            message.textContent = 'Saving…';
+            message.className = 'notice';
+            const values = {};
+            for (const [field, , type] of installationFields) {
+              const raw = form.elements.namedItem(field).value.trim();
+              values[field] = raw === '' ? null : (type === 'number' ? Number(raw) : raw);
+            }
+            try {
+              const updated = await api(`/api/v1/nodes/${encodeURIComponent(device.node_id)}/installation`, {
+                method: 'PUT', body: JSON.stringify(values),
+              });
+              renderDeviceDetail(updated);
+              await refreshDevices();
+              showStatus(`Installation updated for ${device.node_id}`);
+            } catch (error) {
+              message.textContent = error.message;
+              message.className = 'notice error';
+            } finally {
+              save.disabled = false;
+            }
+          });
+          editor.append(form);
+          detail.append(editor);
+        }
+      }
+
+      function showDevice(device) {
+        selectedDeviceId = device.node_id;
+        loadDeviceDetail(device.node_id);
+        document.getElementById('device-detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
 
       function showStatus(message, isError = false) {
@@ -301,6 +386,8 @@
         document.getElementById('user-controls').hidden = false;
         document.getElementById('admin-panel').hidden = role !== 'admin';
         document.getElementById('role-label').textContent = `${role} access`;
+        selectedDeviceId = '';
+        document.getElementById('device-detail').hidden = true;
         refreshDevices();
         refreshTimer = window.setInterval(refreshDevices, 30000);
       }
@@ -365,7 +452,9 @@
         createdToken.hidden = true;
         createdToken.replaceChildren();
         document.getElementById('device-list').replaceChildren();
-        document.getElementById('map').replaceChildren();
+        document.getElementById('device-detail').replaceChildren();
+        document.getElementById('device-detail').hidden = true;
+        selectedDeviceId = '';
         document.getElementById('login-panel').hidden = false;
       });
     </script>
