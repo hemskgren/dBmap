@@ -16,13 +16,14 @@ The architecture document still says “Pi first” and “V0-A single Ear”. H
 
 ESP-Output firmware supports NVS identity/configuration, Wi-Fi STA, HTTPS provisioning, MQTT hello/health/command/ack, and relay/audio stubs (no pin map yet).
 
-The broker is TLS-only on port `8883`; the bootstrap API is HTTPS on port `8443`. Each provisioned node gets a unique MQTT login and topic-scoped permissions. Hub services use a separate broker identity. The local CA is trusted by firmware and clients; keep its private key and `.env` secrets private.
+The broker is TLS-only on port `8883`; the bootstrap API is HTTPS on port `443` through Nginx. Hub bootstrap listens on HTTPS port `8443` only inside the Compose network. Each provisioned node gets a unique MQTT login and topic-scoped permissions. Hub services use a separate broker identity. The local CA is trusted by firmware and clients; keep its private key and `.env` secrets private.
 
 The local deployment now includes a minimal edge proxy and web frontend as part of the Phase A architecture refactor:
 
 - `https://<hub-host>/` serves the lightweight dBmap web UI
 - `https://<hub-host>/api/...` proxies to the Hub bootstrap API
-- the underlying API still retains the original HTTPS endpoint on port `8443`
+- Hub bootstrap is reachable only on the internal Compose network; Nginx proxies to it using verified HTTPS
+- Nginx also verifies HTTPS to the web service using a separate certificate
 - authorization is still enforced by the backend API; the browser UI is not a trust boundary
 - Nginx verifies the Hub's upstream TLS certificate using the stable `hub.local` certificate name, regardless of whether clients connect to the proxy by IP or hostname
 
@@ -80,14 +81,14 @@ set +a
 docker compose up --build -d
 ```
 
-The certificate generator creates a private local CA and a server certificate valid for `hub.local`, the broker's internal `mosquitto` name, and the NUC's LAN IP. If it reports that an existing CA is unsuitable, run `./scripts/gen-mqtt-certs.sh --rotate-ca` to replace it. CA rotation invalidates trust on previously flashed devices; copy the new CA and erase/reflash each device. If `hub.local` is not already advertised by your host/router, run this on the NUC host (not in Docker):
+The certificate generator preserves an existing local CA and refreshes the Hub/Nginx/broker certificate for `hub.local`, the broker's internal `mosquitto` name, and the NUC's current LAN IP. It also creates a separate `dbmap-web` certificate for Nginx's HTTPS connection to the web service. If it reports that an existing CA is unsuitable, run `./scripts/gen-mqtt-certs.sh --rotate-ca` to replace it. CA rotation invalidates trust on previously flashed devices; copy the new CA and erase/reflash each device. If `hub.local` is not already advertised by your host/router, run this on the NUC host (not in Docker):
 
 ```bash
 sudo apt-get install -y avahi-utils
 sudo avahi-publish -a -R hub.local "$DBMAP_LAN_IP"
 ```
 
-Keep the publisher running during tests; it stops advertising when the process exits. Compose binds the service ports to `DBMAP_LAN_IP` only. Restrict access to the trusted LAN with the router/host firewall as well.
+Keep the publisher running during tests; it stops advertising when the process exits. Compose publishes Nginx on port `443` and Mosquitto on `8883` at `DBMAP_LAN_IP`. The API and web service ports remain internal to Compose.
 
 For the first ESP32 test, use the hub's numeric LAN IP in the firmware. `hub.local` works for host tools via mDNS, but this firmware does not include an explicit mDNS resolver. The IP is already included in the generated server certificate. Set `DBMAP_ADVERTISED_MQTT_HOST` in `.env` to the same LAN IP as `DBMAP_LAN_IP` and apply the setting so the provisioning response gives that reachable address to the ESP32:
 
@@ -105,7 +106,7 @@ export CURL_CA_BUNDLE=mqtt/certs/ca.crt
 curl -sS -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{"node_type":"output","hardware_revision":"OUTPUT-DEV-V1"}' \
-  "https://${DBMAP_LAN_IP}:8443/api/v1/nodes"
+  "https://${DBMAP_LAN_IP}/api/v1/nodes"
 ```
 
 The browser UI at `https://hub.local/` accepts either `DBMAP_ADMIN_TOKEN` or `DBMAP_VIEWER_TOKEN`. The viewer token grants read-only access to basic device summaries and the local coordinate plot; the admin token additionally enables device creation and lifecycle actions. Tokens are held in browser memory only and cleared on sign-out. The browser is not the security boundary: the API independently checks the token and role. Device status is online when the Hub received a keepalive within the previous 90 seconds; otherwise it is offline.
@@ -116,7 +117,7 @@ The bootstrap token is returned only once; the hub stores its hash, so it cannot
 cp mqtt/certs/ca.crt firmware/esp-output/main/root_ca.pem
 ```
 
-In firmware menuconfig, under **dBmap node**, set the Wi-Fi SSID and password, hub bootstrap base URL to `https://<mini-PC-LAN-IP>:8443` (actual IP, without angle brackets), the one-time bootstrap token returned by the node-creation request, and hardware revision to `OUTPUT-DEV-V1`. The token field must not be left empty on the board's first provisioning boot: NVS is empty after `erase-flash`, and the token is not saved there before provisioning. Do not use `localhost` on the board; it refers to the ESP32 itself. The ESP32-WROOM-32 test uses the `esp32` target and 4 MB flash, not the planned ESP32-S3/16 MB Ear target.
+In firmware menuconfig, under **dBmap node**, set the Wi-Fi SSID and password, hub bootstrap base URL to `https://<mini-PC-LAN-IP>` (actual IP, without angle brackets), the one-time bootstrap token returned by the node-creation request, and hardware revision to `OUTPUT-DEV-V1`. The token field must not be left empty on the board's first provisioning boot: NVS is empty after `erase-flash`, and the token is not saved there before provisioning. Do not use `localhost` on the board; it refers to the ESP32 itself. The ESP32-WROOM-32 test uses the `esp32` target and 4 MB flash, not the planned ESP32-S3/16 MB Ear target.
 
 ## Install ESP-IDF (Linux)
 
@@ -176,7 +177,7 @@ set -a
 set +a
 export CURL_CA_BUNDLE=mqtt/certs/ca.crt
 curl -sS -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
-  "https://${DBMAP_LAN_IP}:8443/api/v1/nodes"
+  "https://${DBMAP_LAN_IP}/api/v1/nodes"
 ```
 
 ### Record installation metadata
@@ -189,7 +190,7 @@ curl -sS --cacert mqtt/certs/ca.crt \
   -H "Content-Type: application/json" \
   -X PUT \
   -d '{"latitude":59.91,"longitude":10.75,"floor":7,"height_m":21,"height_accuracy_m":2,"mount_type":"balcony","environment":"urban","orientation_deg":180}' \
-  "https://${DBMAP_LAN_IP}:8443/api/v1/nodes/<node-id>/installation"
+  "https://${DBMAP_LAN_IP}/api/v1/nodes/<node-id>/installation"
 ```
 
 The response includes the saved `installation` object. `latitude` must be between -90 and 90, `longitude` between -180 and 180, and optional `orientation_deg` between 0 (inclusive) and 360 (exclusive). Update a node's record by repeating the PUT with its complete installation object; geographic coordinates remain required.
@@ -217,7 +218,7 @@ The simulator reports a node ID and observation ID, not the credentials. Query t
 ```bash
 curl -sS --cacert mqtt/certs/ca.crt \
   -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" \
-  "https://${DBMAP_LAN_IP}:8443/api/v1/observations?node_id=<node-id-from-simulator>"
+  "https://${DBMAP_LAN_IP}/api/v1/observations?node_id=<node-id-from-simulator>"
 ```
 
 Replace `<node-id-from-simulator>` with the `SIM-EAR-*` node ID printed by the simulator. The response contains the validated protocol envelope, observation and hub `received_time_utc`. Classification and bearing have separate confidence values. Bearing is relative to the node reference axis, not a compass direction; the hub does not yet convert it using installation orientation. `signal_level_dbfs` is digital full-scale, not dB SPL. Each observation also includes a UUID, sequence number, timezone-aware event timestamp, monotonic capture timestamp, and timing-quality and uncertainty fields. Repeating publication with the same observation ID is deduplicated. To retry a publish after an error without provisioning another test node, run the command again with `--credentials-file /tmp/dbmap-ear-simulator-credentials.json --reuse-credentials`. Keep that file private; delete it when the simulator credentials are no longer needed.

@@ -53,6 +53,18 @@ openssl req -newkey rsa:2048 -nodes \
 openssl x509 -req -in "$OUT/server.csr" -CA "$OUT/ca.crt" -CAkey "$OUT/ca.key" \
   -CAcreateserial -out "$OUT/server.crt" -days 825 -copy_extensions copy
 
-rm -f "$OUT/server.csr"
-chmod 600 "$OUT/ca.key" "$OUT/server.key"
+openssl req -newkey rsa:2048 -nodes \
+  -keyout "$OUT/web.key" \
+  -out "$OUT/web.csr" \
+  -subj "/CN=dbmap-web" \
+  -addext "subjectAltName=DNS:dbmap-web" \
+  -addext "basicConstraints=critical,CA:FALSE" \
+  -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+  -addext "extendedKeyUsage=serverAuth"
+
+openssl x509 -req -in "$OUT/web.csr" -CA "$OUT/ca.crt" -CAkey "$OUT/ca.key" \
+  -CAcreateserial -out "$OUT/web.crt" -days 825 -copy_extensions copy
+
+rm -f "$OUT/server.csr" "$OUT/web.csr"
+chmod 600 "$OUT/ca.key" "$OUT/server.key" "$OUT/web.key"
 echo "Wrote MQTT TLS material to $OUT"

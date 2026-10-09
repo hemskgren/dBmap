@@ -38,7 +38,7 @@ def test_fetch_nodes_uses_admin_bearer_token(monkeypatch) -> None:
     )
 
     assert hub_event_track.fetch_nodes(
-        "https://hub.example:8443",
+        "https://hub.example",
         "ca.crt",
         "test-admin-token",
     ) == {}

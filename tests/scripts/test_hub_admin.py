@@ -40,7 +40,7 @@ def test_set_desired_preserves_fields_not_explicitly_changed(monkeypatch) -> Non
         payload_file=None,
     )
 
-    result = hub_admin.set_desired(args, "https://hub.example:8443", "test-token")
+    result = hub_admin.set_desired(args, "https://hub.example", "test-token")
 
     assert result == {"node_id": "EAR-001"}
     assert request.call_args.args[4] == "/api/v1/nodes/EAR-001/desired"
@@ -85,7 +85,7 @@ def test_set_installation_preserves_unspecified_fields(monkeypatch) -> None:
         orientation_deg=270,
     )
 
-    hub_admin.set_installation(args, "https://hub.example:8443", "test-token")
+    hub_admin.set_installation(args, "https://hub.example", "test-token")
 
     assert request.call_args.args[5] == {
         "latitude": 59.9,
@@ -115,4 +115,4 @@ def test_set_installation_requires_existing_or_updated_coordinates(monkeypatch) 
     )
 
     with pytest.raises(ValueError, match="latitude and longitude are required"):
-        hub_admin.set_installation(args, "https://hub.example:8443", "test-token")
+        hub_admin.set_installation(args, "https://hub.example", "test-token")

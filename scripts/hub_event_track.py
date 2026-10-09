@@ -464,7 +464,7 @@ def main() -> int:
     if not Path(args.ca).is_file():
         parser.error(f"CA file does not exist: {args.ca}")
 
-    base_url = f"https://{args.hub_host}:8443"
+    base_url = f"https://{args.hub_host}"
     try:
         observations = fetch_observations(base_url, args.ca, admin_token, args.node_id)
         nodes = fetch_nodes(base_url, args.ca, admin_token)

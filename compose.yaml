@@ -20,12 +20,15 @@ services:
       retries: 5
 
   dbmap-web:
+    image: dbmap-web:local
     build:
       context: ./web
     platform: linux/amd64
     restart: unless-stopped
     expose:
-      - "80"
+      - "443"
+    volumes:
+      - ./mqtt/certs:/certs:ro
 
   opa:
     image: openpolicyagent/opa:1.21.1
@@ -67,8 +70,6 @@ services:
         condition: service_healthy
       opa:
         condition: service_started
-    ports:
-      - "${DBMAP_LAN_IP:?Set DBMAP_LAN_IP in .env}:8443:8443"
     command:
       - uvicorn
       - app.main:app

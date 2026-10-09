@@ -194,7 +194,7 @@ def main() -> int:
     if not Path(args.ca).is_file():
         parser.error(f"CA file does not exist: {args.ca}")
 
-    base_url = f"https://{args.hub_host}:8443"
+    base_url = f"https://{args.hub_host}"
     try:
         if args.command == "list":
             nodes = request_json(base_url, args.ca, admin_token, "GET", "/api/v1/nodes")

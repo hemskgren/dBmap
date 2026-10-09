@@ -193,7 +193,7 @@ def main() -> int:
     if not Path(args.ca).is_file():
         parser.error(f"CA file does not exist: {args.ca}")
 
-    base_url = f"https://{args.hub_host}:8443"
+    base_url = f"https://{args.hub_host}"
     try:
         previous = fetch_snapshot(base_url, args.ca, admin_token)
         print_summary(previous)

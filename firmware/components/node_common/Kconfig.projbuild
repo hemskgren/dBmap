@@ -10,7 +10,7 @@ menu "dBmap node"
 
     config DBMAP_HUB_HTTP_URL
         string "Hub bootstrap base URL"
-        default "https://hub.local:8443"
+        default "https://hub.local"
 
     config DBMAP_BOOTSTRAP_TOKEN
         string "One-time bootstrap token (required for first provisioning)"

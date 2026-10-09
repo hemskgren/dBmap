@@ -299,7 +299,7 @@ def main() -> int:
     if not Path(args.ca).is_file():
         parser.error(f"CA file does not exist: {args.ca}")
 
-    args.api_url = f"https://{args.hub_host}:8443"
+    args.api_url = f"https://{args.hub_host}"
     credentials_path = Path(args.credentials_file)
     try:
         credentials = load_or_provision(args, admin_token)
