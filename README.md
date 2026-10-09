@@ -7,7 +7,7 @@ Distributed acoustic sensing, built around **hub-bootstrap** and **ESP-Output**.
 - The first hub profile is **LOCAL_MEDIUM** on an Intel mini-PC with `linux/amd64` containers; V0/V1 do not target Raspberry Pi.
 - `hub-bootstrap` owns node identity, one-time bootstrap tokens, desired/reported state, and initial MQTT telemetry ingestion.
 - ESP-Output supports NVS identity/configuration, Wi-Fi STA, HTTPS provisioning, MQTT hello/health/command/ack, and relay/audio stubs.
-- The broker uses TLS on port `8883`; the bootstrap API is reachable through Nginx over HTTPS on port `443`. Provisioned nodes receive unique MQTT credentials and topic-scoped permissions.
+- The broker uses TLS on port `8883`; the web UI and API are reached through Nginx over HTTPS on port `8443` by default. Provisioned nodes receive unique MQTT credentials and topic-scoped permissions.
 - The local stack includes a device overview at `/` behind Nginx. Separate local admin/viewer tokens control device-management actions and read-only device summaries; the API enforces those roles.
 - The API sends authenticated actions to OPA for authorization. OPA is private to the Compose network; if it cannot return a decision, protected API requests fail closed.
 

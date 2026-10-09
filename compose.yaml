@@ -34,11 +34,20 @@ services:
     image: openpolicyagent/opa:1.21.1
     platform: linux/amd64
     restart: unless-stopped
-    command: ["run", "--server", "--addr=0.0.0.0:8181", "/policies"]
+    command:
+      - run
+      - --server
+      - --addr=https://0.0.0.0:8181
+      - --tls-cert-file=/certs/opa.crt
+      - --tls-private-key-file=/certs/opa.key
+      - /policies
     expose:
       - "8181"
     volumes:
       - ./policy:/policies:ro
+      - ./mqtt/certs:/certs:ro
+    networks:
+      - opa-private
 
   nginx:
     build:
@@ -51,11 +60,15 @@ services:
       hub-bootstrap:
         condition: service_started
     ports:
-      - "${DBMAP_LAN_IP:?Set DBMAP_LAN_IP in .env}:443:443"
+      - "${DBMAP_LAN_IP:?Set DBMAP_LAN_IP in .env}:${DBMAP_HTTPS_PORT:-8443}:${DBMAP_HTTPS_PORT:-8443}"
+    environment:
+      DBMAP_HTTPS_PORT: ${DBMAP_HTTPS_PORT:-8443}
+      DBMAP_PUBLIC_BASE_PATH: ${DBMAP_PUBLIC_BASE_PATH:-}
+      NGINX_ENVSUBST_FILTER: ^DBMAP_HTTPS_PORT$|^DBMAP_PUBLIC_BASE_PATH$
     volumes:
       - ./mqtt/certs:/certs:ro
     healthcheck:
-      test: ["CMD-SHELL", "SSL_CERT_FILE=/certs/ca.crt wget -q -O /dev/null https://127.0.0.1/ >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "SSL_CERT_FILE=/certs/ca.crt wget -q -O /dev/null https://127.0.0.1:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/health >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -84,7 +97,8 @@ services:
     environment:
       DBMAP_ADMIN_TOKEN: ${DBMAP_ADMIN_TOKEN:?Set DBMAP_ADMIN_TOKEN in .env}
       DBMAP_VIEWER_TOKEN: ${DBMAP_VIEWER_TOKEN:?Set DBMAP_VIEWER_TOKEN in .env}
-      DBMAP_OPA_DECISION_URL: ${DBMAP_OPA_DECISION_URL:-http://opa:8181/v1/data/dbmap/authz/allow}
+      DBMAP_OPA_DECISION_URL: ${DBMAP_OPA_DECISION_URL:-https://opa:8181/v1/data/dbmap/authz/allow}
+      DBMAP_OPA_CA_FILE: /certs/ca.crt
       DBMAP_MQTT_HOST: mosquitto
       DBMAP_MQTT_PORT: "8883"
       DBMAP_MQTT_CA_FILE: /certs/ca.crt
@@ -99,6 +113,9 @@ services:
     volumes:
       - bootstrap-data:/data
       - ./mqtt/certs:/certs:ro
+    networks:
+      - default
+      - opa-private
     healthcheck:
       test: ["CMD", "python", "-c", "import ssl, urllib.request; urllib.request.urlopen('https://localhost:8443/health', context=ssl.create_default_context(cafile='/certs/ca.crt'))"]
       interval: 10s
@@ -108,3 +125,8 @@ services:
 volumes:
   mosquitto-data:
   bootstrap-data:
+
+networks:
+  default:
+  opa-private:
+    internal: true
