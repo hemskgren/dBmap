@@ -245,6 +245,31 @@ def print_human_status(status: dict[str, Any]) -> None:
     for name, state in component_states(status).items():
         print(f"  • {name}: {state.replace('_', ' ').capitalize()}")
 
+    summary = status.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
+    print("\nDevices")
+    print(f"  Registered: {summary.get('device_count', 'Not reported')}")
+    print(f"  Online:     {summary.get('online_device_count', 'Not reported')}")
+    for label, field in (
+        ("By type", "devices_by_type"),
+        ("Lifecycle", "devices_by_lifecycle"),
+        ("Availability", "devices_by_availability"),
+    ):
+        counts = summary.get(field)
+        print(f"  {label}:")
+        if isinstance(counts, dict) and counts:
+            for name, count in sorted(counts.items()):
+                print(f"    • {name}: {count}")
+        else:
+            print("    • None")
+    print("  Installation:")
+    print(f"    • Completed: {summary.get('installation_completed_count', 'Not reported')}")
+    print(
+        "    • Missing, incomplete, or invalid: "
+        f"{summary.get('installation_incomplete_count', 'Not reported')}"
+    )
+
 
 def status_changes(previous: dict[str, Any], current: dict[str, Any]) -> list[str]:
     old_states = component_states(previous)

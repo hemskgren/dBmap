@@ -335,7 +335,7 @@ uv run --project hub/bootstrap python scripts/hub_summary.py \
   --hub-host "$DBMAP_LAN_IP"
 ```
 
-The default output shows the Hub mode, Hub ID, and one status line each for Hub API, Database, Policy engine, and MQTT broker. Use `--output json` for machine-readable output from the Hub status endpoint. Add `--watch` to poll service statuses every 15 seconds; text mode reports only changes, while JSON mode emits one JSON object per poll. Use `--interval-seconds 30` to change the interval. Component details such as broker metrics remain available on demand in the web UI. Stop watch mode with `Ctrl+C`.
+The default output shows the Hub mode and ID, one status line each for Hub API, Database, Policy engine, and MQTT broker, and a concise device summary with counts by type, lifecycle, availability, and installation state. Use `--output json` for machine-readable output from the Hub status endpoint. Add `--watch` to poll service statuses every 15 seconds; text mode reports service changes, while JSON mode emits one JSON object per poll. Use `--interval-seconds 30` to change the interval. Component details such as broker metrics remain available on demand in the web UI. Stop watch mode with `Ctrl+C`.
 
 ### Explore observation source hints
 
