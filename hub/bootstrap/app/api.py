@@ -1,12 +1,16 @@
+from collections import Counter
 from dataclasses import dataclass
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from app import policy, service
 from app.config import settings
 from app.db import get_db
 from app.ids import timing_safe_eq
+from app.mqtt_listener import get_broker_metrics, is_connected
 from app.mqtt_security import MqttSecurityError
 from app.policy import PolicyUnavailable
 from app.schemas import (
@@ -103,6 +107,104 @@ def list_devices(db: Session = Depends(get_db)) -> list[DeviceSummaryView]:
         )
         for node in nodes
     ]
+
+
+@router.get(
+    "/api/v1/hub/status",
+    dependencies=[Depends(require_policy("hub.status.read", "hub"))],
+)
+def get_hub_status(db: Session = Depends(get_db)) -> dict:
+    db.execute(text("SELECT 1"))
+    nodes = service.list_nodes(db)
+    observations = service.list_observations(db, None, 500)
+    if not settings.mqtt_enabled:
+        mqtt_status = "disabled"
+    else:
+        mqtt_status = "online" if is_connected() else "offline"
+    installation_completed_count = sum(node.installation is not None for node in nodes)
+    return {
+        "mode": "Local Hub",
+        "hub_id": settings.site_id,
+        "components": [
+            {"name": "Hub API", "status": "online"},
+            {"name": "Database", "status": "online"},
+            {"name": "Policy engine", "status": "online"},
+            {"name": "MQTT broker", "status": mqtt_status},
+        ],
+        "summary": {
+            "device_count": len(nodes),
+            "devices_by_type": dict(sorted(Counter(node.node_type for node in nodes).items())),
+            "devices_by_lifecycle": dict(
+                sorted(Counter(node.lifecycle_state for node in nodes).items())
+            ),
+            "devices_by_availability": dict(
+                sorted(Counter(node.availability for node in nodes).items())
+            ),
+            "online_device_count": sum(node.status == "online" for node in nodes),
+            "installation_completed_count": installation_completed_count,
+            "installation_incomplete_count": len(nodes) - installation_completed_count,
+            "observation_count": len(observations),
+            "observation_limit": 500,
+            "latest_observation_at": max(
+                (item.received_time_utc.isoformat() for item in observations), default=None
+            ),
+        },
+    }
+
+
+@router.get(
+    "/api/v1/hub/components/{component}/details",
+    dependencies=[Depends(require_policy("hub.status.read", "hub"))],
+)
+def get_hub_component_details(component: str, db: Session = Depends(get_db)) -> dict:
+    if component == "hub-api":
+        return {
+            "service": "Hub API",
+            "status": "online",
+            "api_version": "v1",
+            "listener": "HTTPS on port 8443 inside the Compose network",
+            "browser_route": "HTTPS through Nginx",
+        }
+    if component == "opa":
+        return policy.health_summary()
+    if component == "mosquitto":
+        return {
+            "service": "Mosquitto broker",
+            "status": "disabled" if not settings.mqtt_enabled else "online" if is_connected() else "offline",
+            "connected": is_connected(),
+            **get_broker_metrics(),
+        }
+    if component != "database":
+        raise HTTPException(status_code=404, detail="unknown Hub component")
+
+    bind = db.get_bind()
+    details: dict = {
+        "service": "Database",
+        "status": "online",
+        "engine": bind.dialect.name,
+        "driver": bind.dialect.driver,
+        "tables": [],
+    }
+    if bind.dialect.name == "sqlite":
+        details["version"] = db.execute(text("SELECT sqlite_version()")).scalar_one()
+        page_count = db.execute(text("PRAGMA page_count")).scalar_one()
+        page_size = db.execute(text("PRAGMA page_size")).scalar_one()
+        free_pages = db.execute(text("PRAGMA freelist_count")).scalar_one()
+        details["allocated_size_bytes"] = page_count * page_size
+        details["free_size_bytes"] = free_pages * page_size
+        database_path = bind.url.database
+        if database_path and database_path != ":memory:":
+            try:
+                details["file_size_bytes"] = Path(database_path).stat().st_size
+            except OSError:
+                details["file_size_bytes"] = None
+
+    inspector = inspect(bind)
+    for table_name in sorted(inspector.get_table_names()):
+        quoted_name = bind.dialect.identifier_preparer.quote(table_name)
+        row_count = db.execute(text(f"SELECT COUNT(*) FROM {quoted_name}")).scalar_one()
+        details["tables"].append({"name": table_name, "rows": row_count})
+    return details
 
 
 @router.post("/api/v1/nodes", response_model=CreateNodeResponse, dependencies=[Depends(require_policy("nodes.create", "nodes"))])

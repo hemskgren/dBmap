@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>dBmap devices</title>
+    <title>dBmap Local Hub</title>
     <style>
       :root {
         color-scheme: light;
@@ -45,6 +45,7 @@
       button.secondary { color: #183153; background: #e6edf7; }
       button.danger { background: #a83232; }
       button:disabled { cursor: wait; opacity: 0.65; }
+      .button-link { display: inline-block; border-radius: 7px; padding: 0.62rem 0.9rem; color: #fff; background: #2457a7; font-weight: 600; text-decoration: none; }
       .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
       .toolbar h2 { margin: 0; }
       section { padding: 1.25rem; min-width: 0; }
@@ -62,6 +63,28 @@
       .online { color: #157347; font-weight: 700; }
       .offline { color: #a83232; font-weight: 700; }
       .actions { display: flex; gap: 0.5rem; margin-top: 0.85rem; }
+      .tab-list { display: flex; gap: 0.45rem; overflow-x: auto; margin: 0 0 1rem; padding-bottom: 0.35rem; }
+      .tab-list button { flex: 0 0 auto; color: #183153; background: #e6edf7; }
+      .tab-list button[aria-selected="true"] { color: #fff; background: #2457a7; }
+      .overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.8rem; margin-bottom: 1rem; }
+      .hub-identity { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .overview-card { padding: 1rem; border: 1px solid #d8e0eb; border-radius: 10px; background: #fff; }
+      .overview-card span { display: block; color: #526078; font-size: 0.88rem; }
+      .overview-card strong { display: block; margin-top: 0.35rem; font-size: 1.3rem; overflow-wrap: anywhere; }
+      .component-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; }
+      .component { display: flex; justify-content: space-between; gap: 1rem; padding: 0.8rem; border: 1px solid #e3e9f1; border-radius: 8px; }
+      .component-status { font-weight: 700; text-transform: capitalize; }
+      .component-status.online { color: #157347; }
+      .component-status.offline, .component-status.error { color: #a83232; }
+      .component-status.unknown, .component-status.disabled { color: #526078; }
+      .espconnect-callout { max-width: 780px; }
+      .espconnect-callout .actions { flex-wrap: wrap; }
+      .distance-list { display: grid; gap: 0.45rem; padding-left: 1.25rem; }
+      .observation-list { display: grid; gap: 0.8rem; }
+      .observation-item { padding: 0.9rem; border: 1px solid #e3e9f1; border-radius: 8px; }
+      .observation-item summary { cursor: pointer; font-weight: 600; }
+      .observation-item pre { max-height: 28rem; }
+      #component-details { margin-top: 0.8rem; padding: 1rem; border: 1px solid #d8e0eb; border-radius: 8px; }
       .notice { min-height: 1.5rem; margin: 0.6rem 0; color: #526078; }
       .error { color: #a83232; }
       #create-panel { display: flex; align-items: end; gap: 0.6rem; margin: 1rem 0; }
@@ -71,7 +94,7 @@
       #installation-form .actions { grid-column: 1 / -1; }
       [hidden] { display: none !important; }
       @media (max-width: 760px) {
-        .detail-grid, #installation-form { grid-template-columns: 1fr; }
+        .detail-grid, #installation-form, .overview-grid, .component-list { grid-template-columns: 1fr; }
         #installation-form .actions { grid-column: auto; }
         .toolbar { align-items: flex-start; }
         #create-panel { align-items: stretch; flex-direction: column; }
@@ -83,7 +106,7 @@
     <header>
       <div>
         <h1>dBmap</h1>
-        <p>Local device overview</p>
+        <p>Local Hub</p>
       </div>
       <div id="user-controls" hidden>
         <span id="role-label"></span>
@@ -102,36 +125,100 @@
         </form>
       </section>
       <div id="dashboard" hidden>
-        <div class="toolbar">
-          <div>
-            <h2>Devices</h2>
-            <p id="refresh-status" class="notice" aria-live="polite"></p>
+        <nav class="tab-list" role="tablist" aria-label="Hub sections">
+          <button id="tab-button-hub" type="button" role="tab" aria-selected="true" aria-controls="tab-hub" data-tab="hub">Hub</button>
+          <button id="tab-button-devices" type="button" role="tab" aria-selected="false" aria-controls="tab-devices" data-tab="devices">Devices</button>
+          <button id="tab-button-observations" type="button" role="tab" aria-selected="false" aria-controls="tab-observations" data-tab="observations">Observations</button>
+          <button id="tab-button-espconnect" type="button" role="tab" aria-selected="false" aria-controls="tab-espconnect" data-tab="espconnect">ESPConnect</button>
+        </nav>
+        <section id="tab-hub" role="tabpanel" aria-labelledby="tab-button-hub">
+          <div class="toolbar">
+            <div>
+              <h2>Hub overview</h2>
+              <p id="hub-refresh-status" class="notice" aria-live="polite">Loading Hub status…</p>
+            </div>
+            <button id="refresh-hub" class="secondary" type="button">Refresh</button>
           </div>
-          <button id="refresh" class="secondary" type="button">Refresh</button>
-        </div>
-        <section id="admin-panel" hidden>
-          <h2>Local administration</h2>
-          <form id="create-panel">
-            <label for="node-type">Register device
-              <select id="node-type">
-                <option value="ear">Ear</option>
-                <option value="output">Output</option>
-              </select>
-            </label>
-            <button type="submit">Create device</button>
-          </form>
-          <div id="created-token" hidden role="status"></div>
+          <div class="overview-grid hub-identity" aria-live="polite">
+            <article class="overview-card"><span>Mode</span><strong id="hub-mode">Loading…</strong></article>
+            <article class="overview-card"><span>Hub ID</span><strong id="hub-id">—</strong></article>
+          </div>
+          <section>
+            <h3>Components</h3>
+            <div id="component-list" class="component-list" aria-live="polite"><p class="notice">Checking Hub components…</p></div>
+            <div id="component-details" hidden></div>
+          </section>
         </section>
-        <section>
-          <h2>Device list</h2>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Device</th><th>Type</th><th>Status</th><th>Lifecycle</th><th>Location</th><th></th></tr></thead>
-              <tbody id="device-list" aria-live="polite"></tbody>
-            </table>
+        <section id="tab-devices" role="tabpanel" aria-labelledby="tab-button-devices" hidden>
+          <div class="toolbar">
+            <div><h2>Devices</h2><p id="refresh-status" class="notice" aria-live="polite"></p></div>
+            <button id="refresh" class="secondary" type="button">Refresh</button>
+          </div>
+          <div class="overview-grid" aria-live="polite">
+            <article class="overview-card"><span>Registered devices</span><strong id="hub-device-count">—</strong></article>
+            <article class="overview-card"><span>Devices online</span><strong id="hub-online-count">—</strong></article>
+          </div>
+          <section>
+            <h3>Device state summary</h3>
+            <dl id="hub-device-state" class="meta"><dt>Lifecycle</dt><dd>Loading…</dd><dt>Availability</dt><dd>Loading…</dd></dl>
+            <h3>Installation summary</h3>
+            <dl id="hub-installation-summary" class="meta"><dt>Completed</dt><dd>Loading…</dd><dt>Missing, incomplete, or invalid installations</dt><dd>Loading…</dd></dl>
+          </section>
+          <section id="admin-panel" hidden>
+            <h2>Local administration</h2>
+            <form id="create-panel">
+              <label for="node-type">Register device
+                <select id="node-type">
+                  <option value="ear">Ear</option>
+                  <option value="output">Output</option>
+                </select>
+              </label>
+              <button type="submit">Create device</button>
+            </form>
+            <div id="created-token" hidden role="status"></div>
+          </section>
+          <section>
+            <h2>Device list</h2>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Device</th><th>Type</th><th>Status</th><th>Lifecycle</th><th>Location</th><th></th></tr></thead>
+                <tbody id="device-list" aria-live="polite"></tbody>
+              </table>
+            </div>
+          </section>
+          <section id="device-detail" hidden aria-live="polite"></section>
+        </section>
+        <section id="tab-observations" role="tabpanel" aria-labelledby="tab-button-observations" hidden>
+          <div class="toolbar">
+            <div><h2>Observations</h2><p id="observation-refresh-status" class="notice" aria-live="polite"></p></div>
+            <button id="refresh-observations" class="secondary" type="button">Refresh</button>
+          </div>
+          <div class="overview-grid hub-identity" aria-live="polite">
+            <article class="overview-card"><span>Recent observations</span><strong id="hub-observation-count">—</strong></article>
+            <article class="overview-card"><span>Latest observation</span><strong id="latest-observation-card">—</strong></article>
+          </div>
+          <section>
+            <h3>Ear installation distances (site context only; not source associations):</h3>
+            <p id="distance-note" class="notice">Loading Ear installation sites…</p>
+            <ul id="ear-distance-list" class="distance-list"></ul>
+          </section>
+          <section>
+            <h3>Latest observation JSON</h3>
+            <div id="observation-list" class="observation-list" aria-live="polite"><p class="notice">Loading observations…</p></div>
+          </section>
+        </section>
+        <section id="tab-espconnect" role="tabpanel" aria-labelledby="tab-button-espconnect" hidden>
+          <div class="espconnect-callout">
+            <h2>ESPConnect</h2>
+            <p>ESPConnect v1.1.23 is hosted as static files on this Hub. It can inspect supported ESP32 and ESP8266 boards over USB, including device and chip information, without loading the app from the internet.</p>
+            <p>ESPConnect accesses the USB serial device directly from your browser. Use a Chromium-based browser, connect the board to this computer with a data-capable USB cable, then grant access when prompted. Close other serial tools first.</p>
+            <div class="actions">
+              <a id="espconnect-link" class="button-link" href="/espconnect/" target="_blank" rel="noopener noreferrer">Open ESPConnect v1.1.23 in a new window</a>
+              <a href="https://github.com/thelastoutpostworkshop/ESPConnect/releases/tag/v1.1.23" target="_blank" rel="noopener noreferrer">ESPConnect v1.1.23 release notes</a>
+            </div>
+            <p class="notice">The board inspection runs locally in your browser. dBmap does not send ESPConnect your Hub access token or automatically register the detected board; linking device inspection to the registration form is a later step. Release notes and help links still require internet.</p>
           </div>
         </section>
-        <section id="device-detail" hidden aria-live="polite"></section>
       </div>
     </main>
     <script>
@@ -139,7 +226,23 @@
       let currentRole = '';
       let refreshTimer;
       let selectedDeviceId = '';
+      let activeTabName = 'hub';
+      let openComponentDetail = '';
       const publicBasePath = document.querySelector('meta[name="dbmap-base-path"]')?.content || '';
+      const espconnectLink = document.getElementById('espconnect-link');
+      espconnectLink.href = `${publicBasePath}/espconnect/`.replace(/\/{2,}/g, '/');
+      espconnectLink.addEventListener('click', (event) => {
+        const windowRef = window.open(
+          espconnectLink.href,
+          'dbmap-espconnect',
+          'popup,width=1280,height=900,resizable=yes,scrollbars=yes',
+        );
+        if (windowRef) {
+          event.preventDefault();
+          windowRef.opener = null;
+          windowRef.focus();
+        }
+      });
 
       async function api(path, options = {}) {
         const headers = new Headers(options.headers || {});
@@ -162,6 +265,269 @@
         if (!value) return 'Never';
         const date = new Date(value);
         return Number.isNaN(date.getTime()) ? 'Unknown' : date.toLocaleString();
+      }
+
+      const EARTH_RADIUS_M = 6371000;
+      function installationDistanceM(first, second) {
+        if (!first || !second) return null;
+        const values = [first.latitude, first.longitude, second.latitude, second.longitude].map(Number);
+        if (!values.every(Number.isFinite) || Math.abs(values[0]) > 90 || Math.abs(values[2]) > 90 || Math.abs(values[1]) > 180 || Math.abs(values[3]) > 180) return null;
+        const radians = (degrees) => degrees * Math.PI / 180;
+        const [lat1, lon1, lat2, lon2] = values.map(radians);
+        const latDelta = lat2 - lat1;
+        const lonDelta = lon2 - lon1;
+        const a = Math.sin(latDelta / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(lonDelta / 2) ** 2;
+        return EARTH_RADIUS_M * 2 * Math.asin(Math.sqrt(Math.min(1, a)));
+      }
+
+      function hasValidInstallation(device) {
+        return installationDistanceM(device.installation, device.installation) !== null;
+      }
+
+      async function refreshSiteDistances() {
+        const note = document.getElementById('distance-note');
+        const list = document.getElementById('ear-distance-list');
+        list.replaceChildren();
+        note.className = 'notice';
+        try {
+          const devices = await api('/api/v1/devices');
+          const ears = devices.filter((device) => device.node_type === 'ear').sort((a, b) => a.node_id.localeCompare(b.node_id));
+          const installedEars = ears.filter(hasValidInstallation);
+          if (installedEars.length < 2) {
+            note.textContent = ears.length
+              ? `${installedEars.length} of ${ears.length} registered Ears have completed installations; at least two are needed to compare installation sites.`
+              : 'No Ear devices are registered.';
+            return;
+          }
+          const distances = [];
+          for (let first = 0; first < installedEars.length; first += 1) {
+            for (let second = first + 1; second < installedEars.length; second += 1) {
+              distances.push({ first: installedEars[first].node_id, second: installedEars[second].node_id, distance: installationDistanceM(installedEars[first].installation, installedEars[second].installation) });
+            }
+          }
+          const available = distances.sort((a, b) => a.distance - b.distance);
+          if (ears.length < 10) {
+            note.textContent = `${installedEars.length} of ${ears.length} registered Ears have completed installations; showing pairwise installation-site distances for completed installations.`;
+            for (const pair of distances) {
+              list.append(el('li', `${pair.first} ↔ ${pair.second}: ${Math.round(pair.distance)} m`));
+            }
+          } else {
+            const shortest = available[0];
+            const longest = available[available.length - 1];
+            note.textContent = `${ears.length} registered Ears; showing only the shortest and longest valid distances. Use scripts/hub_event_track.py for detailed site analysis.`;
+            list.append(el('li', `Shortest: ${shortest.first} ↔ ${shortest.second}: ${Math.round(shortest.distance)} m`));
+            list.append(el('li', `Longest: ${longest.first} ↔ ${longest.second}: ${Math.round(longest.distance)} m`));
+          }
+        } catch (error) {
+          note.textContent = error.message;
+          note.className = 'notice error';
+        }
+      }
+
+      async function refreshObservations() {
+        const status = document.getElementById('observation-refresh-status');
+        const list = document.getElementById('observation-list');
+        status.textContent = 'Loading latest observations…';
+        status.className = 'notice';
+        list.replaceChildren();
+        try {
+          const observations = await api('/api/v1/observations?limit=100');
+          document.getElementById('hub-observation-count').textContent = `${observations.length} / 100`;
+          document.getElementById('latest-observation-card').textContent = observations.length ? formatSeen(observations[0].received_time_utc) : 'None';
+          if (!observations.length) list.append(el('p', 'No observations have been received yet.', 'notice'));
+          for (const observation of observations) {
+            const item = el('details', undefined, 'observation-item');
+            item.append(
+              el('summary', `${observation.node_id} · ${formatSeen(observation.event_time_utc)} · ${observation.observation_id}`),
+              el('pre', JSON.stringify(observation, null, 2)),
+            );
+            list.append(item);
+          }
+          status.textContent = `Showing ${observations.length} most recent observation${observations.length === 1 ? '' : 's'} (maximum 100). Updated ${new Date().toLocaleTimeString()}.`;
+        } catch (error) {
+          document.getElementById('hub-observation-count').textContent = '—';
+          document.getElementById('latest-observation-card').textContent = '—';
+          list.append(el('p', error.message, 'notice error'));
+          status.textContent = 'Could not load observations.';
+          status.className = 'notice error';
+        }
+        await refreshSiteDistances();
+      }
+
+      function formatCounts(counts) {
+        const entries = Object.entries(counts || {});
+        return entries.length ? entries.map(([name, count]) => `${name}: ${count}`).join(' · ') : 'None';
+      }
+
+      function formatBytes(value) {
+        if (value === null || value === undefined) return 'Not yet reported';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let amount = value;
+        let unit = 0;
+        while (amount >= 1024 && unit < units.length - 1) {
+          amount /= 1024;
+          unit += 1;
+        }
+        return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+      }
+
+      function renderHubStatus(status) {
+        const summary = status.summary;
+        document.getElementById('hub-mode').textContent = status.mode || 'Unknown';
+        document.getElementById('hub-id').textContent = status.hub_id || 'Not set';
+        document.getElementById('hub-device-count').textContent = String(summary.device_count);
+        document.getElementById('hub-online-count').textContent = String(summary.online_device_count);
+        document.getElementById('hub-installation-summary').replaceChildren(
+          el('dt', 'Completed'),
+          el('dd', String(summary.installation_completed_count)),
+          el('dt', 'Missing, incomplete, or invalid installations'),
+          el('dd', String(summary.installation_incomplete_count)),
+        );
+        const components = document.getElementById('component-list');
+        components.replaceChildren();
+        for (const component of status.components) {
+          const row = el('div', undefined, 'component');
+          row.append(el('span', component.name));
+          const state = el('span', component.status, `component-status ${component.status}`);
+          row.append(state);
+          const detailsKey = {
+            'Hub API': 'hub-api',
+            Database: 'database',
+            'Policy engine': 'opa',
+            'MQTT broker': 'mosquitto',
+          }[component.name];
+          if (detailsKey) {
+            const button = el('button', openComponentDetail === detailsKey ? 'Hide details' : 'Details', 'secondary');
+            button.type = 'button';
+            button.dataset.detailComponent = detailsKey;
+            button.addEventListener('click', () => toggleComponentDetails(detailsKey));
+            row.append(button);
+          }
+          components.append(row);
+        }
+        const deviceState = document.getElementById('hub-device-state');
+        deviceState.replaceChildren();
+        addDetailField(deviceState, 'Lifecycle', formatCounts(summary.devices_by_lifecycle));
+        addDetailField(deviceState, 'Availability', formatCounts(summary.devices_by_availability));
+        addDetailField(deviceState, 'Device types', formatCounts(summary.devices_by_type));
+        const updated = new Date().toLocaleTimeString();
+        const statusLine = document.getElementById('hub-refresh-status');
+        statusLine.textContent = `Updated ${updated}`;
+        statusLine.className = 'notice';
+      }
+
+      function renderComponentDetails(component, details) {
+        const panel = document.getElementById('component-details');
+        panel.replaceChildren();
+        const heading = el('h4', `${details.service} details`);
+        panel.append(heading);
+        const metadata = el('dl', undefined, 'meta');
+        if (component === 'database') {
+          for (const [label, value] of [
+            ['Status', details.status], ['Engine', details.engine], ['Driver', details.driver],
+            ['Version', details.version], ['Database file size', details.file_size_bytes === undefined ? null : formatBytes(details.file_size_bytes)],
+            ['Allocated pages', details.allocated_size_bytes === undefined ? null : formatBytes(details.allocated_size_bytes)],
+            ['Free pages', details.free_size_bytes === undefined ? null : formatBytes(details.free_size_bytes)],
+          ]) addDetailField(metadata, label, value);
+          panel.append(metadata);
+          const table = el('table');
+          const header = el('tr');
+          header.append(el('th', 'Table'), el('th', 'Rows'));
+          const head = el('thead');
+          head.append(header);
+          const body = el('tbody');
+          for (const item of details.tables || []) {
+            const row = el('tr');
+            row.append(el('td', item.name), el('td', String(item.rows)));
+            body.append(row);
+          }
+          table.append(head, body);
+          const wrap = el('div', undefined, 'table-wrap');
+          wrap.append(table);
+          panel.append(el('h4', 'Table row counts'), wrap);
+        } else if (component === 'hub-api') {
+          for (const [label, value] of [
+            ['Status', details.status], ['API version', details.api_version],
+            ['Internal listener', details.listener], ['Browser route', details.browser_route],
+          ]) addDetailField(metadata, label, value);
+          panel.append(metadata);
+        } else if (component === 'mosquitto') {
+          for (const [label, value] of [
+            ['Status', details.status], ['Connected clients', details.connected_clients],
+            ['Registered client sessions', details.total_client_sessions],
+            ['Traffic received', formatBytes(details.bytes_received)],
+            ['Traffic sent', formatBytes(details.bytes_sent)],
+            ['Broker uptime', details.uptime], ['Broker version', details.version],
+            ['Statistics received', formatSeen(details.updated_at)],
+          ]) addDetailField(metadata, label, value);
+          panel.append(metadata);
+        } else {
+          for (const [label, value] of [
+            ['Status', details.status], ['Endpoint security', details.endpoint_scheme?.toUpperCase()],
+            ['Decision endpoint', details.decision_endpoint], ['Health check', details.health_check], ['HTTP status', details.http_status],
+            ['Plugin health', details.plugin_health], ['Message', details.message],
+          ]) addDetailField(metadata, label, value);
+          panel.append(metadata);
+        }
+      }
+
+      async function toggleComponentDetails(component) {
+        const panel = document.getElementById('component-details');
+        if (openComponentDetail === component && !panel.hidden) {
+          panel.hidden = true;
+          openComponentDetail = '';
+          document.querySelectorAll('[data-detail-component]').forEach((button) => {
+            button.textContent = 'Details';
+          });
+          return;
+        }
+        openComponentDetail = component;
+        document.querySelectorAll('[data-detail-component]').forEach((button) => {
+          button.textContent = button.dataset.detailComponent === component ? 'Hide details' : 'Details';
+        });
+        panel.hidden = false;
+        panel.replaceChildren(el('p', 'Loading details…', 'notice'));
+        try {
+          const details = await api(`/api/v1/hub/components/${component}/details`);
+          if (openComponentDetail === component) renderComponentDetails(component, details);
+        } catch (error) {
+          if (openComponentDetail === component) panel.replaceChildren(el('p', error.message, 'notice error'));
+        }
+      }
+
+      async function refreshHubStatus() {
+        const statusLine = document.getElementById('hub-refresh-status');
+        try {
+          renderHubStatus(await api('/api/v1/hub/status'));
+        } catch (error) {
+          document.getElementById('hub-mode').textContent = 'Unavailable';
+          document.getElementById('hub-id').textContent = '—';
+          document.getElementById('hub-device-count').textContent = '—';
+          document.getElementById('hub-online-count').textContent = '—';
+          document.getElementById('hub-device-state').replaceChildren();
+          document.getElementById('hub-installation-summary').replaceChildren();
+          document.getElementById('component-list').replaceChildren(el('p', error.message, 'notice error'));
+          statusLine.textContent = 'Could not load Hub status.';
+          statusLine.className = 'notice error';
+        }
+      }
+
+      function setActiveTab(tabName, updateLocation = true) {
+        const knownTabs = ['hub', 'devices', 'observations', 'espconnect'];
+        const activeTab = knownTabs.includes(tabName) ? tabName : 'hub';
+        activeTabName = activeTab;
+        for (const name of knownTabs) {
+          const selected = name === activeTab;
+          document.getElementById(`tab-button-${name}`).setAttribute('aria-selected', String(selected));
+          document.getElementById(`tab-button-${name}`).tabIndex = selected ? 0 : -1;
+          document.getElementById(`tab-${name}`).hidden = !selected;
+        }
+        if (updateLocation && window.location.hash !== `#${activeTab}`) {
+          window.history.replaceState(null, '', `#${activeTab}`);
+        }
+        if (activeTab === 'hub' || activeTab === 'devices') refreshHubStatus();
+        if (activeTab === 'devices') refreshDevices();
+        if (activeTab === 'observations') refreshObservations();
       }
 
       function renderDevices(devices) {
@@ -200,7 +566,7 @@
                   method: 'PUT',
                   body: JSON.stringify({ lifecycle_state }),
                 });
-                await refreshDevices();
+                await Promise.all([refreshDevices(), refreshHubStatus()]);
                 if (selectedDeviceId === device.node_id) await loadDeviceDetail(device.node_id);
               } catch (error) {
                 showStatus(error.message, true);
@@ -344,7 +710,7 @@
                 method: 'PUT', body: JSON.stringify(values),
               });
               renderDeviceDetail(updated);
-              await refreshDevices();
+              await Promise.all([refreshDevices(), refreshHubStatus()]);
               showStatus(`Installation updated for ${device.node_id}`);
             } catch (error) {
               message.textContent = error.message;
@@ -389,8 +755,12 @@
         document.getElementById('role-label').textContent = `${role} access`;
         selectedDeviceId = '';
         document.getElementById('device-detail').hidden = true;
-        refreshDevices();
-        refreshTimer = window.setInterval(refreshDevices, 30000);
+        setActiveTab('hub');
+        refreshTimer = window.setInterval(() => {
+          refreshHubStatus();
+          if (activeTabName === 'observations') refreshObservations();
+          else refreshDevices();
+        }, 30000);
       }
 
       document.getElementById('login-form').addEventListener('submit', async (event) => {
@@ -433,7 +803,7 @@
             el('code', created.bootstrap_token),
           );
           tokenBox.hidden = false;
-          await refreshDevices();
+          await Promise.all([refreshDevices(), refreshHubStatus()]);
         } catch (error) {
           showStatus(error.message, true);
         } finally {
@@ -441,12 +811,37 @@
         }
       });
 
-      document.getElementById('refresh').addEventListener('click', refreshDevices);
+      document.getElementById('refresh').addEventListener('click', () => {
+        refreshDevices();
+        refreshHubStatus();
+      });
+      document.getElementById('refresh-hub').addEventListener('click', refreshHubStatus);
+      document.getElementById('refresh-observations').addEventListener('click', refreshObservations);
+      document.querySelectorAll('[data-tab]').forEach((button) => {
+        button.addEventListener('click', () => setActiveTab(button.dataset.tab));
+        button.addEventListener('keydown', (event) => {
+          const buttons = [...document.querySelectorAll('[data-tab]')];
+          const index = buttons.indexOf(button);
+          let nextIndex;
+          if (event.key === 'ArrowRight') nextIndex = (index + 1) % buttons.length;
+          else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + buttons.length) % buttons.length;
+          else if (event.key === 'Home') nextIndex = 0;
+          else if (event.key === 'End') nextIndex = buttons.length - 1;
+          else return;
+          event.preventDefault();
+          buttons[nextIndex].focus();
+          setActiveTab(buttons[nextIndex].dataset.tab);
+        });
+      });
+      window.addEventListener('hashchange', () => {
+        if (!document.getElementById('dashboard').hidden) setActiveTab(window.location.hash.slice(1), false);
+      });
       document.getElementById('logout').addEventListener('click', () => {
         window.clearInterval(refreshTimer);
         authToken.value = '';
         currentRole = '';
         document.getElementById('dashboard').hidden = true;
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
         document.getElementById('admin-panel').hidden = true;
         document.getElementById('user-controls').hidden = true;
         const createdToken = document.getElementById('created-token');

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import os
 import ssl
 import sys
@@ -44,13 +45,34 @@ def fetch_snapshot(base_url: str, ca_file: str, admin_token: str) -> dict[str, A
         admin_token,
         "/api/v1/observations?" + urllib.parse.urlencode({"limit": 500}),
     )
+    broker = api_get(
+        base_url,
+        ca_file,
+        admin_token,
+        "/api/v1/hub/components/mosquitto/details",
+    )
     if not isinstance(nodes, list) or not all(isinstance(node, dict) for node in nodes):
         raise HubApiError("hub returned an invalid node list")
     if not isinstance(observations, list) or not all(
         isinstance(observation, dict) for observation in observations
     ):
         raise HubApiError("hub returned an invalid observation list")
-    return {"nodes": nodes, "observations": observations}
+    if not isinstance(broker, dict):
+        raise HubApiError("hub returned invalid Mosquitto details")
+    return {"nodes": nodes, "observations": observations, "broker": broker}
+
+
+def fetch_status(base_url: str, ca_file: str, admin_token: str) -> dict[str, Any]:
+    status = api_get(base_url, ca_file, admin_token, "/api/v1/hub/status")
+    if not isinstance(status, dict):
+        raise HubApiError("hub returned an invalid status response")
+    components = status.get("components")
+    if not isinstance(components, list) or not all(
+        isinstance(component, dict) and "name" in component and "status" in component
+        for component in components
+    ):
+        raise HubApiError("hub returned an invalid component status list")
+    return status
 
 
 def summarize(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -59,6 +81,11 @@ def summarize(snapshot: dict[str, Any]) -> dict[str, Any]:
     node_types = Counter(node.get("node_type", "unknown") for node in nodes)
     lifecycle_states = Counter(node.get("lifecycle_state", "active") for node in nodes)
     node_states = Counter(node.get("availability", "unknown") for node in nodes)
+    installation_completed_count = sum(
+        isinstance(node.get("installation"), dict)
+        and _valid_installation(node["installation"])
+        for node in nodes
+    )
     observations_by_node = Counter(
         observation.get("node_id", "unknown") for observation in observations
     )
@@ -70,16 +97,20 @@ def summarize(snapshot: dict[str, Any]) -> dict[str, Any]:
         (observation.get("received_time_utc", "") for observation in observations),
         default=None,
     )
+    broker = snapshot.get("broker", {})
     return {
         "node_count": len(nodes),
         "nodes_by_type": dict(sorted(node_types.items())),
         "nodes_by_lifecycle_state": dict(sorted(lifecycle_states.items())),
         "nodes_by_availability": dict(sorted(node_states.items())),
+        "installation_completed_count": installation_completed_count,
+        "installation_incomplete_count": len(nodes) - installation_completed_count,
         "observation_count": len(observations),
         "observations_by_node": dict(sorted(observations_by_node.items())),
         "observations_by_simulated_source": dict(sorted(observations_by_source.items())),
         "latest_received_time_utc": latest_received,
         "observation_limit": 500,
+        "broker": broker,
     }
 
 
@@ -91,12 +122,43 @@ def node_signature(node: dict[str, Any]) -> tuple[Any, ...]:
         node.get("lifecycle_state", "active"),
         node.get("availability"),
         node.get("pending_configuration_change"),
+        _installation_signature(node.get("installation")),
         node.get("desired"),
         node.get("reported", {}).get("firmware_version"),
         node.get("reported", {}).get("config_version"),
         node.get("reported", {}).get("calibration_version"),
         node.get("reported", {}).get("classifier_version"),
     )
+
+
+def _valid_installation(installation: dict[str, Any]) -> bool:
+    try:
+        latitude = float(installation.get("latitude"))
+        longitude = float(installation.get("longitude"))
+    except (TypeError, ValueError):
+        return False
+    return (
+        math.isfinite(latitude)
+        and math.isfinite(longitude)
+        and abs(latitude) <= 90
+        and abs(longitude) <= 180
+    )
+
+
+def _installation_signature(installation: Any) -> tuple[Any, ...] | None:
+    if not isinstance(installation, dict):
+        return None
+    fields = (
+        "latitude",
+        "longitude",
+        "floor",
+        "height_m",
+        "height_accuracy_m",
+        "mount_type",
+        "environment",
+        "orientation_deg",
+    )
+    return tuple(installation.get(field) for field in fields)
 
 
 def _simulated_source_id(observation: dict[str, Any]) -> str | None:
@@ -121,6 +183,20 @@ def snapshot_diff(previous: dict[str, Any], current: dict[str, Any]) -> list[str
     for node_id in sorted(old_nodes.keys() & new_nodes.keys()):
         if node_signature(old_nodes[node_id]) != node_signature(new_nodes[node_id]):
             changes.append(f"Node state changed: {node_id}")
+
+    old_broker = previous.get("broker", {})
+    new_broker = current.get("broker", {})
+    if any(
+        old_broker.get(field) != new_broker.get(field)
+        for field in ("connected", "connected_clients", "total_client_sessions")
+    ):
+        changes.append(
+            "Mosquitto clients changed: "
+            f"connected={old_broker.get('connected_clients', 'unknown')} -> "
+            f"{new_broker.get('connected_clients', 'unknown')}, "
+            f"sessions={old_broker.get('total_client_sessions', 'unknown')} -> "
+            f"{new_broker.get('total_client_sessions', 'unknown')}"
+        )
 
     old_observation_ids = {
         observation["observation_id"]
@@ -154,24 +230,64 @@ def parse_watch_interval(interval_seconds: float) -> float:
     return interval_seconds
 
 
-def print_summary(snapshot: dict[str, Any]) -> None:
-    summary = summarize(snapshot)
-    print(f"Hub summary at {datetime.now(timezone.utc).isoformat()}")
-    print(f"Nodes: {summary['node_count']} ({summary['nodes_by_type'] or 'none'})")
-    print(f"Lifecycle: {summary['nodes_by_lifecycle_state'] or 'none'}")
-    print(f"Availability: {summary['nodes_by_availability'] or 'none'}")
+def component_states(status: dict[str, Any]) -> dict[str, str]:
+    return {
+        str(component["name"]): str(component["status"])
+        for component in status["components"]
+    }
+
+
+def print_human_status(status: dict[str, Any]) -> None:
+    print("Hub status")
+    print(f"  Mode:   {status.get('mode') or 'Unknown'}")
+    print(f"  Hub ID: {status.get('hub_id') or 'Not set'}")
+    print("\nServices")
+    for name, state in component_states(status).items():
+        print(f"  • {name}: {state.replace('_', ' ').capitalize()}")
+
+    summary = status.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
+    print("\nDevices")
+    print(f"  Registered: {summary.get('device_count', 'Not reported')}")
+    print(f"  Online:     {summary.get('online_device_count', 'Not reported')}")
+    for label, field in (
+        ("By type", "devices_by_type"),
+        ("Lifecycle", "devices_by_lifecycle"),
+        ("Availability", "devices_by_availability"),
+    ):
+        counts = summary.get(field)
+        print(f"  {label}:")
+        if isinstance(counts, dict) and counts:
+            for name, count in sorted(counts.items()):
+                print(f"    • {name}: {count}")
+        else:
+            print("    • None")
+    print("  Installation:")
+    print(f"    • Completed: {summary.get('installation_completed_count', 'Not reported')}")
     print(
-        f"Observations in latest {summary['observation_limit']}: "
-        f"{summary['observation_count']}"
+        "    • Missing, incomplete, or invalid: "
+        f"{summary.get('installation_incomplete_count', 'Not reported')}"
     )
-    print(f"Observations by node: {summary['observations_by_node'] or 'none'}")
-    print(f"Simulated sources: {summary['observations_by_simulated_source'] or 'none'}")
-    print(f"Latest received: {summary['latest_received_time_utc'] or 'none'}")
+
+
+def status_changes(previous: dict[str, Any], current: dict[str, Any]) -> list[str]:
+    old_states = component_states(previous)
+    new_states = component_states(current)
+    return [
+        f"{name}: {old_states.get(name, 'not reported')} → {state}"
+        for name, state in new_states.items()
+        if old_states.get(name) != state
+    ] + [
+        f"{name}: {state} → not reported"
+        for name, state in old_states.items()
+        if name not in new_states
+    ]
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Summarize node and observation state from the authenticated hub API."
+        description="Show Hub service status from the authenticated Hub API."
     )
     parser.add_argument("--hub-host", required=True, help="Hub LAN IP or certificate-valid hostname")
     parser.add_argument("--hub-port", type=int, default=8443, help="HTTPS listener port (default: 8443)")
@@ -181,7 +297,17 @@ def main() -> int:
         help="Optional public path prefix, for example /dbmap",
     )
     parser.add_argument("--ca", default="mqtt/certs/ca.crt", help="Path to the local hub CA")
-    parser.add_argument("--watch", action="store_true", help="Poll repeatedly and report differences")
+    parser.add_argument(
+        "--output",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: readable text; JSON is suitable for scripts)",
+    )
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Poll repeatedly; JSON output is newline-delimited, one status object per poll",
+    )
     parser.add_argument(
         "--interval-seconds",
         type=float,
@@ -208,21 +334,32 @@ def main() -> int:
 
     base_url = f"https://{args.hub_host}:{args.hub_port}{args.base_path}"
     try:
-        previous = fetch_snapshot(base_url, args.ca, admin_token)
-        print_summary(previous)
+        previous = fetch_status(base_url, args.ca, admin_token)
+        if args.output == "json":
+            print(
+                json.dumps(previous, indent=None if args.watch else 2, sort_keys=True),
+                flush=args.watch,
+            )
+        else:
+            print_human_status(previous)
         if not args.watch:
             return 0
-        print("Watching for changes; press Ctrl+C to stop.")
+        if args.output == "text":
+            print("\nWatching service status; press Ctrl+C to stop.")
         while True:
             time.sleep(args.interval_seconds)
-            current = fetch_snapshot(base_url, args.ca, admin_token)
-            changes = snapshot_diff(previous, current)
-            if changes:
-                print(f"\nChanges at {datetime.now(timezone.utc).isoformat()}")
-                for change in changes:
-                    print(change)
+            current = fetch_status(base_url, args.ca, admin_token)
+            if args.output == "json":
+                print(json.dumps(current, separators=(",", ":"), sort_keys=True), flush=True)
             else:
-                print(f"No changes at {datetime.now(timezone.utc).isoformat()}")
+                changes = status_changes(previous, current)
+                timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                if changes:
+                    print(f"\n[{timestamp}] Service status changes")
+                    for change in changes:
+                        print(f"  • {change}")
+                else:
+                    print(f"[{timestamp}] No service status changes.")
             previous = current
     except KeyboardInterrupt:
         print("\nStopped.")

@@ -115,7 +115,9 @@ curl -sS -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
   "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes"
 ```
 
-The browser UI at `https://hub.local:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/` accepts either `DBMAP_ADMIN_TOKEN` or `DBMAP_VIEWER_TOKEN`. The viewer token grants read-only access to basic device summaries and the local coordinate plot; the admin token additionally enables device creation and lifecycle actions. Tokens are held in browser memory only and cleared on sign-out. The browser is not the security boundary: the API independently checks the token and role. Device status is online when the Hub received a keepalive within the previous 90 seconds; otherwise it is offline.
+The browser UI at `https://hub.local:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/` accepts either `DBMAP_ADMIN_TOKEN` or `DBMAP_VIEWER_TOKEN`. The Hub tab shows local mode and component status. Click **Details** beside Hub API, Database, Policy engine, or MQTT broker to fetch that component's summary; those detail requests do not run until clicked. Database details include the SQLite version, storage use, and table row counts. Policy details show OPA HTTPS health and plugin readiness. MQTT details show the broker metrics received by the Hub over its existing TLS connection. The Devices tab summarizes device counts, lifecycle, availability, and the device list. The Observations tab shows up to the latest 100 observations with expandable JSON, plus Ear installation distances as site context only. It lists all pairwise distances when there are fewer than 10 registered Ears; for 10 or more, it shows only the shortest and longest valid distances and points to `scripts/hub_event_track.py` for detailed site analysis. The viewer token grants read-only access to device, Hub, and observation data; the admin token additionally enables device creation and lifecycle actions. Tokens are held in browser memory only and cleared on sign-out or page reload. The browser is not the security boundary: the API independently checks the token and role. Device status is online when the Hub received a keepalive within the previous 90 seconds; otherwise it is offline.
+
+The ESPConnect tab opens the checked-in ESPConnect v1.1.23 static build in a separate browser window at `https://hub.local:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/espconnect/`. It needs no internet connection for its app assets or USB board inspection; its help and release-note links are external. The downloaded release is MIT-licensed; its upstream license and source release are recorded under `web/espconnect/`. Use Chromium 89+ and a data-capable USB cable, accept the browser's device permission prompt, and install the local CA so the Hub is a trusted HTTPS origin. ESPConnect only inspects the USB device in the browser; it does not receive the Hub token. Reading device information into the dBmap registration form is not wired yet.
 
 The bootstrap token is returned only once; the hub stores its hash, so it cannot be displayed again. Save the returned token privately before continuing. If it is lost, repeat the node-creation request to get a new node ID and token; the old pending node can be left unused. Do not post the token in chat or logs. Before building firmware, embed the local CA so the ESP32 can verify HTTPS and MQTT server certificates:
 
@@ -229,6 +231,15 @@ curl -sS --cacert mqtt/certs/ca.crt \
 
 Replace `<node-id-from-simulator>` with the `SIM-EAR-*` node ID printed by the simulator. The response contains the validated protocol envelope, observation and hub `received_time_utc`. Classification and bearing have separate confidence values. Bearing is relative to the node reference axis, not a compass direction; the hub does not yet convert it using installation orientation. `signal_level_dbfs` is digital full-scale, not dB SPL. Each observation also includes a UUID, sequence number, timezone-aware event timestamp, monotonic capture timestamp, and timing-quality and uncertainty fields. Repeating publication with the same observation ID is deduplicated. To retry a publish after an error without provisioning another test node, run the command again with `--credentials-file /tmp/dbmap-ear-simulator-credentials.json --reuse-credentials`. Keep that file private; delete it when the simulator credentials are no longer needed.
 
+To publish a keepalive for that already provisioned simulated Ear, use the saved credentials file. This does not call the Hub API or create another device; it publishes one TLS keepalive, which refreshes the device's reported state and online status:
+
+```bash
+uv run --project hub/bootstrap python simulator/ear/simulate_keepalive.py \
+  --credentials-file /tmp/dbmap-ear-simulator-credentials.json
+```
+
+Add `--watch` to publish every 30 seconds until `Ctrl+C`, or set `--interval-seconds 15` to change the cadence. The simulator verifies that the credentials file is private and the keepalive topic belongs to its `SIM-EAR-*` node. The local CA is used to validate the broker certificate.
+
 To simulate several observations from the same synthetic vehicle, use a finite count. Each observation gets a new UUID and increasing sequence number; all share the supplied synthetic source ID. The default delay between publications is 15 seconds:
 
 ```bash
@@ -317,14 +328,14 @@ uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
   --credentials-file /tmp/dbmap-ear-simulator-v1.json
 ```
 
-For an authenticated summary of nodes and the latest 500 observations, run:
+For a concise, authenticated list of Hub service statuses, run:
 
 ```bash
 uv run --project hub/bootstrap python scripts/hub_summary.py \
   --hub-host "$DBMAP_LAN_IP"
 ```
 
-Add `--watch` to print a summary once and then report new observations and node-state changes every 15 seconds; use `--interval-seconds 30` to change the interval. Stop watch mode with `Ctrl+C`.
+The default output shows the Hub mode and ID, one status line each for Hub API, Database, Policy engine, and MQTT broker, and a concise device summary with counts by type, lifecycle, availability, and installation state. Use `--output json` for machine-readable output from the Hub status endpoint. Add `--watch` to poll service statuses every 15 seconds; text mode reports service changes, while JSON mode emits one JSON object per poll. Use `--interval-seconds 30` to change the interval. Component details such as broker metrics remain available on demand in the web UI. Stop watch mode with `Ctrl+C`.
 
 ### Explore observation source hints
 

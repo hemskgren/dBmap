@@ -8,15 +8,16 @@ The Hub API authenticates the current local admin/viewer bearer tokens, then ask
 | --- | --- | --- | --- |
 | `session.read` | `session` | Allow | Allow |
 | `devices.list_summary` | `device_summaries` | Allow | Allow |
+| `hub.status.read` | `hub` | Allow | Allow |
+| `observations.read` | `observations` | Allow | Allow |
 | `nodes.create` | `nodes` | Allow | Deny |
 | `nodes.list` | `nodes` | Allow | Deny |
 | `nodes.read_detail` | `nodes/{node_id}` | Allow | Deny |
 | `nodes.update_desired` | `nodes/{node_id}` | Allow | Deny |
 | `nodes.update_lifecycle` | `nodes/{node_id}` | Allow | Deny |
 | `nodes.update_installation` | `nodes/{node_id}` | Allow | Deny |
-| `observations.read` | `observations` | Allow | Deny |
 
-The admin rule grants every action to an authenticated admin. A viewer is limited to session and summary reads. Authentication still happens in the API; OPA never receives the bearer token.
+The admin rule grants every action to an authenticated admin. A viewer can read the session, Hub status, device summaries, and observations, but cannot read device details or change Hub state. Authentication still happens in the API; OPA never receives the bearer token.
 
 ## Future policy inputs
 

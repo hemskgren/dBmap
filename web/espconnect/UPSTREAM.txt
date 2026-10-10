@@ -1,0 +1,5 @@
+ESPConnect v1.1.23 static web UI
+Source: https://github.com/thelastoutpostworkshop/ESPConnect/releases/tag/v1.1.23
+License: MIT; see LICENSE.txt
+Release asset: https://github.com/thelastoutpostworkshop/ESPConnect/releases/download/v1.1.23/dist.zip
+SHA-256: 51bd4bcc539e6b6e6bdf17afb6f2e83950b8c2e525d7824dc3c0d87add08e598
