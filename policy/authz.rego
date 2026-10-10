@@ -14,7 +14,7 @@ allow if {
 allow if {
 	input.subject.authenticated == true
 	input.subject.role == "viewer"
-	input.action in {"session.read", "devices.list_summary"}
+	input.action in {"session.read", "devices.list_summary", "hub.status.read", "observations.read"}
 }
 
 # Authenticated external users may see the shared device summary, but not details.

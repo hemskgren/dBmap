@@ -33,6 +33,20 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
     }
 
+    location ~ ^(?<esp_request_base>/[^/]+(?:/[^/]+)*)?(?<esp_uri>/espconnect(?:/.*)?)$ {
+        if ($esp_request_base != $dbmap_public_base_path) { return 404; }
+        if ($esp_uri = /espconnect) { return 308 $dbmap_public_base_path/espconnect/; }
+        proxy_pass https://$dbmap_web_upstream$esp_uri;
+        proxy_ssl_server_name on;
+        proxy_ssl_name dbmap-web;
+        proxy_ssl_verify on;
+        proxy_ssl_trusted_certificate /certs/ca.crt;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
     location ~ ^(?<request_base>/[^/]+(?:/[^/]+)*)?(?<health_uri>/health)$ {
         if ($request_base != $dbmap_public_base_path) { return 404; }
         proxy_pass https://$hub_bootstrap_upstream$health_uri;

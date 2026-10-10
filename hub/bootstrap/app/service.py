@@ -310,6 +310,22 @@ def node_view(db: Session, node: Node) -> NodeView:
         "payload": json.loads(reported.payload_json) if reported and reported.payload_json else {},
     }
     pending = pending_configuration_change(reported_dict, desired_dict)
+    installation_view = None
+    if installation is not None:
+        try:
+            installation_view = InstallationMetadataBody(
+                latitude=installation.latitude,
+                longitude=installation.longitude,
+                floor=installation.floor,
+                height_m=installation.height_m,
+                height_accuracy_m=installation.height_accuracy_m,
+                mount_type=installation.mount_type,
+                environment=installation.environment,
+                orientation_deg=installation.orientation_deg,
+            )
+        except ValueError:
+            # Invalid legacy rows are treated like incomplete installations.
+            installation_view = None
     last_seen_at = reported.last_seen_at if reported else None
     if last_seen_at is not None and last_seen_at.tzinfo is None:
         last_seen_at = last_seen_at.replace(tzinfo=timezone.utc)
@@ -329,18 +345,5 @@ def node_view(db: Session, node: Node) -> NodeView:
         desired=desired_dict,
         reported=reported_dict,
         last_seen_at=isoformat(reported.last_seen_at) if reported else None,
-        installation=(
-            InstallationMetadataBody(
-                latitude=installation.latitude,
-                longitude=installation.longitude,
-                floor=installation.floor,
-                height_m=installation.height_m,
-                height_accuracy_m=installation.height_accuracy_m,
-                mount_type=installation.mount_type,
-                environment=installation.environment,
-                orientation_deg=installation.orientation_deg,
-            )
-            if installation
-            else None
-        ),
+        installation=installation_view,
     )

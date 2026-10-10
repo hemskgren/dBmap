@@ -144,6 +144,18 @@ def ensure_broker_security() -> None:
             {"acltype": "publishClientReceive", "topic": root, "allow": True},
             {"acltype": "publishClientSend", "topic": f"{kind}/local/+/command", "allow": True},
         ])
+    for topic in (
+        "$SYS/broker/clients/connected",
+        "$SYS/broker/clients/total",
+        "$SYS/broker/bytes/received",
+        "$SYS/broker/bytes/sent",
+        "$SYS/broker/uptime",
+        "$SYS/broker/version",
+    ):
+        hub_acls.extend([
+            {"acltype": "subscribeLiteral", "topic": topic, "allow": True},
+            {"acltype": "publishClientReceive", "topic": topic, "allow": True},
+        ])
     _ensure_role("dbmap-hub", hub_acls)
     _ensure_client(settings.mqtt_username, settings.mqtt_password, "dbmap-hub")
 
