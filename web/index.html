@@ -97,6 +97,11 @@
       .error { color: #a83232; }
       #create-panel { display: flex; align-items: end; gap: 0.6rem; margin: 1rem 0; }
       #create-panel label { flex: 1; margin: 0; }
+      #create-user-panel { display: flex; align-items: end; gap: 0.6rem; margin: 1rem 0; }
+      #create-user-panel label { flex: 1; margin: 0; }
+      .user-identity-list { display: grid; gap: 0.3rem; min-width: 15rem; }
+      .user-identity-form { display: flex; gap: 0.35rem; }
+      .user-identity-form input { min-width: 10rem; }
       #created-token { padding: 0.8rem; border-radius: 7px; background: #fff7d6; overflow-wrap: anywhere; }
       #installation-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 0.8rem; }
       #installation-form .actions { grid-column: 1 / -1; }
@@ -137,6 +142,7 @@
         <nav class="tab-list" role="tablist" aria-label="Hub sections">
           <button id="tab-button-hub" type="button" role="tab" aria-selected="true" aria-controls="tab-hub" data-tab="hub">Hub</button>
           <button id="tab-button-devices" type="button" role="tab" aria-selected="false" aria-controls="tab-devices" data-tab="devices">Devices</button>
+          <button id="tab-button-users" type="button" role="tab" aria-selected="false" aria-controls="tab-users" data-tab="users" hidden>Users</button>
           <button id="tab-button-observations" type="button" role="tab" aria-selected="false" aria-controls="tab-observations" data-tab="observations">Observations</button>
           <button id="tab-button-espconnect" type="button" role="tab" aria-selected="false" aria-controls="tab-espconnect" data-tab="espconnect">ESPConnect</button>
         </nav>
@@ -196,6 +202,25 @@
             </div>
           </section>
           <section id="device-detail" hidden aria-live="polite"></section>
+        </section>
+        <section id="tab-users" role="tabpanel" aria-labelledby="tab-button-users" hidden>
+          <div class="toolbar">
+            <div><h2>Users</h2><p id="users-status" class="notice" aria-live="polite">Local admin account management</p></div>
+            <button id="refresh-users" class="secondary" type="button">Refresh</button>
+          </div>
+          <p class="notice">Create internal accounts and explicitly link a GitHub numeric account ID. This does not enable GitHub sign-in yet.</p>
+          <form id="create-user-panel">
+            <label for="new-user-display-name">Create internal user
+              <input id="new-user-display-name" name="display_name" maxlength="128" required />
+            </label>
+            <button type="submit">Create user</button>
+          </form>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>User ID</th><th>Name</th><th>Status</th><th>GitHub identities</th><th>Actions</th></tr></thead>
+              <tbody id="user-list" aria-live="polite"></tbody>
+            </table>
+          </div>
         </section>
         <section id="tab-observations" role="tabpanel" aria-labelledby="tab-button-observations" hidden>
           <div class="toolbar">
@@ -550,7 +575,7 @@
       }
 
       function setActiveTab(tabName, updateLocation = true) {
-        const knownTabs = ['hub', 'devices', 'observations', 'espconnect'];
+        const knownTabs = ['hub', 'devices', ...(currentRole === 'admin' ? ['users'] : []), 'observations', 'espconnect'];
         const activeTab = knownTabs.includes(tabName) ? tabName : 'hub';
         activeTabName = activeTab;
         for (const name of knownTabs) {
@@ -564,7 +589,104 @@
         }
         if (activeTab === 'hub' || activeTab === 'devices') refreshHubStatus();
         if (activeTab === 'devices') refreshDevices();
+        if (activeTab === 'users') refreshUsers();
         if (activeTab === 'observations') refreshObservations();
+      }
+
+      function renderUsers(users) {
+        const list = document.getElementById('user-list');
+        list.replaceChildren();
+        if (!users.length) {
+          const row = el('tr');
+          const cell = el('td', 'No internal users have been created.');
+          cell.colSpan = 5;
+          row.append(cell);
+          list.append(row);
+          return;
+        }
+        for (const user of users) {
+          const row = el('tr');
+          row.append(el('td', user.user_id), el('td', user.display_name), el('td', user.status));
+          const identityCell = el('td');
+          const identityList = el('div', undefined, 'user-identity-list');
+          for (const identity of user.external_identities) {
+            const identityRow = el('div');
+            identityRow.append(el('span', `${identity.provider}: ${identity.provider_subject} (${identity.status}) `));
+            const identityButton = el('button', identity.status === 'active' ? 'Disable identity' : 'Activate identity', 'secondary');
+            identityButton.type = 'button';
+            identityButton.addEventListener('click', async () => {
+              await updateUserStatus(
+                `/api/v1/users/${user.user_id}/identities/${identity.identity_id}/status`,
+                identity.status === 'active' ? 'disabled' : 'active',
+              );
+            });
+            identityRow.append(identityButton);
+            identityList.append(identityRow);
+          }
+          const identityForm = el('form', undefined, 'user-identity-form');
+          const subject = el('input');
+          subject.type = 'text';
+          subject.inputMode = 'numeric';
+          subject.pattern = '[0-9]{1,32}';
+          subject.maxLength = 32;
+          subject.placeholder = 'GitHub numeric ID';
+          subject.setAttribute('aria-label', `GitHub numeric ID for ${user.display_name}`);
+          subject.required = true;
+          const linkButton = el('button', 'Link');
+          linkButton.type = 'submit';
+          identityForm.append(subject, linkButton);
+          identityForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            try {
+              await api(`/api/v1/users/${user.user_id}/identities`, {
+                method: 'POST',
+                body: JSON.stringify({ provider: 'github', provider_subject: subject.value.trim() }),
+              });
+              document.getElementById('users-status').textContent = `Linked GitHub identity to ${user.display_name}.`;
+              await refreshUsers();
+            } catch (error) {
+              showUsersStatus(error.message, true);
+            }
+          });
+          identityList.append(identityForm);
+          identityCell.append(identityList);
+          row.append(identityCell);
+
+          const actions = el('td');
+          const statusButton = el('button', user.status === 'active' ? 'Disable user' : 'Activate user', user.status === 'active' ? 'danger' : 'secondary');
+          statusButton.type = 'button';
+          statusButton.addEventListener('click', async () => {
+            await updateUserStatus(`/api/v1/users/${user.user_id}/status`, user.status === 'active' ? 'disabled' : 'active');
+          });
+          actions.append(statusButton);
+          row.append(actions);
+          list.append(row);
+        }
+      }
+
+      function showUsersStatus(message, isError = false) {
+        const status = document.getElementById('users-status');
+        status.textContent = message;
+        status.className = isError ? 'notice error' : 'notice';
+      }
+
+      async function refreshUsers() {
+        try {
+          renderUsers(await api('/api/v1/users'));
+          showUsersStatus('Local admin account management');
+        } catch (error) {
+          document.getElementById('user-list').replaceChildren();
+          showUsersStatus(error.message, true);
+        }
+      }
+
+      async function updateUserStatus(path, status) {
+        try {
+          await api(path, { method: 'PUT', body: JSON.stringify({ status }) });
+          await refreshUsers();
+        } catch (error) {
+          showUsersStatus(error.message, true);
+        }
       }
 
       function renderDevices(devices) {
@@ -789,6 +911,7 @@
         document.getElementById('dashboard').hidden = false;
         document.getElementById('user-controls').hidden = false;
         document.getElementById('admin-panel').hidden = role !== 'admin';
+        document.getElementById('tab-button-users').hidden = role !== 'admin';
         document.getElementById('role-label').textContent = `${role} access`;
         selectedDeviceId = '';
         document.getElementById('device-detail').hidden = true;
@@ -848,19 +971,38 @@
         }
       });
 
+      document.getElementById('create-user-panel').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const submit = form.querySelector('button[type="submit"]');
+        submit.disabled = true;
+        try {
+          const displayName = document.getElementById('new-user-display-name').value;
+          await api('/api/v1/users', { method: 'POST', body: JSON.stringify({ display_name: displayName }) });
+          form.reset();
+          showUsersStatus(`Created ${displayName.trim()}.`);
+          await refreshUsers();
+        } catch (error) {
+          showUsersStatus(error.message, true);
+        } finally {
+          submit.disabled = false;
+        }
+      });
+
       document.getElementById('refresh').addEventListener('click', () => {
         refreshDevices();
         refreshHubStatus();
       });
       document.getElementById('refresh-hub').addEventListener('click', refreshHubStatus);
       document.getElementById('refresh-observations').addEventListener('click', refreshObservations);
+      document.getElementById('refresh-users').addEventListener('click', refreshUsers);
       document.getElementById('site-distance-details').addEventListener('toggle', (event) => {
         if (event.currentTarget.open) refreshSiteDistances();
       });
       document.querySelectorAll('[data-tab]').forEach((button) => {
         button.addEventListener('click', () => setActiveTab(button.dataset.tab));
         button.addEventListener('keydown', (event) => {
-          const buttons = [...document.querySelectorAll('[data-tab]')];
+          const buttons = [...document.querySelectorAll('[data-tab]')].filter((item) => !item.hidden);
           const index = buttons.indexOf(button);
           let nextIndex;
           if (event.key === 'ArrowRight') nextIndex = (index + 1) % buttons.length;
@@ -883,6 +1025,7 @@
         document.getElementById('dashboard').hidden = true;
         window.history.replaceState(null, '', window.location.pathname + window.location.search);
         document.getElementById('admin-panel').hidden = true;
+        document.getElementById('tab-button-users').hidden = true;
         document.getElementById('user-controls').hidden = true;
         const createdToken = document.getElementById('created-token');
         createdToken.hidden = true;
@@ -890,6 +1033,7 @@
         document.getElementById('device-list').replaceChildren();
         document.getElementById('device-detail').replaceChildren();
         document.getElementById('device-detail').hidden = true;
+        document.getElementById('user-list').replaceChildren();
         selectedDeviceId = '';
         document.getElementById('login-panel').hidden = false;
       });
