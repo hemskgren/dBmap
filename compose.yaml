@@ -109,6 +109,7 @@ services:
       DBMAP_ADVERTISED_MQTT_HOST: ${DBMAP_ADVERTISED_MQTT_HOST:-hub.local}
       DBMAP_ADVERTISED_MQTT_PORT: ${DBMAP_ADVERTISED_MQTT_PORT:-8883}
       DBMAP_ADVERTISED_MQTT_USE_TLS: "true"
+      DBMAP_SITE_ID: ${DBMAP_SITE_ID:-local-01}
       DBMAP_DATABASE_URL: sqlite:////data/bootstrap.db
     volumes:
       - bootstrap-data:/data

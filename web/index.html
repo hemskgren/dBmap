@@ -18,13 +18,13 @@
         align-items: center;
         justify-content: space-between;
         gap: 1rem;
-        padding: 1rem max(1.25rem, calc((100vw - 1100px) / 2));
+        padding: 0.55rem max(1.25rem, calc((100vw - 1440px) / 2));
         color: #f8fafc;
         background: #14223b;
       }
       header h1 { margin: 0; font-size: 1.35rem; }
       header p { margin: 0.2rem 0 0; color: #cbd5e1; font-size: 0.9rem; }
-      main { width: min(1100px, calc(100vw - 2rem)); margin: 2rem auto; }
+      main { width: min(1440px, calc(100vw - 2.5rem)); margin: 0.75rem auto; }
       section, article {
         border: 1px solid #d8e0eb;
         border-radius: 12px;
@@ -46,9 +46,9 @@
       button.danger { background: #a83232; }
       button:disabled { cursor: wait; opacity: 0.65; }
       .button-link { display: inline-block; border-radius: 7px; padding: 0.62rem 0.9rem; color: #fff; background: #2457a7; font-weight: 600; text-decoration: none; }
-      .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+      .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 0.65rem; }
       .toolbar h2 { margin: 0; }
-      section { padding: 1.25rem; min-width: 0; }
+      section { padding: 1rem; min-width: 0; }
       .table-wrap { overflow-x: auto; }
       table { width: 100%; border-collapse: collapse; text-align: left; }
       th, td { padding: 0.75rem 0.6rem; border-bottom: 1px solid #e3e9f1; vertical-align: middle; }
@@ -63,7 +63,7 @@
       .online { color: #157347; font-weight: 700; }
       .offline { color: #a83232; font-weight: 700; }
       .actions { display: flex; gap: 0.5rem; margin-top: 0.85rem; }
-      .tab-list { display: flex; gap: 0.45rem; overflow-x: auto; margin: 0 0 1rem; padding-bottom: 0.35rem; }
+      .tab-list { display: flex; gap: 0.45rem; overflow-x: auto; margin: 0 0 0.6rem; padding-bottom: 0.2rem; }
       .tab-list button { flex: 0 0 auto; color: #183153; background: #e6edf7; }
       .tab-list button[aria-selected="true"] { color: #fff; background: #2457a7; }
       .overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.8rem; margin-bottom: 1rem; }
@@ -79,11 +79,19 @@
       .component-status.unknown, .component-status.disabled { color: #526078; }
       .espconnect-callout { max-width: 780px; }
       .espconnect-callout .actions { flex-wrap: wrap; }
-      .distance-list { display: grid; gap: 0.45rem; padding-left: 1.25rem; }
-      .observation-list { display: grid; gap: 0.8rem; }
-      .observation-item { padding: 0.9rem; border: 1px solid #e3e9f1; border-radius: 8px; }
-      .observation-item summary { cursor: pointer; font-weight: 600; }
-      .observation-item pre { max-height: 28rem; }
+      .distance-list { display: grid; gap: 0.35rem; padding-left: 1.25rem; }
+      .observation-list { display: grid; gap: 0.55rem; max-height: 22rem; overflow-y: auto; margin: 0.65rem 0 0 0.55rem; padding: 0.1rem 0.5rem 0.1rem 1rem; border-left: 2px solid #d8e0eb; }
+      .timeline-entry { position: relative; width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #e3e9f1; border-radius: 8px; color: #172033; background: #fff; text-align: left; }
+      .timeline-entry::before { position: absolute; top: 0.8rem; left: -1.42rem; width: 0.55rem; height: 0.55rem; border: 2px solid #fff; border-radius: 50%; background: #2457a7; content: ""; }
+      .timeline-entry[aria-pressed="true"] { border-color: #2457a7; background: #f3f7ff; }
+      #tab-devices > section { margin-top: 0.6rem; padding: 0.75rem; }
+      #tab-devices > section h2, #tab-devices > section h3 { margin: 0 0 0.45rem; }
+      #tab-devices > section h3:not(:first-child) { margin-top: 0.75rem; }
+      #tab-devices .overview-grid { margin-bottom: 0.5rem; }
+      #tab-devices th, #tab-devices td { padding: 0.45rem 0.55rem; }
+      #tab-observations > section { margin-top: 0.6rem; padding: 0.75rem; }
+      #tab-observations > section h3 { margin: 0 0 0.45rem; }
+      #site-distance-details > summary { cursor: pointer; font-weight: 650; }
       #component-details { margin-top: 0.8rem; padding: 1rem; border: 1px solid #d8e0eb; border-radius: 8px; }
       .notice { min-height: 1.5rem; margin: 0.6rem 0; color: #526078; }
       .error { color: #a83232; }
@@ -98,7 +106,8 @@
         #installation-form .actions { grid-column: auto; }
         .toolbar { align-items: flex-start; }
         #create-panel { align-items: stretch; flex-direction: column; }
-        header { padding: 1rem; }
+        header { padding: 0.65rem 1rem; }
+        main { width: calc(100vw - 1rem); margin: 0.5rem auto; }
       }
     </style>
   </head>
@@ -198,13 +207,22 @@
             <article class="overview-card"><span>Latest observation</span><strong id="latest-observation-card">—</strong></article>
           </div>
           <section>
-            <h3>Ear installation distances (site context only; not source associations):</h3>
-            <p id="distance-note" class="notice">Loading Ear installation sites…</p>
-            <ul id="ear-distance-list" class="distance-list"></ul>
+            <h3>Observation timeline</h3>
+            <p class="notice">Timeline times use your local time. Observation JSON keeps the original UTC timestamps.</p>
+            <div id="observation-list" class="observation-list" aria-live="polite"><p class="notice">Loading observations…</p></div>
           </section>
           <section>
-            <h3>Latest observation JSON</h3>
-            <div id="observation-list" class="observation-list" aria-live="polite"><p class="notice">Loading observations…</p></div>
+            <details id="latest-observation-details">
+              <summary id="latest-observation-summary">Latest observation JSON</summary>
+              <pre id="latest-observation-json">Loading latest observation…</pre>
+            </details>
+          </section>
+          <section>
+            <details id="site-distance-details">
+              <summary>Ear installation distances (site context only; not source associations)</summary>
+              <p id="distance-note" class="notice">Expand to load Ear installation distances.</p>
+              <ul id="ear-distance-list" class="distance-list"></ul>
+            </details>
           </section>
         </section>
         <section id="tab-espconnect" role="tabpanel" aria-labelledby="tab-button-espconnect" hidden>
@@ -261,10 +279,20 @@
         return node;
       }
 
+      const EU_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('en-GB', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hourCycle: 'h23',
+      });
+
       function formatSeen(value) {
         if (!value) return 'Never';
         const date = new Date(value);
-        return Number.isNaN(date.getTime()) ? 'Unknown' : date.toLocaleString();
+        return Number.isNaN(date.getTime()) ? 'Unknown' : EU_DATE_TIME_FORMATTER.format(date);
       }
 
       const EARTH_RADIUS_M = 6371000;
@@ -334,16 +362,25 @@
           const observations = await api('/api/v1/observations?limit=100');
           document.getElementById('hub-observation-count').textContent = `${observations.length} / 100`;
           document.getElementById('latest-observation-card').textContent = observations.length ? formatSeen(observations[0].received_time_utc) : 'None';
+          const latestJson = document.getElementById('latest-observation-json');
+          const jsonSummary = document.getElementById('latest-observation-summary');
+          jsonSummary.textContent = 'Latest observation JSON';
+          latestJson.textContent = observations.length ? JSON.stringify(observations[0], null, 2) : 'No observations have been received yet.';
           if (!observations.length) list.append(el('p', 'No observations have been received yet.', 'notice'));
           for (const observation of observations) {
-            const item = el('details', undefined, 'observation-item');
-            item.append(
-              el('summary', `${observation.node_id} · ${formatSeen(observation.event_time_utc)} · ${observation.observation_id}`),
-              el('pre', JSON.stringify(observation, null, 2)),
-            );
+            const item = el('button', `${observation.node_id} · ${formatSeen(observation.event_time_utc)} (local) · ${observation.observation_id}`, 'timeline-entry');
+            item.type = 'button';
+            item.setAttribute('aria-pressed', 'false');
+            item.addEventListener('click', () => {
+              list.querySelectorAll('.timeline-entry').forEach((entry) => entry.setAttribute('aria-pressed', String(entry === item)));
+              latestJson.textContent = JSON.stringify(observation, null, 2);
+              jsonSummary.textContent = observation === observations[0] ? 'Latest observation JSON' : `${observation.node_id} observation JSON`;
+              document.getElementById('latest-observation-details').open = true;
+            });
             list.append(item);
           }
-          status.textContent = `Showing ${observations.length} most recent observation${observations.length === 1 ? '' : 's'} (maximum 100). Updated ${new Date().toLocaleTimeString()}.`;
+          if (observations.length) list.querySelector('.timeline-entry').setAttribute('aria-pressed', 'true');
+          status.textContent = `Showing ${observations.length} most recent observation${observations.length === 1 ? '' : 's'} (maximum 100). Updated ${formatSeen(new Date())}.`;
         } catch (error) {
           document.getElementById('hub-observation-count').textContent = '—';
           document.getElementById('latest-observation-card').textContent = '—';
@@ -351,7 +388,7 @@
           status.textContent = 'Could not load observations.';
           status.className = 'notice error';
         }
-        await refreshSiteDistances();
+        if (document.getElementById('site-distance-details').open) await refreshSiteDistances();
       }
 
       function formatCounts(counts) {
@@ -410,7 +447,7 @@
         addDetailField(deviceState, 'Lifecycle', formatCounts(summary.devices_by_lifecycle));
         addDetailField(deviceState, 'Availability', formatCounts(summary.devices_by_availability));
         addDetailField(deviceState, 'Device types', formatCounts(summary.devices_by_type));
-        const updated = new Date().toLocaleTimeString();
+        const updated = formatSeen(new Date());
         const statusLine = document.getElementById('hub-refresh-status');
         statusLine.textContent = `Updated ${updated}`;
         statusLine.className = 'notice';
@@ -740,7 +777,7 @@
         try {
           const devices = await api('/api/v1/devices');
           renderDevices(devices);
-          showStatus(`Updated ${new Date().toLocaleTimeString()}`);
+          showStatus(`Updated ${formatSeen(new Date())}`);
         } catch (error) {
           showStatus(error.message, true);
         }
@@ -817,6 +854,9 @@
       });
       document.getElementById('refresh-hub').addEventListener('click', refreshHubStatus);
       document.getElementById('refresh-observations').addEventListener('click', refreshObservations);
+      document.getElementById('site-distance-details').addEventListener('toggle', (event) => {
+        if (event.currentTarget.open) refreshSiteDistances();
+      });
       document.querySelectorAll('[data-tab]').forEach((button) => {
         button.addEventListener('click', () => setActiveTab(button.dataset.tab));
         button.addEventListener('keydown', (event) => {

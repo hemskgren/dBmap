@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,7 +25,12 @@ class Settings(BaseSettings):
     advertised_mqtt_port: int = 8883
     advertised_mqtt_use_tls: bool = True
 
-    site_id: str = "local"
+    site_id: str = Field(
+        default="local-01",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
 
 
 settings = Settings()

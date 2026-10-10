@@ -108,6 +108,12 @@ def observation_time(observation: dict[str, Any]) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def format_local_datetime(value: datetime | None) -> str:
+    if value is None:
+        return "unknown"
+    return value.astimezone().strftime("%d/%m/%Y %H:%M:%S %Z")
+
+
 def sort_observations(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(
         observations,
@@ -275,7 +281,12 @@ def proposed_event_groups(
 def format_observation(observation: dict[str, Any]) -> str:
     observation_id = observation.get("observation_id", "unknown-id")
     node_id = observation.get("node_id", "unknown-node")
-    event_time = observation.get("event_time_utc", "unknown-time")
+    parsed_event_time = observation_time(observation)
+    event_time = (
+        format_local_datetime(parsed_event_time)
+        if parsed_event_time is not None
+        else observation.get("event_time_utc", "unknown-time")
+    )
     details = []
     classification = observation.get("classification")
     if isinstance(classification, dict):
@@ -310,7 +321,7 @@ def report(
     parse_positive_interval(event_gap_seconds)
     nodes = nodes or {}
     lines = [
-        f"Observation analysis at {datetime.now(timezone.utc).isoformat()}",
+        f"Observation analysis at {format_local_datetime(datetime.now().astimezone())} (local time)",
         f"Observations fetched (maximum 500): {len(observations)}",
         ("Detection candidates: each observation stays separate. "
         "Ground-truth simulator IDs are not used for grouping or correlation."),
@@ -358,7 +369,7 @@ def report(
             episode_number += 1
             episode_times = [observation_time(item) for item in episode]
             known_times = [item for item in episode_times if item is not None]
-            start_text = min(known_times).isoformat() if known_times else "unknown"
+            start_text = format_local_datetime(min(known_times)) if known_times else "unknown"
             end_text = "unknown"
             if known_times:
                 last_observation = max(
@@ -375,9 +386,9 @@ def report(
                 ):
                     duration_ms = 0
                 if last_time is not None:
-                    end_text = (
+                    end_text = format_local_datetime(
                         last_time + timedelta(milliseconds=max(duration_ms, 0))
-                    ).isoformat()
+                    )
             observation_ids = [
                 str(item.get("observation_id", "unknown-id")) for item in episode
             ]

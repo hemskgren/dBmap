@@ -50,6 +50,7 @@ Do **not** run `init-local-secrets.sh`; it creates `.env` only when the file doe
 DBMAP_LAN_IP=<mini-PC-LAN-IP>
 DBMAP_HTTPS_PORT=8443
 DBMAP_PUBLIC_BASE_PATH=
+DBMAP_SITE_ID=local-01
 DBMAP_ADMIN_TOKEN=<random-secret-1>
 DBMAP_VIEWER_TOKEN=<random-secret-2>
 DBMAP_MQTT_HUB_PASSWORD=<random-secret-3>
@@ -63,6 +64,8 @@ Replace the angle-bracket values with real values (do not type the brackets). Se
 ```bash
 chmod 600 .env
 ```
+
+`DBMAP_SITE_ID` is the stable local Hub ID shown in the UI and status API. It defaults to `local-01`; assign a distinct value to each Hub if you plan to connect multiple Hubs to a Regional Hub later (for example, `l-hub-agg-01`). It is configuration, not a first-boot database value: you can change it in `.env` later and recreate `hub-bootstrap` to apply it. The current local Hub does not yet configure a Regional Hub relationship.
 
 ### If `.env` does not exist
 
@@ -115,7 +118,9 @@ curl -sS -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
   "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes"
 ```
 
-The browser UI at `https://hub.local:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/` accepts either `DBMAP_ADMIN_TOKEN` or `DBMAP_VIEWER_TOKEN`. The Hub tab shows local mode and component status. Click **Details** beside Hub API, Database, Policy engine, or MQTT broker to fetch that component's summary; those detail requests do not run until clicked. Database details include the SQLite version, storage use, and table row counts. Policy details show OPA HTTPS health and plugin readiness. MQTT details show the broker metrics received by the Hub over its existing TLS connection. The Devices tab summarizes device counts, lifecycle, availability, and the device list. The Observations tab shows up to the latest 100 observations with expandable JSON, plus Ear installation distances as site context only. It lists all pairwise distances when there are fewer than 10 registered Ears; for 10 or more, it shows only the shortest and longest valid distances and points to `scripts/hub_event_track.py` for detailed site analysis. The viewer token grants read-only access to device, Hub, and observation data; the admin token additionally enables device creation and lifecycle actions. Tokens are held in browser memory only and cleared on sign-out or page reload. The browser is not the security boundary: the API independently checks the token and role. Device status is online when the Hub received a keepalive within the previous 90 seconds; otherwise it is offline.
+The browser UI at `https://hub.local:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/` accepts either `DBMAP_ADMIN_TOKEN` or `DBMAP_VIEWER_TOKEN`. The Hub tab shows local mode and component status. Click **Details** beside Hub API, Database, Policy engine, or MQTT broker to fetch that component's summary; those detail requests do not run until clicked. Database details include the SQLite version, storage use, and table row counts. Policy details show OPA HTTPS health and plugin readiness. MQTT details show the broker metrics received by the Hub over its existing TLS connection. The Devices tab summarizes device counts, lifecycle, availability, and the device list. The Observations tab shows up to the latest 100 observations in a timeline using local date and time; select an entry to view its original JSON, which retains UTC timestamps. Ear installation distances are site context only and load when expanded. It lists all pairwise distances when there are fewer than 10 registered Ears; for 10 or more, it shows only the shortest and longest valid distances and points to `scripts/hub_event_track.py` for detailed site analysis. The viewer token grants read-only access to device, Hub, and observation data; the admin token additionally enables device creation and lifecycle actions. Tokens are held in browser memory only and cleared on sign-out or page reload. The browser is not the security boundary: the API independently checks the token and role. Device status is online when the Hub received a keepalive within the previous 90 seconds; otherwise it is offline.
+
+Web timestamps use day/month/year and a 24-hour clock in the browser's local time zone. Human-readable Python reports use the same date/time order in the host's local time zone. API timestamps and `--output json` retain UTC ISO 8601 values.
 
 The ESPConnect tab opens the checked-in ESPConnect v1.1.23 static build in a separate browser window at `https://hub.local:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/espconnect/`. It needs no internet connection for its app assets or USB board inspection; its help and release-note links are external. The downloaded release is MIT-licensed; its upstream license and source release are recorded under `web/espconnect/`. Use Chromium 89+ and a data-capable USB cable, accept the browser's device permission prompt, and install the local CA so the Hub is a trusted HTTPS origin. ESPConnect only inspects the USB device in the browser; it does not receive the Hub token. Reading device information into the dBmap registration form is not wired yet.
 
