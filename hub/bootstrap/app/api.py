@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
-from app import policy, service
+from app import identity_service, policy, service
 from app.config import settings
 from app.db import get_db
 from app.ids import timing_safe_eq
@@ -16,14 +16,18 @@ from app.policy import PolicyUnavailable
 from app.schemas import (
     CreateNodeRequest,
     CreateNodeResponse,
+    CreateUserBody,
     DesiredStateBody,
     DeviceSummaryView,
     InstallationMetadataBody,
+    LinkExternalIdentityBody,
     NodeLifecycleBody,
     NodeView,
     ObservationView,
     ProvisionRequest,
     ProvisionResponse,
+    UserStatusBody,
+    UserView,
 )
 
 router = APIRouter()
@@ -58,7 +62,9 @@ def require_policy(action: str, resource_type: str):
     ) -> Principal:
         principal = _authenticate(authorization)
         resource = {"type": resource_type}
-        resource_id = request.path_params.get("node_id")
+        resource_id = request.path_params.get("node_id") or request.path_params.get("user_id")
+        if resource_id is None:
+            resource_id = request.path_params.get("identity_id")
         if resource_id is not None:
             resource["id"] = resource_id
         decision_input = {
@@ -85,6 +91,83 @@ def require_policy(action: str, resource_type: str):
 @router.get("/api/v1/session")
 def get_session(principal: Principal = Depends(require_policy("session.read", "session"))) -> dict[str, str]:
     return {"role": principal.role}
+
+
+@router.get(
+    "/api/v1/users",
+    response_model=list[UserView],
+    dependencies=[Depends(require_policy("users.read", "users"))],
+)
+def list_users(db: Session = Depends(get_db)) -> list[UserView]:
+    return identity_service.list_users(db)
+
+
+@router.post(
+    "/api/v1/users",
+    response_model=UserView,
+    dependencies=[Depends(require_policy("users.create", "users"))],
+)
+def create_user(body: CreateUserBody, db: Session = Depends(get_db)) -> UserView:
+    return identity_service.create_user(db, body.display_name)
+
+
+@router.get(
+    "/api/v1/users/{user_id}",
+    response_model=UserView,
+    dependencies=[Depends(require_policy("users.read", "users"))],
+)
+def get_user(user_id: str, db: Session = Depends(get_db)) -> UserView:
+    try:
+        return identity_service.get_user(db, user_id)
+    except identity_service.UserNotFound:
+        raise HTTPException(status_code=404, detail="unknown user") from None
+
+
+@router.put(
+    "/api/v1/users/{user_id}/status",
+    response_model=UserView,
+    dependencies=[Depends(require_policy("users.update_status", "users"))],
+)
+def put_user_status(user_id: str, body: UserStatusBody, db: Session = Depends(get_db)) -> UserView:
+    try:
+        return identity_service.set_user_status(db, user_id, body.status)
+    except identity_service.UserNotFound:
+        raise HTTPException(status_code=404, detail="unknown user") from None
+
+
+@router.post(
+    "/api/v1/users/{user_id}/identities",
+    response_model=UserView,
+    dependencies=[Depends(require_policy("users.identities.link", "users"))],
+)
+def link_user_identity(
+    user_id: str,
+    body: LinkExternalIdentityBody,
+    db: Session = Depends(get_db),
+) -> UserView:
+    try:
+        return identity_service.link_github_identity(db, user_id, body.provider_subject)
+    except identity_service.UserNotFound:
+        raise HTTPException(status_code=404, detail="unknown user") from None
+    except identity_service.IdentityConflict:
+        raise HTTPException(status_code=409, detail="identity is already linked or disabled") from None
+
+
+@router.put(
+    "/api/v1/users/{user_id}/identities/{identity_id}/status",
+    response_model=UserView,
+    dependencies=[Depends(require_policy("users.identities.update_status", "users"))],
+)
+def put_identity_status(
+    user_id: str,
+    identity_id: str,
+    body: UserStatusBody,
+    db: Session = Depends(get_db),
+) -> UserView:
+    try:
+        return identity_service.set_identity_status(db, user_id, identity_id, body.status)
+    except identity_service.UserNotFound:
+        raise HTTPException(status_code=404, detail="unknown user identity") from None
 
 
 @router.get(

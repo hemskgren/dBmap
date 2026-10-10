@@ -158,3 +158,42 @@ class DeviceSummaryView(BaseModel):
     status: Literal["online", "offline"]
     last_seen_at: str | None
     installation: InstallationMetadataBody | None = None
+
+
+class CreateUserBody(BaseModel):
+    display_name: str = Field(min_length=1, max_length=128)
+
+    @field_validator("display_name")
+    @classmethod
+    def normalize_display_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("display_name must not be blank")
+        return normalized
+
+
+class UserStatusBody(BaseModel):
+    status: Literal["active", "disabled"]
+
+
+class LinkExternalIdentityBody(BaseModel):
+    provider: Literal["github"]
+    provider_subject: str = Field(pattern=r"^[0-9]{1,32}$")
+
+
+class UserIdentityView(BaseModel):
+    identity_id: str
+    provider: str
+    provider_subject: str
+    status: Literal["active", "disabled"]
+    created_at: datetime
+    last_authenticated_at: datetime | None
+
+
+class UserView(BaseModel):
+    user_id: str
+    display_name: str
+    status: Literal["active", "disabled"]
+    created_at: datetime
+    updated_at: datetime
+    external_identities: list[UserIdentityView]

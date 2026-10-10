@@ -36,6 +36,21 @@ test_viewer_cannot_read_details_or_write if {
 	}
 }
 
+test_viewer_cannot_manage_users_or_identities if {
+	not authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "users.create",
+		"resource": {"type": "users"},
+		"context": {},
+	}
+	not authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "users.identities.link",
+		"resource": {"type": "users", "id": "user-123"},
+		"context": {},
+	}
+}
+
 test_owner_can_read_and_update_owned_device if {
 	authz.allow with input as {
 		"subject": {"id": "user-123", "role": "user", "authenticated": true},

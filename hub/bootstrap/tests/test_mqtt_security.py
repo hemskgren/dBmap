@@ -132,4 +132,10 @@ def test_hub_defaults_deny_and_scope_access_to_dbmap_topics(monkeypatch) -> None
         "esp-output/local/+/command",
         "esp-ear/local/#",
         "esp-ear/local/+/command",
+        "$SYS/broker/clients/connected",
+        "$SYS/broker/clients/total",
+        "$SYS/broker/bytes/received",
+        "$SYS/broker/bytes/sent",
+        "$SYS/broker/uptime",
+        "$SYS/broker/version",
     }
