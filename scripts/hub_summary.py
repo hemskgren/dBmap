@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import os
 import ssl
 import sys
@@ -119,8 +120,8 @@ def _valid_installation(installation: dict[str, Any]) -> bool:
     except (TypeError, ValueError):
         return False
     return (
-        latitude == latitude
-        and longitude == longitude
+        math.isfinite(latitude)
+        and math.isfinite(longitude)
         and abs(latitude) <= 90
         and abs(longitude) <= 180
     )
