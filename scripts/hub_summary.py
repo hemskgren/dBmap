@@ -10,7 +10,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -353,7 +353,7 @@ def main() -> int:
                 print(json.dumps(current, separators=(",", ":"), sort_keys=True), flush=True)
             else:
                 changes = status_changes(previous, current)
-                timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                timestamp = datetime.now().astimezone().strftime("%d/%m/%Y %H:%M:%S %Z")
                 if changes:
                     print(f"\n[{timestamp}] Service status changes")
                     for change in changes:
