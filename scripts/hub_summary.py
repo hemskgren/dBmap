@@ -45,16 +45,21 @@ def fetch_snapshot(base_url: str, ca_file: str, admin_token: str) -> dict[str, A
         admin_token,
         "/api/v1/observations?" + urllib.parse.urlencode({"limit": 500}),
     )
-    hub_status = api_get(base_url, ca_file, admin_token, "/api/v1/hub/status")
+    broker = api_get(
+        base_url,
+        ca_file,
+        admin_token,
+        "/api/v1/hub/components/mosquitto/details",
+    )
     if not isinstance(nodes, list) or not all(isinstance(node, dict) for node in nodes):
         raise HubApiError("hub returned an invalid node list")
     if not isinstance(observations, list) or not all(
         isinstance(observation, dict) for observation in observations
     ):
         raise HubApiError("hub returned an invalid observation list")
-    if not isinstance(hub_status, dict) or not isinstance(hub_status.get("broker"), dict):
-        raise HubApiError("hub returned an invalid Mosquitto status summary")
-    return {"nodes": nodes, "observations": observations, "broker": hub_status["broker"]}
+    if not isinstance(broker, dict):
+        raise HubApiError("hub returned invalid Mosquitto details")
+    return {"nodes": nodes, "observations": observations, "broker": broker}
 
 
 def summarize(snapshot: dict[str, Any]) -> dict[str, Any]:
