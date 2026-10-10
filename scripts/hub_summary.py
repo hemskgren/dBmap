@@ -62,6 +62,19 @@ def fetch_snapshot(base_url: str, ca_file: str, admin_token: str) -> dict[str, A
     return {"nodes": nodes, "observations": observations, "broker": broker}
 
 
+def fetch_status(base_url: str, ca_file: str, admin_token: str) -> dict[str, Any]:
+    status = api_get(base_url, ca_file, admin_token, "/api/v1/hub/status")
+    if not isinstance(status, dict):
+        raise HubApiError("hub returned an invalid status response")
+    components = status.get("components")
+    if not isinstance(components, list) or not all(
+        isinstance(component, dict) and "name" in component and "status" in component
+        for component in components
+    ):
+        raise HubApiError("hub returned an invalid component status list")
+    return status
+
+
 def summarize(snapshot: dict[str, Any]) -> dict[str, Any]:
     nodes = snapshot["nodes"]
     observations = snapshot["observations"]
@@ -217,45 +230,39 @@ def parse_watch_interval(interval_seconds: float) -> float:
     return interval_seconds
 
 
-def print_summary(snapshot: dict[str, Any]) -> None:
-    summary = summarize(snapshot)
-    print(f"Hub summary at {datetime.now(timezone.utc).isoformat()}")
-    print(f"Nodes: {summary['node_count']} ({summary['nodes_by_type'] or 'none'})")
-    print(f"Lifecycle: {summary['nodes_by_lifecycle_state'] or 'none'}")
-    print(f"Availability: {summary['nodes_by_availability'] or 'none'}")
-    print(
-        "Installation: "
-        f"completed: {summary['installation_completed_count']}, "
-        "missing, incomplete, or invalid installations: "
-        f"{summary['installation_incomplete_count']}"
-    )
-    print(
-        f"Observations in latest {summary['observation_limit']}: "
-        f"{summary['observation_count']}"
-    )
-    print(f"Observations by node: {summary['observations_by_node'] or 'none'}")
-    print(f"Simulated sources: {summary['observations_by_simulated_source'] or 'none'}")
-    print(f"Latest received: {summary['latest_received_time_utc'] or 'none'}")
-    broker = summary["broker"]
-    state = "unknown" if not broker else "connected" if broker.get("connected") else "disconnected"
-    print(f"Mosquitto: {state}")
-    print(
-        "MQTT clients: "
-        f"{broker.get('connected_clients', 'not yet reported')} connected, "
-        f"{broker.get('total_client_sessions', 'not yet reported')} registered sessions"
-    )
-    print(
-        "MQTT traffic: "
-        f"{broker.get('bytes_received', 'not yet reported')} bytes received, "
-        f"{broker.get('bytes_sent', 'not yet reported')} bytes sent"
-    )
-    print(f"Mosquitto version: {broker.get('version') or 'not yet reported'}")
-    print(f"Mosquitto uptime: {broker.get('uptime') or 'not yet reported'}")
+def component_states(status: dict[str, Any]) -> dict[str, str]:
+    return {
+        str(component["name"]): str(component["status"])
+        for component in status["components"]
+    }
+
+
+def print_human_status(status: dict[str, Any]) -> None:
+    print("Hub status")
+    print(f"  Mode:   {status.get('mode') or 'Unknown'}")
+    print(f"  Hub ID: {status.get('hub_id') or 'Not set'}")
+    print("\nServices")
+    for name, state in component_states(status).items():
+        print(f"  • {name}: {state.replace('_', ' ').capitalize()}")
+
+
+def status_changes(previous: dict[str, Any], current: dict[str, Any]) -> list[str]:
+    old_states = component_states(previous)
+    new_states = component_states(current)
+    return [
+        f"{name}: {old_states.get(name, 'not reported')} → {state}"
+        for name, state in new_states.items()
+        if old_states.get(name) != state
+    ] + [
+        f"{name}: {state} → not reported"
+        for name, state in old_states.items()
+        if name not in new_states
+    ]
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Summarize node and observation state from the authenticated hub API."
+        description="Show Hub service status from the authenticated Hub API."
     )
     parser.add_argument("--hub-host", required=True, help="Hub LAN IP or certificate-valid hostname")
     parser.add_argument("--hub-port", type=int, default=8443, help="HTTPS listener port (default: 8443)")
@@ -265,7 +272,17 @@ def main() -> int:
         help="Optional public path prefix, for example /dbmap",
     )
     parser.add_argument("--ca", default="mqtt/certs/ca.crt", help="Path to the local hub CA")
-    parser.add_argument("--watch", action="store_true", help="Poll repeatedly and report differences")
+    parser.add_argument(
+        "--output",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: readable text; JSON is suitable for scripts)",
+    )
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Poll repeatedly; JSON output is newline-delimited, one status object per poll",
+    )
     parser.add_argument(
         "--interval-seconds",
         type=float,
@@ -292,21 +309,32 @@ def main() -> int:
 
     base_url = f"https://{args.hub_host}:{args.hub_port}{args.base_path}"
     try:
-        previous = fetch_snapshot(base_url, args.ca, admin_token)
-        print_summary(previous)
+        previous = fetch_status(base_url, args.ca, admin_token)
+        if args.output == "json":
+            print(
+                json.dumps(previous, indent=None if args.watch else 2, sort_keys=True),
+                flush=args.watch,
+            )
+        else:
+            print_human_status(previous)
         if not args.watch:
             return 0
-        print("Watching for changes; press Ctrl+C to stop.")
+        if args.output == "text":
+            print("\nWatching service status; press Ctrl+C to stop.")
         while True:
             time.sleep(args.interval_seconds)
-            current = fetch_snapshot(base_url, args.ca, admin_token)
-            changes = snapshot_diff(previous, current)
-            if changes:
-                print(f"\nChanges at {datetime.now(timezone.utc).isoformat()}")
-                for change in changes:
-                    print(change)
+            current = fetch_status(base_url, args.ca, admin_token)
+            if args.output == "json":
+                print(json.dumps(current, separators=(",", ":"), sort_keys=True), flush=True)
             else:
-                print(f"No changes at {datetime.now(timezone.utc).isoformat()}")
+                changes = status_changes(previous, current)
+                timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                if changes:
+                    print(f"\n[{timestamp}] Service status changes")
+                    for change in changes:
+                        print(f"  • {change}")
+                else:
+                    print(f"[{timestamp}] No service status changes.")
             previous = current
     except KeyboardInterrupt:
         print("\nStopped.")

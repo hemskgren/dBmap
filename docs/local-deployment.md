@@ -328,14 +328,14 @@ uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
   --credentials-file /tmp/dbmap-ear-simulator-v1.json
 ```
 
-For an authenticated summary of nodes, the latest 500 observations, and Mosquitto broker statistics, run:
+For a concise, authenticated list of Hub service statuses, run:
 
 ```bash
 uv run --project hub/bootstrap python scripts/hub_summary.py \
   --hub-host "$DBMAP_LAN_IP"
 ```
 
-The broker section includes connected clients, registered client sessions, byte totals, uptime, and version from Mosquitto's `$SYS` status topics. Add `--watch` to print a summary once and then report new observations, node-state changes, and MQTT client-count changes every 15 seconds; use `--interval-seconds 30` to change the interval. Stop watch mode with `Ctrl+C`.
+The default output shows the Hub mode, Hub ID, and one status line each for Hub API, Database, Policy engine, and MQTT broker. Use `--output json` for machine-readable output from the Hub status endpoint. Add `--watch` to poll service statuses every 15 seconds; text mode reports only changes, while JSON mode emits one JSON object per poll. Use `--interval-seconds 30` to change the interval. Component details such as broker metrics remain available on demand in the web UI. Stop watch mode with `Ctrl+C`.
 
 ### Explore observation source hints
 
