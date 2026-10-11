@@ -1,6 +1,12 @@
 server {
     listen ${DBMAP_HTTPS_PORT} ssl;
     server_name _;
+    server_tokens off;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:TLS:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
 
     # Container IPs may change on recreation; query Docker DNS at request time.
     resolver 127.0.0.11 valid=10s ipv6=off;
@@ -11,12 +17,27 @@ server {
     ssl_certificate /certs/server.crt;
     ssl_certificate_key /certs/server.key;
 
+    error_page 404 /dbmap-404.html;
+    error_page 500 502 503 504 /dbmap-unavailable.html;
+
     sub_filter_once on;
     sub_filter '</head>' '<meta name="dbmap-base-path" content="${DBMAP_PUBLIC_BASE_PATH}"></head>';
 
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+
+    location = /dbmap-404.html {
+        internal;
+        root /usr/share/nginx/html;
+    }
+
+    location = /dbmap-unavailable.html {
+        internal;
+        root /usr/share/nginx/html;
+    }
 
     location = / {
         if ($dbmap_public_base_path != "") {
@@ -63,6 +84,7 @@ server {
 
     location ~ ^(?<request_base>/[^/]+(?:/[^/]+)*)?(?<api_uri>/api/.*)$ {
         if ($request_base != $dbmap_public_base_path) { return 404; }
+        if ($api_uri !~ ^/api/v1/) { return 404; }
         proxy_pass https://$hub_bootstrap_upstream$api_uri;
         proxy_ssl_server_name on;
         proxy_ssl_name hub.local;

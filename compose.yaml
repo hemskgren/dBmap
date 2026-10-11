@@ -59,6 +59,21 @@ services:
       - ./mqtt/certs:/certs:ro
     networks:
       - opa-private
+    healthcheck:
+      test:
+        - CMD
+        - /opa
+        - eval
+        - --data
+        - /policies
+        - --format
+        - raw
+        - --fail
+        - 'http.send({"method":"GET","url":"https://opa:8181/health?plugins=true","tls_ca_cert_file":"/certs/ca.crt"}).status_code == 200'
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   nginx:
     build:

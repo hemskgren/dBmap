@@ -104,9 +104,20 @@
       .user-identity-list { display: grid; gap: 0.3rem; min-width: 15rem; }
       .user-identity-form { display: flex; gap: 0.35rem; }
       .user-identity-form input { min-width: 10rem; }
-      .group-members { display: grid; gap: 0.45rem; min-width: 18rem; }
-      .group-member { display: flex; align-items: center; flex-wrap: wrap; gap: 0.35rem; }
-      .group-member select { width: auto; min-width: 7rem; padding: 0.35rem; }
+      .group-members { display: grid; min-width: 22rem; }
+      .group-member { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.55rem 1rem; padding: 0.55rem 0; }
+      .group-member + .group-member { border-top: 1px solid #e3e9f1; }
+      .group-member-info { display: grid; min-width: 0; gap: 0.12rem; }
+      .group-member-name { font-weight: 650; }
+      .group-member-identifiers { display: flex; flex-wrap: wrap; gap: 0.15rem 0.8rem; color: #526078; font-size: 0.82rem; }
+      .group-member-identifier { display: inline-flex; gap: 0.25rem; }
+      .group-member-identifiers code { color: #34445c; font: inherit; overflow-wrap: anywhere; user-select: all; }
+      .group-member-control { display: grid; grid-template-columns: auto auto auto; align-items: center; gap: 0.35rem; }
+      .group-member-control select { width: auto; min-width: 7rem; padding: 0.35rem; }
+      .group-members button, .group-status-button { padding: 0.4rem 0.62rem; font-size: 0.88rem; }
+      .group-member-role { color: #526078; font-size: 0.9rem; }
+      .group-member-add { display: flex; flex-wrap: wrap; }
+      .group-member-add select { width: auto; }
       #created-token { padding: 0.8rem; border-radius: 7px; background: #fff7d6; overflow-wrap: anywhere; }
       #installation-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 0.8rem; }
       #installation-form .actions { grid-column: 1 / -1; }
@@ -116,6 +127,8 @@
         #installation-form .actions { grid-column: auto; }
         .toolbar { align-items: flex-start; }
         #create-panel, #create-group-panel { align-items: stretch; flex-direction: column; }
+        .group-member { grid-template-columns: minmax(0, 1fr); }
+        .group-member-control { grid-template-columns: auto auto auto; justify-content: start; }
         header { padding: 0.65rem 1rem; }
         main { width: calc(100vw - 1rem); margin: 0.5rem auto; }
       }
@@ -746,6 +759,7 @@
         createForm.querySelector('button[type="submit"]').disabled = ownerSelect.disabled;
 
         const list = document.getElementById('group-list');
+        const usersById = new Map(users.map((user) => [user.user_id, user]));
         list.replaceChildren();
         if (!groups.length) {
           const row = el('tr');
@@ -767,8 +781,27 @@
           const members = el('div', undefined, 'group-members');
           for (const member of group.members) {
             const memberRow = el('div', undefined, 'group-member');
-            memberRow.append(el('span', `${member.display_name} (${member.user_id})`));
+            const memberInfo = el('div', undefined, 'group-member-info');
+            memberInfo.append(el('span', member.display_name, 'group-member-name'));
+            const identifiers = el('div', undefined, 'group-member-identifiers');
+            const userId = el('span', undefined, 'group-member-identifier');
+            userId.append(el('span', 'dBmap ID'), el('code', member.user_id));
+            identifiers.append(userId);
+            for (const identity of usersById.get(member.user_id)?.external_identities ?? []) {
+              const identityId = el('span', undefined, 'group-member-identifier');
+              const provider = identity.provider === 'github'
+                ? 'GitHub ID'
+                : `${identity.provider} ID`;
+              identityId.append(
+                el('span', identity.status === 'active' ? provider : `${provider} (disabled)`),
+                el('code', identity.provider_subject),
+              );
+              identifiers.append(identityId);
+            }
+            memberInfo.append(identifiers);
+            memberRow.append(memberInfo);
             if (isAdmin) {
+              const controls = el('div', undefined, 'group-member-control');
               const roleSelect = document.createElement('select');
               roleSelect.setAttribute('aria-label', `Role for ${member.display_name}`);
               for (const role of ['owner', 'member', 'viewer']) {
@@ -799,15 +832,16 @@
                   showGroupsStatus(error.message, true);
                 }
               });
-              memberRow.append(roleSelect, saveRole, removeMember);
+              controls.append(roleSelect, saveRole, removeMember);
+              memberRow.append(controls);
             } else {
-              memberRow.append(el('span', `· ${member.role}`));
+              memberRow.append(el('span', member.role, 'group-member-role'));
             }
             members.append(memberRow);
           }
           if (!group.members.length) members.append(el('span', 'No members'));
           if (isAdmin) {
-            const addForm = el('form', undefined, 'group-member');
+            const addForm = el('form', undefined, 'group-member group-member-add');
             const userSelect = document.createElement('select');
             userSelect.setAttribute('aria-label', `Add member to ${group.name}`);
             userSelect.append(new Option('Add active user', ''));
@@ -842,7 +876,7 @@
 
           const actions = el('td');
           if (isAdmin) {
-            const statusButton = el('button', group.status === 'active' ? 'Disable group' : 'Activate group', group.status === 'active' ? 'danger' : 'secondary');
+            const statusButton = el('button', group.status === 'active' ? 'Disable group' : 'Activate group', `group-status-button ${group.status === 'active' ? 'danger' : 'secondary'}`);
             statusButton.type = 'button';
             statusButton.addEventListener('click', async () => {
               try {

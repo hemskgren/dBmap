@@ -47,4 +47,4 @@ uv run pytest tests ../../tests
 
 Run Rego authorization tests from the repository root with `sh scripts/test-policy.sh` (requires OPA or Docker).
 
-The hub container currently uses Python 3.12, the runtime used by the deployed local hub and verified test environment. Although the package metadata allows Python 3.11 and later, a test run on Python 3.14.4 currently fails during SQLAlchemy 2.0.36 ORM model initialization, before test collection completes. Keep the container on 3.12 until the ORM dependency is upgraded and the full suite and container build pass on a newer runtime.
+The hub container uses Python 3.14 with SQLAlchemy 2.0.54. The full Hub and repository test suite passes on Python 3.14.4. Package metadata continues to allow Python 3.11 and later.

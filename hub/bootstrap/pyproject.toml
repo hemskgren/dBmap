@@ -4,19 +4,19 @@ version = "0.1.0"
 description = "dBmap hub-bootstrap: identity, provisioning, desired/reported state"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi==0.115.6",
+    "fastapi==0.143.0",
     "uvicorn[standard]==0.32.1",
-    "sqlalchemy==2.0.36",
+    "sqlalchemy==2.0.54",
     "paho-mqtt==2.1.0",
     "pydantic-settings==2.6.1",
-    "python-multipart==0.0.17",
+    "python-multipart==0.0.32",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "anyio==4.14.0",
+    "anyio==4.15.1",
     "httpx==0.27.2",
-    "pytest==8.3.4",
+    "pytest==9.1.1",
     "ruff==0.16.10",
 ]
 

@@ -24,11 +24,13 @@ The local deployment now includes a minimal edge proxy and web frontend as part 
 - `https://<hub-host>:8443/api/...` proxies to the Hub bootstrap API
 - Hub bootstrap is reachable only on the internal Compose network; Nginx proxies to it using verified HTTPS
 - Nginx also verifies HTTPS to the web service and OPA using separate certificates
+- Nginx accepts TLS 1.2 and 1.3, disables session tickets and version disclosure, and sends browser security headers
+- Missing pages and unavailable upstream services receive local dBmap-branded error pages; the latter keeps the original gateway error status
 - Set `DBMAP_PUBLIC_BASE_PATH=/dbmap` (or `/hub`) to serve the UI and API below that path; leave it empty for root deployment. The browser UI uses the configured prefix, and CLI/simulator tools read it from the environment or accept `--base-path`.
 - authorization is still enforced by the backend API; the browser UI is not a trust boundary
 - Nginx verifies the Hub's upstream TLS certificate using the stable `hub.local` certificate name, regardless of whether clients connect to the proxy by IP or hostname
 
-The Hub API delegates role and action decisions to OPA. OPA is attached to a private Compose network shared only with Hub bootstrap and has no host-published port. Hub-to-OPA calls use HTTPS and validate OPA's certificate against the local CA. This is TLS server authentication, not mutual TLS. The default decision URL is `https://opa:8181/v1/data/dbmap/authz/allow`; deployments can override it with `DBMAP_OPA_DECISION_URL`, which must use HTTPS. If OPA is unavailable or returns no boolean decision, protected API requests return HTTP 503 rather than being allowed. The Rego policy is mounted read-only from `policy/`, and OPA watches that directory to reload changed policy files. Compose reports the web service's HTTPS health in `docker compose ps`.
+The Hub API delegates role and action decisions to OPA. OPA is attached to a private Compose network shared only with Hub bootstrap and has no host-published port. Hub-to-OPA calls use HTTPS and validate OPA's certificate against the local CA. This is TLS server authentication, not mutual TLS. The default decision URL is `https://opa:8181/v1/data/dbmap/authz/allow`; deployments can override it with `DBMAP_OPA_DECISION_URL`, which must use HTTPS. If OPA is unavailable or returns no boolean decision, protected API requests return HTTP 503 rather than being allowed. The Rego policy is mounted read-only from `policy/`, and OPA watches that directory to reload changed policy files. Compose checks OPA's HTTPS `/health?plugins=true` endpoint using the mounted local CA and reports the result in `docker compose ps`.
 
 Run the policy unit tests from the repository root with:
 
@@ -121,6 +123,8 @@ curl -sS -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
 ```
 
 The browser UI at `https://hub.local:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/` accepts either `DBMAP_ADMIN_TOKEN` or `DBMAP_VIEWER_TOKEN`. The Hub tab shows local mode and component status. Click **Details** beside Hub API, Database, Policy engine, or MQTT broker to fetch that component's summary; those detail requests do not run until clicked. Database details include the SQLite version, storage use, and table row counts. Policy details show OPA HTTPS health and plugin readiness. MQTT details show the broker metrics received by the Hub over its existing TLS connection. The Devices tab summarizes device counts, lifecycle, availability, and the device list. The Observations tab shows up to the latest 100 observations in a timeline using local date and time; select an entry to view its original JSON, which retains UTC timestamps. Ear installation distances are site context only and load when expanded. It lists all pairwise distances when there are fewer than 10 registered Ears; for 10 or more, it shows only the shortest and longest valid distances and points to `scripts/hub_event_track.py` for detailed site analysis. The viewer token grants read-only access to device, Hub, and observation data; the admin token additionally enables device creation and lifecycle actions. Tokens are held in browser memory only and cleared on sign-out or page reload. The browser is not the security boundary: the API independently checks the token and role. Device status is online when the Hub received a keepalive within the previous 90 seconds; otherwise it is offline.
+
+The Groups tab shows member names, copyable dBmap user IDs, and linked GitHub numeric IDs. Local administrators can manage group membership and roles there; viewers can inspect the directory.
 
 Web timestamps use day/month/year and a 24-hour clock in the browser's local time zone. Human-readable Python reports use the same date/time order in the host's local time zone. API timestamps and `--output json` retain UTC ISO 8601 values.
 
@@ -433,4 +437,4 @@ uv run ruff check app
 uv run pytest tests ../../tests
 ```
 
-The hub container currently uses Python 3.12, the runtime used by the deployed local hub and the verified test environment. Although the package metadata allows Python 3.11 and later, a test run on Python 3.14.4 currently fails during SQLAlchemy 2.0.36 ORM model initialization, before test collection completes. Keep the container on 3.12 until the ORM dependency is upgraded and the full suite and container build pass on a newer runtime.
+The Hub container uses Python 3.14 with SQLAlchemy 2.0.54. The full Hub and repository test suite passes on Python 3.14.4. Package metadata continues to allow Python 3.11 and later.
