@@ -147,6 +147,9 @@ class NodeView(BaseModel):
     reported: dict[str, Any]
     last_seen_at: str | None
     installation: InstallationMetadataBody | None = None
+    owner_type: Literal["user", "group"] | None = None
+    owner_id: str | None = None
+    owner_display_name: str | None = None
 
 
 class DeviceSummaryView(BaseModel):
@@ -158,6 +161,9 @@ class DeviceSummaryView(BaseModel):
     status: Literal["online", "offline"]
     last_seen_at: str | None
     installation: InstallationMetadataBody | None = None
+    owner_type: Literal["user", "group"] | None = None
+    owner_id: str | None = None
+    owner_display_name: str | None = None
 
 
 class CreateUserBody(BaseModel):
@@ -197,3 +203,70 @@ class UserView(BaseModel):
     created_at: datetime
     updated_at: datetime
     external_identities: list[UserIdentityView]
+
+
+class DeviceOwnerBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    owner_type: Literal["user", "group"] | None = None
+    owner_id: str | None = None
+
+    @model_validator(mode="after")
+    def require_owner_pair(self) -> "DeviceOwnerBody":
+        if (self.owner_type is None) != (self.owner_id is None):
+            raise ValueError("owner_type and owner_id must be provided together")
+        return self
+
+
+class OwnershipAssignmentView(BaseModel):
+    assignment_id: str
+    owner_type: Literal["user", "group"]
+    owner_id: str
+    owner_display_name: str
+    valid_from: datetime
+    valid_to: datetime | None
+
+
+class DeviceOwnershipView(BaseModel):
+    node_id: str
+    current_owner_type: Literal["user", "group"] | None
+    current_owner_id: str | None
+    current_owner_display_name: str | None
+    assignments: list[OwnershipAssignmentView]
+
+
+class CreateGroupBody(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    owner_user_id: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def normalize_group_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("name must not be blank")
+        return normalized
+
+
+class GroupMemberBody(BaseModel):
+    role: Literal["owner", "member", "viewer"]
+
+
+class GroupStatusBody(BaseModel):
+    status: Literal["active", "disabled"]
+
+
+class GroupMemberView(BaseModel):
+    user_id: str
+    display_name: str
+    role: Literal["owner", "member", "viewer"]
+
+
+class GroupView(BaseModel):
+    group_id: str
+    name: str
+    status: Literal["active", "disabled"]
+    created_by_user_id: str
+    created_at: datetime
+    updated_at: datetime
+    members: list[GroupMemberView]

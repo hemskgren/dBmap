@@ -130,6 +130,9 @@ def test_viewer_can_read_device_summaries_but_not_admin_api() -> None:
     device = next(item for item in devices.json() if item["node_id"] == created.json()["node_id"])
     assert device["status"] == "offline"
     assert device["hardware_revision"] == "EAR-DEV-V1"
+    assert device["owner_type"] is None
+    assert device["owner_id"] is None
+    assert device["owner_display_name"] is None
     assert "desired" not in device
     assert "reported" not in device
     assert client.get("/api/v1/nodes", headers=viewer_headers).status_code == 403

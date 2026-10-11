@@ -28,7 +28,7 @@ The local deployment now includes a minimal edge proxy and web frontend as part 
 - authorization is still enforced by the backend API; the browser UI is not a trust boundary
 - Nginx verifies the Hub's upstream TLS certificate using the stable `hub.local` certificate name, regardless of whether clients connect to the proxy by IP or hostname
 
-The Hub API delegates role and action decisions to OPA. OPA is attached to a private Compose network shared only with Hub bootstrap and has no host-published port. Hub-to-OPA calls use HTTPS and validate OPA's certificate against the local CA. This is TLS server authentication, not mutual TLS. The default decision URL is `https://opa:8181/v1/data/dbmap/authz/allow`; deployments can override it with `DBMAP_OPA_DECISION_URL`, which must use HTTPS. If OPA is unavailable or returns no boolean decision, protected API requests return HTTP 503 rather than being allowed. The Rego policy is mounted read-only from `policy/`.
+The Hub API delegates role and action decisions to OPA. OPA is attached to a private Compose network shared only with Hub bootstrap and has no host-published port. Hub-to-OPA calls use HTTPS and validate OPA's certificate against the local CA. This is TLS server authentication, not mutual TLS. The default decision URL is `https://opa:8181/v1/data/dbmap/authz/allow`; deployments can override it with `DBMAP_OPA_DECISION_URL`, which must use HTTPS. If OPA is unavailable or returns no boolean decision, protected API requests return HTTP 503 rather than being allowed. The Rego policy is mounted read-only from `policy/`, and OPA watches that directory to reload changed policy files. Compose reports the web service's HTTPS health in `docker compose ps`.
 
 Run the policy unit tests from the repository root with:
 
@@ -88,6 +88,8 @@ docker compose up --build -d
 ```
 
 The certificate generator preserves an existing local CA and refreshes the Hub/Nginx/broker certificate for `hub.local`, the broker's internal `mosquitto` name, and the NUC's current LAN IP. It also creates separate `dbmap-web` and `opa` certificates for verified service-to-service HTTPS. OPA uses HTTPS only and remains unpublished to the host. If it reports that an existing CA is unsuitable, run `./scripts/gen-mqtt-certs.sh --rotate-ca` to replace it. CA rotation invalidates trust on previously flashed devices; copy the new CA and erase/reflash each device.
+
+When applying the OPA policy watcher or web healthcheck to an existing deployment, recreate those services with `docker compose up -d --force-recreate opa dbmap-web`. Later changes under `policy/` are reloaded by OPA automatically. `docker compose ps` reports the web service's health.
 
 The local CA is not automatically trusted by browsers or operating systems. Install `mqtt/certs/ca.crt` in the trusted root store on each client using that platform's documented process, then browse to `hub.local` or the certificate-covered LAN IP. For command-line requests, pass `--cacert mqtt/certs/ca.crt`. The server certificate covers `hub.local`, `localhost`, `127.0.0.1`, and the configured LAN IP. Do not treat a browser certificate warning as successful verification.
 

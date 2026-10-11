@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
-from app import identity_service, policy, service
+from app import group_service, identity_service, ownership_service, policy, service
 from app.config import settings
 from app.db import get_db
 from app.ids import timing_safe_eq
@@ -14,11 +14,17 @@ from app.mqtt_listener import get_broker_metrics, is_connected
 from app.mqtt_security import MqttSecurityError
 from app.policy import PolicyUnavailable
 from app.schemas import (
+    CreateGroupBody,
     CreateNodeRequest,
     CreateNodeResponse,
     CreateUserBody,
     DesiredStateBody,
+    DeviceOwnerBody,
+    DeviceOwnershipView,
     DeviceSummaryView,
+    GroupMemberBody,
+    GroupStatusBody,
+    GroupView,
     InstallationMetadataBody,
     LinkExternalIdentityBody,
     NodeLifecycleBody,
@@ -59,6 +65,7 @@ def require_policy(action: str, resource_type: str):
     def dependency(
         request: Request,
         authorization: str | None = Header(default=None),
+        db: Session = Depends(get_db),
     ) -> Principal:
         principal = _authenticate(authorization)
         resource = {"type": resource_type}
@@ -67,6 +74,9 @@ def require_policy(action: str, resource_type: str):
             resource_id = request.path_params.get("identity_id")
         if resource_id is not None:
             resource["id"] = resource_id
+            if resource_type == "nodes":
+                owner = ownership_service.get_current_owner(db, resource_id)
+                resource["owner_id"] = owner[1] if owner else None
         decision_input = {
             "subject": {
                 "id": principal.subject_id,
@@ -171,6 +181,87 @@ def put_identity_status(
 
 
 @router.get(
+    "/api/v1/groups",
+    response_model=list[GroupView],
+    dependencies=[Depends(require_policy("groups.read", "groups"))],
+)
+def list_groups(db: Session = Depends(get_db)) -> list[GroupView]:
+    return group_service.list_groups(db)
+
+
+@router.post(
+    "/api/v1/groups",
+    response_model=GroupView,
+    dependencies=[Depends(require_policy("groups.create", "groups"))],
+)
+def create_group(body: CreateGroupBody, db: Session = Depends(get_db)) -> GroupView:
+    if body.owner_user_id is None:
+        raise HTTPException(status_code=422, detail="owner_user_id is required")
+    try:
+        return group_service.create_group(
+            db,
+            body.name,
+            body.owner_user_id,
+            settings.group_creation_limit_per_user,
+        )
+    except group_service.InvalidGroupMember:
+        raise HTTPException(status_code=404, detail="unknown or disabled owner user") from None
+    except group_service.GroupCreationLimit:
+        raise HTTPException(status_code=409, detail="group creation limit reached") from None
+
+
+@router.put(
+    "/api/v1/groups/{group_id}/members/{user_id}",
+    response_model=GroupView,
+    dependencies=[Depends(require_policy("groups.update", "groups"))],
+)
+def put_group_member(
+    group_id: str,
+    user_id: str,
+    body: GroupMemberBody,
+    db: Session = Depends(get_db),
+) -> GroupView:
+    try:
+        return group_service.set_member_role(db, group_id, user_id, body.role)
+    except group_service.GroupNotFound:
+        raise HTTPException(status_code=404, detail="unknown group") from None
+    except group_service.InvalidGroupMember:
+        raise HTTPException(status_code=404, detail="unknown or disabled user") from None
+    except group_service.LastGroupOwner:
+        raise HTTPException(status_code=409, detail="a group must have at least one owner") from None
+
+
+@router.delete(
+    "/api/v1/groups/{group_id}/members/{user_id}",
+    response_model=GroupView,
+    dependencies=[Depends(require_policy("groups.update", "groups"))],
+)
+def delete_group_member(group_id: str, user_id: str, db: Session = Depends(get_db)) -> GroupView:
+    try:
+        return group_service.remove_member(db, group_id, user_id)
+    except group_service.GroupNotFound:
+        raise HTTPException(status_code=404, detail="unknown group") from None
+    except group_service.LastGroupOwner:
+        raise HTTPException(status_code=409, detail="a group must have at least one owner") from None
+
+
+@router.put(
+    "/api/v1/groups/{group_id}/status",
+    response_model=GroupView,
+    dependencies=[Depends(require_policy("groups.update", "groups"))],
+)
+def put_group_status(
+    group_id: str,
+    body: GroupStatusBody,
+    db: Session = Depends(get_db),
+) -> GroupView:
+    try:
+        return group_service.set_group_status(db, group_id, body.status)
+    except group_service.GroupNotFound:
+        raise HTTPException(status_code=404, detail="unknown group") from None
+
+
+@router.get(
     "/api/v1/devices",
     response_model=list[DeviceSummaryView],
     dependencies=[Depends(require_policy("devices.list_summary", "device_summaries"))],
@@ -187,6 +278,9 @@ def list_devices(db: Session = Depends(get_db)) -> list[DeviceSummaryView]:
             status=node.status,
             last_seen_at=node.last_seen_at,
             installation=node.installation,
+            owner_type=node.owner_type,
+            owner_id=node.owner_id,
+            owner_display_name=node.owner_display_name,
         )
         for node in nodes
     ]
@@ -306,6 +400,36 @@ def get_node(node_id: str, db: Session = Depends(get_db)) -> NodeView:
         return service.get_node(db, node_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown node") from None
+
+
+@router.get(
+    "/api/v1/nodes/{node_id}/ownership",
+    response_model=DeviceOwnershipView,
+    dependencies=[Depends(require_policy("nodes.read_ownership", "nodes"))],
+)
+def get_node_ownership(node_id: str, db: Session = Depends(get_db)) -> DeviceOwnershipView:
+    try:
+        return ownership_service.get_ownership(db, node_id)
+    except ownership_service.OwnershipTargetNotFound:
+        raise HTTPException(status_code=404, detail="unknown node") from None
+
+
+@router.put(
+    "/api/v1/nodes/{node_id}/ownership",
+    response_model=DeviceOwnershipView,
+    dependencies=[Depends(require_policy("nodes.update_ownership", "nodes"))],
+)
+def put_node_ownership(
+    node_id: str,
+    body: DeviceOwnerBody,
+    db: Session = Depends(get_db),
+) -> DeviceOwnershipView:
+    try:
+        return ownership_service.set_owner(db, node_id, body.owner_type, body.owner_id)
+    except ownership_service.OwnershipTargetNotFound:
+        raise HTTPException(status_code=404, detail="unknown node or owner") from None
+    except ownership_service.InactiveOwner:
+        raise HTTPException(status_code=409, detail="disabled owners cannot own devices") from None
 
 
 @router.put("/api/v1/nodes/{node_id}/desired", response_model=NodeView, dependencies=[Depends(require_policy("nodes.update_desired", "nodes"))])

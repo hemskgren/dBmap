@@ -4,8 +4,8 @@
 
 - A Local Hub has a stable `DBMAP_SITE_ID` (currently defaulting to `local-01`). The ID belongs to the Hub, not to a user.
 - The Hub API authenticates configured local admin and viewer bearer tokens. These are deployment credentials, not individual user accounts. OPA authorizes their roles and fails closed when it cannot decide.
-- Nodes are identified by their existing `node_id` and live in this Local Hub's database. There is no `hub_id` column on each node or hierarchy between hubs yet; this deployment is the association boundary. Desired state, reported state, observations, and installation metadata are stored separately. There is no device ownership model today.
-- The `users` and `external_identities` tables provide the internal identity model. Local admin API routes and the admin-only Users tab can create, inspect, disable, and explicitly link these records. They are not used for login or per-user resource authorization yet.
+- Nodes are identified by their existing `node_id` and live in this Local Hub's database. There is no `hub_id` column on each node or hierarchy between hubs yet; this deployment is the association boundary. Desired state, reported state, observations, installation metadata, and ownership are stored separately. Ownership is an optional, admin-managed relationship with retained assignment history; ordinary-user sessions are not implemented yet.
+- The `users` and `external_identities` tables provide the internal identity model. Admins can create, inspect, disable, and explicitly link these records. Admins and local viewers can read the user directory; the Users tab is read-only for viewers. These records are not used for login yet.
 - Local Hub services, device communication, and local administration do not call GitHub. They use the local API, database, OPA, and MQTT services when internet access is unavailable.
 
 ## Operating modes
@@ -38,14 +38,15 @@ Hub identity, node identity, user identity, ownership, and installation remain d
 | --- | --- | --- |
 | Local Hub | `DBMAP_SITE_ID` / `settings.site_id` | One configured identity for this Hub; not a database user or node ID |
 | Device | `nodes.node_id` in the Local Hub database | Stable across user changes and installation updates; there is no per-node Hub association field yet |
-| Installation | `installation_metadata.node_id` | Site/location facts keyed to the device; no owner relationship |
-| User | `users.user_id` | Stable dBmap UUID; no device ownership exists yet |
+| Installation | `installation_metadata.node_id` | Current site/location facts keyed to the device; no owner relationship |
+| Ownership | `device_ownership` assignment rows | Optional owner relationship keyed to stable device and user IDs; reassignment retains prior rows |
+| User | `users.user_id` | Stable dBmap UUID; may be assigned as owner by the local administrator |
 | Login identity | `external_identities.identity_id`, provider, provider subject | Explicitly linked to one internal user |
 
-Provisioning a device does not require a user. Relocation or future ownership changes must not replace the device ID or delete observations. If ownership is introduced, model it as a separate relationship and preserve its history; do not infer ownership from who signed in or provisioned the device.
+Provisioning a device does not require a user. Relocation or ownership changes do not replace the device ID or delete observations. Ownership is assigned explicitly by a local administrator; it is never inferred from who signs in or provisions the device. An owner may read detailed device status after ordinary-user sessions are implemented. Owners cannot edit installation or configuration; those operations remain local-admin-only.
 
 ## Schema and migration status
 
-The `users` and `external_identities` tables are additive. Startup currently uses SQLAlchemy `create_all` to create missing tables; this change does not rewrite node, installation, or observation records. There is no Alembic migration framework in this service yet. Any future schema change that alters existing records must include an explicit, backed-up migration and rollback/recovery instructions.
+The `users`, `external_identities`, and `device_ownership` tables are additive. Startup currently uses SQLAlchemy `create_all` to create missing tables; ownership rows are initially empty, and startup does not rewrite node, installation, or observation records. There is no Alembic migration framework in this service yet. Any future schema change that alters existing records must include an explicit, backed-up migration and rollback/recovery instructions.
 
 The admin provisioning/linking API and Users tab exist, but the tables do not make multi-user login available. Before enabling it, implement and test the session store, API authorization for individual users, OAuth callback protections, and opt-in deployment configuration. Keep the existing local admin credential usable if GitHub or the internet is unavailable.

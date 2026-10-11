@@ -29,6 +29,16 @@ services:
       - "443"
     volumes:
       - ./mqtt/certs:/certs:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import ssl, urllib.request; urllib.request.urlopen('https://dbmap-web/', context=ssl.create_default_context(cafile='/certs/ca.crt'), timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   opa:
     image: openpolicyagent/opa:1.21.1
@@ -40,6 +50,7 @@ services:
       - --addr=https://0.0.0.0:8181
       - --tls-cert-file=/certs/opa.crt
       - --tls-private-key-file=/certs/opa.key
+      - --watch
       - /policies
     expose:
       - "8181"
