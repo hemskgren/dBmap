@@ -31,6 +31,7 @@ class Settings(BaseSettings):
         max_length=64,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
     )
+    group_creation_limit_per_user: int = Field(default=1, ge=0, le=100)
 
 
 settings = Settings()

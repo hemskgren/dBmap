@@ -22,6 +22,7 @@ from app.models import (
     ReportedState,
 )
 from app.mqtt_security import ensure_node_security, set_node_security_active
+from app.ownership_service import get_current_owner
 from app.schemas import (
     CreateNodeRequest,
     CreateNodeResponse,
@@ -292,6 +293,7 @@ def node_view(db: Session, node: Node) -> NodeView:
     desired = db.get(DesiredState, node.node_id)
     reported = db.get(ReportedState, node.node_id)
     installation = db.get(InstallationMetadata, node.node_id)
+    owner = get_current_owner(db, node.node_id)
     desired_dict = {
         "firmware_version": desired.firmware_version if desired else "",
         "config_version": desired.config_version if desired else 0,
@@ -346,4 +348,7 @@ def node_view(db: Session, node: Node) -> NodeView:
         reported=reported_dict,
         last_seen_at=isoformat(reported.last_seen_at) if reported else None,
         installation=installation_view,
+        owner_type=owner[0] if owner else None,
+        owner_id=owner[1] if owner else None,
+        owner_display_name=owner[2] if owner else None,
     )

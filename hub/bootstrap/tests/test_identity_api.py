@@ -28,10 +28,20 @@ def test_admin_can_manage_users_and_github_identities_only() -> None:
     assert user["status"] == "active"
     assert user["external_identities"] == []
 
-    assert client.get("/api/v1/users", headers=viewer_headers).status_code == 403
+    viewer_list = client.get("/api/v1/users", headers=viewer_headers)
+    assert viewer_list.status_code == 200
+    assert any(item["user_id"] == user["user_id"] for item in viewer_list.json())
+    viewer_detail = client.get(f"/api/v1/users/{user['user_id']}", headers=viewer_headers)
+    assert viewer_detail.status_code == 200
+    assert viewer_detail.json()["user_id"] == user["user_id"]
     assert client.get("/api/v1/users").status_code == 401
     assert client.post(
         "/api/v1/users", json={"display_name": "Blocked"}, headers=viewer_headers
+    ).status_code == 403
+    assert client.put(
+        f"/api/v1/users/{user['user_id']}/status",
+        json={"status": "disabled"},
+        headers=viewer_headers,
     ).status_code == 403
     assert client.post(
         "/api/v1/users", json={"display_name": "   "}, headers=admin_headers
@@ -87,3 +97,206 @@ def test_identity_management_returns_not_found_for_unknown_user() -> None:
     response = client.get("/api/v1/users/unknown-user", headers=admin_headers)
 
     assert response.status_code == 404
+
+
+def test_admin_can_manage_groups_and_viewer_can_read_group_directory() -> None:
+    client = TestClient(create_app())
+    admin_headers = {"Authorization": "Bearer test-admin"}
+    viewer_headers = {"Authorization": "Bearer test-viewer"}
+    owner = client.post(
+        "/api/v1/users", json={"display_name": "Group owner"}, headers=admin_headers
+    ).json()
+    member = client.post(
+        "/api/v1/users", json={"display_name": "Group member"}, headers=admin_headers
+    ).json()
+
+    created = client.post(
+        "/api/v1/groups",
+        json={"name": "  Operations  ", "owner_user_id": owner["user_id"]},
+        headers=admin_headers,
+    )
+    assert created.status_code == 200, created.text
+    group = created.json()
+    assert group["name"] == "Operations"
+    assert group["status"] == "active"
+    assert [(item["user_id"], item["role"]) for item in group["members"]] == [
+        (owner["user_id"], "owner")
+    ]
+    assert any(
+        item["group_id"] == group["group_id"]
+        for item in client.get("/api/v1/groups", headers=viewer_headers).json()
+    )
+    assert client.post(
+        "/api/v1/groups",
+        json={"name": "Missing owner"},
+        headers=admin_headers,
+    ).status_code == 422
+
+    added = client.put(
+        f"/api/v1/groups/{group['group_id']}/members/{member['user_id']}",
+        json={"role": "member"},
+        headers=admin_headers,
+    )
+    assert added.status_code == 200, added.text
+    assert len(added.json()["members"]) == 2
+
+    changed = client.put(
+        f"/api/v1/groups/{group['group_id']}/members/{member['user_id']}",
+        json={"role": "viewer"},
+        headers=admin_headers,
+    )
+    assert next(item for item in changed.json()["members"] if item["user_id"] == member["user_id"])["role"] == "viewer"
+
+    removed = client.delete(
+        f"/api/v1/groups/{group['group_id']}/members/{member['user_id']}",
+        headers=admin_headers,
+    )
+    assert removed.status_code == 200
+    assert [item["user_id"] for item in removed.json()["members"]] == [owner["user_id"]]
+    cannot_remove_last_owner = client.delete(
+        f"/api/v1/groups/{group['group_id']}/members/{owner['user_id']}",
+        headers=admin_headers,
+    )
+    assert cannot_remove_last_owner.status_code == 409
+
+    disabled = client.put(
+        f"/api/v1/groups/{group['group_id']}/status",
+        json={"status": "disabled"},
+        headers=admin_headers,
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["status"] == "disabled"
+
+
+def test_admin_can_assign_reassign_and_clear_device_ownership_without_changing_device_id() -> None:
+    client = TestClient(create_app())
+    admin_headers = {"Authorization": f"Bearer {settings.admin_token}"}
+    viewer_headers = {"Authorization": f"Bearer {settings.viewer_token}"}
+    node = client.post("/api/v1/nodes", json={"node_type": "ear"}, headers=admin_headers)
+    assert node.status_code == 200, node.text
+    node_id = node.json()["node_id"]
+    first_user = client.post(
+        "/api/v1/users", json={"display_name": "First owner"}, headers=admin_headers
+    ).json()
+    second_user = client.post(
+        "/api/v1/users", json={"display_name": "Second owner"}, headers=admin_headers
+    ).json()
+
+    empty = client.get(f"/api/v1/nodes/{node_id}/ownership", headers=admin_headers)
+    assert empty.status_code == 200
+    assert empty.json() == {
+        "node_id": node_id,
+        "current_owner_type": None,
+        "current_owner_id": None,
+        "current_owner_display_name": None,
+        "assignments": [],
+    }
+    assert client.get(
+        f"/api/v1/nodes/{node_id}/ownership", headers=viewer_headers
+    ).status_code == 403
+
+    assigned = client.put(
+        f"/api/v1/nodes/{node_id}/ownership",
+        json={"owner_type": "user", "owner_id": first_user["user_id"]},
+        headers=admin_headers,
+    )
+    assert assigned.status_code == 200, assigned.text
+    assert assigned.json()["current_owner_id"] == first_user["user_id"]
+
+    reassigned = client.put(
+        f"/api/v1/nodes/{node_id}/ownership",
+        json={"owner_type": "user", "owner_id": second_user["user_id"]},
+        headers=admin_headers,
+    )
+    assert reassigned.status_code == 200, reassigned.text
+    history = reassigned.json()
+    assert history["current_owner_id"] == second_user["user_id"]
+    assert [item["owner_id"] for item in history["assignments"]] == [
+        first_user["user_id"],
+        second_user["user_id"],
+    ]
+    assert history["assignments"][0]["valid_to"] is not None
+    assert history["assignments"][1]["valid_to"] is None
+
+    unassigned = client.put(
+        f"/api/v1/nodes/{node_id}/ownership",
+        json={"owner_type": None, "owner_id": None},
+        headers=admin_headers,
+    )
+    assert unassigned.status_code == 200
+    assert unassigned.json()["current_owner_id"] is None
+    assert len(unassigned.json()["assignments"]) == 2
+    assert unassigned.json()["assignments"][1]["valid_to"] is not None
+    assert client.get(f"/api/v1/nodes/{node_id}", headers=admin_headers).json()["node_id"] == node_id
+
+    group = client.post(
+        "/api/v1/groups",
+        json={"name": "Device group", "owner_user_id": first_user["user_id"]},
+        headers=admin_headers,
+    )
+    assert group.status_code == 200, group.text
+    assigned_group = client.put(
+        f"/api/v1/nodes/{node_id}/ownership",
+        json={"owner_type": "group", "owner_id": group.json()["group_id"]},
+        headers=admin_headers,
+    )
+    assert assigned_group.status_code == 200, assigned_group.text
+    assert assigned_group.json()["current_owner_type"] == "group"
+    device = client.get("/api/v1/devices", headers=viewer_headers)
+    summary = next(item for item in device.json() if item["node_id"] == node_id)
+    assert summary["owner_type"] == "group"
+    assert summary["owner_id"] == group.json()["group_id"]
+    assert summary["owner_display_name"] == "Device group"
+
+
+def test_device_ownership_requires_existing_active_user() -> None:
+    client = TestClient(create_app())
+    admin_headers = {"Authorization": f"Bearer {settings.admin_token}"}
+    node = client.post("/api/v1/nodes", json={"node_type": "ear"}, headers=admin_headers)
+    node_id = node.json()["node_id"]
+    unknown = client.put(
+        f"/api/v1/nodes/{node_id}/ownership",
+        json={"owner_type": "user", "owner_id": str(uuid4())},
+        headers=admin_headers,
+    )
+    assert unknown.status_code == 404
+
+    user = client.post(
+        "/api/v1/users", json={"display_name": "Disabled"}, headers=admin_headers
+    ).json()
+    client.put(
+        f"/api/v1/users/{user['user_id']}/status",
+        json={"status": "disabled"},
+        headers=admin_headers,
+    )
+    disabled = client.put(
+        f"/api/v1/nodes/{node_id}/ownership",
+        json={"owner_type": "user", "owner_id": user["user_id"]},
+        headers=admin_headers,
+    )
+    assert disabled.status_code == 409
+
+
+def test_node_policy_input_uses_database_owner_not_client_input(monkeypatch) -> None:
+    from app import policy
+
+    client = TestClient(create_app())
+    admin_headers = {"Authorization": f"Bearer {settings.admin_token}"}
+    node = client.post("/api/v1/nodes", json={"node_type": "ear"}, headers=admin_headers)
+    user = client.post(
+        "/api/v1/users", json={"display_name": "Assigned"}, headers=admin_headers
+    ).json()
+    node_id = node.json()["node_id"]
+    assigned = client.put(
+        f"/api/v1/nodes/{node_id}/ownership",
+        json={"owner_type": "user", "owner_id": user["user_id"]},
+        headers=admin_headers,
+    )
+    assert assigned.status_code == 200
+
+    inputs = []
+    monkeypatch.setattr(policy, "evaluate", lambda data: inputs.append(data) or True)
+    response = client.get(f"/api/v1/nodes/{node_id}", headers=admin_headers)
+
+    assert response.status_code == 200
+    assert inputs[-1]["resource"]["owner_id"] == user["user_id"]

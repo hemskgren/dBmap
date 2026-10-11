@@ -16,13 +16,18 @@ The Hub API authenticates the current local admin/viewer bearer tokens, then ask
 | `nodes.update_desired` | `nodes/{node_id}` | Allow | Deny |
 | `nodes.update_lifecycle` | `nodes/{node_id}` | Allow | Deny |
 | `nodes.update_installation` | `nodes/{node_id}` | Allow | Deny |
-| `users.read` | `users` | Allow | Deny |
+| `nodes.read_ownership` | `nodes/{node_id}/ownership` | Allow | Deny |
+| `nodes.update_ownership` | `nodes/{node_id}/ownership` | Allow | Deny |
+| `users.read` | `users` | Allow | Allow |
 | `users.create` | `users` | Allow | Deny |
 | `users.update_status` | `users/{user_id}` | Allow | Deny |
 | `users.identities.link` | `users/{user_id}/identities` | Allow | Deny |
 | `users.identities.update_status` | `users/{user_id}/identities/{identity_id}` | Allow | Deny |
+| `groups.read` | `groups` | Allow | Allow |
+| `groups.create` | `groups` | Allow | Deny |
+| `groups.update` | `groups/{group_id}` | Allow | Deny |
 
-The admin rule grants every action to an authenticated admin. A viewer can read the session, Hub status, device summaries, and observations, but cannot read device details or change Hub state. Authentication still happens in the API; OPA never receives the bearer token.
+The admin rule grants every action to an authenticated admin. A viewer can read the session, Hub status, device summaries, observations, internal user directory, and group directory, but cannot read device details or change Hub state, user records, or groups. The Users and Groups tabs are read-only for viewers. Authentication still happens in the API; OPA never receives the bearer token.
 
 ## Operating modes
 
@@ -36,11 +41,15 @@ Multi-user sign-in is not enabled yet. The user and external-identity tables are
 
 At startup, `init_db()` calls SQLAlchemy `create_all`, so these additive tables are created in an existing database without changing existing node IDs, installations, or observations. No table migration is required for this step.
 
-The current admin API is `GET/POST /api/v1/users`, `GET /api/v1/users/{user_id}`, `PUT /api/v1/users/{user_id}/status`, `POST /api/v1/users/{user_id}/identities`, and `PUT /api/v1/users/{user_id}/identities/{identity_id}/status`. It is authorized by the existing local admin token and OPA; viewers are denied. There is no deletion operation. Linking requires an explicit GitHub numeric subject and never merges accounts by display name or email. This API does not authenticate GitHub users.
+The current user API is `GET/POST /api/v1/users`, `GET /api/v1/users/{user_id}`, `PUT /api/v1/users/{user_id}/status`, `POST /api/v1/users/{user_id}/identities`, and `PUT /api/v1/users/{user_id}/identities/{identity_id}/status`. Group management uses `GET/POST /api/v1/groups`, `PUT /api/v1/groups/{group_id}/members/{user_id}`, `DELETE /api/v1/groups/{group_id}/members/{user_id}`, and `PUT /api/v1/groups/{group_id}/status`. These management operations require the local admin token and OPA; viewers can read group and user directories. There is no deletion operation for users or groups. Linking requires an explicit GitHub numeric subject and never merges accounts by display name or email. This API does not authenticate GitHub users.
 
 ## Future policy inputs
 
-The policy lets future authenticated users read shared device summaries, and defines owner access using `subject.id` and `resource.owner_id` for device details and edits. It also defines a provisioning quota using `context.pending_device_count` and `context.provisioning_limit`. The database has no device-ownership or provisioning-record model, so owner details and quota rules are not used by API routes. The existing `POST /api/v1/provision` endpoint exchanges a one-time device bootstrap token and keeps its current stateful validation. Add ownership and quota context only with the corresponding domain model and authorization behavior.
+Users may read shared device summaries. An authenticated user may read detailed status only when `subject.id` matches `resource.owner_id`; owners cannot change desired state, installation, lifecycle, or ownership. The owner detail rule is covered by OPA tests but is not reachable through an ordinary-user session yet: the API currently authenticates only the local admin and viewer bearer tokens. Device ownership is stored separately in `device_ownership`, with a retained assignment history and at most one current user or group owner per device. Existing nodes begin unassigned. Admin-only `GET/PUT /api/v1/nodes/{node_id}/ownership` routes inspect or change assignments; disabled users and groups cannot be newly assigned. Reassignment and unassignment close the active record rather than deleting it. No node IDs, installations, observations, or ownership history are regenerated or erased.
+
+For node-specific actions, the API resolves the current owner from the database and includes `resource.owner_id` in OPA input. This is already wired for every node resource route. Ordinary-user sessions are still absent, so only the admin and viewer bearer-token principals can currently reach those routes. When user sessions are introduced, they must identify the active internal user ID and OPA will enforce the owner match without trusting a client-supplied owner ID. Keep ownership changes admin-only. The existing `POST /api/v1/provision` endpoint exchanges a one-time device bootstrap token; device provisioning remains independent of users and ownership. The policy also retains a future provisioning quota rule, but there is no provisioning quota model or ordinary-user provisioning route yet.
+
+Installation remains separate data keyed by the stable node ID in `installation_metadata`. The current one-row-per-device representation suits the single Local Hub installation context; relocation updates installation metadata without changing node identity or observations. A future multi-site installation history is outside this change.
 
 Run the Rego tests from the repository root:
 

@@ -6,10 +6,12 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -35,6 +37,47 @@ class User(Base):
     external_identities: Mapped[list["ExternalIdentity"]] = relationship(
         back_populates="user", passive_deletes="all"
     )
+
+
+class Group(Base):
+    __tablename__ = "groups"
+    __table_args__ = (CheckConstraint("status IN ('active', 'disabled')"),)
+
+    group_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(128))
+    created_by_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.user_id", ondelete="RESTRICT"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class GroupMembership(Base):
+    __tablename__ = "group_memberships"
+    __table_args__ = (
+        CheckConstraint("role IN ('owner', 'member', 'viewer')"),
+        CheckConstraint("valid_to IS NULL OR valid_to >= valid_from"),
+        Index(
+            "uq_group_membership_current",
+            "group_id",
+            "user_id",
+            unique=True,
+            sqlite_where=text("valid_to IS NULL"),
+            postgresql_where=text("valid_to IS NULL"),
+        ),
+    )
+
+    membership_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    group_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("groups.group_id", ondelete="RESTRICT"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.user_id", ondelete="RESTRICT"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(16))
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ExternalIdentity(Base):
@@ -68,6 +111,37 @@ class Node(Base):
     availability: Mapped[str] = mapped_column(String(32), default="SERVICE")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class DeviceOwnership(Base):
+    __tablename__ = "device_ownership"
+    __table_args__ = (
+        CheckConstraint("owner_type IN ('user', 'group')"),
+        CheckConstraint(
+            "(owner_type = 'user' AND owner_user_id IS NOT NULL AND owner_group_id IS NULL) OR "
+            "(owner_type = 'group' AND owner_group_id IS NOT NULL AND owner_user_id IS NULL)"
+        ),
+        CheckConstraint("valid_to IS NULL OR valid_to >= valid_from"),
+        Index(
+            "uq_device_ownership_current",
+            "node_id",
+            unique=True,
+            sqlite_where=text("valid_to IS NULL"),
+            postgresql_where=text("valid_to IS NULL"),
+        ),
+    )
+
+    assignment_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    node_id: Mapped[str] = mapped_column(String(64), ForeignKey("nodes.node_id", ondelete="RESTRICT"), index=True)
+    owner_type: Mapped[str] = mapped_column(String(8), default="user")
+    owner_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.user_id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    owner_group_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("groups.group_id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class InstallationMetadata(Base):
