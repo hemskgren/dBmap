@@ -144,6 +144,14 @@ class DeviceOwnership(Base):
     valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class RegistrationRequest(Base):
+    __tablename__ = "registration_requests"
+
+    idempotency_key: Mapped[str] = mapped_column(String(36), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(64), ForeignKey("nodes.node_id", ondelete="RESTRICT"), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class InstallationMetadata(Base):
     __tablename__ = "installation_metadata"
 

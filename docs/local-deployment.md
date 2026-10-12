@@ -103,24 +103,13 @@ Optional mDNS publishing can be started on a host with Avahi installed:
 
 Keep the publisher running while you need the name; it stops advertising when the process exits. Publishing is optional and a missing/unavailable Avahi installation does not affect the Hub. Compose publishes Nginx on `DBMAP_HTTPS_PORT` (default `8443`) and Mosquitto on `8883` at `DBMAP_LAN_IP`. The Hub API, web, and OPA ports remain internal to Compose. An existing Nginx can terminate public HTTPS on 443 and proxy to `https://<hub-host>:8443`, verifying the local CA.
 
-For the first ESP32 test, use the hub's numeric LAN IP in the firmware. `hub.local` works for host tools via mDNS, but this firmware does not include an explicit mDNS resolver. The IP is already included in the generated server certificate. Set the firmware's Hub base URL to `https://<mini-PC-LAN-IP>:8443` by default (or the configured listener port). Set `DBMAP_ADVERTISED_MQTT_HOST` in `.env` to the same LAN IP as `DBMAP_LAN_IP` and apply the setting so the provisioning response gives that reachable address to the ESP32:
+For device deployments, set `DBMAP_ADVERTISED_MQTT_HOST` in `.env` to the Hub's reachable numeric LAN IP (normally the same value as `DBMAP_LAN_IP`). The current Output firmware does not resolve `hub.local`; the advertised address must be reachable by the device and covered by the local TLS certificate. This is a Hub-wide setting, not a per-device setting. After changing it, or whenever the Hub is stopped, apply the configuration and start the services:
 
 ```bash
 sudo docker compose up -d
 ```
 
-Create a **new** Output node/token for this secure firmware test. Load the private settings into the current shell before the request:
-
-```bash
-set -a
-. ./.env
-set +a
-export CURL_CA_BUNDLE=mqtt/certs/ca.crt
-curl -sS -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{"node_type":"output","hardware_revision":"OUTPUT-DEV-V1"}' \
-  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes"
-```
+For node registration, bootstrap-token recovery, and ESP-Output build/flash instructions, see [Register and deploy a device](./device-registration-and-deployment.md).
 
 The browser UI at `https://hub.local:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/` accepts either `DBMAP_ADMIN_TOKEN` or `DBMAP_VIEWER_TOKEN`. The Hub tab shows local mode and component status. Click **Details** beside Hub API, Database, Policy engine, or MQTT broker to fetch that component's summary; those detail requests do not run until clicked. Database details include the SQLite version, storage use, and table row counts. Policy details show OPA HTTPS health and plugin readiness. MQTT details show the broker metrics received by the Hub over its existing TLS connection. The Devices tab summarizes device counts, lifecycle, availability, and the device list. The Observations tab shows up to the latest 100 observations in a timeline using local date and time; select an entry to view its original JSON, which retains UTC timestamps. Ear installation distances are site context only and load when expanded. It lists all pairwise distances when there are fewer than 10 registered Ears; for 10 or more, it shows only the shortest and longest valid distances and points to `scripts/hub_event_track.py` for detailed site analysis. The viewer token grants read-only access to device, Hub, and observation data; the admin token additionally enables device creation and lifecycle actions. Tokens are held in browser memory only and cleared on sign-out or page reload. The browser is not the security boundary: the API independently checks the token and role. Device status is online when the Hub received a keepalive within the previous 90 seconds; otherwise it is offline.
 
@@ -128,76 +117,9 @@ The Groups tab shows member names, copyable dBmap user IDs, and linked GitHub nu
 
 Web timestamps use day/month/year and a 24-hour clock in the browser's local time zone. Human-readable Python reports use the same date/time order in the host's local time zone. API timestamps and `--output json` retain UTC ISO 8601 values.
 
-The ESPConnect tab opens the checked-in ESPConnect v1.1.23 static build in a separate browser window at `https://hub.local:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/espconnect/`. It needs no internet connection for its app assets or USB board inspection; its help and release-note links are external. The downloaded release is MIT-licensed; its upstream license and source release are recorded under `web/espconnect/`. Use Chromium 89+ and a data-capable USB cable, accept the browser's device permission prompt, and install the local CA so the Hub is a trusted HTTPS origin. ESPConnect only inspects the USB device in the browser; it does not receive the Hub token. Reading device information into the dBmap registration form is not wired yet.
+The ESPConnect tab is a separate power-user tool for local admin/viewer accounts. Device registration reads the dBmap node ID from compatible firmware over USB serial; it does not use the USB-to-UART vendor ID as device identity. See [Register and deploy a device](./device-registration-and-deployment.md) for prerequisites and the manual deployment flow.
 
-The bootstrap token is returned only once; the hub stores its hash, so it cannot be displayed again. Save the returned token privately before continuing. If it is lost, repeat the node-creation request to get a new node ID and token; the old pending node can be left unused. Do not post the token in chat or logs. Before building firmware, embed the local CA so the ESP32 can verify HTTPS and MQTT server certificates:
-
-```bash
-cp mqtt/certs/ca.crt firmware/esp-output/main/root_ca.pem
-```
-
-In firmware menuconfig, under **dBmap node**, set the Wi-Fi SSID and password, hub bootstrap base URL to `https://<mini-PC-LAN-IP>:8443` (actual IP, without angle brackets; use your configured listener port), the one-time bootstrap token returned by the node-creation request, and hardware revision to `OUTPUT-DEV-V1`. The token field must not be left empty on the board's first provisioning boot: NVS is empty after `erase-flash`, and the token is not saved there before provisioning. Do not use `localhost` on the board; it refers to the ESP32 itself. The ESP32-WROOM-32 test uses the `esp32` target and 4 MB flash, not the planned ESP32-S3/16 MB Ear target.
-
-## Install ESP-IDF (Linux)
-
-`idf.py` is part of Espressif's ESP-IDF toolchain, not a Python project dependency. Install the Linux prerequisites and pinned ESP-IDF release once:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y git wget flex bison gperf python3 python3-pip python3-venv \
-  cmake ninja-build ccache libffi-dev libssl-dev dfu-util libusb-1.0-0
-
-mkdir -p ~/esp
-git clone --recursive --branch v5.4.2 \
-  https://github.com/espressif/esp-idf.git ~/esp/esp-idf
-cd ~/esp/esp-idf
-./install.sh esp32
-```
-
-Activate ESP-IDF in each terminal used to build firmware:
-
-```bash
-. "$HOME/esp/esp-idf/export.sh"
-idf.py --version
-```
-
-On Linux, if `/dev/ttyACM0` is owned by group `dialout`, add your user to that group once, then fully log out and back in:
-
-```bash
-sudo usermod -aG dialout "$USER"
-```
-
-Verify serial access after reconnecting:
-
-```bash
-id -nG
-test -r /dev/ttyACM0 && echo "serial port readable"
-```
-
-Build, flash, and monitor using the serial port present on your machine (`/dev/ttyACM0` or `/dev/ttyUSB0` are common):
-
-```bash
-. "$HOME/esp/esp-idf/export.sh"
-cd firmware/esp-output
-idf.py set-target esp32
-idf.py menuconfig
-idf.py -p /dev/ttyACM0 erase-flash
-idf.py build
-idf.py -p /dev/ttyACM0 flash monitor
-```
-
-Erasing is important when reusing a board that has old lab credentials in NVS. Change `/dev/ttyACM0` to the port shown on your system. To leave the serial monitor, press `Ctrl+]`.
-
-After flashing, expect Wi-Fi connection, a `provisioned as OUT-...` message, and a verified TLS MQTT connection. In a terminal at the repository root, load `.env` and list provisioned nodes with:
-
-```bash
-set -a
-. ./.env
-set +a
-export CURL_CA_BUNDLE=mqtt/certs/ca.crt
-curl -sS -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
-  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes"
-```
+The local ESP32-WROOM-32 test uses the `esp32` target and 4 MB flash, not the planned ESP32-S3/16 MB Ear target. See the device guide for bootstrap-token handling, firmware settings, and flashing.
 
 ### Record installation metadata
 

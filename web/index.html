@@ -89,14 +89,24 @@
       #tab-devices > section h3:not(:first-child) { margin-top: 0.75rem; }
       #tab-devices .overview-grid { margin-bottom: 0.5rem; }
       #tab-devices th, #tab-devices td { padding: 0.45rem 0.55rem; }
+      #admin-panel { max-width: 960px; padding: 0.75rem; }
+      #admin-panel input[type="checkbox"] { width: auto; margin-right: 0.35rem; }
       #tab-observations > section { margin-top: 0.6rem; padding: 0.75rem; }
       #tab-observations > section h3 { margin: 0 0 0.45rem; }
       #site-distance-details > summary { cursor: pointer; font-weight: 650; }
       #component-details { margin-top: 0.8rem; padding: 1rem; border: 1px solid #d8e0eb; border-radius: 8px; }
       .notice { min-height: 1.5rem; margin: 0.6rem 0; color: #526078; }
       .error { color: #a83232; }
-      #create-panel { display: flex; align-items: end; gap: 0.6rem; margin: 1rem 0; }
-      #create-panel label { flex: 1; margin: 0; }
+      #create-panel { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; gap: 0.5rem; margin: 0.7rem 0; }
+      #create-panel label { min-width: 0; margin: 0; }
+      #create-panel input, #create-panel select { padding: 0.45rem 0.55rem; }
+      #device-filters { display: flex; flex-wrap: wrap; gap: 0.45rem 0.6rem; margin: 0.5rem 0; }
+      #device-filters label { flex: 0 0 auto; margin: 0; }
+      #device-filters select { width: auto; padding: 0.35rem 1.6rem 0.35rem 0.5rem; font-size: 0.88rem; }
+      #device-filter-type { min-width: 6.5rem; max-width: 8rem; }
+      #device-filter-status { min-width: 7rem; max-width: 9rem; }
+      #device-filter-lifecycle { min-width: 8.5rem; max-width: 10rem; }
+      #device-filter-owner { min-width: 9rem; max-width: 14rem; }
       #create-user-panel { display: flex; align-items: end; gap: 0.6rem; margin: 1rem 0; }
       #create-user-panel label { flex: 1; margin: 0; }
       #create-group-panel { display: flex; align-items: end; gap: 0.6rem; margin: 1rem 0; }
@@ -126,7 +136,8 @@
         .detail-grid, #installation-form, .overview-grid, .component-list { grid-template-columns: 1fr; }
         #installation-form .actions { grid-column: auto; }
         .toolbar { align-items: flex-start; }
-        #create-panel, #create-group-panel { align-items: stretch; flex-direction: column; }
+        #create-panel { grid-template-columns: 1fr; }
+        #create-group-panel { align-items: stretch; flex-direction: column; }
         .group-member { grid-template-columns: minmax(0, 1fr); }
         .group-member-control { grid-template-columns: auto auto auto; justify-content: start; }
         header { padding: 0.65rem 1rem; }
@@ -163,7 +174,7 @@
           <button id="tab-button-users" type="button" role="tab" aria-selected="false" aria-controls="tab-users" data-tab="users" hidden>Users</button>
           <button id="tab-button-groups" type="button" role="tab" aria-selected="false" aria-controls="tab-groups" data-tab="groups" hidden>Groups</button>
           <button id="tab-button-observations" type="button" role="tab" aria-selected="false" aria-controls="tab-observations" data-tab="observations">Observations</button>
-          <button id="tab-button-espconnect" type="button" role="tab" aria-selected="false" aria-controls="tab-espconnect" data-tab="espconnect">ESPConnect</button>
+          <button id="tab-button-espconnect" type="button" role="tab" aria-selected="false" aria-controls="tab-espconnect" data-tab="espconnect" hidden>ESPConnect</button>
         </nav>
         <section id="tab-hub" role="tabpanel" aria-labelledby="tab-button-hub">
           <div class="toolbar">
@@ -199,7 +210,21 @@
             <dl id="hub-installation-summary" class="meta"><dt>Completed</dt><dd>Loading…</dd><dt>Missing, incomplete, or invalid installations</dt><dd>Loading…</dd></dl>
           </section>
           <section id="admin-panel" hidden>
-            <h2>Local administration</h2>
+            <h2>Device registration</h2>
+            <p>Step 1: select a USB serial port, read its dBmap identity, assign its owner, and enter its Wi-Fi details. USB IDs identify only the serial adapter; browser-based firmware building and flashing are not part of this step.</p>
+            <div class="actions">
+              <button id="inspect-device" class="secondary" type="button">Read USB device identity</button>
+              <span id="usb-inspection-status" class="notice" role="status">USB inspection has not been started.</span>
+            </div>
+            <dl id="usb-inspection-details" class="meta" hidden></dl>
+            <label id="confirm-new-device-label" hidden>
+              <input id="confirm-new-device" type="checkbox">
+              The device identity could not be read; I have verified this is a new supported device and want to register it.
+            </label>
+            <label id="confirm-replacement-label" hidden>
+              <input id="confirm-replacement" type="checkbox">
+              I intentionally want a replacement dBmap registration. I will deactivate the existing Hub node first if it may still be operating.
+            </label>
             <form id="create-panel">
               <label for="node-type">Register device
                 <select id="node-type">
@@ -207,12 +232,49 @@
                   <option value="output">Output</option>
                 </select>
               </label>
-              <button type="submit">Create device</button>
+              <label for="create-owner-type">Owner type
+                <select id="create-owner-type" required disabled>
+                  <option value="user">User</option>
+                  <option value="group">Group</option>
+                </select>
+              </label>
+              <label for="create-owner-id">Assign owner
+                <select id="create-owner-id" required disabled>
+                  <option value="">Loading owners…</option>
+                </select>
+              </label>
+              <label for="wifi-ssid">Wi-Fi SSID
+                <input id="wifi-ssid" type="text" maxlength="32" autocomplete="off" required>
+              </label>
+              <label for="wifi-password">Wi-Fi password
+                <input id="wifi-password" type="password" autocomplete="new-password" required>
+              </label>
+              <button type="submit" disabled>Create device</button>
             </form>
+            <p id="create-status" class="notice" aria-live="polite">The Wi-Fi password is collected for this step only; it is not sent to or stored by the Hub.</p>
             <div id="created-token" hidden role="status"></div>
+            <details id="build-handoff" hidden>
+              <summary>Step 2 build handoff preview (not implemented)</summary>
+              <p class="notice">This allowlisted preview excludes Wi-Fi credentials, the bootstrap token, and the Hub access token. Firmware build and flashing are not implemented.</p>
+              <pre id="build-handoff-json"></pre>
+            </details>
           </section>
           <section>
             <h2>Device list</h2>
+            <div id="device-filters" aria-label="Filter device list">
+              <label for="device-filter-type">Type
+                <select id="device-filter-type"><option value="">All types</option></select>
+              </label>
+              <label for="device-filter-status">Status
+                <select id="device-filter-status"><option value="">All statuses</option></select>
+              </label>
+              <label for="device-filter-lifecycle">Lifecycle
+                <select id="device-filter-lifecycle"><option value="">All lifecycle states</option></select>
+              </label>
+              <label for="device-filter-owner">Assigned owner
+                <select id="device-filter-owner"><option value="">All owners</option></select>
+              </label>
+            </div>
             <div class="table-wrap">
               <table>
                 <thead><tr><th>Device</th><th>Type</th><th>Status</th><th>Lifecycle</th><th>Assigned owner</th><th>Location</th><th></th></tr></thead>
@@ -616,7 +678,8 @@
       }
 
       function setActiveTab(tabName, updateLocation = true) {
-        const knownTabs = ['hub', 'devices', ...(['admin', 'viewer'].includes(currentRole) ? ['users', 'groups'] : []), 'observations', 'espconnect'];
+        const localRoles = ['admin', 'viewer'].includes(currentRole);
+        const knownTabs = ['hub', 'devices', ...(localRoles ? ['users', 'groups'] : []), 'observations', ...(localRoles ? ['espconnect'] : [])];
         const activeTab = knownTabs.includes(tabName) ? tabName : 'hub';
         activeTabName = activeTab;
         for (const name of knownTabs) {
@@ -912,18 +975,65 @@
         }
       }
 
+      let allDevices = [];
+
+      function updateDeviceFilterOptions(devices) {
+        const filters = [
+          ['device-filter-type', 'All types', [...new Set(devices.map((device) => device.node_type))].sort()],
+          ['device-filter-status', 'All statuses', [...new Set(devices.map((device) => device.status))].sort()],
+          ['device-filter-lifecycle', 'All lifecycle states', [...new Set(devices.map((device) => device.lifecycle_state))].sort()],
+        ];
+        for (const [id, allLabel, values] of filters) {
+          const select = document.getElementById(id);
+          const selectedValue = select.value;
+          select.replaceChildren(new Option(allLabel, ''));
+          for (const value of values) select.append(new Option(value, value));
+          select.value = values.includes(selectedValue) ? selectedValue : '';
+        }
+
+        const ownerSelect = document.getElementById('device-filter-owner');
+        const selectedOwner = ownerSelect.value;
+        const owners = new Map();
+        for (const device of devices) {
+          const key = device.owner_type && device.owner_id
+            ? `${device.owner_type}:${device.owner_id}`
+            : 'unassigned';
+          owners.set(key, device.owner_display_name || 'Unassigned');
+        }
+        ownerSelect.replaceChildren(new Option('All owners', ''));
+        for (const [key, label] of [...owners.entries()].sort((a, b) => a[1].localeCompare(b[1]))) {
+          ownerSelect.append(new Option(label, key));
+        }
+        ownerSelect.value = owners.has(selectedOwner) ? selectedOwner : '';
+      }
+
       function renderDevices(devices) {
+        allDevices = devices;
+        updateDeviceFilterOptions(devices);
+        const type = document.getElementById('device-filter-type').value;
+        const status = document.getElementById('device-filter-status').value;
+        const lifecycle = document.getElementById('device-filter-lifecycle').value;
+        const owner = document.getElementById('device-filter-owner').value;
+        const filteredDevices = devices.filter((device) => {
+          const ownerKey = device.owner_type && device.owner_id
+            ? `${device.owner_type}:${device.owner_id}`
+            : 'unassigned';
+          return (!type || device.node_type === type)
+            && (!status || device.status === status)
+            && (!lifecycle || device.lifecycle_state === lifecycle)
+            && (!owner || ownerKey === owner);
+        });
         const list = document.getElementById('device-list');
         list.replaceChildren();
-        if (!devices.length) {
+        if (!filteredDevices.length) {
           const row = el('tr');
-          const cell = el('td', 'No devices are registered yet.');
+          const cell = el('td', devices.length ? 'No devices match these filters.' : 'No devices are registered yet.');
           cell.colSpan = 7;
           row.append(cell);
           list.append(row);
         }
 
-        for (const device of devices) {
+        for (const device of filteredDevices) {
           const row = el('tr');
           row.append(el('td', device.node_id), el('td', device.node_type.toUpperCase()));
           row.append(el('td', device.status, device.status));
@@ -1070,7 +1180,7 @@
             ownerSelect.value = device.owner_type === ownerType ? (device.owner_id || '') : '';
           }
           ownerTypeSelect.value = device.owner_type || 'user';
-          ownerTypeSelect.addEventListener('change', populateOwners);
+          ownerTypeSelect.onchange = populateOwners;
           assignmentForm.addEventListener('submit', async (event) => {
             event.preventDefault();
             assignButton.disabled = true;
@@ -1219,12 +1329,210 @@
         }
       }
 
+      let createOwnersReady = false;
+      const wifiSsidInput = document.getElementById('wifi-ssid');
+      const wifiPasswordInput = document.getElementById('wifi-password');
+      const createSubmitButton = document.querySelector('#create-panel button[type="submit"]');
+      const confirmNewDevice = document.getElementById('confirm-new-device');
+      const confirmReplacement = document.getElementById('confirm-replacement');
+      const confirmNewDeviceLabel = document.getElementById('confirm-new-device-label');
+      const confirmReplacementLabel = document.getElementById('confirm-replacement-label');
+      const usbInspectionStatus = document.getElementById('usb-inspection-status');
+      const usbInspectionDetails = document.getElementById('usb-inspection-details');
+      let inspectedSerialPort = null;
+      let inspectedUsbMetadata = null;
+      let detectedNodeId = '';
+      let pendingRegistrationKey = sessionStorage.getItem('dbmap-pending-registration-key') || '';
+
+      function syncCreateButton() {
+        validateWifiSsid();
+        const identityAllowsCreate = detectedNodeId === 'UNPROVISIONED'
+          || (detectedNodeId && confirmReplacement.checked)
+          || (!detectedNodeId && confirmNewDevice.checked);
+        createSubmitButton.disabled = !(
+          createOwnersReady
+          && inspectedSerialPort
+          && identityAllowsCreate
+          && document.getElementById('create-owner-id').value
+          && wifiSsidInput.value
+          && wifiPasswordInput.value
+          && !wifiSsidInput.validity.customError
+        );
+      }
+
+      function validateWifiSsid() {
+        const byteLength = new TextEncoder().encode(wifiSsidInput.value).length;
+        wifiSsidInput.setCustomValidity(byteLength > 32 ? 'Wi-Fi SSID must be 32 UTF-8 bytes or fewer.' : '');
+      }
+
+      wifiSsidInput.addEventListener('input', syncCreateButton);
+      wifiPasswordInput.addEventListener('input', syncCreateButton);
+      document.getElementById('create-owner-id').addEventListener('change', syncCreateButton);
+      confirmNewDevice.addEventListener('change', syncCreateButton);
+      confirmReplacement.addEventListener('change', syncCreateButton);
+
+      function clearUsbInspection(message) {
+        inspectedSerialPort = null;
+        inspectedUsbMetadata = null;
+        detectedNodeId = '';
+        confirmNewDevice.checked = false;
+        confirmReplacement.checked = false;
+        confirmNewDeviceLabel.hidden = true;
+        confirmReplacementLabel.hidden = true;
+        usbInspectionDetails.hidden = true;
+        usbInspectionDetails.replaceChildren();
+        usbInspectionStatus.textContent = message;
+        usbInspectionStatus.className = 'notice';
+        syncCreateButton();
+      }
+
+      if (!navigator.serial) {
+        document.getElementById('inspect-device').disabled = true;
+        usbInspectionStatus.textContent = 'Web Serial is not available. Use a supported Chromium-based browser on a secure connection.';
+        usbInspectionStatus.className = 'notice error';
+      } else {
+        navigator.serial.addEventListener('disconnect', (event) => {
+          if (event.target === inspectedSerialPort) {
+            clearUsbInspection('USB device disconnected. Select it again before registering.');
+          }
+        });
+      }
+
+      async function readDeviceIdentity(port) {
+        await port.open({ baudRate: 115200 });
+        const reader = port.readable.getReader();
+        const decoder = new TextDecoder();
+        let output = '';
+        const deadline = Date.now() + 20000;
+        try {
+          while (Date.now() < deadline) {
+            let timeoutId;
+            const result = await Promise.race([
+              reader.read(),
+              new Promise((_, reject) => {
+                timeoutId = window.setTimeout(() => reject(new Error('Timed out waiting for device identity.')), deadline - Date.now());
+              }),
+            ]).finally(() => window.clearTimeout(timeoutId));
+            if (result.done) break;
+            output += decoder.decode(result.value, { stream: true });
+            const match = output.match(/DBMAP_DEVICE_ID=([A-Z0-9][A-Z0-9_-]{0,63})/);
+            if (match) return match[1];
+            output = output.slice(-4096);
+          }
+        } finally {
+          await reader.cancel().catch(() => {});
+          reader.releaseLock();
+          await port.close().catch(() => {});
+        }
+        throw new Error('No dBmap identity was reported. Confirm compatible firmware is installed, then try again and press the board reset button when prompted.');
+      }
+
+      document.getElementById('inspect-device').addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        clearUsbInspection('Waiting for USB serial device selection…');
+        try {
+          const port = await navigator.serial.requestPort();
+          const info = port.getInfo();
+          inspectedSerialPort = port;
+          inspectedUsbMetadata = {
+            vendor_id: Number.isInteger(info.usbVendorId) ? `0x${info.usbVendorId.toString(16).padStart(4, '0')}` : null,
+            product_id: Number.isInteger(info.usbProductId) ? `0x${info.usbProductId.toString(16).padStart(4, '0')}` : null,
+          };
+          addDetailField(usbInspectionDetails, 'USB serial adapter vendor ID', inspectedUsbMetadata.vendor_id);
+          addDetailField(usbInspectionDetails, 'USB serial adapter product ID', inspectedUsbMetadata.product_id);
+          usbInspectionDetails.hidden = false;
+          usbInspectionStatus.textContent = 'Reading dBmap identity from firmware NVS. Press the board reset button now.';
+          detectedNodeId = await readDeviceIdentity(port);
+          addDetailField(usbInspectionDetails, 'dBmap device identity', detectedNodeId === 'UNPROVISIONED' ? 'No dBmap node ID stored' : detectedNodeId);
+          if (detectedNodeId === 'UNPROVISIONED') {
+            usbInspectionStatus.textContent = 'Compatible firmware reports no stored dBmap identity. You can register this device as new.';
+          } else {
+            confirmReplacementLabel.hidden = false;
+            try {
+              const node = await api(`/api/v1/nodes/${encodeURIComponent(detectedNodeId)}`);
+              addDetailField(usbInspectionDetails, 'Hub registration', `Already registered (${node.node_type}, ${node.lifecycle_state}; owner: ${node.owner_display_name || 'unassigned'}).`);
+              usbInspectionStatus.textContent = 'This device is already registered on this Hub. Duplicate registration is blocked unless you explicitly request a replacement.';
+            } catch (error) {
+              if (!error.message.includes('unknown node')) throw error;
+              addDetailField(usbInspectionDetails, 'Hub registration', 'This identity is not registered on this Hub.');
+              usbInspectionStatus.textContent = 'The device reports an existing dBmap identity not found on this Hub. Creating a new registration requires explicit replacement confirmation.';
+            }
+          }
+          confirmNewDeviceLabel.hidden = detectedNodeId !== '';
+          syncCreateButton();
+        } catch (error) {
+          if (error.name === 'NotFoundError') {
+            usbInspectionStatus.textContent = 'No USB serial port was selected.';
+            usbInspectionStatus.className = 'notice';
+          } else {
+            detectedNodeId = '';
+            confirmNewDeviceLabel.hidden = false;
+            usbInspectionStatus.textContent = error.message;
+            usbInspectionStatus.className = 'notice error';
+          }
+          syncCreateButton();
+        } finally {
+          button.disabled = !navigator.serial;
+        }
+      });
+
+      async function loadCreateOwners() {
+        const ownerTypeSelect = document.getElementById('create-owner-type');
+        const ownerSelect = document.getElementById('create-owner-id');
+        const status = document.getElementById('create-status');
+        createOwnersReady = false;
+        ownerTypeSelect.disabled = true;
+        ownerSelect.disabled = true;
+        syncCreateButton();
+        status.textContent = 'Loading active users and groups…';
+        status.className = 'notice';
+        try {
+          const [users, groups] = await Promise.all([
+            api('/api/v1/users'),
+            api('/api/v1/groups'),
+          ]);
+          const activeUsers = users.filter((user) => user.status === 'active');
+          const activeGroups = groups.filter((group) => group.status === 'active');
+          function populateOwners() {
+            const isGroup = ownerTypeSelect.value === 'group';
+            const owners = isGroup ? activeGroups : activeUsers;
+            const idField = isGroup ? 'group_id' : 'user_id';
+            const nameField = isGroup ? 'name' : 'display_name';
+            ownerSelect.replaceChildren(new Option(`Select a ${isGroup ? 'group' : 'user'}`, '', true, true));
+            for (const owner of owners) {
+              const option = new Option(owner[nameField], owner[idField]);
+              option.dataset.ownerName = owner[nameField];
+              ownerSelect.append(option);
+            }
+          }
+          ownerTypeSelect.value = 'user';
+          populateOwners();
+          ownerTypeSelect.disabled = false;
+          ownerSelect.disabled = false;
+          ownerTypeSelect.onchange = () => {
+            populateOwners();
+            syncCreateButton();
+          };
+          createOwnersReady = true;
+          status.textContent = 'Read the device identity, choose an owner, and enter the Wi-Fi details. Existing identities are blocked from duplicate registration unless replacement is intentional.';
+          status.className = 'notice';
+          syncCreateButton();
+        } catch (error) {
+          status.textContent = `Could not load active users and groups: ${error.message}`;
+          status.className = 'notice error';
+          syncCreateButton();
+        }
+      }
+
       function showDashboard(role) {
         currentRole = role;
         document.getElementById('login-panel').hidden = true;
         document.getElementById('dashboard').hidden = false;
         document.getElementById('user-controls').hidden = false;
         document.getElementById('admin-panel').hidden = role !== 'admin';
+        document.getElementById('tab-button-espconnect').hidden = !['admin', 'viewer'].includes(role);
+        if (role === 'admin') loadCreateOwners();
         document.getElementById('tab-button-users').hidden = !['admin', 'viewer'].includes(role);
         document.getElementById('tab-button-groups').hidden = !['admin', 'viewer'].includes(role);
         document.getElementById('create-user-panel').hidden = role !== 'admin';
@@ -1264,28 +1572,87 @@
 
       document.getElementById('create-panel').addEventListener('submit', async (event) => {
         event.preventDefault();
-        const submit = event.currentTarget.querySelector('button[type="submit"]');
+        const form = event.currentTarget;
         const tokenBox = document.getElementById('created-token');
-        submit.disabled = true;
+        const status = document.getElementById('create-status');
+        const ownerTypeSelect = document.getElementById('create-owner-type');
+        const ownerSelect = document.getElementById('create-owner-id');
+        const owner = ownerSelect.selectedOptions[0];
+        const ownerType = ownerTypeSelect.value;
+        const ownerId = ownerSelect.value;
+        const wifiSsid = wifiSsidInput.value;
         tokenBox.hidden = true;
+        tokenBox.replaceChildren();
+        syncCreateButton();
+        if (createSubmitButton.disabled) {
+          status.textContent = 'Read the device identity, choose an active owner, confirm a new or intentional replacement registration, and enter valid Wi-Fi details.';
+          status.className = 'notice error';
+          return;
+        }
+        createSubmitButton.disabled = true;
+        status.textContent = 'Creating device with its owner assignment…';
+        status.className = 'notice';
         try {
+          if (!pendingRegistrationKey) {
+            pendingRegistrationKey = crypto.randomUUID();
+            sessionStorage.setItem('dbmap-pending-registration-key', pendingRegistrationKey);
+          }
           const created = await api('/api/v1/nodes', {
             method: 'POST',
+            headers: { 'Idempotency-Key': pendingRegistrationKey },
             body: JSON.stringify({
               node_type: document.getElementById('node-type').value,
               hardware_revision: 'unknown',
+              owner_type: ownerType,
+              owner_id: ownerId,
             }),
           });
           tokenBox.replaceChildren(
-            el('strong', `Created ${created.node_id}. Save this one-time bootstrap token now: `),
+            el('strong', `Created ${created.node_id}.`),
+            el('p', `Assigned owner: ${owner.dataset.ownerName} (${ownerType}).`),
+            el('p', `Wi-Fi SSID: ${wifiSsid}`),
+            ...(detectedNodeId ? [el('p', `Device previously reported: ${detectedNodeId}.`)] : []),
+            el('p', 'The Wi-Fi password was collected but is not sent to the Hub or saved. It is cleared from the form after successful registration.'),
+          );
+          tokenBox.append(
+            el('strong', 'Save this one-time bootstrap token now: '),
             el('code', created.bootstrap_token),
           );
           tokenBox.hidden = false;
+          const handoff = {
+            node_id: created.node_id,
+            node_type: document.getElementById('node-type').value,
+            hardware_revision: 'unknown',
+            owner: { type: ownerType, id: ownerId, display_name: owner.dataset.ownerName },
+            hub_id: document.getElementById('hub-id').textContent,
+            wifi: { ssid: wifiSsid, password_supplied: Boolean(wifiPasswordInput.value) },
+            previous_device_identity: detectedNodeId || null,
+            usb_metadata: inspectedUsbMetadata,
+          };
+          document.getElementById('build-handoff-json').textContent = JSON.stringify(handoff, null, 2);
+          document.getElementById('build-handoff').hidden = false;
+          status.textContent = 'Device created. The safe Step 2 handoff is shown below; firmware build and flashing are not implemented.';
+          status.className = 'notice';
+          pendingRegistrationKey = '';
+          sessionStorage.removeItem('dbmap-pending-registration-key');
+          clearUsbInspection('Device registered. Select a USB serial port again to begin another registration.');
+          form.reset();
+          wifiPasswordInput.value = '';
+          wifiSsidInput.setCustomValidity('');
+          ownerTypeSelect.value = 'user';
+          ownerTypeSelect.dispatchEvent(new Event('change'));
+          syncCreateButton();
           await Promise.all([refreshDevices(), refreshHubStatus()]);
         } catch (error) {
-          showStatus(error.message, true);
+          if (error.message.includes('registration already completed')) {
+            pendingRegistrationKey = '';
+            sessionStorage.removeItem('dbmap-pending-registration-key');
+            clearUsbInspection('This registration attempt already created a node. Its one-time token cannot be recovered. Select the device and confirm again only if you intentionally need a replacement node.');
+          }
+          status.textContent = error.message;
+          status.className = 'notice error';
         } finally {
-          submit.disabled = false;
+          syncCreateButton();
         }
       });
 
@@ -1333,6 +1700,9 @@
         refreshDevices();
         refreshHubStatus();
       });
+      document.querySelectorAll('#device-filters select').forEach((select) => {
+        select.addEventListener('change', () => renderDevices(allDevices));
+      });
       document.getElementById('refresh-hub').addEventListener('click', refreshHubStatus);
       document.getElementById('refresh-observations').addEventListener('click', refreshObservations);
       document.getElementById('refresh-users').addEventListener('click', refreshUsers);
@@ -1372,6 +1742,18 @@
         const createdToken = document.getElementById('created-token');
         createdToken.hidden = true;
         createdToken.replaceChildren();
+        clearUsbInspection('USB inspection has not been started.');
+        document.getElementById('build-handoff').hidden = true;
+        document.getElementById('build-handoff-json').textContent = '';
+        document.getElementById('create-panel').reset();
+        wifiPasswordInput.value = '';
+        wifiSsidInput.setCustomValidity('');
+        document.getElementById('tab-button-espconnect').hidden = true;
+        document.getElementById('create-status').textContent = '';
+        createOwnersReady = false;
+        allDevices = [];
+        updateDeviceFilterOptions(allDevices);
+        for (const filter of document.querySelectorAll('#device-filters select')) filter.value = '';
         document.getElementById('device-list').replaceChildren();
         document.getElementById('device-detail').replaceChildren();
         document.getElementById('device-detail').hidden = true;

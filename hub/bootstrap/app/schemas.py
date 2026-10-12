@@ -11,11 +11,15 @@ class CreateNodeRequest(BaseModel):
     desired_firmware_version: str = ""
     desired_config_version: int = 0
     simulated: bool = False
+    owner_type: Literal["user", "group"] | None = None
+    owner_id: str | None = None
 
     @model_validator(mode="after")
-    def simulated_nodes_must_be_ears(self) -> "CreateNodeRequest":
+    def validate_creation_options(self) -> "CreateNodeRequest":
         if self.simulated and self.node_type != "ear":
             raise ValueError("only Ear nodes can be simulated")
+        if (self.owner_type is None) != (self.owner_id is None):
+            raise ValueError("owner_type and owner_id must be provided together")
         return self
 
 

@@ -1,6 +1,7 @@
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy import inspect, text
@@ -385,8 +386,24 @@ def get_hub_component_details(component: str, db: Session = Depends(get_db)) -> 
 
 
 @router.post("/api/v1/nodes", response_model=CreateNodeResponse, dependencies=[Depends(require_policy("nodes.create", "nodes"))])
-def create_node(body: CreateNodeRequest, db: Session = Depends(get_db)) -> CreateNodeResponse:
-    return service.create_node(db, body)
+def create_node(
+    body: CreateNodeRequest,
+    idempotency_key: UUID | None = Header(default=None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db),
+) -> CreateNodeResponse:
+    try:
+        return service.create_node(db, body, str(idempotency_key) if idempotency_key else None)
+    except ownership_service.OwnershipTargetNotFound:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="unknown or disabled owner") from None
+    except ownership_service.InactiveOwner:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="disabled owners cannot own devices") from None
+    except service.DuplicateRegistration as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"registration already completed for this attempt as {exc.node_id}; bootstrap token cannot be recovered",
+        ) from None
 
 
 @router.get("/api/v1/nodes", response_model=list[NodeView], dependencies=[Depends(require_policy("nodes.list", "nodes"))])
