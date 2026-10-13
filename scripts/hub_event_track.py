@@ -2,7 +2,6 @@
 import argparse
 import json
 import math
-import os
 import ssl
 import sys
 import time
@@ -12,8 +11,14 @@ import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
-from pathlib import Path
 from typing import Any
+
+from _hub_cli import (
+    add_hub_connection_arguments,
+    load_project_env,
+    print_help_without_arguments,
+    validate_hub_connection,
+)
 
 EARTH_RADIUS_M = 6_371_000
 
@@ -430,64 +435,51 @@ def parse_positive_interval(value: float) -> float:
 
 
 def main() -> int:
+    try:
+        load_project_env()
+    except ValueError as exc:
+        print(f"Hub configuration failed: {exc}", file=sys.stderr)
+        return 1
     parser = argparse.ArgumentParser(
         description=(
             "Print independent Ear observations, site metadata, and per-Ear inactivity summaries; "
             "ground-truth simulator IDs are not used for association."
         )
     )
-    parser.add_argument("--hub-host", required=True, help="Hub LAN IP or certificate-valid hostname")
-    parser.add_argument("--hub-port", type=int, default=8443, help="HTTPS listener port (default: 8443)")
-    parser.add_argument(
-        "--base-path",
-        default=os.environ.get("DBMAP_PUBLIC_BASE_PATH", ""),
-        help="Optional public path prefix, for example /dbmap",
-    )
-    parser.add_argument("--ca", default="mqtt/certs/ca.crt", help="Path to the local hub CA")
-    parser.add_argument("--node-id", help="Optionally restrict observations to one Ear")
-    parser.add_argument(
-        "--watch",
-        action="store_true",
-        help="Re-fetch observations and reprint the analysis when new records arrive",
-    )
-    parser.add_argument(
+    add_hub_connection_arguments(parser)
+    commands = parser.add_subparsers(dest="command", required=True)
+    list_command = commands.add_parser("list", help="Show the current report once")
+    watch_command = commands.add_parser("watch", help="Re-fetch and report new observations")
+    for command in (list_command, watch_command):
+        command.add_argument("--node-id", help="Optionally restrict observations to one Ear")
+        command.add_argument(
+            "--event-gap-seconds",
+            type=float,
+            default=15,
+            help=(
+                "Silence after an observation interval that closes a time episode; "
+                "not a source-correlation threshold (default: 15)"
+            ),
+        )
+    watch_command.add_argument(
         "--interval-seconds",
         type=float,
         default=15,
-        help="Polling interval with --watch (default: 15)",
+        help="Polling interval (default: 15)",
     )
-    parser.add_argument(
-        "--event-gap-seconds",
-        type=float,
-        default=15,
-        help=(
-            "Silence after an observation interval that closes a time episode; "
-            "not a source-correlation threshold (default: 15)"
-        ),
-    )
+    if print_help_without_arguments(parser):
+        return 0
     args = parser.parse_args()
-    args.base_path = args.base_path.rstrip("/")
-    if args.base_path and (
-        not args.base_path.startswith("/")
-        or "//" in args.base_path
-        or any(part in {".", ".."} for part in args.base_path.split("/"))
-    ):
-        parser.error("--base-path must be empty or a normalized absolute path")
-    for label, value in (
-        ("watch interval", args.interval_seconds),
-        ("event gap", args.event_gap_seconds),
-    ):
+    base_url, admin_token = validate_hub_connection(args, parser)
+    watching = args.command == "watch"
+    intervals = [("event gap", args.event_gap_seconds)]
+    if watching:
+        intervals.append(("watch interval", args.interval_seconds))
+    for label, value in intervals:
         try:
             parse_positive_interval(value)
         except ValueError as exc:
             parser.error(f"{label} {exc}")
-    admin_token = os.environ.get("DBMAP_ADMIN_TOKEN", "")
-    if len(admin_token) < 32:
-        parser.error("DBMAP_ADMIN_TOKEN must be loaded from the private .env file")
-    if not Path(args.ca).is_file():
-        parser.error(f"CA file does not exist: {args.ca}")
-
-    base_url = f"https://{args.hub_host}:{args.hub_port}{args.base_path}"
     try:
         observations = fetch_observations(base_url, args.ca, admin_token, args.node_id)
         nodes = fetch_nodes(base_url, args.ca, admin_token)
@@ -502,7 +494,7 @@ def main() -> int:
             for observation in observations
             if isinstance(observation.get("observation_id"), str)
         }
-        if not args.watch:
+        if not watching:
             return 0
 
         print(f"Watching for new observations every {args.interval_seconds:g}s; press Ctrl+C to stop.")

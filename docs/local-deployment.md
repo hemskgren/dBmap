@@ -22,6 +22,7 @@ The local deployment now includes a minimal edge proxy and web frontend as part 
 
 - `https://<hub-host>:8443/` serves the lightweight dBmap web UI
 - `https://<hub-host>:8443/api/...` proxies to the Hub bootstrap API
+- `https://<hub-host>:8443/api/v1/firmware/catalog...` proxies to the Hub firmware catalog API; catalog ZIPs and metadata are retained in the `firmware-catalog` named volume
 - Hub bootstrap is reachable only on the internal Compose network; Nginx proxies to it using verified HTTPS
 - Nginx also verifies HTTPS to the web service and OPA using separate certificates
 - Nginx accepts TLS 1.2 and 1.3, disables session tickets and version disclosure, and sends browser security headers
@@ -31,6 +32,8 @@ The local deployment now includes a minimal edge proxy and web frontend as part 
 - Nginx verifies the Hub's upstream TLS certificate using the stable `hub.local` certificate name, regardless of whether clients connect to the proxy by IP or hostname
 
 The Hub API delegates role and action decisions to OPA. OPA is attached to a private Compose network shared only with Hub bootstrap and has no host-published port. Hub-to-OPA calls use HTTPS and validate OPA's certificate against the local CA. This is TLS server authentication, not mutual TLS. The default decision URL is `https://opa:8181/v1/data/dbmap/authz/allow`; deployments can override it with `DBMAP_OPA_DECISION_URL`, which must use HTTPS. If OPA is unavailable or returns no boolean decision, protected API requests return HTTP 503 rather than being allowed. The Rego policy is mounted read-only from `policy/`, and OPA watches that directory to reload changed policy files. Compose checks OPA's HTTPS `/health?plugins=true` endpoint using the mounted local CA and reports the result in `docker compose ps`.
+
+Normal Compose startup does not build or start the ESP-IDF firmware builder. Its code and build artifacts are retained behind the optional `firmware-build` profile for future use. The Hub catalog stores external firmware ZIPs and matching JSON sidecars in the persistent `firmware-catalog` volume. Uploads begin as unregistered candidates; admins can review, promote, and delete entries, while viewers can list and download every entry, including candidates, without changing catalog state. The catalog does not yet filter compatibility or flash devices through the browser.
 
 Run the policy unit tests from the repository root with:
 
@@ -238,9 +241,7 @@ uv run --project hub/bootstrap python simulator/ear/simulate_scenario.py \
 Inspect the resulting records with the existing read-only explorer:
 
 ```bash
-uv run --project hub/bootstrap python scripts/hub_event_track.py \
-  --hub-host "$DBMAP_LAN_IP" \
-  --watch
+uv run python scripts/hub_event_track.py watch
 ```
 
 This lets us exercise observation ingestion, review the independent tracker input, and compare it with scenario ground truth only after the tracker has produced predictions. It does not change or require rebuilding the Hub container.
@@ -264,11 +265,12 @@ uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
 For a concise, authenticated list of Hub service statuses, run:
 
 ```bash
-uv run --project hub/bootstrap python scripts/hub_summary.py \
-  --hub-host "$DBMAP_LAN_IP"
+uv run python scripts/hub_summary.py list
 ```
 
-The default output shows the Hub mode and ID, one status line each for Hub API, Database, Policy engine, and MQTT broker, and a concise device summary with counts by type, lifecycle, availability, and installation state. Use `--output json` for machine-readable output from the Hub status endpoint. Add `--watch` to poll service statuses every 15 seconds; text mode reports service changes, while JSON mode emits one JSON object per poll. Use `--interval-seconds 30` to change the interval. Component details such as broker metrics remain available on demand in the web UI. Stop watch mode with `Ctrl+C`.
+All `scripts/hub_*.py` command-line tools use the same Hub connection defaults from the project-root `.env`: `DBMAP_LAN_IP`, `DBMAP_HTTPS_PORT` (default `8443`), `DBMAP_PUBLIC_BASE_PATH`, and `DBMAP_ADMIN_TOKEN`. The local CA defaults to `mqtt/certs/ca.crt`. Exported shell values take precedence; options such as `--hub-host`, `--hub-port`, `--base-path`, and `--ca` are optional overrides.
+
+The `list` command shows the Hub mode and ID, one status line each for Hub API, Database, Policy engine, and MQTT broker, and a concise device summary with counts by type, lifecycle, availability, and installation state. Use `list --output json` for machine-readable output from the Hub status endpoint. Use `watch` to poll service statuses every 15 seconds; text mode reports service changes, while JSON mode emits one JSON object per poll. Use `watch --interval-seconds 30` to change the interval. Component details such as broker metrics remain available on demand in the web UI. Stop watch mode with `Ctrl+C`.
 
 ### Explore observation source hints
 
@@ -277,36 +279,25 @@ The default output shows the Hub mode and ID, one status line each for Hub API, 
 The default 15-second inactivity window closes a per-Ear activity summary only after that much silence following an observation interval (`event_time_utc + duration_ms`). This is a time boundary, not evidence that observations inside the episode came from the same source; simultaneous sources can still be distinct. The summary is only printed, never persisted or used to control a node. The tool does not create Events/Tracks or infer geographic source positions from bearing. Watch mode re-fetches observations and node metadata, then reprints the analysis when new observations arrive.
 
 ```bash
-uv run --project hub/bootstrap python scripts/hub_event_track.py \
-  --hub-host "$DBMAP_LAN_IP"
+uv run python scripts/hub_event_track.py list
 ```
 
-To monitor and recalculate the report every 15 seconds, add `--watch`; customize the polling interval with `--interval-seconds 30`. Change the per-Ear inactivity summary window with `--event-gap-seconds 20`. To inspect one Ear only, add `--node-id SIM-EAR-001`. The script fetches at most the latest 500 observations per poll.
+To monitor and recalculate the report every 15 seconds, use `watch`; customize the polling interval with `watch --interval-seconds 30`. Change the per-Ear inactivity summary window with `--event-gap-seconds 20` after either `list` or `watch`. To inspect one Ear only, add `--node-id SIM-EAR-001` after either command. The script fetches at most the latest 500 observations per poll.
 
 ### Administer Hub nodes
 
 The authenticated admin CLI lists and inspects nodes, updates desired state or installation metadata, and reversibly deactivates/reactivates a node without deleting its observations or MQTT account. While deactivated, the Hub rejects new observations and refuses provisioning, and the node's MQTT role ACLs are suspended; reactivation restores the role ACLs without changing the account or password. A broker ACL failure returns HTTP 503. If reactivation reports that Hub state is active while broker access remains suspended, retry the `reactivate` command after fixing broker access.
 
-Load the admin token from the private `.env` file, then use `scripts/hub_admin.py`:
+Use `scripts/hub_admin.py`; it loads the Hub address and admin token from the project-root `.env`:
 
 ```bash
-set -a
-. ./.env
-set +a
-
-uv run --project hub/bootstrap python scripts/hub_admin.py \
-  --hub-host "$DBMAP_LAN_IP" list
-uv run --project hub/bootstrap python scripts/hub_admin.py \
-  --hub-host "$DBMAP_LAN_IP" show SIM-EAR-001
-uv run --project hub/bootstrap python scripts/hub_admin.py \
-  --hub-host "$DBMAP_LAN_IP" set-desired SIM-EAR-001 --config-version 2
-uv run --project hub/bootstrap python scripts/hub_admin.py \
-  --hub-host "$DBMAP_LAN_IP" set-installation SIM-EAR-001 \
+uv run python scripts/hub_admin.py list
+uv run python scripts/hub_admin.py show SIM-EAR-001
+uv run python scripts/hub_admin.py set-desired SIM-EAR-001 --config-version 2
+uv run python scripts/hub_admin.py set-installation SIM-EAR-001 \
   --latitude 59.91 --longitude 10.75 --orientation-deg 180
-uv run --project hub/bootstrap python scripts/hub_admin.py \
-  --hub-host "$DBMAP_LAN_IP" deactivate SIM-EAR-001
-uv run --project hub/bootstrap python scripts/hub_admin.py \
-  --hub-host "$DBMAP_LAN_IP" reactivate SIM-EAR-001
+uv run python scripts/hub_admin.py deactivate SIM-EAR-001
+uv run python scripts/hub_admin.py reactivate SIM-EAR-001
 ```
 
 Installation updates preserve fields not supplied on the command line; latitude and longitude must already exist or be supplied together. Desired-state updates likewise preserve fields that are not explicitly changed. Both commands validate the resulting complete object through the Hub API. Keep `.env` and the local CA private.

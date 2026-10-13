@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import os
 import ssl
 import sys
 import urllib.error
@@ -9,6 +8,13 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+from _hub_cli import (
+    add_hub_connection_arguments,
+    load_project_env,
+    print_help_without_arguments,
+    validate_hub_connection,
+)
 
 
 class HubAdminError(RuntimeError):
@@ -145,14 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Inspect and update registered nodes through the authenticated Hub API."
     )
-    parser.add_argument("--hub-host", required=True, help="Hub LAN IP or certificate-valid hostname")
-    parser.add_argument("--hub-port", type=int, default=8443, help="HTTPS listener port (default: 8443)")
-    parser.add_argument(
-        "--base-path",
-        default=os.environ.get("DBMAP_PUBLIC_BASE_PATH", ""),
-        help="Optional public path prefix, for example /dbmap",
-    )
-    parser.add_argument("--ca", default="mqtt/certs/ca.crt", help="Path to the local hub CA")
+    add_hub_connection_arguments(parser)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list", help="List registered nodes")
 
@@ -192,22 +191,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    try:
+        load_project_env()
+    except ValueError as exc:
+        print(f"Hub configuration failed: {exc}", file=sys.stderr)
+        return 1
     parser = build_parser()
+    if print_help_without_arguments(parser):
+        return 0
     args = parser.parse_args()
-    admin_token = os.environ.get("DBMAP_ADMIN_TOKEN", "")
-    if len(admin_token) < 32:
-        parser.error("DBMAP_ADMIN_TOKEN must be loaded from the private .env file")
-    if not Path(args.ca).is_file():
-        parser.error(f"CA file does not exist: {args.ca}")
-    args.base_path = args.base_path.rstrip("/")
-    if args.base_path and (
-        not args.base_path.startswith("/")
-        or "//" in args.base_path
-        or any(part in {".", ".."} for part in args.base_path.split("/"))
-    ):
-        parser.error("--base-path must be empty or a normalized absolute path")
-
-    base_url = f"https://{args.hub_host}:{args.hub_port}{args.base_path}"
+    base_url, admin_token = validate_hub_connection(args, parser)
     try:
         if args.command == "list":
             nodes = request_json(base_url, args.ca, admin_token, "GET", "/api/v1/nodes")

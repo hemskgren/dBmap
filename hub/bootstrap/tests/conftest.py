@@ -13,6 +13,7 @@ def _test_policy(input_data: dict) -> bool:
         "devices.list_summary",
         "users.read",
         "groups.read",
+        "firmware.catalog.read",
     }
 
 

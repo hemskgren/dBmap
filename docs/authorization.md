@@ -26,8 +26,14 @@ The Hub API authenticates the current local admin/viewer bearer tokens, then ask
 | `groups.read` | `groups` | Allow | Allow |
 | `groups.create` | `groups` | Allow | Deny |
 | `groups.update` | `groups/{group_id}` | Allow | Deny |
+| `firmware.catalog.read` | `firmware_catalog` | Allow | Allow |
+| `firmware.catalog.upload` | `firmware_catalog` | Allow | Deny |
+| `firmware.catalog.promote` | `firmware_catalog` | Allow | Deny |
+| `firmware.catalog.delete` | `firmware_catalog` | Allow | Deny |
 
-The admin rule grants every action to an authenticated admin. A viewer can read the session, Hub status, device summaries, observations, internal user directory, and group directory, but cannot read device details or change Hub state, user records, or groups. The Users and Groups tabs are read-only for viewers. Authentication still happens in the API; OPA never receives the bearer token.
+The admin rule grants every action to an authenticated admin. A viewer can read the session, Hub status, device summaries, observations, internal user directory, group directory, and all firmware catalog entries, including unregistered candidates, but cannot read device details or change Hub state, user records, groups, or firmware catalog records. Firmware uploads, promotion, and deletion are admin-only. Authentication still happens in the API; OPA never receives the bearer token.
+
+The firmware catalog is served by the Hub API. Admins upload external firmware bundles as candidates and explicitly promote them after review; viewers can list and download all bundles, including candidates, without changing catalog state. The optional local ESP-IDF builder is not part of normal Compose startup or the current catalog workflow. Individual user sessions are not implemented, so there is no owner-scoped firmware compatibility selection or ordinary-user deployment flow.
 
 ## Operating modes
 

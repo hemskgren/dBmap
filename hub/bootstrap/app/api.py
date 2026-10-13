@@ -1,13 +1,31 @@
+import json
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
+from fastapi.responses import FileResponse
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
-from app import group_service, identity_service, ownership_service, policy, service
+from app import (
+    firmware_catalog,
+    group_service,
+    identity_service,
+    ownership_service,
+    policy,
+    service,
+)
 from app.config import settings
 from app.db import get_db
 from app.ids import timing_safe_eq
@@ -38,6 +56,9 @@ from app.schemas import (
 )
 
 router = APIRouter()
+FIRMWARE_CATALOG_DIR = Path(settings.firmware_catalog_dir)
+MAX_BUNDLE_BYTES = firmware_catalog.MAX_BUNDLE_BYTES
+MAX_METADATA_BYTES = firmware_catalog.MAX_METADATA_BYTES
 
 
 @dataclass(frozen=True)
@@ -285,6 +306,119 @@ def list_devices(db: Session = Depends(get_db)) -> list[DeviceSummaryView]:
         )
         for node in nodes
     ]
+
+
+@router.get("/api/v1/firmware/catalog")
+def list_firmware_catalog(
+    principal: Principal = Depends(require_policy("firmware.catalog.read", "firmware_catalog")),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    return firmware_catalog.list_entries(
+        db,
+        FIRMWARE_CATALOG_DIR,
+        include_candidates=True,
+    )
+
+
+@router.get("/api/v1/firmware/catalog/{firmware_id}")
+def get_firmware_metadata(
+    firmware_id: str,
+    principal: Principal = Depends(require_policy("firmware.catalog.read", "firmware_catalog")),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        entry = firmware_catalog.get_entry(
+            db,
+            FIRMWARE_CATALOG_DIR,
+            firmware_id,
+            include_candidate=True,
+        )
+        return firmware_catalog.public_entry(entry, FIRMWARE_CATALOG_DIR)
+    except firmware_catalog.FirmwareNotFound:
+        raise HTTPException(status_code=404, detail="registered firmware not found") from None
+
+
+@router.get("/api/v1/firmware/catalog/{firmware_id}/artifact")
+def download_firmware_artifact(
+    firmware_id: str,
+    principal: Principal = Depends(require_policy("firmware.catalog.read", "firmware_catalog")),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    try:
+        entry = firmware_catalog.get_entry(
+            db,
+            FIRMWARE_CATALOG_DIR,
+            firmware_id,
+            include_candidate=True,
+        )
+    except firmware_catalog.FirmwareNotFound:
+        raise HTTPException(status_code=404, detail="registered firmware not found") from None
+    return FileResponse(
+        FIRMWARE_CATALOG_DIR / f"{entry.firmware_id}.zip",
+        media_type="application/zip",
+        filename=f"{entry.firmware_id}.zip",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/api/v1/firmware/catalog", status_code=201)
+async def upload_firmware_candidate(
+    firmware: UploadFile = File(),
+    metadata: UploadFile = File(),
+    _: Principal = Depends(require_policy("firmware.catalog.upload", "firmware_catalog")),
+    db: Session = Depends(get_db),
+) -> dict:
+    bundle = await firmware.read(MAX_BUNDLE_BYTES + 1)
+    metadata_bytes = await metadata.read(MAX_METADATA_BYTES + 1)
+    if len(bundle) > MAX_BUNDLE_BYTES or len(metadata_bytes) > MAX_METADATA_BYTES:
+        raise HTTPException(status_code=413, detail="Firmware ZIP or metadata JSON exceeds the upload size limit.")
+    try:
+        parsed_metadata = json.loads(metadata_bytes)
+        firmware_id = parsed_metadata.get("firmware_id") if isinstance(parsed_metadata, dict) else None
+        if not isinstance(firmware_id, str):
+            raise firmware_catalog.InvalidFirmwareBundle("Metadata must include a string firmware_id.")
+        if firmware.filename != f"{firmware_id}.zip" or metadata.filename != f"{firmware_id}.json":
+            raise firmware_catalog.InvalidFirmwareBundle(
+                "Firmware and metadata filenames must match metadata firmware_id."
+            )
+        entry = firmware_catalog.create_candidate(
+            db,
+            FIRMWARE_CATALOG_DIR,
+            firmware_id,
+            bundle,
+            metadata_bytes,
+        )
+        return firmware_catalog.public_entry(entry, FIRMWARE_CATALOG_DIR)
+    except firmware_catalog.FirmwareAlreadyExists as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except firmware_catalog.InvalidFirmwareBundle as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=422, detail="Metadata sidecar must contain valid UTF-8 JSON.") from None
+
+
+@router.post("/api/v1/firmware/catalog/{firmware_id}/promote")
+def promote_firmware_candidate(
+    firmware_id: str,
+    _: Principal = Depends(require_policy("firmware.catalog.promote", "firmware_catalog")),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        return firmware_catalog.promote_entry(db, FIRMWARE_CATALOG_DIR, firmware_id)
+    except firmware_catalog.FirmwareNotFound:
+        raise HTTPException(status_code=404, detail="firmware candidate not found") from None
+
+
+@router.delete("/api/v1/firmware/catalog/{firmware_id}", status_code=204)
+def delete_firmware_entry(
+    firmware_id: str,
+    _: Principal = Depends(require_policy("firmware.catalog.delete", "firmware_catalog")),
+    db: Session = Depends(get_db),
+) -> None:
+    try:
+        firmware_catalog.delete_entry(db, FIRMWARE_CATALOG_DIR, firmware_id)
+    except firmware_catalog.FirmwareNotFound:
+        raise HTTPException(status_code=404, detail="firmware entry not found") from None
 
 
 @router.get(

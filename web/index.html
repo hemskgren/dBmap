@@ -91,6 +91,13 @@
       #tab-devices th, #tab-devices td { padding: 0.45rem 0.55rem; }
       #admin-panel { max-width: 960px; padding: 0.75rem; }
       #admin-panel input[type="checkbox"] { width: auto; margin-right: 0.35rem; }
+      #firmware-upload-form { display: flex; flex-wrap: wrap; align-items: end; gap: 0.5rem; }
+      #firmware-upload-form label { flex: 1 1 16rem; margin: 0; }
+      #firmware-catalog-list { display: grid; gap: 0.45rem; margin-top: 0.5rem; }
+      .firmware-entry { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem 0.7rem; padding: 0.55rem; border: 1px solid #e3e9f1; border-radius: 7px; }
+      .firmware-entry-metadata { flex: 1 0 100%; min-width: 0; }
+      .firmware-entry-metadata > summary { cursor: pointer; font-weight: 650; }
+      .firmware-entry-metadata pre { max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
       #tab-observations > section { margin-top: 0.6rem; padding: 0.75rem; }
       #tab-observations > section h3 { margin: 0 0 0.45rem; }
       #site-distance-details > summary { cursor: pointer; font-weight: 650; }
@@ -137,6 +144,7 @@
         #installation-form .actions { grid-column: auto; }
         .toolbar { align-items: flex-start; }
         #create-panel { grid-template-columns: 1fr; }
+        #firmware-upload-form { align-items: stretch; flex-direction: column; }
         #create-group-panel { align-items: stretch; flex-direction: column; }
         .group-member { grid-template-columns: minmax(0, 1fr); }
         .group-member-control { grid-template-columns: auto auto auto; justify-content: start; }
@@ -171,6 +179,7 @@
         <nav class="tab-list" role="tablist" aria-label="Hub sections">
           <button id="tab-button-hub" type="button" role="tab" aria-selected="true" aria-controls="tab-hub" data-tab="hub">Hub</button>
           <button id="tab-button-devices" type="button" role="tab" aria-selected="false" aria-controls="tab-devices" data-tab="devices">Devices</button>
+          <button id="tab-button-firmware" type="button" role="tab" aria-selected="false" aria-controls="tab-firmware" data-tab="firmware" hidden>Firmware</button>
           <button id="tab-button-users" type="button" role="tab" aria-selected="false" aria-controls="tab-users" data-tab="users" hidden>Users</button>
           <button id="tab-button-groups" type="button" role="tab" aria-selected="false" aria-controls="tab-groups" data-tab="groups" hidden>Groups</button>
           <button id="tab-button-observations" type="button" role="tab" aria-selected="false" aria-controls="tab-observations" data-tab="observations">Observations</button>
@@ -283,6 +292,27 @@
             </div>
           </section>
           <section id="device-detail" hidden aria-live="polite"></section>
+        </section>
+        <section id="tab-firmware" role="tabpanel" aria-labelledby="tab-button-firmware" hidden>
+          <div class="toolbar">
+            <div><h2>Firmware catalog</h2><p id="firmware-catalog-status" class="notice" aria-live="polite">Approved firmware available for deployment.</p></div>
+            <button id="refresh-firmware-catalog" class="secondary" type="button">Refresh</button>
+          </div>
+          <section id="firmware-upload-panel" hidden>
+            <h3>Upload firmware candidate</h3>
+            <p>Upload an externally built <code>&lt;firmware_id&gt;.zip</code> and matching <code>&lt;firmware_id&gt;.json</code> metadata sidecar. New uploads stay unregistered until an administrator verifies and promotes them.</p>
+            <form id="firmware-upload-form">
+              <label for="firmware-upload-bundle">Firmware ZIP
+                <input id="firmware-upload-bundle" name="firmware" type="file" accept=".zip,application/zip" required>
+              </label>
+              <label for="firmware-upload-metadata">Metadata JSON
+                <input id="firmware-upload-metadata" name="metadata" type="file" accept=".json,application/json" required>
+              </label>
+              <button type="submit">Upload candidate</button>
+            </form>
+          </section>
+          <p id="firmware-catalog-note" class="notice">Select a registered image for a future deployment workflow. No example or unsupported hardware combinations are assumed.</p>
+          <div id="firmware-catalog-list" aria-live="polite"></div>
         </section>
         <section id="tab-users" role="tabpanel" aria-labelledby="tab-button-users" hidden>
           <div class="toolbar">
@@ -679,7 +709,7 @@
 
       function setActiveTab(tabName, updateLocation = true) {
         const localRoles = ['admin', 'viewer'].includes(currentRole);
-        const knownTabs = ['hub', 'devices', ...(localRoles ? ['users', 'groups'] : []), 'observations', ...(localRoles ? ['espconnect'] : [])];
+        const knownTabs = ['hub', 'devices', ...(localRoles ? ['users', 'groups', 'firmware'] : []), 'observations', ...(localRoles ? ['espconnect'] : [])];
         const activeTab = knownTabs.includes(tabName) ? tabName : 'hub';
         activeTabName = activeTab;
         for (const name of knownTabs) {
@@ -695,6 +725,7 @@
         if (activeTab === 'devices') refreshDevices();
         if (activeTab === 'users') refreshUsers();
         if (activeTab === 'groups') refreshGroups();
+        if (activeTab === 'firmware') refreshFirmwareCatalog();
         if (activeTab === 'observations') refreshObservations();
       }
 
@@ -1525,6 +1556,144 @@
         }
       }
 
+      function renderFirmwareCatalog(entries) {
+        const list = document.getElementById('firmware-catalog-list');
+        document.getElementById('firmware-upload-panel').hidden = currentRole !== 'admin';
+        list.replaceChildren();
+        if (!entries.length) {
+          list.append(el('p', 'No firmware catalog entries are available.', 'notice'));
+          return;
+        }
+        for (const entry of entries) {
+          const row = el('article', undefined, 'firmware-entry');
+          row.append(
+            el('strong', entry.firmware_id),
+            el('span', entry.status === 'registered' ? 'Registered · available' : 'Unregistered candidate · admin review required'),
+            el('span', `${entry.node_type} · ${entry.platform} · ${entry.hardware_revision}`),
+            el('span', `Version ${entry.firmware_version} · built ${formatSeen(entry.build_date_utc)}`),
+            el('span', `Uploaded ${formatSeen(entry.uploaded_at)} · ${formatBytes(entry.artifact_size_bytes)}`),
+          );
+          const metadata = el('details', undefined, 'firmware-entry-metadata');
+          metadata.append(
+            el('summary', 'Inspect build metadata and digest'),
+            el('pre', JSON.stringify(entry, null, 2)),
+          );
+          row.append(metadata);
+          const download = el('button', 'Download ZIP');
+          download.type = 'button';
+          download.className = 'secondary';
+          download.addEventListener('click', () => downloadFirmwareBundle(entry.firmware_id));
+          row.append(download);
+          if (currentRole === 'admin') {
+            if (entry.status === 'candidate') {
+              const promote = el('button', 'Promote to registered');
+              promote.type = 'button';
+              promote.addEventListener('click', () => promoteFirmwareCandidate(entry.firmware_id));
+              row.append(promote);
+            }
+            const remove = el('button', 'Delete');
+            remove.type = 'button';
+            remove.className = 'danger';
+            remove.addEventListener('click', () => deleteFirmwareEntry(entry.firmware_id));
+            row.append(remove);
+          }
+          list.append(row);
+        }
+      }
+
+      async function refreshFirmwareCatalog() {
+        const status = document.getElementById('firmware-catalog-status');
+        try {
+          const entries = await api('/api/v1/firmware/catalog');
+          renderFirmwareCatalog(entries);
+          const candidates = entries.filter((entry) => entry.status === 'candidate').length;
+          const registered = entries.length - candidates;
+          status.textContent = candidates
+            ? `${registered} registered firmware image(s); ${candidates} unregistered candidate(s)${currentRole === 'admin' ? ' need review.' : ' visible read-only.'}`
+            : `${registered} registered firmware image(s) available.`;
+          status.className = 'notice';
+        } catch (error) {
+          status.textContent = `Could not load firmware catalog: ${error.message}`;
+          status.className = 'notice error';
+        }
+      }
+
+      async function downloadFirmwareBundle(firmwareId) {
+        const status = document.getElementById('firmware-catalog-status');
+        try {
+          const response = await fetch(
+            `${publicBasePath}/api/v1/firmware/catalog/${encodeURIComponent(firmwareId)}/artifact`,
+            { headers: { Authorization: `Bearer ${authToken.value}` }, cache: 'no-store' },
+          );
+          if (!response.ok) throw new Error(`Download failed (${response.status}).`);
+          const url = URL.createObjectURL(await response.blob());
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${firmwareId}.zip`;
+          link.click();
+          window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        } catch (error) {
+          status.textContent = `Could not download firmware bundle: ${error.message}`;
+          status.className = 'notice error';
+        }
+      }
+
+      async function promoteFirmwareCandidate(firmwareId) {
+        if (!window.confirm(`Promote ${firmwareId} to registered firmware available for deployment?`)) return;
+        try {
+          await api(`/api/v1/firmware/catalog/${encodeURIComponent(firmwareId)}/promote`, { method: 'POST' });
+          await refreshFirmwareCatalog();
+        } catch (error) {
+          const status = document.getElementById('firmware-catalog-status');
+          status.textContent = `Could not promote firmware candidate: ${error.message}`;
+          status.className = 'notice error';
+        }
+      }
+
+      async function deleteFirmwareEntry(firmwareId) {
+        if (!window.confirm(`Permanently delete firmware ${firmwareId} and its metadata?`)) return;
+        try {
+          await api(`/api/v1/firmware/catalog/${encodeURIComponent(firmwareId)}`, { method: 'DELETE' });
+          await refreshFirmwareCatalog();
+        } catch (error) {
+          const status = document.getElementById('firmware-catalog-status');
+          status.textContent = `Could not delete firmware entry: ${error.message}`;
+          status.className = 'notice error';
+        }
+      }
+
+      document.getElementById('firmware-upload-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const button = form.querySelector('button[type="submit"]');
+        const status = document.getElementById('firmware-catalog-status');
+        const bundle = document.getElementById('firmware-upload-bundle').files[0];
+        const metadata = document.getElementById('firmware-upload-metadata').files[0];
+        if (!bundle || !metadata) return;
+        button.disabled = true;
+        status.textContent = 'Uploading and verifying firmware bundle and metadata…';
+        status.className = 'notice';
+        try {
+          const response = await fetch(`${publicBasePath}/api/v1/firmware/catalog`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${authToken.value}` },
+            body: new FormData(form),
+            cache: 'no-store',
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(result.detail || `Upload failed (${response.status}).`);
+          form.reset();
+          await refreshFirmwareCatalog();
+        } catch (error) {
+          status.textContent = `Could not upload firmware candidate: ${error.message}`;
+          status.className = 'notice error';
+        } finally {
+          button.disabled = false;
+        }
+      });
+
+      document.getElementById('refresh-firmware-catalog').addEventListener('click', refreshFirmwareCatalog);
+
       function showDashboard(role) {
         currentRole = role;
         document.getElementById('login-panel').hidden = true;
@@ -1532,7 +1701,11 @@
         document.getElementById('user-controls').hidden = false;
         document.getElementById('admin-panel').hidden = role !== 'admin';
         document.getElementById('tab-button-espconnect').hidden = !['admin', 'viewer'].includes(role);
-        if (role === 'admin') loadCreateOwners();
+        document.getElementById('tab-button-firmware').hidden = !['admin', 'viewer'].includes(role);
+        if (role === 'admin') {
+          loadCreateOwners();
+        }
+        refreshFirmwareCatalog();
         document.getElementById('tab-button-users').hidden = !['admin', 'viewer'].includes(role);
         document.getElementById('tab-button-groups').hidden = !['admin', 'viewer'].includes(role);
         document.getElementById('create-user-panel').hidden = role !== 'admin';
@@ -1545,6 +1718,7 @@
           refreshHubStatus();
           if (activeTabName === 'observations') refreshObservations();
           else if (activeTabName === 'groups') refreshGroups();
+          else if (activeTabName === 'firmware') refreshFirmwareCatalog();
           else refreshDevices();
         }, 30000);
       }
@@ -1738,7 +1912,9 @@
         document.getElementById('admin-panel').hidden = true;
         document.getElementById('tab-button-users').hidden = true;
         document.getElementById('tab-button-groups').hidden = true;
+        document.getElementById('tab-button-firmware').hidden = true;
         document.getElementById('user-controls').hidden = true;
+        document.getElementById('firmware-catalog-list').replaceChildren();
         const createdToken = document.getElementById('created-token');
         createdToken.hidden = true;
         createdToken.replaceChildren();

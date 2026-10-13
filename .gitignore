@@ -14,6 +14,7 @@ __pycache__/
 *.pfx
 *.der
 *.csr
+artifacts/*
 mqtt/certs/*
 !mqtt/certs/.gitkeep
 hub/bootstrap/data/
