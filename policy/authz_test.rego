@@ -81,6 +81,27 @@ test_viewer_can_read_users_and_groups_but_not_manage_them if {
 	}
 }
 
+test_viewer_can_read_firmware_catalog_but_not_upload_or_promote if {
+	authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "firmware.catalog.read",
+		"resource": {"type": "firmware_catalog"},
+		"context": {},
+	}
+	not authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "firmware.catalog.upload",
+		"resource": {"type": "firmware_catalog"},
+		"context": {},
+	}
+	not authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "firmware.catalog.promote",
+		"resource": {"type": "firmware_catalog"},
+		"context": {},
+	}
+}
+
 test_owner_can_read_owned_device if {
 	authz.allow with input as {
 		"subject": {"id": "user-123", "role": "user", "authenticated": true},

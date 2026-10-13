@@ -2,7 +2,6 @@
 import argparse
 import json
 import math
-import os
 import ssl
 import sys
 import time
@@ -11,8 +10,14 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 from datetime import datetime
-from pathlib import Path
 from typing import Any
+
+from _hub_cli import (
+    add_hub_connection_arguments,
+    load_project_env,
+    print_help_without_arguments,
+    validate_hub_connection,
+)
 
 
 class HubApiError(RuntimeError):
@@ -286,63 +291,51 @@ def status_changes(previous: dict[str, Any], current: dict[str, Any]) -> list[st
 
 
 def main() -> int:
+    try:
+        load_project_env()
+    except ValueError as exc:
+        print(f"Hub configuration failed: {exc}", file=sys.stderr)
+        return 1
     parser = argparse.ArgumentParser(
         description="Show Hub service status from the authenticated Hub API."
     )
-    parser.add_argument("--hub-host", required=True, help="Hub LAN IP or certificate-valid hostname")
-    parser.add_argument("--hub-port", type=int, default=8443, help="HTTPS listener port (default: 8443)")
-    parser.add_argument(
-        "--base-path",
-        default=os.environ.get("DBMAP_PUBLIC_BASE_PATH", ""),
-        help="Optional public path prefix, for example /dbmap",
-    )
-    parser.add_argument("--ca", default="mqtt/certs/ca.crt", help="Path to the local hub CA")
-    parser.add_argument(
-        "--output",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: readable text; JSON is suitable for scripts)",
-    )
-    parser.add_argument(
-        "--watch",
-        action="store_true",
-        help="Poll repeatedly; JSON output is newline-delimited, one status object per poll",
-    )
-    parser.add_argument(
+    add_hub_connection_arguments(parser)
+    commands = parser.add_subparsers(dest="command", required=True)
+    list_command = commands.add_parser("list", help="Show Hub status once")
+    watch_command = commands.add_parser("watch", help="Poll Hub status repeatedly")
+    for command in (list_command, watch_command):
+        command.add_argument(
+            "--output",
+            choices=("text", "json"),
+            default="text",
+            help="Output format (default: readable text; JSON is suitable for scripts)",
+        )
+    watch_command.add_argument(
         "--interval-seconds",
         type=float,
         default=15,
-        help="Polling interval when --watch is set (default: 15)",
+        help="Polling interval (default: 15)",
     )
+    if print_help_without_arguments(parser):
+        return 0
     args = parser.parse_args()
-    args.base_path = args.base_path.rstrip("/")
-    if args.base_path and (
-        not args.base_path.startswith("/")
-        or "//" in args.base_path
-        or any(part in {".", ".."} for part in args.base_path.split("/"))
-    ):
-        parser.error("--base-path must be empty or a normalized absolute path")
-    try:
-        parse_watch_interval(args.interval_seconds)
-    except ValueError as exc:
-        parser.error(str(exc))
-    admin_token = os.environ.get("DBMAP_ADMIN_TOKEN", "")
-    if len(admin_token) < 32:
-        parser.error("DBMAP_ADMIN_TOKEN must be loaded from the private .env file")
-    if not Path(args.ca).is_file():
-        parser.error(f"CA file does not exist: {args.ca}")
-
-    base_url = f"https://{args.hub_host}:{args.hub_port}{args.base_path}"
+    base_url, admin_token = validate_hub_connection(args, parser)
+    watching = args.command == "watch"
+    if watching:
+        try:
+            parse_watch_interval(args.interval_seconds)
+        except ValueError as exc:
+            parser.error(str(exc))
     try:
         previous = fetch_status(base_url, args.ca, admin_token)
         if args.output == "json":
             print(
-                json.dumps(previous, indent=None if args.watch else 2, sort_keys=True),
-                flush=args.watch,
+                json.dumps(previous, indent=None if watching else 2, sort_keys=True),
+                flush=watching,
             )
         else:
             print_human_status(previous)
-        if not args.watch:
+        if not watching:
             return 0
         if args.output == "text":
             print("\nWatching service status; press Ctrl+C to stop.")

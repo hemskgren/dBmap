@@ -2,6 +2,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -19,10 +20,11 @@ from app.models import (
     Node,
     NodeCredential,
     Observation,
+    RegistrationRequest,
     ReportedState,
 )
 from app.mqtt_security import ensure_node_security, set_node_security_active
-from app.ownership_service import get_current_owner
+from app.ownership_service import add_initial_owner, get_current_owner
 from app.schemas import (
     CreateNodeRequest,
     CreateNodeResponse,
@@ -42,13 +44,27 @@ from app.topics import topics_for
 DEVICE_ONLINE_WINDOW = timedelta(seconds=90)
 
 
+class DuplicateRegistration(Exception):
+    def __init__(self, node_id: str) -> None:
+        self.node_id = node_id
+
+
 def _next_sequence(db: Session, node_type: str, simulated: bool = False) -> int:
     prefix = "SIM-EAR-%" if simulated else ("OUT-%" if node_type == "output" else "EAR-%")
     count = db.scalar(select(func.count()).select_from(Node).where(Node.node_id.like(prefix))) or 0
     return int(count) + 1
 
 
-def create_node(db: Session, body: CreateNodeRequest) -> CreateNodeResponse:
+def create_node(
+    db: Session,
+    body: CreateNodeRequest,
+    idempotency_key: str | None = None,
+) -> CreateNodeResponse:
+    if idempotency_key is not None:
+        previous = db.get(RegistrationRequest, idempotency_key)
+        if previous is not None:
+            raise DuplicateRegistration(previous.node_id)
+
     seq = _next_sequence(db, body.node_type, body.simulated)
     node_id = allocate_node_id(body.node_type, seq, body.simulated)
     while db.get(Node, node_id) is not None:
@@ -62,6 +78,7 @@ def create_node(db: Session, body: CreateNodeRequest) -> CreateNodeResponse:
         provisioning_state="pending",
         availability="SERVICE",
     )
+    add_initial_owner(db, node_id, body.owner_type, body.owner_id)
     db.add(node)
     db.add(
         DesiredState(
@@ -74,7 +91,17 @@ def create_node(db: Session, body: CreateNodeRequest) -> CreateNodeResponse:
 
     token = new_token()
     db.add(BootstrapToken(token_hash=token_hash(token), node_id=node_id))
-    db.commit()
+    if idempotency_key is not None:
+        db.add(RegistrationRequest(idempotency_key=idempotency_key, node_id=node_id))
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if idempotency_key is not None:
+            previous = db.get(RegistrationRequest, idempotency_key)
+            if previous is not None:
+                raise DuplicateRegistration(previous.node_id) from exc
+        raise
     return CreateNodeResponse(node_id=node_id, bootstrap_token=token, provisioning_state="pending")
 
 

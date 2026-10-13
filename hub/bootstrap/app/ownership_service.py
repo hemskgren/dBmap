@@ -127,5 +127,33 @@ def set_owner(
     return get_ownership(db, normalized_id)
 
 
+def add_initial_owner(
+    db: Session,
+    node_id: str,
+    owner_type: str | None,
+    owner_id: str | None,
+) -> None:
+    if owner_type is None and owner_id is None:
+        return
+    if owner_type is None or owner_id is None:
+        raise ValueError("owner type and owner ID must be provided together")
+
+    owner = db.get(User if owner_type == "user" else Group, owner_id)
+    if owner is None:
+        raise OwnershipTargetNotFound
+    if owner.status != "active":
+        raise InactiveOwner
+
+    db.add(
+        DeviceOwnership(
+            node_id=node_id,
+            owner_type=owner_type,
+            owner_user_id=owner_id if owner_type == "user" else None,
+            owner_group_id=owner_id if owner_type == "group" else None,
+            valid_from=datetime.now(timezone.utc),
+        )
+    )
+
+
 def _utc(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)

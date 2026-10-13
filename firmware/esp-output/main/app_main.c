@@ -20,6 +20,11 @@ void app_main(void)
     dbmap_effective_defaults(&s_cfg);
     ESP_ERROR_CHECK(dbmap_nvs_load(&s_cfg));
 
+    ESP_LOGI(
+        TAG,
+        "DBMAP_DEVICE_ID=%s",
+        s_cfg.identity.node_id[0] != '\0' ? s_cfg.identity.node_id : "UNPROVISIONED"
+    );
     ESP_LOGI(TAG, "boot hardware=%s provisioned=%d", s_cfg.identity.hardware_revision, (int)s_cfg.provisioned);
 
     ESP_ERROR_CHECK(dbmap_wifi_start(&s_cfg.network));

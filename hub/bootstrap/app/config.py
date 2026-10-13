@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="DBMAP_", extra="ignore")
 
     database_url: str = "sqlite:////data/bootstrap.db"
+    firmware_catalog_dir: str = "/firmware-catalog"
     admin_token: str = ""
     viewer_token: str = ""
     opa_decision_url: str = "https://opa:8181/v1/data/dbmap/authz/allow"

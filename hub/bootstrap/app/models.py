@@ -144,6 +144,28 @@ class DeviceOwnership(Base):
     valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class RegistrationRequest(Base):
+    __tablename__ = "registration_requests"
+
+    idempotency_key: Mapped[str] = mapped_column(String(36), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(64), ForeignKey("nodes.node_id", ondelete="RESTRICT"), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class FirmwareCatalogEntry(Base):
+    __tablename__ = "firmware_catalog"
+    __table_args__ = (
+        CheckConstraint("status IN ('candidate', 'registered')"),
+    )
+
+    firmware_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="candidate")
+    metadata_json: Mapped[str] = mapped_column(Text)
+    artifact_sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    registered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class InstallationMetadata(Base):
     __tablename__ = "installation_metadata"
 

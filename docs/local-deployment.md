@@ -22,6 +22,7 @@ The local deployment now includes a minimal edge proxy and web frontend as part 
 
 - `https://<hub-host>:8443/` serves the lightweight dBmap web UI
 - `https://<hub-host>:8443/api/...` proxies to the Hub bootstrap API
+- `https://<hub-host>:8443/api/v1/firmware/catalog...` proxies to the Hub firmware catalog API; catalog ZIPs and metadata are retained in the `firmware-catalog` named volume
 - Hub bootstrap is reachable only on the internal Compose network; Nginx proxies to it using verified HTTPS
 - Nginx also verifies HTTPS to the web service and OPA using separate certificates
 - Nginx accepts TLS 1.2 and 1.3, disables session tickets and version disclosure, and sends browser security headers
@@ -31,6 +32,8 @@ The local deployment now includes a minimal edge proxy and web frontend as part 
 - Nginx verifies the Hub's upstream TLS certificate using the stable `hub.local` certificate name, regardless of whether clients connect to the proxy by IP or hostname
 
 The Hub API delegates role and action decisions to OPA. OPA is attached to a private Compose network shared only with Hub bootstrap and has no host-published port. Hub-to-OPA calls use HTTPS and validate OPA's certificate against the local CA. This is TLS server authentication, not mutual TLS. The default decision URL is `https://opa:8181/v1/data/dbmap/authz/allow`; deployments can override it with `DBMAP_OPA_DECISION_URL`, which must use HTTPS. If OPA is unavailable or returns no boolean decision, protected API requests return HTTP 503 rather than being allowed. The Rego policy is mounted read-only from `policy/`, and OPA watches that directory to reload changed policy files. Compose checks OPA's HTTPS `/health?plugins=true` endpoint using the mounted local CA and reports the result in `docker compose ps`.
+
+Normal Compose startup does not build or start the ESP-IDF firmware builder. Its code and build artifacts are retained behind the optional `firmware-build` profile for future use. The Hub catalog stores external firmware ZIPs and matching JSON sidecars in the persistent `firmware-catalog` volume. Uploads begin as unregistered candidates; admins can review, promote, and delete entries, while viewers can list and download every entry, including candidates, without changing catalog state. The catalog does not yet filter compatibility or flash devices through the browser.
 
 Run the policy unit tests from the repository root with:
 
@@ -103,24 +106,13 @@ Optional mDNS publishing can be started on a host with Avahi installed:
 
 Keep the publisher running while you need the name; it stops advertising when the process exits. Publishing is optional and a missing/unavailable Avahi installation does not affect the Hub. Compose publishes Nginx on `DBMAP_HTTPS_PORT` (default `8443`) and Mosquitto on `8883` at `DBMAP_LAN_IP`. The Hub API, web, and OPA ports remain internal to Compose. An existing Nginx can terminate public HTTPS on 443 and proxy to `https://<hub-host>:8443`, verifying the local CA.
 
-For the first ESP32 test, use the hub's numeric LAN IP in the firmware. `hub.local` works for host tools via mDNS, but this firmware does not include an explicit mDNS resolver. The IP is already included in the generated server certificate. Set the firmware's Hub base URL to `https://<mini-PC-LAN-IP>:8443` by default (or the configured listener port). Set `DBMAP_ADVERTISED_MQTT_HOST` in `.env` to the same LAN IP as `DBMAP_LAN_IP` and apply the setting so the provisioning response gives that reachable address to the ESP32:
+For device deployments, set `DBMAP_ADVERTISED_MQTT_HOST` in `.env` to the Hub's reachable numeric LAN IP (normally the same value as `DBMAP_LAN_IP`). The current Output firmware does not resolve `hub.local`; the advertised address must be reachable by the device and covered by the local TLS certificate. This is a Hub-wide setting, not a per-device setting. After changing it, or whenever the Hub is stopped, apply the configuration and start the services:
 
 ```bash
 sudo docker compose up -d
 ```
 
-Create a **new** Output node/token for this secure firmware test. Load the private settings into the current shell before the request:
-
-```bash
-set -a
-. ./.env
-set +a
-export CURL_CA_BUNDLE=mqtt/certs/ca.crt
-curl -sS -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{"node_type":"output","hardware_revision":"OUTPUT-DEV-V1"}' \
-  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes"
-```
+For node registration, bootstrap-token recovery, and ESP-Output build/flash instructions, see [Register and deploy a device](./device-registration-and-deployment.md).
 
 The browser UI at `https://hub.local:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/` accepts either `DBMAP_ADMIN_TOKEN` or `DBMAP_VIEWER_TOKEN`. The Hub tab shows local mode and component status. Click **Details** beside Hub API, Database, Policy engine, or MQTT broker to fetch that component's summary; those detail requests do not run until clicked. Database details include the SQLite version, storage use, and table row counts. Policy details show OPA HTTPS health and plugin readiness. MQTT details show the broker metrics received by the Hub over its existing TLS connection. The Devices tab summarizes device counts, lifecycle, availability, and the device list. The Observations tab shows up to the latest 100 observations in a timeline using local date and time; select an entry to view its original JSON, which retains UTC timestamps. Ear installation distances are site context only and load when expanded. It lists all pairwise distances when there are fewer than 10 registered Ears; for 10 or more, it shows only the shortest and longest valid distances and points to `scripts/hub_event_track.py` for detailed site analysis. The viewer token grants read-only access to device, Hub, and observation data; the admin token additionally enables device creation and lifecycle actions. Tokens are held in browser memory only and cleared on sign-out or page reload. The browser is not the security boundary: the API independently checks the token and role. Device status is online when the Hub received a keepalive within the previous 90 seconds; otherwise it is offline.
 
@@ -128,76 +120,9 @@ The Groups tab shows member names, copyable dBmap user IDs, and linked GitHub nu
 
 Web timestamps use day/month/year and a 24-hour clock in the browser's local time zone. Human-readable Python reports use the same date/time order in the host's local time zone. API timestamps and `--output json` retain UTC ISO 8601 values.
 
-The ESPConnect tab opens the checked-in ESPConnect v1.1.23 static build in a separate browser window at `https://hub.local:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/espconnect/`. It needs no internet connection for its app assets or USB board inspection; its help and release-note links are external. The downloaded release is MIT-licensed; its upstream license and source release are recorded under `web/espconnect/`. Use Chromium 89+ and a data-capable USB cable, accept the browser's device permission prompt, and install the local CA so the Hub is a trusted HTTPS origin. ESPConnect only inspects the USB device in the browser; it does not receive the Hub token. Reading device information into the dBmap registration form is not wired yet.
+The ESPConnect tab is a separate power-user tool for local admin/viewer accounts. Device registration reads the dBmap node ID from compatible firmware over USB serial; it does not use the USB-to-UART vendor ID as device identity. See [Register and deploy a device](./device-registration-and-deployment.md) for prerequisites and the manual deployment flow.
 
-The bootstrap token is returned only once; the hub stores its hash, so it cannot be displayed again. Save the returned token privately before continuing. If it is lost, repeat the node-creation request to get a new node ID and token; the old pending node can be left unused. Do not post the token in chat or logs. Before building firmware, embed the local CA so the ESP32 can verify HTTPS and MQTT server certificates:
-
-```bash
-cp mqtt/certs/ca.crt firmware/esp-output/main/root_ca.pem
-```
-
-In firmware menuconfig, under **dBmap node**, set the Wi-Fi SSID and password, hub bootstrap base URL to `https://<mini-PC-LAN-IP>:8443` (actual IP, without angle brackets; use your configured listener port), the one-time bootstrap token returned by the node-creation request, and hardware revision to `OUTPUT-DEV-V1`. The token field must not be left empty on the board's first provisioning boot: NVS is empty after `erase-flash`, and the token is not saved there before provisioning. Do not use `localhost` on the board; it refers to the ESP32 itself. The ESP32-WROOM-32 test uses the `esp32` target and 4 MB flash, not the planned ESP32-S3/16 MB Ear target.
-
-## Install ESP-IDF (Linux)
-
-`idf.py` is part of Espressif's ESP-IDF toolchain, not a Python project dependency. Install the Linux prerequisites and pinned ESP-IDF release once:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y git wget flex bison gperf python3 python3-pip python3-venv \
-  cmake ninja-build ccache libffi-dev libssl-dev dfu-util libusb-1.0-0
-
-mkdir -p ~/esp
-git clone --recursive --branch v5.4.2 \
-  https://github.com/espressif/esp-idf.git ~/esp/esp-idf
-cd ~/esp/esp-idf
-./install.sh esp32
-```
-
-Activate ESP-IDF in each terminal used to build firmware:
-
-```bash
-. "$HOME/esp/esp-idf/export.sh"
-idf.py --version
-```
-
-On Linux, if `/dev/ttyACM0` is owned by group `dialout`, add your user to that group once, then fully log out and back in:
-
-```bash
-sudo usermod -aG dialout "$USER"
-```
-
-Verify serial access after reconnecting:
-
-```bash
-id -nG
-test -r /dev/ttyACM0 && echo "serial port readable"
-```
-
-Build, flash, and monitor using the serial port present on your machine (`/dev/ttyACM0` or `/dev/ttyUSB0` are common):
-
-```bash
-. "$HOME/esp/esp-idf/export.sh"
-cd firmware/esp-output
-idf.py set-target esp32
-idf.py menuconfig
-idf.py -p /dev/ttyACM0 erase-flash
-idf.py build
-idf.py -p /dev/ttyACM0 flash monitor
-```
-
-Erasing is important when reusing a board that has old lab credentials in NVS. Change `/dev/ttyACM0` to the port shown on your system. To leave the serial monitor, press `Ctrl+]`.
-
-After flashing, expect Wi-Fi connection, a `provisioned as OUT-...` message, and a verified TLS MQTT connection. In a terminal at the repository root, load `.env` and list provisioned nodes with:
-
-```bash
-set -a
-. ./.env
-set +a
-export CURL_CA_BUNDLE=mqtt/certs/ca.crt
-curl -sS -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
-  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes"
-```
+The local ESP32-WROOM-32 test uses the `esp32` target and 4 MB flash, not the planned ESP32-S3/16 MB Ear target. See the device guide for bootstrap-token handling, firmware settings, and flashing.
 
 ### Record installation metadata
 
@@ -316,9 +241,7 @@ uv run --project hub/bootstrap python simulator/ear/simulate_scenario.py \
 Inspect the resulting records with the existing read-only explorer:
 
 ```bash
-uv run --project hub/bootstrap python scripts/hub_event_track.py \
-  --hub-host "$DBMAP_LAN_IP" \
-  --watch
+uv run python scripts/hub_event_track.py watch
 ```
 
 This lets us exercise observation ingestion, review the independent tracker input, and compare it with scenario ground truth only after the tracker has produced predictions. It does not change or require rebuilding the Hub container.
@@ -342,11 +265,12 @@ uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
 For a concise, authenticated list of Hub service statuses, run:
 
 ```bash
-uv run --project hub/bootstrap python scripts/hub_summary.py \
-  --hub-host "$DBMAP_LAN_IP"
+uv run python scripts/hub_summary.py list
 ```
 
-The default output shows the Hub mode and ID, one status line each for Hub API, Database, Policy engine, and MQTT broker, and a concise device summary with counts by type, lifecycle, availability, and installation state. Use `--output json` for machine-readable output from the Hub status endpoint. Add `--watch` to poll service statuses every 15 seconds; text mode reports service changes, while JSON mode emits one JSON object per poll. Use `--interval-seconds 30` to change the interval. Component details such as broker metrics remain available on demand in the web UI. Stop watch mode with `Ctrl+C`.
+All `scripts/hub_*.py` command-line tools use the same Hub connection defaults from the project-root `.env`: `DBMAP_LAN_IP`, `DBMAP_HTTPS_PORT` (default `8443`), `DBMAP_PUBLIC_BASE_PATH`, and `DBMAP_ADMIN_TOKEN`. The local CA defaults to `mqtt/certs/ca.crt`. Exported shell values take precedence; options such as `--hub-host`, `--hub-port`, `--base-path`, and `--ca` are optional overrides.
+
+The `list` command shows the Hub mode and ID, one status line each for Hub API, Database, Policy engine, and MQTT broker, and a concise device summary with counts by type, lifecycle, availability, and installation state. Use `list --output json` for machine-readable output from the Hub status endpoint. Use `watch` to poll service statuses every 15 seconds; text mode reports service changes, while JSON mode emits one JSON object per poll. Use `watch --interval-seconds 30` to change the interval. Component details such as broker metrics remain available on demand in the web UI. Stop watch mode with `Ctrl+C`.
 
 ### Explore observation source hints
 
@@ -355,36 +279,25 @@ The default output shows the Hub mode and ID, one status line each for Hub API, 
 The default 15-second inactivity window closes a per-Ear activity summary only after that much silence following an observation interval (`event_time_utc + duration_ms`). This is a time boundary, not evidence that observations inside the episode came from the same source; simultaneous sources can still be distinct. The summary is only printed, never persisted or used to control a node. The tool does not create Events/Tracks or infer geographic source positions from bearing. Watch mode re-fetches observations and node metadata, then reprints the analysis when new observations arrive.
 
 ```bash
-uv run --project hub/bootstrap python scripts/hub_event_track.py \
-  --hub-host "$DBMAP_LAN_IP"
+uv run python scripts/hub_event_track.py list
 ```
 
-To monitor and recalculate the report every 15 seconds, add `--watch`; customize the polling interval with `--interval-seconds 30`. Change the per-Ear inactivity summary window with `--event-gap-seconds 20`. To inspect one Ear only, add `--node-id SIM-EAR-001`. The script fetches at most the latest 500 observations per poll.
+To monitor and recalculate the report every 15 seconds, use `watch`; customize the polling interval with `watch --interval-seconds 30`. Change the per-Ear inactivity summary window with `--event-gap-seconds 20` after either `list` or `watch`. To inspect one Ear only, add `--node-id SIM-EAR-001` after either command. The script fetches at most the latest 500 observations per poll.
 
 ### Administer Hub nodes
 
 The authenticated admin CLI lists and inspects nodes, updates desired state or installation metadata, and reversibly deactivates/reactivates a node without deleting its observations or MQTT account. While deactivated, the Hub rejects new observations and refuses provisioning, and the node's MQTT role ACLs are suspended; reactivation restores the role ACLs without changing the account or password. A broker ACL failure returns HTTP 503. If reactivation reports that Hub state is active while broker access remains suspended, retry the `reactivate` command after fixing broker access.
 
-Load the admin token from the private `.env` file, then use `scripts/hub_admin.py`:
+Use `scripts/hub_admin.py`; it loads the Hub address and admin token from the project-root `.env`:
 
 ```bash
-set -a
-. ./.env
-set +a
-
-uv run --project hub/bootstrap python scripts/hub_admin.py \
-  --hub-host "$DBMAP_LAN_IP" list
-uv run --project hub/bootstrap python scripts/hub_admin.py \
-  --hub-host "$DBMAP_LAN_IP" show SIM-EAR-001
-uv run --project hub/bootstrap python scripts/hub_admin.py \
-  --hub-host "$DBMAP_LAN_IP" set-desired SIM-EAR-001 --config-version 2
-uv run --project hub/bootstrap python scripts/hub_admin.py \
-  --hub-host "$DBMAP_LAN_IP" set-installation SIM-EAR-001 \
+uv run python scripts/hub_admin.py list
+uv run python scripts/hub_admin.py show SIM-EAR-001
+uv run python scripts/hub_admin.py set-desired SIM-EAR-001 --config-version 2
+uv run python scripts/hub_admin.py set-installation SIM-EAR-001 \
   --latitude 59.91 --longitude 10.75 --orientation-deg 180
-uv run --project hub/bootstrap python scripts/hub_admin.py \
-  --hub-host "$DBMAP_LAN_IP" deactivate SIM-EAR-001
-uv run --project hub/bootstrap python scripts/hub_admin.py \
-  --hub-host "$DBMAP_LAN_IP" reactivate SIM-EAR-001
+uv run python scripts/hub_admin.py deactivate SIM-EAR-001
+uv run python scripts/hub_admin.py reactivate SIM-EAR-001
 ```
 
 Installation updates preserve fields not supplied on the command line; latitude and longitude must already exist or be supplied together. Desired-state updates likewise preserve fields that are not explicitly changed. Both commands validate the resulting complete object through the Hub API. Keep `.env` and the local CA private.

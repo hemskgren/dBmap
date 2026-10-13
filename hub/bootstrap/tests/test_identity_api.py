@@ -277,6 +277,79 @@ def test_device_ownership_requires_existing_active_user() -> None:
     assert disabled.status_code == 409
 
 
+def test_node_creation_assigns_owner_atomically_and_is_idempotent() -> None:
+    client = TestClient(create_app())
+    admin_headers = {"Authorization": "Bearer test-admin"}
+    before = client.get("/api/v1/nodes", headers=admin_headers)
+    assert before.status_code == 200
+    user = client.post(
+        "/api/v1/users",
+        json={"display_name": "Deployment owner"},
+        headers=admin_headers,
+    ).json()
+    idempotency_key = str(uuid4())
+    headers = {**admin_headers, "Idempotency-Key": idempotency_key}
+    payload = {
+        "node_type": "output",
+        "hardware_revision": "unknown",
+        "owner_type": "user",
+        "owner_id": user["user_id"],
+    }
+
+    created = client.post("/api/v1/nodes", json=payload, headers=headers)
+    assert created.status_code == 200, created.text
+    node_id = created.json()["node_id"]
+    detail = client.get(f"/api/v1/nodes/{node_id}", headers=admin_headers)
+    assert detail.status_code == 200
+    assert detail.json()["owner_type"] == "user"
+    assert detail.json()["owner_id"] == user["user_id"]
+
+    retry = client.post("/api/v1/nodes", json=payload, headers=headers)
+    assert retry.status_code == 409
+    assert node_id in retry.json()["detail"]
+    assert "bootstrap_token" not in retry.json()
+    after_retry = client.get("/api/v1/nodes", headers=admin_headers)
+    assert len(after_retry.json()) == len(before.json()) + 1
+
+    invalid_owner = client.post(
+        "/api/v1/nodes",
+        json={
+            **payload,
+            "owner_id": str(uuid4()),
+        },
+        headers={**admin_headers, "Idempotency-Key": str(uuid4())},
+    )
+    assert invalid_owner.status_code == 404
+    after_invalid = client.get("/api/v1/nodes", headers=admin_headers)
+    assert len(after_invalid.json()) == len(after_retry.json())
+
+    disabled_user = client.post(
+        "/api/v1/users",
+        json={"display_name": "Disabled deployment owner"},
+        headers=admin_headers,
+    ).json()
+    client.put(
+        f"/api/v1/users/{disabled_user['user_id']}/status",
+        json={"status": "disabled"},
+        headers=admin_headers,
+    )
+    inactive_owner = client.post(
+        "/api/v1/nodes",
+        json={**payload, "owner_id": disabled_user["user_id"]},
+        headers={**admin_headers, "Idempotency-Key": str(uuid4())},
+    )
+    assert inactive_owner.status_code == 409
+    after_inactive = client.get("/api/v1/nodes", headers=admin_headers)
+    assert len(after_inactive.json()) == len(after_retry.json())
+
+    viewer_create = client.post(
+        "/api/v1/nodes",
+        json=payload,
+        headers={"Authorization": "Bearer test-viewer", "Idempotency-Key": str(uuid4())},
+    )
+    assert viewer_create.status_code == 403
+
+
 def test_node_policy_input_uses_database_owner_not_client_input(monkeypatch) -> None:
     from app import policy
 

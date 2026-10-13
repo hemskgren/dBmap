@@ -1,7 +1,10 @@
+import sys
 from argparse import Namespace
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from unittest.mock import Mock
+
+sys.path.insert(0, str(Path(__file__).parents[2] / "scripts"))
 
 import pytest
 

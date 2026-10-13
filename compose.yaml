@@ -93,6 +93,8 @@ services:
       NGINX_ENVSUBST_FILTER: ^DBMAP_HTTPS_PORT$|^DBMAP_PUBLIC_BASE_PATH$
     volumes:
       - ./mqtt/certs:/certs:ro
+    networks:
+      - default
     healthcheck:
       test: ["CMD-SHELL", "SSL_CERT_FILE=/certs/ca.crt wget -q -O /dev/null https://127.0.0.1:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/health >/dev/null 2>&1 || exit 1"]
       interval: 10s
@@ -137,8 +139,10 @@ services:
       DBMAP_ADVERTISED_MQTT_USE_TLS: "true"
       DBMAP_SITE_ID: ${DBMAP_SITE_ID:-local-01}
       DBMAP_DATABASE_URL: sqlite:////data/bootstrap.db
+      DBMAP_FIRMWARE_CATALOG_DIR: /firmware-catalog
     volumes:
       - bootstrap-data:/data
+      - firmware-catalog:/firmware-catalog
       - ./mqtt/certs:/certs:ro
     networks:
       - default
@@ -149,11 +153,42 @@ services:
       timeout: 3s
       retries: 10
 
+  firmware-builder:
+    profiles:
+      - firmware-build
+    build:
+      context: ./firmware-builder
+    platform: linux/amd64
+    restart: unless-stopped
+    environment:
+      DBMAP_ADMIN_TOKEN: ${DBMAP_ADMIN_TOKEN:?Set DBMAP_ADMIN_TOKEN in .env}
+      DBMAP_FIRMWARE_SOURCE: /firmware/esp-output
+      DBMAP_FIRMWARE_ARTIFACTS: /artifacts
+    expose:
+      - "8090"
+    volumes:
+      - ./firmware/esp-output:/firmware/esp-output:ro
+      - ./firmware/components:/firmware/components:ro
+      - ./mqtt/certs:/certs:ro
+      - firmware-artifacts:/artifacts
+    networks:
+      - firmware-private
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 volumes:
   mosquitto-data:
   bootstrap-data:
+  firmware-catalog:
+  firmware-artifacts:
 
 networks:
   default:
+  firmware-private:
+    internal: true
   opa-private:
     internal: true
