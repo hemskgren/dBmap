@@ -242,6 +242,15 @@ class InstallationMetadata(Base):
 
 class BootstrapToken(Base):
     __tablename__ = "bootstrap_tokens"
+    __table_args__ = (
+        Index(
+            "uq_bootstrap_tokens_one_unconsumed_per_node",
+            "node_id",
+            unique=True,
+            sqlite_where=text("consumed_at IS NULL"),
+            postgresql_where=text("consumed_at IS NULL"),
+        ),
+    )
 
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     node_id: Mapped[str] = mapped_column(String(64), index=True)

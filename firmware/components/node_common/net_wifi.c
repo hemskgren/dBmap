@@ -18,7 +18,8 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
     (void)arg;
     (void)base;
     (void)id;
-    (void)data;
+    const ip_event_got_ip_t *event = data;
+    ESP_LOGI(TAG, "got IPv4 address " IPSTR, IP2STR(&event->ip_info.ip));
     xEventGroupSetBits(s_wifi, GOT_IP);
 }
 

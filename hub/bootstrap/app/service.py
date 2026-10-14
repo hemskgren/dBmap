@@ -49,6 +49,10 @@ class DuplicateRegistration(Exception):
         self.node_id = node_id
 
 
+class BootstrapTokenRotationUnavailable(Exception):
+    pass
+
+
 def _next_sequence(db: Session, node_type: str, simulated: bool = False) -> int:
     prefix = "SIM-EAR-%" if simulated else ("OUT-%" if node_type == "output" else "EAR-%")
     count = db.scalar(select(func.count()).select_from(Node).where(Node.node_id.like(prefix))) or 0
@@ -103,6 +107,32 @@ def create_node(
                 raise DuplicateRegistration(previous.node_id) from exc
         raise
     return CreateNodeResponse(node_id=node_id, bootstrap_token=token, provisioning_state="pending")
+
+
+def rotate_pending_bootstrap_token(db: Session, node_id: str) -> str:
+    node = db.get(Node, node_id.upper())
+    if node is None:
+        raise KeyError(node_id)
+    if node.provisioning_state != "pending":
+        raise BootstrapTokenRotationUnavailable("bootstrap tokens can only be replaced while the device is pending")
+
+    now = datetime.now(timezone.utc)
+    active_tokens = db.scalars(
+        select(BootstrapToken)
+        .where(BootstrapToken.node_id == node.node_id, BootstrapToken.consumed_at.is_(None))
+        .with_for_update()
+    ).all()
+    for row in active_tokens:
+        row.consumed_at = now
+    db.flush()
+    token = new_token()
+    db.add(BootstrapToken(token_hash=token_hash(token), node_id=node.node_id))
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise BootstrapTokenRotationUnavailable("a bootstrap token was just issued; reload the device and retry") from exc
+    return token
 
 
 def provision(db: Session, body: ProvisionRequest) -> ProvisionResponse:

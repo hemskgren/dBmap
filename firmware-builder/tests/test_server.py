@@ -58,7 +58,8 @@ def test_builder_requires_admin_token(builder):
     assert request(builder, "GET", "/api/v1/firmware/targets", token="viewer-token")[0] == 403
     status, targets = request(builder, "GET", "/api/v1/firmware/targets", token="test-admin-token")
     assert status == 200
-    assert [target["id"] for target in targets] == ["esp-output-esp32"]
+    assert [target["id"] for target in targets] == ["output-esp32"]
+    assert targets[0]["hardware_revision"] == "generic"
 
 
 @pytest.mark.parametrize("body", [None, {}, {"target": "unlisted"}, {"target": []}])
@@ -80,7 +81,7 @@ def test_build_submission_and_status_polling_preserve_queued_state(builder, monk
         builder,
         "POST",
         "/api/v1/firmware/builds",
-        body={"target": "esp-output-esp32"},
+        body={"target": "output-esp32"},
         token="test-admin-token",
         idempotency_key="d8e1d748-9582-4a65-aa85-4d149b8afc9f",
     )
@@ -97,7 +98,7 @@ def test_build_submission_and_status_polling_preserve_queued_state(builder, monk
         builder,
         "POST",
         "/api/v1/firmware/builds",
-        body={"target": "esp-output-esp32"},
+        body={"target": "output-esp32"},
         token="test-admin-token",
         idempotency_key="d8e1d748-9582-4a65-aa85-4d149b8afc9f",
     )
@@ -150,12 +151,12 @@ def test_sdkconfig_string_reads_firmware_version(tmp_path):
 
 
 def test_toolchain_check_requires_pinned_esp_idf_version(tmp_path, monkeypatch):
-    monkeypatch.setattr(server, "_run_stage", lambda command, cwd: (0, "ESP-IDF v5.4.2"))
-    server._check_toolchain("esp-output-esp32", tmp_path)
+    monkeypatch.setattr(server, "_run_stage", lambda command, cwd, log_path: (0, "ESP-IDF v5.4.4"))
+    server._check_toolchain("output-esp32", tmp_path)
 
-    monkeypatch.setattr(server, "_run_stage", lambda command, cwd: (0, "ESP-IDF v5.3.0"))
+    monkeypatch.setattr(server, "_run_stage", lambda command, cwd, log_path: (0, "ESP-IDF v5.3.0"))
     with pytest.raises(RuntimeError, match="pinned ESP-IDF toolchain check failed"):
-        server._check_toolchain("esp-output-esp32", tmp_path)
+        server._check_toolchain("output-esp32", tmp_path)
 
 
 def test_build_list_keeps_older_artifacts_visible(builder):
@@ -163,7 +164,7 @@ def test_build_list_keeps_older_artifacts_visible(builder):
     for number in range(101):
         job_id = f"00000000-0000-0000-0000-{number:012d}"
         (jobs / f"{job_id}.json").write_text(
-            json.dumps({"id": job_id, "status": "succeeded", "target": "esp-output-esp32"}),
+            json.dumps({"id": job_id, "status": "succeeded", "target": "output-esp32"}),
             encoding="utf-8",
         )
 
@@ -190,7 +191,14 @@ def test_artifact_flash_manifest_contains_only_nvs_preserving_offsets(tmp_path):
         json.dumps({"flash_files": flash_files}),
         encoding="utf-8",
     )
-    entries = server._artifact_entries(build_dir)
+    entries = server._artifact_entries(
+        build_dir,
+        {
+            "0x1000": "bootloader.bin",
+            "0x8000": "partition-table.bin",
+            "0x10000": "esp-output.bin",
+        },
+    )
     assert [(entry["offset"], entry["name"]) for entry in entries] == [
         ("0x1000", "bootloader.bin"),
         ("0x8000", "partition-table.bin"),
@@ -203,7 +211,14 @@ def test_artifact_flash_manifest_contains_only_nvs_preserving_offsets(tmp_path):
         encoding="utf-8",
     )
     with pytest.raises(RuntimeError, match="Unexpected ESP-IDF flash offset"):
-        server._artifact_entries(build_dir)
+        server._artifact_entries(
+            build_dir,
+            {
+                "0x1000": "bootloader.bin",
+                "0x8000": "partition-table.bin",
+                "0x10000": "esp-output.bin",
+            },
+        )
 
 
 def test_artifact_download_and_explicit_delete(builder):
@@ -213,11 +228,14 @@ def test_artifact_download_and_explicit_delete(builder):
     artifact_dir.mkdir()
     bundle = artifact_dir / "firmware.zip"
     with zipfile.ZipFile(bundle, "w") as archive:
-        archive.writestr("manifest.json", '{"target":"esp-output-esp32"}')
+        archive.writestr(
+            "manifest.json",
+            json.dumps({"target": "output-esp32", "firmware_version": "0.1.4"}),
+        )
     bundle.chmod(0o600)
     job = {
         "id": build_id,
-        "target": "esp-output-esp32",
+        "target": "output-esp32",
         "status": "succeeded",
         "stage": "complete",
         "artifact": {

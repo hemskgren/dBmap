@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 class CreateNodeRequest(BaseModel):
     node_type: Literal["ear", "output"] = "output"
-    hardware_revision: str = "OUTPUT-DEV-V1"
+    hardware_revision: str = "unknown"
     desired_firmware_version: str = ""
     desired_config_version: int = 0
     simulated: bool = False
@@ -41,9 +41,16 @@ class CreateNodeResponse(BaseModel):
     provisioning_state: str
 
 
+class BootstrapTokenResponse(BaseModel):
+    node_id: str
+    bootstrap_token: str
+    provisioning_state: str
+
+
 class FirmwareSelectionBody(BaseModel):
     firmware_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
     acknowledge_unverified_platform: bool = False
+    allow_candidate: bool = False
 
 
 class DeploymentAttemptCreateBody(BaseModel):
@@ -51,6 +58,7 @@ class DeploymentAttemptCreateBody(BaseModel):
 
     firmware_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
     acknowledge_unverified_platform: bool = False
+    allow_candidate: bool = False
     flasher_version: str | None = Field(default=None, min_length=1, max_length=64)
 
 

@@ -12,6 +12,7 @@ server {
     resolver 127.0.0.11 valid=10s ipv6=off;
     set $hub_bootstrap_upstream hub-bootstrap:8443;
     set $dbmap_web_upstream dbmap-web:443;
+    set $firmware_builder_upstream firmware-builder:8090;
     set $dbmap_public_base_path "${DBMAP_PUBLIC_BASE_PATH}";
 
     ssl_certificate /certs/server.crt;
@@ -95,10 +96,26 @@ server {
         proxy_set_header X-Forwarded-Port $server_port;
     }
 
+    location ~ ^(?<build_request_base>/[^/]+(?:/[^/]+)*)?(?<build_api_uri>/api/v1/firmware/(?:targets|builds(?:/.*)?))$ {
+        if ($build_request_base != $dbmap_public_base_path) { return 404; }
+        error_page 502 503 504 = @firmware_builder_unavailable;
+        proxy_pass http://$firmware_builder_upstream$build_api_uri$is_args$args;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location @firmware_builder_unavailable {
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+        return 503 '{"detail":"Optional firmware builder is not running. Start it with docker compose --profile firmware-build up -d firmware-builder nginx."}';
+    }
+
     location ~ ^(?<request_base>/[^/]+(?:/[^/]+)*)?(?<api_uri>/api/.*)$ {
         if ($request_base != $dbmap_public_base_path) { return 404; }
         if ($api_uri !~ ^/api/v1/) { return 404; }
-        proxy_pass https://$hub_bootstrap_upstream$api_uri;
+        proxy_pass https://$hub_bootstrap_upstream$api_uri$is_args$args;
         proxy_ssl_server_name on;
         proxy_ssl_name hub.local;
         proxy_ssl_verify on;

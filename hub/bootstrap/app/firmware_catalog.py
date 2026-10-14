@@ -10,15 +10,23 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from app.models import FirmwareCatalogEntry, utcnow
+from app.models import DeploymentAttempt, FirmwareCatalogEntry, utcnow
 
 MAX_BUNDLE_BYTES = 128 * 1024 * 1024
 MAX_METADATA_BYTES = 64 * 1024
 FIRMWARE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-EXPECTED_COMPONENTS = {
-    "bootloader.bin": "0x1000",
-    "partition-table.bin": "0x8000",
-    "esp-output.bin": "0x10000",
+TARGET_FLASH_LAYOUTS = {
+    "output-esp32": {
+        "bootloader.bin": "0x1000",
+        "partition-table.bin": "0x8000",
+        "esp-output.bin": "0x10000",
+    },
+    # Keep catalog entries built before the release ID was renamed usable.
+    "esp-output-esp32": {
+        "bootloader.bin": "0x1000",
+        "partition-table.bin": "0x8000",
+        "esp-output.bin": "0x10000",
+    },
 }
 ESP_WEB_TOOLS_CHIP_FAMILIES = {
     "esp32": "ESP32",
@@ -75,6 +83,10 @@ class FirmwarePlatformUnverified(Exception):
     pass
 
 
+class FirmwareDeploymentInProgress(Exception):
+    pass
+
+
 def validate_upload(
     firmware_id: str,
     bundle: bytes,
@@ -126,20 +138,23 @@ def validate_upload(
     try:
         with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
             names = archive.namelist()
-            if len(names) != 4 or set(names) != {
-                *EXPECTED_COMPONENTS,
-                "manifest.json",
-            }:
-                raise InvalidFirmwareBundle("Firmware ZIP must contain the three supported components and manifest.json only.")
+            if "manifest.json" not in names or len(names) != len(set(names)):
+                raise InvalidFirmwareBundle("Firmware ZIP must contain one manifest and unique component files.")
             if archive.getinfo("manifest.json").file_size > MAX_METADATA_BYTES:
                 raise InvalidFirmwareBundle("Firmware manifest exceeds the 64 KiB limit.")
-            if any(archive.getinfo(name).file_size > MAX_COMPONENT_BYTES for name in EXPECTED_COMPONENTS):
-                raise InvalidFirmwareBundle("Firmware component exceeds the 32 MiB limit.")
             if archive.testzip() is not None:
                 raise InvalidFirmwareBundle("Firmware ZIP failed its CRC integrity check.")
             manifest = json.loads(archive.read("manifest.json"))
             if not isinstance(manifest, dict):
                 raise InvalidFirmwareBundle("Firmware ZIP manifest must be a JSON object.")
+            target_components = TARGET_FLASH_LAYOUTS.get(manifest.get("target"))
+            if target_components is None:
+                raise InvalidFirmwareBundle("Firmware target is not supported by the Hub catalog.")
+            expected_names = set(target_components) | {"manifest.json"}
+            if len(names) != len(expected_names) or set(names) != expected_names:
+                raise InvalidFirmwareBundle("Firmware ZIP has files that do not match its supported target.")
+            if any(archive.getinfo(name).file_size > MAX_COMPONENT_BYTES for name in target_components):
+                raise InvalidFirmwareBundle("Firmware component exceeds the 32 MiB limit.")
             _validate_manifest(metadata, manifest, archive)
     except (OSError, zipfile.BadZipFile, KeyError, json.JSONDecodeError) as exc:
         raise InvalidFirmwareBundle("Firmware upload is not a valid firmware ZIP bundle.") from exc
@@ -165,17 +180,20 @@ def _validate_manifest(metadata: dict, manifest: dict, archive: zipfile.ZipFile)
     if manifest.get("nvs_preserved") is not True:
         raise InvalidFirmwareBundle("Firmware manifest must confirm that NVS is preserved.")
     components = manifest.get("flash_components")
-    if not isinstance(components, list) or len(components) != len(EXPECTED_COMPONENTS):
+    target_components = TARGET_FLASH_LAYOUTS.get(metadata["target"])
+    if target_components is None:
+        raise InvalidFirmwareBundle("Firmware target is not supported by the Hub catalog.")
+    if not isinstance(components, list) or len(components) != len(target_components):
         raise InvalidFirmwareBundle("Firmware manifest has an invalid flash component list.")
     observed = set()
     for component in components:
         if not isinstance(component, dict):
             raise InvalidFirmwareBundle("Firmware manifest contains an invalid flash component.")
         name = component.get("name")
-        if name not in EXPECTED_COMPONENTS or name in observed:
+        if name not in target_components or name in observed:
             raise InvalidFirmwareBundle("Firmware manifest contains an unsupported or duplicate component.")
         observed.add(name)
-        if component.get("offset") != EXPECTED_COMPONENTS[name]:
+        if component.get("offset") != target_components[name]:
             raise InvalidFirmwareBundle(f"Unexpected flash offset for {name}.")
         if archive.getinfo(name).file_size > MAX_COMPONENT_BYTES:
             raise InvalidFirmwareBundle(f"Firmware component {name} exceeds the 32 MiB limit.")
@@ -185,8 +203,8 @@ def _validate_manifest(metadata: dict, manifest: dict, archive: zipfile.ZipFile)
             or component.get("sha256") != hashlib.sha256(content).hexdigest()
         ):
             raise InvalidFirmwareBundle(f"Firmware component integrity check failed for {name}.")
-    if observed != set(EXPECTED_COMPONENTS):
-        raise InvalidFirmwareBundle("Firmware manifest is missing a supported flash component.")
+    if observed != set(target_components):
+        raise InvalidFirmwareBundle("Firmware manifest is missing a supported target component.")
 
 
 def create_candidate(
@@ -250,23 +268,37 @@ def list_compatible_entries(
     catalog_dir: Path,
     node_type: str,
     hardware_revision: str,
+    include_candidates: bool = False,
 ) -> list[dict]:
-    if not node_type or node_type == "unknown" or not hardware_revision or hardware_revision == "unknown":
+    if not node_type or node_type == "unknown":
         return []
-    registered = list_entries(db, catalog_dir, include_candidates=False)
+    registered = list_entries(db, catalog_dir, include_candidates=include_candidates)
     matches = [
         entry
         for entry in registered
         if entry["node_type"] == node_type
-        and entry["hardware_revision"] == hardware_revision
+        and (
+            entry["hardware_revision"] == "generic"
+            or (
+                hardware_revision
+                and hardware_revision != "unknown"
+                and entry["hardware_revision"] == hardware_revision
+            )
+        )
     ]
     return [
         {
             **entry,
             "compatibility": {
                 "node_type": "matched",
-                "hardware_revision": "matched",
-                "hardware_reference": "registered_device_record",
+                "hardware_revision": (
+                    "generic" if entry["hardware_revision"] == "generic" else "matched"
+                ),
+                "hardware_reference": (
+                    "firmware_declared_generic"
+                    if entry["hardware_revision"] == "generic"
+                    else "registered_device_record"
+                ),
                 "platform": "unknown",
             },
             "requires_platform_review": True,
@@ -283,16 +315,19 @@ def validate_selection(
     node_type: str,
     hardware_revision: str,
     acknowledge_unverified_platform: bool,
+    allow_candidate: bool = False,
 ) -> dict:
-    entry = get_entry(db, catalog_dir, firmware_id, include_candidate=False)
+    entry = get_entry(db, catalog_dir, firmware_id, include_candidate=allow_candidate)
     metadata = json.loads(entry.metadata_json)
-    if not node_type or node_type == "unknown" or not hardware_revision or hardware_revision == "unknown":
-        raise FirmwareNotCompatible(
-            "The registered device is missing a known node type or hardware revision."
-        )
+    if not node_type or node_type == "unknown":
+        raise FirmwareNotCompatible("The registered device is missing a known node type.")
     if metadata["node_type"] != node_type:
         raise FirmwareNotCompatible("Firmware node_type does not match the registered device.")
-    if metadata["hardware_revision"] != hardware_revision:
+    if metadata["hardware_revision"] != "generic" and (
+        not hardware_revision
+        or hardware_revision == "unknown"
+        or metadata["hardware_revision"] != hardware_revision
+    ):
         raise FirmwareNotCompatible(
             "Firmware hardware_revision does not match the registered device."
         )
@@ -306,8 +341,14 @@ def validate_selection(
         "device_id": device_id,
         "compatibility": {
             "node_type": "matched",
-            "hardware_revision": "matched",
-            "hardware_reference": "registered_device_record",
+            "hardware_revision": (
+                "generic" if metadata["hardware_revision"] == "generic" else "matched"
+            ),
+            "hardware_reference": (
+                "firmware_declared_generic"
+                if metadata["hardware_revision"] == "generic"
+                else "registered_device_record"
+            ),
             "platform": "unknown",
         },
         "acknowledged_unverified_platform": True,
@@ -375,7 +416,7 @@ def get_flash_image(
     catalog_dir: Path,
     component_name: str,
 ) -> tuple[bytes, str]:
-    if component_name not in EXPECTED_COMPONENTS:
+    if not isinstance(component_name, str):
         raise FirmwareNotFound
     _, manifest, images = _read_validated_bundle(entry, catalog_dir)
     component = next(
@@ -412,7 +453,10 @@ def _read_validated_bundle(
         )
     with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
         manifest = json.loads(archive.read("manifest.json"))
-        images = {name: archive.read(name) for name in EXPECTED_COMPONENTS}
+        images = {
+            component["name"]: archive.read(component["name"])
+            for component in manifest["flash_components"]
+        }
     return metadata, manifest, images
 
 
@@ -420,6 +464,27 @@ def promote_entry(db: Session, catalog_dir: Path, firmware_id: str) -> dict:
     entry = get_entry(db, catalog_dir, firmware_id, include_candidate=True)
     entry.status = "registered"
     entry.registered_at = utcnow()
+    db.commit()
+    db.refresh(entry)
+    return public_entry(entry, catalog_dir)
+
+
+def return_to_candidate(db: Session, catalog_dir: Path, firmware_id: str) -> dict:
+    entry = get_entry(db, catalog_dir, firmware_id, include_candidate=True)
+    active_attempt = (
+        db.query(DeploymentAttempt)
+        .filter(
+            DeploymentAttempt.firmware_id == firmware_id,
+            DeploymentAttempt.status == "in_progress",
+        )
+        .first()
+    )
+    if active_attempt is not None:
+        raise FirmwareDeploymentInProgress(
+            "Firmware cannot be returned to candidate while a deployment attempt is in progress."
+        )
+    entry.status = "candidate"
+    entry.registered_at = None
     db.commit()
     db.refresh(entry)
     return public_entry(entry, catalog_dir)

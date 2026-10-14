@@ -70,33 +70,38 @@ esp_err_t dbmap_nvs_load(dbmap_effective_t *cfg)
 esp_err_t dbmap_nvs_save_identity_network(const dbmap_effective_t *cfg)
 {
     nvs_handle_t h;
-    ESP_ERROR_CHECK(nvs_open("identity", NVS_READWRITE, &h));
-    nvs_set_str(h, "node_id", cfg->identity.node_id);
-    nvs_set_str(h, "hw_rev", cfg->identity.hardware_revision);
-    nvs_set_str(h, "prov_state", cfg->identity.provisioning_state);
-    nvs_commit(h);
+    esp_err_t err = nvs_open("identity", NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_str(h, "node_id", cfg->identity.node_id);
+    if (err == ESP_OK) err = nvs_set_str(h, "hw_rev", cfg->identity.hardware_revision);
+    if (err == ESP_OK) err = nvs_set_str(h, "prov_state", cfg->identity.provisioning_state);
+    if (err == ESP_OK) err = nvs_set_str(h, "boot_tok", cfg->bootstrap_token);
+    if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
+    if (err != ESP_OK) return err;
 
-    ESP_ERROR_CHECK(nvs_open("network", NVS_READWRITE, &h));
-    nvs_set_str(h, "ssid", cfg->network.ssid);
-    nvs_set_str(h, "wifi_pw", cfg->network.password);
-    nvs_set_str(h, "hub_http", cfg->network.hub_http_url);
-    nvs_set_str(h, "mqtt_host", cfg->network.mqtt_host);
-    nvs_set_u16(h, "mqtt_port", cfg->network.mqtt_port);
-    nvs_set_u8(h, "mqtt_tls", cfg->network.mqtt_use_tls ? 1 : 0);
-    nvs_set_str(h, "mqtt_user", cfg->network.mqtt_username);
-    nvs_set_str(h, "mqtt_pw", cfg->network.mqtt_password);
-    nvs_commit(h);
+    err = nvs_open("network", NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_str(h, "ssid", cfg->network.ssid);
+    if (err == ESP_OK) err = nvs_set_str(h, "wifi_pw", cfg->network.password);
+    if (err == ESP_OK) err = nvs_set_str(h, "hub_http", cfg->network.hub_http_url);
+    if (err == ESP_OK) err = nvs_set_str(h, "mqtt_host", cfg->network.mqtt_host);
+    if (err == ESP_OK) err = nvs_set_u16(h, "mqtt_port", cfg->network.mqtt_port);
+    if (err == ESP_OK) err = nvs_set_u8(h, "mqtt_tls", cfg->network.mqtt_use_tls ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_str(h, "mqtt_user", cfg->network.mqtt_username);
+    if (err == ESP_OK) err = nvs_set_str(h, "mqtt_pw", cfg->network.mqtt_password);
+    if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
-    return ESP_OK;
+    return err;
 }
 
 esp_err_t dbmap_nvs_save_bootstrap_token(const char *token)
 {
     nvs_handle_t h;
-    ESP_ERROR_CHECK(nvs_open("identity", NVS_READWRITE, &h));
-    nvs_set_str(h, "boot_tok", token);
-    nvs_commit(h);
+    esp_err_t err = nvs_open("identity", NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_str(h, "boot_tok", token);
+    if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
-    return ESP_OK;
+    return err;
 }

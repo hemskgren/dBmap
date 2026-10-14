@@ -95,6 +95,7 @@ services:
       - ./mqtt/certs:/certs:ro
     networks:
       - default
+      - firmware-private
     healthcheck:
       test: ["CMD-SHELL", "SSL_CERT_FILE=/certs/ca.crt wget -q -O /dev/null https://127.0.0.1:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/health >/dev/null 2>&1 || exit 1"]
       interval: 10s
@@ -162,13 +163,12 @@ services:
     restart: unless-stopped
     environment:
       DBMAP_ADMIN_TOKEN: ${DBMAP_ADMIN_TOKEN:?Set DBMAP_ADMIN_TOKEN in .env}
-      DBMAP_FIRMWARE_SOURCE: /firmware/esp-output
+      DBMAP_FIRMWARE_ROOT: /firmware
       DBMAP_FIRMWARE_ARTIFACTS: /artifacts
     expose:
       - "8090"
     volumes:
-      - ./firmware/esp-output:/firmware/esp-output:ro
-      - ./firmware/components:/firmware/components:ro
+      - ./firmware:/firmware:ro
       - ./mqtt/certs:/certs:ro
       - firmware-artifacts:/artifacts
     networks:

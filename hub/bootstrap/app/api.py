@@ -35,6 +35,7 @@ from app.mqtt_listener import get_broker_metrics, is_connected
 from app.mqtt_security import MqttSecurityError
 from app.policy import PolicyUnavailable
 from app.schemas import (
+    BootstrapTokenResponse,
     CreateGroupBody,
     CreateNodeRequest,
     CreateNodeResponse,
@@ -374,6 +375,7 @@ def download_firmware_artifact(
 @router.get("/api/v1/firmware/catalog/{firmware_id}/flash-manifest")
 def get_firmware_flash_manifest(
     firmware_id: str,
+    allow_candidate: bool = Query(default=False),
     _: Principal = Depends(require_policy("firmware.deploy.flash.read", "firmware_catalog")),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -382,7 +384,7 @@ def get_firmware_flash_manifest(
             db,
             FIRMWARE_CATALOG_DIR,
             firmware_id,
-            include_candidate=False,
+            include_candidate=allow_candidate,
         )
         return firmware_catalog.get_flash_manifest(entry, FIRMWARE_CATALOG_DIR)
     except firmware_catalog.FirmwareNotFound:
@@ -397,6 +399,7 @@ def get_firmware_flash_manifest(
 def download_firmware_flash_image(
     firmware_id: str,
     component_name: str,
+    allow_candidate: bool = Query(default=False),
     _: Principal = Depends(require_policy("firmware.deploy.flash.read", "firmware_catalog")),
     db: Session = Depends(get_db),
 ) -> Response:
@@ -405,7 +408,7 @@ def download_firmware_flash_image(
             db,
             FIRMWARE_CATALOG_DIR,
             firmware_id,
-            include_candidate=False,
+            include_candidate=allow_candidate,
         )
         image, digest = firmware_catalog.get_flash_image(
             entry,
@@ -474,6 +477,20 @@ def promote_firmware_candidate(
         raise HTTPException(status_code=404, detail="firmware candidate not found") from None
 
 
+@router.post("/api/v1/firmware/catalog/{firmware_id}/unregister")
+def return_firmware_to_candidate(
+    firmware_id: str,
+    _: Principal = Depends(require_policy("firmware.catalog.unpromote", "firmware_catalog")),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        return firmware_catalog.return_to_candidate(db, FIRMWARE_CATALOG_DIR, firmware_id)
+    except firmware_catalog.FirmwareNotFound:
+        raise HTTPException(status_code=404, detail="firmware entry not found") from None
+    except firmware_catalog.FirmwareDeploymentInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
 @router.delete("/api/v1/firmware/catalog/{firmware_id}", status_code=204)
 def delete_firmware_entry(
     firmware_id: str,
@@ -489,6 +506,7 @@ def delete_firmware_entry(
 @router.get("/api/v1/nodes/{node_id}/compatible-firmware")
 def list_compatible_firmware(
     node_id: str,
+    include_candidates: bool = Query(default=False),
     _: Principal = Depends(require_policy("firmware.deploy.select", "nodes")),
     db: Session = Depends(get_db),
 ) -> list[dict]:
@@ -502,6 +520,7 @@ def list_compatible_firmware(
         FIRMWARE_CATALOG_DIR,
         node.node_type,
         node.hardware_revision,
+        include_candidates=include_candidates,
     )
 
 
@@ -526,6 +545,7 @@ def validate_firmware_selection(
             node.node_type,
             node.hardware_revision,
             body.acknowledge_unverified_platform,
+            allow_candidate=body.allow_candidate,
         )
     except firmware_catalog.FirmwareNotFound:
         raise HTTPException(status_code=404, detail="registered firmware not found") from None
@@ -556,12 +576,13 @@ def start_deployment_attempt(
             node.node_type,
             node.hardware_revision,
             body.acknowledge_unverified_platform,
+            allow_candidate=body.allow_candidate,
         )
         entry = firmware_catalog.get_entry(
             db,
             FIRMWARE_CATALOG_DIR,
             body.firmware_id,
-            include_candidate=False,
+            include_candidate=body.allow_candidate,
         )
         firmware_catalog.verify_artifact_integrity(entry, FIRMWARE_CATALOG_DIR)
     except firmware_catalog.FirmwareNotFound:
@@ -778,6 +799,31 @@ def get_node(node_id: str, db: Session = Depends(get_db)) -> NodeView:
         return service.get_node(db, node_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown node") from None
+
+
+@router.post(
+    "/api/v1/nodes/{node_id}/bootstrap-token",
+    response_model=BootstrapTokenResponse,
+    dependencies=[Depends(require_policy("nodes.bootstrap_token.rotate", "nodes"))],
+)
+def rotate_node_bootstrap_token(
+    node_id: str,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> BootstrapTokenResponse:
+    try:
+        token = service.rotate_pending_bootstrap_token(db, node_id)
+        node = service.get_node(db, node_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="unknown node") from None
+    except service.BootstrapTokenRotationUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    response.headers["Cache-Control"] = "no-store"
+    return BootstrapTokenResponse(
+        node_id=node.node_id,
+        bootstrap_token=token,
+        provisioning_state=node.provisioning_state,
+    )
 
 
 @router.get(

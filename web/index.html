@@ -38,14 +38,15 @@
       input, select {
         width: 100%; padding: 0.65rem 0.75rem; border: 1px solid #aab7c9; border-radius: 7px;
       }
+      select { padding: 0.45rem 0.58rem; font-size: 0.94rem; }
       button {
-        border: 0; border-radius: 7px; padding: 0.62rem 0.9rem; cursor: pointer;
-        color: #fff; background: #2457a7; font-weight: 600;
+        border: 0; border-radius: 7px; padding: 0.48rem 0.72rem; cursor: pointer;
+        color: #fff; background: #2457a7; font-size: 0.94rem; font-weight: 600;
       }
       button.secondary { color: #183153; background: #e6edf7; }
       button.danger { background: #a83232; }
       button:disabled { cursor: wait; opacity: 0.65; }
-      .button-link { display: inline-block; border-radius: 7px; padding: 0.62rem 0.9rem; color: #fff; background: #2457a7; font-weight: 600; text-decoration: none; }
+      .button-link { display: inline-block; border-radius: 7px; padding: 0.48rem 0.72rem; color: #fff; background: #2457a7; font-size: 0.94rem; font-weight: 600; text-decoration: none; }
       .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 0.65rem; }
       .toolbar h2 { margin: 0; }
       section { padding: 1rem; min-width: 0; }
@@ -63,6 +64,7 @@
       .online { color: #157347; font-weight: 700; }
       .offline { color: #a83232; font-weight: 700; }
       .actions { display: flex; gap: 0.5rem; margin-top: 0.85rem; }
+      #browser-flash-panel .actions { flex-wrap: wrap; align-items: center; }
       .tab-list { display: flex; gap: 0.45rem; overflow-x: auto; margin: 0 0 0.6rem; padding-bottom: 0.2rem; }
       .tab-list button { flex: 0 0 auto; color: #183153; background: #e6edf7; }
       .tab-list button[aria-selected="true"] { color: #fff; background: #2457a7; }
@@ -93,14 +95,18 @@
       #admin-panel input[type="checkbox"] { width: auto; margin-right: 0.35rem; }
       #firmware-upload-form { display: flex; flex-wrap: wrap; align-items: end; gap: 0.5rem; }
       #firmware-upload-form label { flex: 1 1 16rem; margin: 0; }
+      #tab-firmware input:not([type="checkbox"]) { padding: 0.45rem 0.58rem; font-size: 0.94rem; }
       #firmware-catalog-list { display: grid; gap: 0.45rem; margin-top: 0.5rem; }
+      #firmware-build-jobs { display: grid; gap: 0.45rem; margin-top: 0.75rem; }
+      .firmware-build-job { display: grid; gap: 0.35rem; padding: 0.75rem; border: 1px solid #bbb; border-radius: 0.5rem; }
+      .firmware-build-log pre { max-height: 26rem; overflow: auto; padding: 0.75rem; background: #f4f6f8; white-space: pre-wrap; overflow-wrap: anywhere; }
       .firmware-entry { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem 0.7rem; padding: 0.55rem; border: 1px solid #e3e9f1; border-radius: 7px; }
       .firmware-entry-metadata { flex: 1 0 100%; min-width: 0; }
       .firmware-entry-metadata > summary { cursor: pointer; font-weight: 650; }
       .firmware-entry-metadata pre { max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
       #browser-flash-panel { max-width: 960px; margin-bottom: 0.8rem; }
-      #browser-flash-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; align-items: end; }
-      #browser-flash-controls label { margin: 0; }
+      #browser-flash-controls, #usb-provision-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; align-items: end; }
+      #browser-flash-controls label, #usb-provision-controls label { margin: 0; }
       #browser-flash-panel input[type="checkbox"] { width: auto; }
       #browser-flash-history { display: grid; gap: 0.4rem; }
       .deployment-attempt { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem; padding: 0.55rem; border: 1px solid #e3e9f1; border-radius: 7px; }
@@ -136,6 +142,7 @@
       .group-member-identifiers { display: flex; flex-wrap: wrap; gap: 0.15rem 0.8rem; color: #526078; font-size: 0.82rem; }
       .group-member-identifier { display: inline-flex; gap: 0.25rem; }
       .group-member-identifiers code { color: #34445c; font: inherit; overflow-wrap: anywhere; user-select: all; }
+      .bootstrap-token-value { display: block; margin-top: 0.5rem; overflow-wrap: anywhere; user-select: all; }
       .group-member-control { display: grid; grid-template-columns: auto auto auto; align-items: center; gap: 0.35rem; }
       .group-member-control select { width: auto; min-width: 7rem; padding: 0.35rem; }
       .group-members button, .group-status-button { padding: 0.4rem 0.62rem; font-size: 0.88rem; }
@@ -151,7 +158,7 @@
         #installation-form .actions { grid-column: auto; }
         .toolbar { align-items: flex-start; }
         #create-panel { grid-template-columns: 1fr; }
-        #browser-flash-controls { grid-template-columns: 1fr; }
+        #browser-flash-controls, #usb-provision-controls { grid-template-columns: 1fr; }
         #firmware-upload-form { align-items: stretch; flex-direction: column; }
         #create-group-panel { align-items: stretch; flex-direction: column; }
         .group-member { grid-template-columns: minmax(0, 1fr); }
@@ -319,30 +326,45 @@
               <button type="submit">Upload candidate</button>
             </form>
           </section>
-          <p id="firmware-catalog-note" class="notice">Registered firmware can be flashed by an administrator from a supported Chromium-based browser over HTTPS.</p>
+          <section aria-labelledby="firmware-catalog-list-title">
+            <h3 id="firmware-catalog-list-title">Firmware images in catalog</h3>
+            <div id="firmware-catalog-list" aria-live="polite"></div>
+          </section>
+          <section id="firmware-build-panel" hidden>
+            <h3>Build reusable firmware (administrator)</h3>
+            <p>The optional local ESP-IDF builder creates a generic image without Wi-Fi credentials or bootstrap tokens. Build it once, then upload and approve one catalog release for reuse across all compatible devices. It must be started with the <code>firmware-build</code> Compose profile; the builder is not needed for normal Hub operation.</p>
+            <div class="actions">
+              <label for="firmware-build-target">Supported build target
+                <select id="firmware-build-target"><option value="">Loading supported targets…</option></select>
+              </label>
+              <button id="start-firmware-build" type="button" disabled>Build firmware</button>
+              <span id="firmware-build-status" class="notice" role="status">Checking the optional builder…</span>
+            </div>
+            <div id="firmware-build-jobs" aria-live="polite"></div>
+          </section>
           <section id="browser-flash-panel" hidden>
             <h3>Browser flashing (administrator)</h3>
-            <p>Choose an active device and compatible registered firmware. The safer option reads the dBmap device ID first. If that does not work, an administrator can explicitly confirm the physical device selection and continue; ESP Web Tools detects the chip family, not the dBmap node ID.</p>
+            <p>Flash compatible registered firmware or test a candidate using a supported Chromium-based browser over HTTPS. Choose an active device and compatible firmware. Registered releases are ready for deployment; unregistered candidates are marked and can be flashed by an administrator for hardware verification before promotion. The safer option reads the dBmap device ID first. If that does not work, an administrator can explicitly confirm the physical device selection and continue; ESP Web Tools detects the chip family, not the dBmap node ID.</p>
             <div id="browser-flash-controls">
               <label for="flash-device">Active device
                 <select id="flash-device"><option value="">Loading devices…</option></select>
               </label>
-              <label for="flash-firmware">Compatible registered firmware
+              <label for="flash-firmware">Compatible firmware
                 <select id="flash-firmware" disabled><option value="">Select a device first</option></select>
               </label>
             </div>
-            <label><input id="flash-platform-ack" type="checkbox"> I acknowledge that this Hub cannot verify the device chip platform; the selected firmware's chip family must match the physical board.</label>
-            <label><input id="flash-identity-override" type="checkbox"> I have physically confirmed this is the selected Hub device, and I accept that the Hub cannot verify its dBmap node ID over serial. ESP Web Tools' chip/MAC detection is not a node identity check.</label>
-            <p class="notice">Do not choose the erase-data option in ESP Web Tools. Erasing clears NVS, including the Hub device identity and configuration. This flow flashes the registered image only; it does not inject Wi-Fi credentials.</p>
+            <p class="notice">Compatibility checks use the registered device type and either a generic hardware profile or an exact recorded board revision. The Hub cannot verify the chip platform from the device record, so confirm the selected firmware chip family matches the physical board.</p>
+            <p class="notice">When ESP Web Tools asks “Erase device?”, leave the “Erase device” checkbox unchecked and choose “Next”. Erasing clears NVS, including the Hub device identity and configuration. Flashing does not inject Wi-Fi credentials. Candidate flashes are listed in install history for admins but do not promote the release.</p>
             <div class="actions">
               <button id="prepare-browser-flash" type="button" disabled>Verify USB identity and prepare flash</button>
-              <button id="prepare-browser-flash-override" class="secondary" type="button" disabled>Continue without ID verification</button>
-              <button id="refresh-deployment-history" class="secondary" type="button" disabled>Refresh attempts</button>
+              <button id="prepare-browser-flash-override" class="secondary" type="button" disabled>Admin override: continue without ID verification</button>
+              <button id="refresh-deployment-history" class="secondary" type="button" disabled>Refresh install history</button>
               <span id="browser-flash-status" class="notice" role="status">Select an active device and compatible firmware.</span>
             </div>
             <div id="esp-web-tools-launch"></div>
             <section id="deployment-outcome-panel" hidden>
-              <h4>Record the result after ESP Web Tools finishes</h4>
+              <h4>Record firmware flash result</h4>
+              <p>These actions record only whether ESP Web Tools flashed the firmware. They do not confirm USB configuration or Hub connectivity; check those separately below and in the Devices tab.</p>
               <label for="deployment-failure-code">If flashing failed, choose a reason
                 <select id="deployment-failure-code">
                   <option value="flash_failed">Flash failed</option>
@@ -352,15 +374,28 @@
                 </select>
               </label>
               <div class="actions">
-                <button id="record-flash-success" type="button">Record success</button>
-                <button id="record-flash-failure" class="danger" type="button">Record failure</button>
-                <button id="record-flash-unknown" class="secondary" type="button">Outcome unknown</button>
+                <button id="record-flash-success" type="button">Record flash succeeded</button>
+                <button id="record-flash-failure" class="danger" type="button">Record flash failed</button>
+                <button id="record-flash-unknown" class="secondary" type="button">Flash result unclear</button>
               </div>
             </section>
-            <h4>Recent deployment attempts</h4>
+            <h4>Recent installs</h4>
             <div id="browser-flash-history" aria-live="polite"></div>
+            <section id="usb-provision-panel" aria-labelledby="usb-provision-title">
+              <h4 id="usb-provision-title">Configure device over USB</h4>
+              <p>For a registered device running firmware with dBmap USB provisioning support. Connect the board and reset it; provisioned devices advertise a 10-second configuration window after boot. No configuration is sent until the firmware prompt appears. The Wi-Fi password and bootstrap token are sent directly to the selected board and are not saved in Hub history or browser storage.</p>
+              <div id="usb-provision-controls">
+                <label for="provision-ssid">Wi-Fi network name<input id="provision-ssid" maxlength="32" autocomplete="off"></label>
+                <label for="provision-wifi-password">Wi-Fi password<input id="provision-wifi-password" type="password" maxlength="64" autocomplete="new-password"></label>
+                <label for="provision-bootstrap-token">Bootstrap token<input id="provision-bootstrap-token" type="password" maxlength="127" autocomplete="off"></label>
+              </div>
+              <p id="provision-hub-url" class="notice"></p>
+              <div class="actions">
+                <button id="send-usb-provisioning" type="button">Send configuration to device</button>
+                <span id="usb-provision-status" class="notice" role="status">Select a pending registered device above.</span>
+              </div>
+            </section>
           </section>
-          <div id="firmware-catalog-list" aria-live="polite"></div>
         </section>
         <section id="tab-users" role="tabpanel" aria-labelledby="tab-button-users" hidden>
           <div class="toolbar">
@@ -1326,6 +1361,44 @@
         detail.append(grid);
 
         if (currentRole === 'admin') {
+          if (device.provisioning_state === 'pending') {
+            const tokenPanel = el('section');
+            tokenPanel.append(
+              el('h3', 'Recover bootstrap token'),
+              el('p', 'Use this only for a device that has not completed Hub provisioning. Issuing a replacement immediately invalidates any earlier unused token. The new token is shown once in this page and is not saved by the browser.'),
+            );
+            const tokenStatus = el('span', '', 'notice');
+            tokenStatus.setAttribute('role', 'status');
+            const tokenValue = el('code', '');
+            tokenValue.className = 'bootstrap-token-value';
+            tokenValue.hidden = true;
+            const issueToken = el('button', 'Issue replacement token');
+            issueToken.type = 'button';
+            issueToken.addEventListener('click', async () => {
+              if (!window.confirm(`Replace the unused bootstrap token for ${device.node_id}? Any previous unused token will stop working.`)) return;
+              issueToken.disabled = true;
+              tokenStatus.textContent = 'Issuing replacement token…';
+              tokenStatus.className = 'notice';
+              tokenValue.hidden = true;
+              tokenValue.textContent = '';
+              try {
+                const result = await api(`/api/v1/nodes/${encodeURIComponent(device.node_id)}/bootstrap-token`, { method: 'POST' });
+                pendingBootstrapTokens.set(device.node_id, result.bootstrap_token);
+                document.getElementById('provision-bootstrap-token').value = result.bootstrap_token;
+                document.getElementById('flash-device').value = device.node_id;
+                tokenValue.textContent = result.bootstrap_token;
+                tokenValue.hidden = false;
+                tokenStatus.textContent = `Replacement token for ${result.node_id}. Copy it now:`;
+              } catch (error) {
+                tokenStatus.textContent = error.message;
+                tokenStatus.className = 'notice error';
+              } finally {
+                issueToken.disabled = false;
+              }
+            });
+            tokenPanel.append(issueToken, tokenStatus, tokenValue);
+            detail.append(tokenPanel);
+          }
           const hardwareEditor = el('section');
           hardwareEditor.append(el('h3', 'Set verified hardware revision'));
           hardwareEditor.append(el(
@@ -1694,6 +1767,11 @@
               promote.type = 'button';
               promote.addEventListener('click', () => promoteFirmwareCandidate(entry.firmware_id));
               row.append(promote);
+            } else {
+              const unpromote = el('button', 'Return to candidate', 'secondary');
+              unpromote.type = 'button';
+              unpromote.addEventListener('click', () => returnFirmwareToCandidate(entry.firmware_id));
+              row.append(unpromote);
             }
             const remove = el('button', 'Delete');
             remove.type = 'button';
@@ -1707,6 +1785,7 @@
 
       async function refreshFirmwareCatalog() {
         const status = document.getElementById('firmware-catalog-status');
+        document.getElementById('firmware-build-panel').hidden = currentRole !== 'admin';
         try {
           const entries = await api('/api/v1/firmware/catalog');
           renderFirmwareCatalog(entries);
@@ -1718,6 +1797,312 @@
           status.className = 'notice';
         } catch (error) {
           status.textContent = `Could not load firmware catalog: ${error.message}`;
+          status.className = 'notice error';
+        }
+        if (currentRole === 'admin') {
+          await Promise.all([refreshFirmwareBuildTargets(), refreshFirmwareBuilds()]);
+        }
+      }
+
+      let firmwareBuildPollTimer = null;
+      let firmwareBuildInProgress = false;
+      const expandedFirmwareBuildLogs = new Set();
+      const firmwareBuildLogCache = new Map();
+      const firmwareBuildLogLoads = new Map();
+      const firmwareBuildStatuses = new Map();
+
+      async function firmwareBuilderApi(path, options = {}) {
+        const response = await fetch(`${publicBasePath}${path}`, {
+          ...options,
+          headers: {
+            Authorization: `Bearer ${authToken.value}`,
+            ...(options.headers || {}),
+          },
+          cache: 'no-store',
+        });
+        const contentType = response.headers.get('content-type') || '';
+        let result;
+        if (contentType.includes('application/json')) {
+          result = await response.json();
+        } else {
+          const body = await response.text();
+          const detail = contentType.includes('text/html')
+            ? new DOMParser().parseFromString(body, 'text/html').querySelector('main')?.textContent.replace(/\s+/g, ' ').trim()
+            : body.trim();
+          result = { detail: detail || `Builder request failed (${response.status}).` };
+        }
+        if (!response.ok) throw new Error(result.detail || `Builder request failed (${response.status}).`);
+        return result;
+      }
+
+      async function refreshFirmwareBuildTargets() {
+        const targetSelect = document.getElementById('firmware-build-target');
+        const status = document.getElementById('firmware-build-status');
+        const button = document.getElementById('start-firmware-build');
+        targetSelect.replaceChildren(new Option('Loading supported targets…', ''));
+        button.disabled = true;
+        try {
+          const targets = await firmwareBuilderApi('/api/v1/firmware/targets');
+          targetSelect.replaceChildren(new Option('Select a build target', ''));
+          for (const target of targets) {
+            targetSelect.append(new Option(
+              `${target.id} · ${target.chip} · ${target.hardware_revision} · ESP-IDF ${target.esp_idf_version}`,
+              target.id,
+            ));
+          }
+          const pendingTarget = sessionStorage.getItem('dbmap-pending-build-target');
+          if (pendingTarget && targets.some((target) => target.id === pendingTarget)) {
+            targetSelect.value = pendingTarget;
+          }
+          button.disabled = firmwareBuildInProgress || !targetSelect.value;
+          status.textContent = targets.length
+            ? 'Optional local builder is available. Builds contain no device-specific credentials.'
+            : 'The builder reports no supported firmware targets.';
+          status.className = targets.length ? 'notice' : 'notice error';
+          button.disabled = firmwareBuildInProgress || !targetSelect.value;
+        } catch (error) {
+          targetSelect.replaceChildren(new Option('Builder unavailable', ''));
+          const builderStopped = error.message.includes('Optional firmware builder is not running');
+          status.textContent = builderStopped
+            ? error.message
+            : `Optional builder unavailable. ${error.message}`;
+          status.className = builderStopped ? 'notice' : 'notice error';
+        }
+      }
+
+      function renderFirmwareBuilds(jobs) {
+        const list = document.getElementById('firmware-build-jobs');
+        const buildButton = document.getElementById('start-firmware-build');
+        const buildTarget = document.getElementById('firmware-build-target');
+        firmwareBuildInProgress = jobs.some((job) => ['queued', 'running'].includes(job.status));
+        buildButton.disabled = firmwareBuildInProgress || !buildTarget.value;
+        if (!jobs.length) {
+          list.replaceChildren(el('p', 'No firmware builds yet.', 'notice'));
+          return;
+        }
+        const jobIds = new Set(jobs.map((job) => job.id));
+        for (const row of list.querySelectorAll('article[data-build-id]')) {
+          if (!jobIds.has(row.dataset.buildId)) row.remove();
+        }
+        for (const placeholder of list.querySelectorAll(':scope > p')) placeholder.remove();
+        jobs.forEach((job, index) => {
+          const previousStatus = firmwareBuildStatuses.get(job.id);
+          const statusChanged = previousStatus !== undefined && previousStatus !== job.status;
+          firmwareBuildStatuses.set(job.id, job.status);
+          let row = list.querySelector(`article[data-build-id="${job.id}"]`);
+          if (!row) {
+            row = el('article', undefined, 'firmware-build-job');
+            row.dataset.buildId = job.id;
+            row.append(
+              el('strong', '', undefined),
+              el('span', '', undefined),
+              el('p', '', 'notice error'),
+              el('span', '', undefined),
+            );
+            row.children[0].dataset.buildStatus = '';
+            row.children[1].dataset.buildStarted = '';
+            row.children[2].dataset.buildError = '';
+            row.children[3].dataset.buildArtifact = '';
+            const actions = el('div', undefined, 'actions');
+            for (const [label, kind, className] of [
+              ['Download firmware ZIP', 'artifact', 'secondary'],
+              ['Download matching metadata JSON', 'metadata', 'secondary'],
+            ]) {
+              const button = el('button', label, className);
+              button.type = 'button';
+              button.addEventListener('click', () => downloadFirmwareBuildFile(job.id, kind));
+              button.dataset.buildAction = kind;
+              actions.append(button);
+            }
+            const deleteArtifact = el('button', 'Delete artifact', 'danger');
+            deleteArtifact.type = 'button';
+            deleteArtifact.dataset.buildAction = 'delete-artifact';
+            deleteArtifact.addEventListener('click', () => deleteFirmwareBuild(job.id));
+            actions.append(deleteArtifact);
+            const removeFailed = el('button', 'Remove failed build', 'danger');
+            removeFailed.type = 'button';
+            removeFailed.dataset.buildAction = 'remove-failed';
+            removeFailed.addEventListener('click', () => deleteFirmwareBuild(job.id));
+            actions.append(removeFailed);
+            row.append(actions);
+            const logDetails = document.createElement('details');
+            logDetails.className = 'firmware-build-log';
+            logDetails.dataset.buildLog = job.id;
+            logDetails.open = expandedFirmwareBuildLogs.has(job.id);
+            logDetails.append(el('summary', 'Build log'));
+            const refreshLog = el('button', 'Refresh log', 'secondary');
+            refreshLog.type = 'button';
+            refreshLog.addEventListener('click', (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              loadFirmwareBuildLog(job.id, logDetails.querySelector('pre'), true);
+            });
+            const logOutput = document.createElement('pre');
+            logOutput.textContent = firmwareBuildLogCache.get(job.id) || 'Expand to load the full build log.';
+            logDetails.append(refreshLog, logOutput);
+            logDetails.addEventListener('toggle', () => {
+              if (logDetails.open) {
+                expandedFirmwareBuildLogs.add(job.id);
+                logDetails.dataset.lastRefreshAt = String(Date.now());
+                loadFirmwareBuildLog(job.id, logOutput, true);
+              } else {
+                expandedFirmwareBuildLogs.delete(job.id);
+              }
+            });
+            row.append(logDetails);
+          }
+          row.querySelector('[data-build-status]').textContent = `${job.target}${job.firmware_version ? ` · ${job.firmware_version}` : ''} · ${job.status} · ${job.stage}`;
+          row.querySelector('[data-build-started]').textContent = `Build ${job.id} · started ${formatSeen(new Date((job.started_at || job.created_at) * 1000))}`;
+          const error = row.querySelector('[data-build-error]');
+          error.textContent = job.error || '';
+          error.hidden = !job.error;
+          const artifact = row.querySelector('[data-build-artifact]');
+          artifact.textContent = job.artifact
+            ? `SHA-256 ${job.artifact.sha256} · ${formatBytes(job.artifact.size_bytes)}`
+            : '';
+          artifact.hidden = !job.artifact;
+          row.querySelector('[data-build-action="artifact"]').hidden = !job.artifact;
+          row.querySelector('[data-build-action="metadata"]').hidden = !job.artifact;
+          row.querySelector('[data-build-action="delete-artifact"]').hidden = !job.artifact;
+          row.querySelector('[data-build-action="remove-failed"]').hidden = job.status !== 'failed';
+          const logDetails = row.querySelector('details[data-build-log]');
+          logDetails.querySelector('summary').textContent = job.status === 'succeeded' ? 'Full successful build log' : 'Build log';
+          if (logDetails.open) {
+            expandedFirmwareBuildLogs.add(job.id);
+            const lastRefresh = Number(logDetails.dataset.lastRefreshAt || 0);
+            const liveRefreshDue = job.status === 'running' && Date.now() - lastRefresh >= 5000;
+            if (statusChanged || liveRefreshDue) {
+              logDetails.dataset.lastRefreshAt = String(Date.now());
+              loadFirmwareBuildLog(job.id, logDetails.querySelector('pre'), true);
+            }
+          }
+          const currentAtIndex = list.children[index];
+          if (currentAtIndex !== row) {
+            list.insertBefore(row, currentAtIndex || null);
+          }
+        });
+      }
+
+      async function loadFirmwareBuildLog(jobId, output, refresh = false) {
+        if (!refresh && firmwareBuildLogCache.has(jobId)) {
+          output.textContent = firmwareBuildLogCache.get(jobId);
+          return;
+        }
+        if (firmwareBuildLogLoads.has(jobId)) {
+          output.textContent = await firmwareBuildLogLoads.get(jobId);
+          return;
+        }
+        output.textContent = 'Loading full build log…';
+        const request = (async () => {
+          const response = await fetch(
+            `${publicBasePath}/api/v1/firmware/builds/${encodeURIComponent(jobId)}/log`,
+            { headers: { Authorization: `Bearer ${authToken.value}` }, cache: 'no-store' },
+          );
+          const body = await response.text();
+          if (response.status === 404) {
+            const message = 'No full log was saved for this build. Full logs are available for builds started after the builder update.';
+            firmwareBuildLogCache.set(jobId, message);
+            return message;
+          }
+          if (!response.ok) throw new Error(body.trim() || `Build log request failed (${response.status}).`);
+          firmwareBuildLogCache.set(jobId, body || 'No build output was recorded.');
+          return firmwareBuildLogCache.get(jobId);
+        })();
+        firmwareBuildLogLoads.set(jobId, request);
+        try {
+          output.textContent = await request;
+        } catch (error) {
+          output.textContent = `Could not load build log: ${error.message}`;
+        } finally {
+          firmwareBuildLogLoads.delete(jobId);
+        }
+      }
+
+      async function refreshFirmwareBuilds() {
+        const list = document.getElementById('firmware-build-jobs');
+        try {
+          const jobs = await firmwareBuilderApi('/api/v1/firmware/builds');
+          renderFirmwareBuilds(jobs);
+          if (firmwareBuildPollTimer) window.clearTimeout(firmwareBuildPollTimer);
+          if (jobs.some((job) => ['queued', 'running'].includes(job.status))) {
+            firmwareBuildPollTimer = window.setTimeout(refreshFirmwareBuilds, 3000);
+          }
+        } catch (error) {
+          const builderStopped = error.message.includes('Optional firmware builder is not running');
+          const message = builderStopped
+            ? 'Build history will appear when the optional firmware builder is started.'
+            : `Could not load builder history: ${error.message}`;
+          list.replaceChildren(el('p', message, builderStopped ? 'notice' : 'notice error'));
+        }
+      }
+
+      async function startFirmwareBuild() {
+        const targetSelect = document.getElementById('firmware-build-target');
+        const target = sessionStorage.getItem('dbmap-pending-build-target') || targetSelect.value;
+        const button = document.getElementById('start-firmware-build');
+        const status = document.getElementById('firmware-build-status');
+        if (!target || currentRole !== 'admin') return;
+        if (targetSelect.value !== target) {
+          targetSelect.value = target;
+          status.textContent = `Retry the uncertain request for ${target} before starting a different build.`;
+          status.className = 'notice error';
+          return;
+        }
+        if (!window.confirm(`Build a generic ${target} image? The build does not flash or change a device.`)) return;
+        button.disabled = true;
+        status.textContent = 'Submitting validated firmware build…';
+        status.className = 'notice';
+        const idempotencyKey = sessionStorage.getItem('dbmap-pending-build-key') || crypto.randomUUID();
+        sessionStorage.setItem('dbmap-pending-build-key', idempotencyKey);
+        sessionStorage.setItem('dbmap-pending-build-target', target);
+        try {
+          const job = await firmwareBuilderApi('/api/v1/firmware/builds', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+            body: JSON.stringify({ target }),
+          });
+          sessionStorage.removeItem('dbmap-pending-build-key');
+          sessionStorage.removeItem('dbmap-pending-build-target');
+          status.textContent = `Build ${job.id} ${job.status}: ${job.stage}.`;
+          await refreshFirmwareBuilds();
+        } catch (error) {
+          status.textContent = `Build request failed or its result is uncertain. Retry the same request safely: ${error.message}`;
+          status.className = 'notice error';
+        } finally {
+          button.disabled = false;
+        }
+      }
+
+      async function downloadFirmwareBuildFile(buildId, fileType) {
+        try {
+          const response = await fetch(`${publicBasePath}/api/v1/firmware/builds/${encodeURIComponent(buildId)}/${fileType}`, {
+            headers: { Authorization: `Bearer ${authToken.value}` },
+            cache: 'no-store',
+          });
+          if (!response.ok) throw new Error(`Download failed (${response.status}).`);
+          const url = URL.createObjectURL(await response.blob());
+          const link = document.createElement('a');
+          link.href = url;
+          const disposition = response.headers.get('Content-Disposition') || '';
+          const filename = disposition.match(/filename="([^"]+)"/);
+          link.download = filename ? filename[1] : `dBmap-${buildId}.${fileType === 'metadata' ? 'json' : 'zip'}`;
+          link.click();
+          window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        } catch (error) {
+          const status = document.getElementById('firmware-build-status');
+          status.textContent = error.message;
+          status.className = 'notice error';
+        }
+      }
+
+      async function deleteFirmwareBuild(buildId) {
+        if (!window.confirm(`Remove build ${buildId} and its retained files? This cannot be undone.`)) return;
+        try {
+          await firmwareBuilderApi(`/api/v1/firmware/builds/${encodeURIComponent(buildId)}`, { method: 'DELETE' });
+          await refreshFirmwareBuilds();
+        } catch (error) {
+          const status = document.getElementById('firmware-build-status');
+          status.textContent = `Could not delete build artifact: ${error.message}`;
           status.className = 'notice error';
         }
       }
@@ -1745,6 +2130,7 @@
       let currentDeploymentAttempt = null;
       let deploymentBlobUrls = [];
       let espWebToolsReady = null;
+      const pendingBootstrapTokens = new Map();
 
       async function ensureEspWebToolsLoaded() {
         if (!espWebToolsReady) {
@@ -1768,13 +2154,10 @@
         const selected = currentRole === 'admin'
           && Boolean(document.getElementById('flash-device').value)
           && Boolean(document.getElementById('flash-firmware').value)
-          && document.getElementById('flash-platform-ack').checked
           && Boolean(navigator.serial)
           && !currentDeploymentAttempt;
         document.getElementById('prepare-browser-flash').disabled = !selected;
-        document.getElementById('prepare-browser-flash-override').disabled = !(
-          selected && document.getElementById('flash-identity-override').checked
-        );
+        document.getElementById('prepare-browser-flash-override').disabled = !selected;
         document.getElementById('refresh-deployment-history').disabled = !document.getElementById('flash-device').value;
       }
 
@@ -1783,20 +2166,130 @@
         deviceSelect.replaceChildren(new Option('Loading active devices…', ''));
         try {
           const devices = await api('/api/v1/devices');
-          const activeDevices = devices.filter((device) => device.lifecycle_state === 'active');
-          deviceSelect.replaceChildren(new Option('Select an active device', ''));
-          for (const device of activeDevices) {
+          const deployableDevices = devices.filter((device) => device.lifecycle_state === 'active');
+          deviceSelect.replaceChildren(new Option('Select a registered device', ''));
+          for (const device of deployableDevices) {
             deviceSelect.append(new Option(
-              `${device.node_id} · ${device.node_type} · ${device.hardware_revision}`,
+              `${device.node_id} · ${device.node_type} · ${device.hardware_revision} · ${device.provisioning_state}`,
               device.node_id,
             ));
           }
-          if (!activeDevices.length) deviceSelect.replaceChildren(new Option('No active devices', ''));
+          if (!deployableDevices.length) deviceSelect.replaceChildren(new Option('No registered devices', ''));
           await refreshCompatibleFirmware();
           await refreshDeploymentAttempts();
         } catch (error) {
           deviceSelect.replaceChildren(new Option('Could not load devices', ''));
           setBrowserFlashStatus(`Could not load devices for browser flashing: ${error.message}`, true);
+        }
+      }
+
+      function updateProvisionHubUrl() {
+        const base = new URL(publicBasePath || '/', window.location.origin);
+        document.getElementById('provision-hub-url').textContent = `Device Hub URL: ${base.origin}${base.pathname.replace(/\/$/, '')}`;
+      }
+
+      async function waitForSerialLine(reader, pattern, timeoutMs, description) {
+        let buffer = '';
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          let timeoutId;
+          const result = await Promise.race([
+            reader.read(),
+            new Promise((_, reject) => {
+              timeoutId = window.setTimeout(() => reject(new Error(`Timed out ${description}.`)), Math.max(1, deadline - Date.now()));
+            }),
+          ]).finally(() => window.clearTimeout(timeoutId));
+          if (result.done) throw new Error('USB serial connection closed.');
+          buffer += new TextDecoder().decode(result.value, { stream: true });
+          const match = buffer.match(pattern);
+          if (match) return match;
+          buffer = buffer.slice(-4096);
+        }
+        throw new Error(`Timed out ${description}.`);
+      }
+
+      async function provisionDeviceOverUsb() {
+        const nodeId = document.getElementById('flash-device').value;
+        const status = document.getElementById('usb-provision-status');
+        const button = document.getElementById('send-usb-provisioning');
+        const ssid = document.getElementById('provision-ssid').value;
+        const wifiPassword = document.getElementById('provision-wifi-password').value;
+        const token = document.getElementById('provision-bootstrap-token').value || pendingBootstrapTokens.get(nodeId) || '';
+        if (!nodeId || !ssid || !token) {
+          status.textContent = 'Select a registered device and enter its Wi-Fi network name and bootstrap token.';
+          status.className = 'notice error';
+          return;
+        }
+        if (currentRole !== 'admin' || !navigator.serial) {
+          status.textContent = 'USB provisioning requires an administrator in a supported Chromium browser.';
+          status.className = 'notice error';
+          return;
+        }
+        button.disabled = true;
+        let port;
+        let reader;
+        let writer;
+        try {
+          const hub = new URL(publicBasePath || '/', window.location.origin);
+          const hubUrl = `${hub.origin}${hub.pathname.replace(/\/$/, '')}`;
+          status.textContent = 'Select the device USB serial port. Press reset if the board is not waiting for configuration.';
+          status.className = 'notice';
+          port = await navigator.serial.requestPort();
+          await port.open({ baudRate: 115200 });
+          reader = port.readable.getReader();
+          writer = port.writable.getWriter();
+          status.textContent = 'Waiting for compatible firmware to enter the provisioning state…';
+          await waitForSerialLine(reader, /DBMAP_PROVISION_READY/, 30000, 'waiting for the device provisioning prompt');
+          const requestId = crypto.randomUUID();
+          const request = {
+            protocol: 1,
+            operation: 'configure',
+            request_id: requestId,
+            configuration: { ssid, wifi_password: wifiPassword, hub_url: hubUrl, bootstrap_token: token },
+          };
+          await writer.write(new TextEncoder().encode(`${JSON.stringify(request)}\n`));
+          status.textContent = 'Configuration sent. Waiting for the firmware to confirm its NVS write…';
+          const responseMatch = await waitForSerialLine(
+            reader,
+            /DBMAP_PROVISION_RESULT:(\{[^\r\n]*\})/,
+            15000,
+            'waiting for the device NVS result',
+          );
+          const result = JSON.parse(responseMatch[1]);
+          if (result.request_id !== requestId || result.status !== 'accepted') {
+            throw new Error(result.error || 'The device did not accept this configuration.');
+          }
+          status.textContent = 'NVS write confirmed. Waiting for the Hub to confirm this device is provisioned and online…';
+          const deadline = Date.now() + 120000;
+          while (Date.now() < deadline) {
+            await new Promise((resolve) => window.setTimeout(resolve, 3000));
+            try {
+              const device = await api(`/api/v1/nodes/${encodeURIComponent(nodeId)}`);
+              if (device.provisioning_state === 'active' && device.status === 'online') {
+                status.textContent = `Deployment verified: ${nodeId} is active and online on the Hub.`;
+                status.className = 'notice success';
+                pendingBootstrapTokens.delete(nodeId);
+                document.getElementById('provision-bootstrap-token').value = '';
+                document.getElementById('provision-wifi-password').value = '';
+                await refreshDevices();
+                return;
+              }
+            } catch (_) {
+              status.textContent = 'Waiting for Hub status…';
+            }
+          }
+          status.textContent = 'Configuration is saved in device NVS, but the Hub has not confirmed this device online. Keep the same physical device and matching device selection. Check Wi-Fi connection and device logs; the entered credentials are retained here for retry. Recover a bootstrap token only if Hub provisioning reports that the token is invalid or expired.';
+          status.className = 'notice error';
+        } catch (error) {
+          status.textContent = error.message.includes('waiting for the device provisioning prompt')
+            ? 'The device did not advertise the dBmap USB provisioning prompt. The installed image likely predates this protocol; a new generic firmware release with USB provisioning support is required. No configuration was sent.'
+            : `USB provisioning did not complete: ${error.message}`;
+          status.className = 'notice error';
+        } finally {
+          if (writer) { writer.releaseLock(); }
+          if (reader) { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+          if (port?.readable || port?.writable) await port.close().catch(() => {});
+          button.disabled = false;
         }
       }
 
@@ -1811,20 +2304,23 @@
           return;
         }
         try {
-          const compatible = await api(`/api/v1/nodes/${encodeURIComponent(deviceId)}/compatible-firmware`);
-          firmwareSelect.replaceChildren(new Option('Select registered firmware', ''));
+          const compatible = await api(`/api/v1/nodes/${encodeURIComponent(deviceId)}/compatible-firmware?include_candidates=true`);
+          firmwareSelect.replaceChildren(new Option('Select compatible firmware', ''));
           for (const firmware of compatible) {
-            firmwareSelect.append(new Option(
-              `${firmware.firmware_id} · ${firmware.firmware_version} · ${firmware.platform}`,
+            const option = new Option(
+              `${firmware.status === 'candidate' ? 'CANDIDATE · admin test · ' : ''}${firmware.firmware_id} · ${firmware.firmware_version} · ${firmware.platform}`,
               firmware.firmware_id,
-            ));
+            );
+            option.dataset.status = firmware.status;
+            firmwareSelect.append(option);
           }
-          if (!compatible.length) firmwareSelect.replaceChildren(new Option('No compatible registered firmware', ''));
+          if (!compatible.length) firmwareSelect.replaceChildren(new Option('No compatible firmware', ''));
           firmwareSelect.disabled = compatible.length === 0;
+          const hasCandidates = compatible.some((firmware) => firmware.status === 'candidate');
           setBrowserFlashStatus(
             compatible.length
-              ? 'Firmware matches the registered device type and hardware revision. Chip platform must still be confirmed physically.'
-              : 'No registered firmware matches this active device.',
+              ? `Firmware matches the registered device type${compatible.some((item) => item.compatibility?.hardware_revision === 'generic') ? ' with a generic hardware profile' : ' and hardware revision'}.${hasCandidates ? ' Candidate images are for admin verification and are not promoted.' : ''} Chip platform must still be confirmed physically.`
+              : 'No compatible registered release or candidate matches this active device.',
           );
         } catch (error) {
           firmwareSelect.replaceChildren(new Option('Could not load compatible firmware', ''));
@@ -1841,7 +2337,7 @@
         try {
           const attempts = await api(`/api/v1/nodes/${encodeURIComponent(deviceId)}/deployment-attempts`);
           if (!attempts.length) {
-            history.append(el('p', 'No deployment attempts for this device.', 'notice'));
+            history.append(el('p', 'No recent installs for this device.', 'notice'));
             return;
           }
           for (const attempt of attempts) {
@@ -1872,7 +2368,7 @@
             history.append(row);
           }
         } catch (error) {
-          history.append(el('p', `Could not load deployment attempts: ${error.message}`, 'notice error'));
+          history.append(el('p', `Could not load install history: ${error.message}`, 'notice error'));
         }
       }
 
@@ -1907,10 +2403,9 @@
       async function prepareBrowserFlash(skipIdentityCheck = false) {
         const deviceId = document.getElementById('flash-device').value;
         const firmwareId = document.getElementById('flash-firmware').value;
-        if (skipIdentityCheck && !document.getElementById('flash-identity-override').checked) {
-          setBrowserFlashStatus('Explicit administrator confirmation is required to continue without a verified dBmap device ID.', true);
-          return;
-        }
+        const allowCandidate = document.getElementById('flash-firmware').selectedOptions[0]?.dataset.status === 'candidate';
+        if (skipIdentityCheck && !window.confirm(`Admin override: skip reading the dBmap device ID over USB? You must physically verify this board is ${deviceId}. ESP Web Tools chip/MAC detection is not an identity check.`)) return;
+        if (allowCandidate && !window.confirm(`Flash unregistered candidate ${firmwareId} to ${deviceId} for administrator verification? It will remain a candidate.`)) return;
         const button = document.getElementById(
           skipIdentityCheck ? 'prepare-browser-flash-override' : 'prepare-browser-flash',
         );
@@ -1918,7 +2413,7 @@
         button.disabled = true;
         try {
           if (skipIdentityCheck) {
-            setBrowserFlashStatus('Admin override confirmed. Continue to registered-image validation; ESP Web Tools will request the USB port and detect the chip.');
+            setBrowserFlashStatus(`Admin override confirmed. Continue to ${allowCandidate ? 'candidate' : 'registered'}-image validation; ESP Web Tools will request the USB port and detect the chip.`);
           } else {
             setBrowserFlashStatus('Select the board’s USB serial port. Once it opens, press reset only if needed to read its dBmap device ID.');
             const port = await navigator.serial.requestPort();
@@ -1926,7 +2421,7 @@
               setBrowserFlashStatus('Serial port open at 115200 baud. Waiting up to 30 seconds for the device’s dBmap ID; press reset if required.');
             });
             if (observedDeviceId !== deviceId) {
-              throw new Error(`Connected device reports ${observedDeviceId}; selected device is ${deviceId}. No deployment attempt was created.`);
+              throw new Error(`Connected device reports ${observedDeviceId}; selected device is ${deviceId}. No install attempt was created.`);
             }
           }
           await api(`/api/v1/nodes/${encodeURIComponent(deviceId)}/firmware-selection`, {
@@ -1934,14 +2429,16 @@
             body: JSON.stringify({
               firmware_id: firmwareId,
               acknowledge_unverified_platform: true,
+              allow_candidate: allowCandidate,
             }),
           });
           setBrowserFlashStatus('Identity and selection verified. Downloading and checking firmware components…');
-          const manifest = await api(`/api/v1/firmware/catalog/${encodeURIComponent(firmwareId)}/flash-manifest`);
+          const candidateQuery = allowCandidate ? '?allow_candidate=true' : '';
+          const manifest = await api(`/api/v1/firmware/catalog/${encodeURIComponent(firmwareId)}/flash-manifest${candidateQuery}`);
           const parts = manifest.builds[0].parts;
           for (const part of parts) {
             const response = await fetch(
-              `${publicBasePath}/api/v1/firmware/catalog/${encodeURIComponent(firmwareId)}/flash-images/${encodeURIComponent(part.path)}`,
+              `${publicBasePath}/api/v1/firmware/catalog/${encodeURIComponent(firmwareId)}/flash-images/${encodeURIComponent(part.path)}${candidateQuery}`,
               { headers: { Authorization: `Bearer ${authToken.value}` }, cache: 'no-store' },
             );
             if (!response.ok) {
@@ -1969,6 +2466,7 @@
             body: JSON.stringify({
               firmware_id: firmwareId,
               acknowledge_unverified_platform: true,
+              allow_candidate: allowCandidate,
               flasher_version: skipIdentityCheck
                 ? 'EWT 10.4.0; identity override'
                 : 'EWT 10.4.0; ID verified',
@@ -1977,7 +2475,8 @@
           currentDeploymentAttempt = createdAttempt;
           const installer = document.createElement('esp-web-install-button');
           installer.setAttribute('manifest', manifestUrl);
-          const launch = el('button', 'Open ESP Web Tools installer');
+          const launch = el('button', 'Connect USB → Install');
+          launch.setAttribute('slot', 'activate');
           launch.type = 'button';
           launch.addEventListener('click', () => {
             document.getElementById('deployment-outcome-panel').hidden = false;
@@ -1988,8 +2487,8 @@
           document.getElementById('deployment-outcome-panel').hidden = true;
           setBrowserFlashStatus(
             skipIdentityCheck
-              ? `Deployment attempt ${createdAttempt.attempt_id} is ready. ESP Web Tools will now request the USB port and detect the chip; confirm the board is ${deviceId}.`
-              : `Deployment attempt ${createdAttempt.attempt_id} is ready. Select the same USB device in ESP Web Tools.`,
+              ? `Install attempt ${createdAttempt.attempt_id} is ready. ESP Web Tools will now request the USB port and detect the chip; confirm the board is ${deviceId}.`
+              : `Install attempt ${createdAttempt.attempt_id} is ready. Select the same USB device in ESP Web Tools.`,
           );
           await refreshDeploymentAttempts();
         } catch (error) {
@@ -2002,7 +2501,11 @@
             await refreshDeploymentAttempts();
           }
           if (error.name === 'NotFoundError') {
-            setBrowserFlashStatus('No USB serial device was selected. No deployment attempt was created.');
+            setBrowserFlashStatus('No USB serial device was selected. No install attempt was created.');
+          } else if (error.message.includes('deployment attempt is already in progress')) {
+            await refreshDeploymentAttempts();
+            setBrowserFlashStatus('An install attempt is already open for this device. Review Recent installs below and record failed only if flashing did not happen; use outcome unknown if you cannot determine the result.', true);
+            document.getElementById('browser-flash-history').scrollIntoView({ behavior: 'smooth', block: 'center' });
           } else {
             setBrowserFlashStatus(error.message, true);
           }
@@ -2016,9 +2519,23 @@
         try {
           await api(`/api/v1/firmware/catalog/${encodeURIComponent(firmwareId)}/promote`, { method: 'POST' });
           await refreshFirmwareCatalog();
+          await refreshCompatibleFirmware();
         } catch (error) {
           const status = document.getElementById('firmware-catalog-status');
           status.textContent = `Could not promote firmware candidate: ${error.message}`;
+          status.className = 'notice error';
+        }
+      }
+
+      async function returnFirmwareToCandidate(firmwareId) {
+        if (!window.confirm(`Return ${firmwareId} to candidate status? It will be removed from the registered release list, but the image and history will be kept.`)) return;
+        try {
+          await api(`/api/v1/firmware/catalog/${encodeURIComponent(firmwareId)}/unregister`, { method: 'POST' });
+          await refreshFirmwareCatalog();
+          await refreshCompatibleFirmware();
+        } catch (error) {
+          const status = document.getElementById('firmware-catalog-status');
+          status.textContent = `Could not return firmware to candidate status: ${error.message}`;
           status.className = 'notice error';
         }
       }
@@ -2066,13 +2583,19 @@
       });
 
       document.getElementById('refresh-firmware-catalog').addEventListener('click', refreshFirmwareCatalog);
+      document.getElementById('firmware-build-target').addEventListener('change', (event) => {
+        const pendingTarget = sessionStorage.getItem('dbmap-pending-build-target');
+        if (pendingTarget) event.currentTarget.value = pendingTarget;
+        document.getElementById('start-firmware-build').disabled = firmwareBuildInProgress || !event.currentTarget.value;
+      });
+      document.getElementById('start-firmware-build').addEventListener('click', startFirmwareBuild);
       document.getElementById('flash-device').addEventListener('change', () => {
         refreshCompatibleFirmware();
         refreshDeploymentAttempts();
+        document.getElementById('provision-bootstrap-token').value = pendingBootstrapTokens.get(document.getElementById('flash-device').value) || '';
       });
+      document.getElementById('send-usb-provisioning').addEventListener('click', provisionDeviceOverUsb);
       document.getElementById('flash-firmware').addEventListener('change', syncBrowserFlashControls);
-      document.getElementById('flash-platform-ack').addEventListener('change', syncBrowserFlashControls);
-      document.getElementById('flash-identity-override').addEventListener('change', syncBrowserFlashControls);
       document.getElementById('prepare-browser-flash').addEventListener('click', prepareBrowserFlash);
       document.getElementById('prepare-browser-flash-override').addEventListener('click', () => {
         prepareBrowserFlash(true);
@@ -2110,6 +2633,7 @@
 
       function showDashboard(role) {
         currentRole = role;
+        updateProvisionHubUrl();
         document.getElementById('login-panel').hidden = true;
         document.getElementById('dashboard').hidden = false;
         document.getElementById('user-controls').hidden = false;
@@ -2223,7 +2747,12 @@
           };
           document.getElementById('build-handoff-json').textContent = JSON.stringify(handoff, null, 2);
           document.getElementById('build-handoff').hidden = false;
-          status.textContent = 'Device created. The safe Step 2 handoff is shown below; firmware build and flashing are not implemented.';
+          pendingBootstrapTokens.set(created.node_id, created.bootstrap_token);
+          document.getElementById('flash-device').value = created.node_id;
+          document.getElementById('provision-bootstrap-token').value = created.bootstrap_token;
+          document.getElementById('provision-ssid').value = wifiSsid;
+          document.getElementById('provision-wifi-password').value = wifiPasswordInput.value;
+          status.textContent = 'Device registered and assigned. Its one-time token is ready in the USB provisioning panel; select a compatible image, flash without erasing NVS, then send configuration over USB.';
           status.className = 'notice';
           pendingRegistrationKey = '';
           sessionStorage.removeItem('dbmap-pending-registration-key');
@@ -2234,12 +2763,15 @@
           ownerTypeSelect.value = 'user';
           ownerTypeSelect.dispatchEvent(new Event('change'));
           syncCreateButton();
-          await Promise.all([refreshDevices(), refreshHubStatus()]);
+          await Promise.all([refreshDevices(), refreshHubStatus(), refreshBrowserFlashDevices()]);
+          document.getElementById('flash-device').value = created.node_id;
+          refreshCompatibleFirmware();
+          refreshDeploymentAttempts();
         } catch (error) {
           if (error.message.includes('registration already completed')) {
             pendingRegistrationKey = '';
             sessionStorage.removeItem('dbmap-pending-registration-key');
-            clearUsbInspection('This registration attempt already created a node. Its one-time token cannot be recovered. Select the device and confirm again only if you intentionally need a replacement node.');
+            clearUsbInspection('This registration attempt already created a node. The token is not returned again; open that device in the list to issue a replacement while it is still pending.');
           }
           status.textContent = error.message;
           status.className = 'notice error';
@@ -2325,6 +2857,11 @@
         window.clearInterval(refreshTimer);
         for (const url of deploymentBlobUrls) URL.revokeObjectURL(url);
         deploymentBlobUrls = [];
+        firmwareBuildLogCache.clear();
+        firmwareBuildLogLoads.clear();
+        firmwareBuildStatuses.clear();
+        expandedFirmwareBuildLogs.clear();
+        document.getElementById('firmware-build-jobs').replaceChildren();
         currentDeploymentAttempt = null;
         authToken.value = '';
         currentRole = '';
@@ -2342,8 +2879,6 @@
         document.getElementById('deployment-outcome-panel').hidden = true;
         document.getElementById('flash-device').replaceChildren(new Option('Select an active device', ''));
         document.getElementById('flash-firmware').replaceChildren(new Option('Select a device first', ''));
-        document.getElementById('flash-platform-ack').checked = false;
-        document.getElementById('flash-identity-override').checked = false;
         const createdToken = document.getElementById('created-token');
         createdToken.hidden = true;
         createdToken.replaceChildren();

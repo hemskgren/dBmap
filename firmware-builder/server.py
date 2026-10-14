@@ -4,29 +4,40 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
 import time
 import uuid
 import zipfile
+from collections import deque
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
 ARTIFACTS = Path(os.environ.get("DBMAP_FIRMWARE_ARTIFACTS", "/artifacts"))
 JOBS = ARTIFACTS / ".jobs"
-FIRMWARE_SOURCE = Path(os.environ.get("DBMAP_FIRMWARE_SOURCE", "/firmware/esp-output"))
+FIRMWARE_ROOT = Path(os.environ.get("DBMAP_FIRMWARE_ROOT", "/firmware"))
+FIRMWARE_SOURCE = Path(os.environ.get("DBMAP_FIRMWARE_SOURCE", str(FIRMWARE_ROOT / "esp-output")))
 HUB_CA_FILE = Path(os.environ.get("DBMAP_HUB_CA_FILE", "/certs/ca.crt"))
 ADMIN_TOKEN = os.environ.get("DBMAP_ADMIN_TOKEN", "")
 BUILD_TIMEOUT_SECONDS = 1800
+FIRMWARE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 TARGETS = {
-    "esp-output-esp32": {
+    "output-esp32": {
         "project": FIRMWARE_SOURCE,
+        "components": FIRMWARE_ROOT / "components",
         "chip": "esp32",
         "node_type": "output",
-        "hardware_revision": "OUTPUT-DEV-V1",
-        "idf_version": "v5.4.2",
+        "hardware_revision": "generic",
+        "idf_version": "v5.4.4",
+        "flash_components": {
+            "0x1000": "bootloader.bin",
+            "0x8000": "partition-table.bin",
+            "0x10000": "esp-output.bin",
+        },
     },
 }
 SECRET_CONFIG = (
@@ -69,30 +80,49 @@ def _load_jobs(recover_interrupted: bool = False) -> list[dict]:
     return jobs
 
 
-def _run_stage(command: list[str], cwd: Path) -> tuple[int, str]:
-    result = subprocess.run(
-        command,
-        cwd=cwd,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=BUILD_TIMEOUT_SECONDS,
-        env=os.environ.copy(),
-    )
-    return result.returncode, "\n".join((result.stdout + result.stderr).splitlines()[-40:])
+def _tail_log(path: Path, line_count: int = 40) -> str:
+    try:
+        with path.open(encoding="utf-8", errors="replace") as log_file:
+            return "".join(deque(log_file, maxlen=line_count))
+    except OSError:
+        return ""
 
 
-def _artifact_entries(build_dir: Path) -> list[dict]:
+def _append_log(path: Path, message: str) -> None:
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(descriptor, "a", encoding="utf-8") as log_file:
+            log_file.write(f"\n{message}\n")
+    except OSError:
+        pass
+
+
+def _run_stage(command: list[str], cwd: Path, log_path: Path) -> tuple[int, str]:
+    log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(descriptor, "a", encoding="utf-8") as log_file:
+        log_file.write(f"\n$ {' '.join(command)}\n")
+        log_file.flush()
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            check=False,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=BUILD_TIMEOUT_SECONDS,
+            env=os.environ.copy(),
+        )
+    return result.returncode, _tail_log(log_path)
+
+
+def _artifact_entries(build_dir: Path, expected_components: dict[str, str]) -> list[dict]:
     args_file = build_dir / "flasher_args.json"
     args = json.loads(args_file.read_text(encoding="utf-8"))
     flash_files = args.get("flash_files")
     if not isinstance(flash_files, dict) or not flash_files:
         raise RuntimeError("ESP-IDF did not provide a flash manifest.")
-    expected = {
-        "0x1000": "bootloader.bin",
-        "0x8000": "partition-table.bin",
-        "0x10000": "esp-output.bin",
-    }
+    expected = expected_components
     entries = []
     for offset, source in flash_files.items():
         if expected.get(offset) is None:
@@ -165,8 +195,20 @@ def _sdkconfig_string(sdkconfig: Path, name: str) -> str:
     raise RuntimeError(f"Missing firmware version setting {name}.")
 
 
-def _check_toolchain(target: str, work_dir: Path) -> None:
-    code, output = _run_stage(["idf.py", "--version"], work_dir)
+def _release_firmware_id(manifest: dict, artifact_sha256: str) -> str:
+    if not re.fullmatch(r"[0-9a-f]{64}", artifact_sha256):
+        raise ValueError("Build artifact SHA-256 is invalid.")
+    firmware_id = (
+        f"dbmap-{manifest['target']}-{manifest['firmware_version']}-"
+        f"{artifact_sha256[:8]}"
+    )
+    if not FIRMWARE_ID_PATTERN.fullmatch(firmware_id):
+        raise ValueError("Build target and version do not form a safe firmware ID.")
+    return firmware_id
+
+
+def _check_toolchain(target: str, work_dir: Path, log_path: Path) -> None:
+    code, output = _run_stage(["idf.py", "--version"], work_dir, log_path)
     if code != 0 or TARGETS[target]["idf_version"] not in output:
         raise RuntimeError("The pinned ESP-IDF toolchain check failed.\n" + output)
 
@@ -175,41 +217,47 @@ def _build(job_id: str, target: str) -> None:
     global active_build
     job_path = JOBS / f"{job_id}.json"
     work_root = ARTIFACTS / f".work-{job_id}"
-    work_dir = work_root / "esp-output"
+    target_config = TARGETS.get(target)
+    work_dir = work_root / target
     artifact_dir = ARTIFACTS / job_id
+    log_path = JOBS / f"{job_id}.log"
     job = json.loads(job_path.read_text(encoding="utf-8"))
     try:
+        descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.close(descriptor)
+        log_path.chmod(0o600)
+        log_path.write_text("dBmap generic firmware build log\n", encoding="utf-8")
         job.update(status="running", stage="validating", started_at=time.time())
         _persist(job)
-        if not FIRMWARE_SOURCE.is_dir():
-            raise RuntimeError("The firmware source directory is not mounted into the builder.")
-        if target not in TARGETS:
+        if target_config is None:
             raise RuntimeError("Unsupported firmware target.")
+        if not target_config["project"].is_dir():
+            raise RuntimeError("The firmware source directory is not mounted into the builder.")
 
         shutil.copytree(
-            TARGETS[target]["project"],
+            target_config["project"],
             work_dir,
             ignore=shutil.ignore_patterns("build", "sdkconfig", "sdkconfig.old"),
         )
-        shutil.copytree(FIRMWARE_SOURCE.parent / "components", work_root / "components")
+        shutil.copytree(target_config["components"], work_root / "components")
         _install_hub_ca(work_dir)
         for defaults in work_dir.glob("sdkconfig.defaults*"):
             _clear_device_secrets(defaults)
 
         job.update(stage="checking_toolchain")
         _persist(job)
-        _check_toolchain(target, work_dir)
+        _check_toolchain(target, work_dir, log_path)
 
         job.update(stage="configuring")
         _persist(job)
-        code, output = _run_stage(["idf.py", "set-target", TARGETS[target]["chip"]], work_dir)
+        code, output = _run_stage(["idf.py", "set-target", TARGETS[target]["chip"]], work_dir, log_path)
         if code != 0:
             raise RuntimeError("ESP-IDF target configuration failed.\n" + output)
         _clear_device_secrets(work_dir / "sdkconfig")
 
         job.update(stage="building")
         _persist(job)
-        code, output = _run_stage(["idf.py", "build"], work_dir)
+        code, output = _run_stage(["idf.py", "build"], work_dir, log_path)
         if code != 0:
             raise RuntimeError("ESP-IDF firmware build failed.\n" + output)
 
@@ -219,7 +267,7 @@ def _build(job_id: str, target: str) -> None:
         job.update(stage="finalizing")
         _persist(job)
         build_dir = work_dir / "build"
-        entries = _artifact_entries(build_dir)
+        entries = _artifact_entries(build_dir, target_config["flash_components"])
         artifact_dir.mkdir(mode=0o700)
         bundle_path = artifact_dir / "firmware.zip"
         manifest_entries = []
@@ -230,10 +278,10 @@ def _build(job_id: str, target: str) -> None:
             manifest = {
                 "build_id": job_id,
                 "target": target,
-                "chip": TARGETS[target]["chip"],
-                "node_type": TARGETS[target]["node_type"],
-                "hardware_revision": TARGETS[target]["hardware_revision"],
-                "esp_idf_version": TARGETS[target]["idf_version"],
+                "chip": target_config["chip"],
+                "node_type": target_config["node_type"],
+                "hardware_revision": target_config["hardware_revision"],
+                "esp_idf_version": target_config["idf_version"],
                 "firmware_version": _sdkconfig_string(
                     work_dir / "sdkconfig",
                     "CONFIG_DBMAP_FIRMWARE_VERSION",
@@ -248,11 +296,13 @@ def _build(job_id: str, target: str) -> None:
         job.update(
             status="succeeded",
             stage="complete",
+            firmware_version=manifest["firmware_version"],
             artifact={"sha256": digest, "size_bytes": bundle_path.stat().st_size},
             finished_at=time.time(),
         )
         _persist(job)
     except subprocess.TimeoutExpired:
+        _append_log(log_path, "ESP-IDF build exceeded the 30-minute limit.")
         job.update(
             status="failed",
             stage="failed",
@@ -262,6 +312,7 @@ def _build(job_id: str, target: str) -> None:
         _persist(job)
         shutil.rmtree(artifact_dir, ignore_errors=True)
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError, zipfile.BadZipFile) as error:
+        _append_log(log_path, f"Build failed: {error}")
         job.update(status="failed", stage="failed", error=str(error), finished_at=time.time())
         _persist(job)
         shutil.rmtree(artifact_dir, ignore_errors=True)
@@ -324,6 +375,32 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, [_public_job(job) for job in _load_jobs()])
             return
         parts = path.strip("/").split("/")
+        if len(parts) == 6 and parts[:4] == ["api", "v1", "firmware", "builds"] and parts[5] == "log":
+            job_id = parts[4]
+            if not _valid_id(job_id):
+                self.send_error(404, "Build not found.")
+                return
+            if _get_job(job_id) is None:
+                self.send_error(404, "Build not found.")
+                return
+            log_path = JOBS / f"{job_id}.log"
+            if not log_path.is_file():
+                self.send_error(404, "Build log is not available.")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            remaining = log_path.stat().st_size
+            self.send_header("Content-Length", str(remaining))
+            self.end_headers()
+            with log_path.open("rb") as log_file:
+                while remaining > 0:
+                    chunk = log_file.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+            return
         if len(parts) == 6 and parts[:4] == ["api", "v1", "firmware", "builds"] and parts[5] == "artifact":
             job_id = parts[4]
             if not _valid_id(job_id):
@@ -338,13 +415,64 @@ class Handler(BaseHTTPRequestHandler):
             if hashlib.sha256(data).hexdigest() != job["artifact"]["sha256"]:
                 self.send_error(500, "Build artifact integrity check failed.")
                 return
+            try:
+                with zipfile.ZipFile(bundle) as archive:
+                    manifest = json.loads(archive.read("manifest.json"))
+                firmware_id = _release_firmware_id(manifest, job["artifact"]["sha256"])
+            except (KeyError, OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError):
+                self.send_error(500, "Could not read build metadata from artifact.")
+                return
             self.send_response(200)
             self.send_header("Content-Type", "application/zip")
-            self.send_header("Content-Disposition", f'attachment; filename="dBmap-{job_id}.zip"')
+            self.send_header("Content-Disposition", f'attachment; filename="{firmware_id}.zip"')
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+            return
+        if len(parts) == 6 and parts[:4] == ["api", "v1", "firmware", "builds"] and parts[5] == "metadata":
+            job_id = parts[4]
+            if not _valid_id(job_id):
+                self.send_error(404, "Build not found.")
+                return
+            job = _get_job(job_id)
+            bundle = ARTIFACTS / job_id / "firmware.zip"
+            if not job or job.get("status") != "succeeded" or not bundle.is_file():
+                self.send_error(404, "Build artifact not found.")
+                return
+            data = bundle.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            if digest != job.get("artifact", {}).get("sha256"):
+                self.send_error(500, "Build artifact integrity check failed.")
+                return
+            try:
+                with zipfile.ZipFile(bundle) as archive:
+                    manifest = json.loads(archive.read("manifest.json"))
+                started_at = datetime.fromtimestamp(job["started_at"], timezone.utc)
+                firmware_id = _release_firmware_id(manifest, digest)
+                metadata = {
+                    "firmware_id": firmware_id,
+                    "build_date_utc": started_at.isoformat().replace("+00:00", "Z"),
+                    "target": manifest["target"],
+                    "node_type": manifest["node_type"],
+                    "platform": manifest["chip"],
+                    "hardware_revision": manifest["hardware_revision"],
+                    "firmware_version": manifest["firmware_version"],
+                    "esp_idf_version": manifest["esp_idf_version"],
+                    "configuration_version": manifest["configuration_version"],
+                    "artifact_sha256": digest,
+                }
+                metadata_bytes = (json.dumps(metadata, indent=2) + "\n").encode()
+            except (KeyError, OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError):
+                self.send_error(500, "Could not generate metadata from build artifact.")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{firmware_id}.json"')
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(metadata_bytes)))
+            self.end_headers()
+            self.wfile.write(metadata_bytes)
             return
         if len(parts) == 5 and parts[:4] == ["api", "v1", "firmware", "builds"]:
             if not _valid_id(parts[4]):
@@ -424,12 +552,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404, "Build not found.")
             return
         job = _get_job(job_id)
-        if not job or job.get("status") != "succeeded":
-            self.send_error(404, "Completed build artifact not found.")
+        if not job or job.get("status") not in {"succeeded", "failed"}:
+            self.send_error(404, "Completed build not found.")
             return
-        shutil.rmtree(ARTIFACTS / job_id, ignore_errors=False)
-        job.update(status="deleted", stage="deleted", artifact=None)
-        _persist(job)
+        if job.get("status") == "succeeded":
+            shutil.rmtree(ARTIFACTS / job_id, ignore_errors=False)
+            (JOBS / f"{job_id}.log").unlink(missing_ok=True)
+            job.update(status="deleted", stage="deleted", artifact=None)
+            _persist(job)
+        else:
+            shutil.rmtree(ARTIFACTS / job_id, ignore_errors=True)
+            (JOBS / f"{job_id}.log").unlink(missing_ok=True)
+            (JOBS / f"{job_id}.json").unlink(missing_ok=True)
         self._json(200, _public_job(job))
 
 
@@ -448,7 +582,16 @@ def _get_job(job_id: str) -> dict | None:
 
 
 def _public_job(job: dict) -> dict:
-    return {key: value for key, value in job.items() if key != "idempotency_key"}
+    public = {key: value for key, value in job.items() if key != "idempotency_key"}
+    if not public.get("firmware_version") and job.get("status") == "succeeded":
+        bundle = ARTIFACTS / str(job.get("id", "")) / "firmware.zip"
+        try:
+            with zipfile.ZipFile(bundle) as archive:
+                manifest = json.loads(archive.read("manifest.json"))
+            public["firmware_version"] = manifest.get("firmware_version")
+        except (OSError, KeyError, ValueError, zipfile.BadZipFile, json.JSONDecodeError):
+            pass
+    return public
 
 
 def _find_idempotent_job(key: str) -> dict | None:
