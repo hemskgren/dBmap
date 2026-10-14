@@ -100,6 +100,42 @@ test_viewer_can_read_firmware_catalog_but_not_upload_or_promote if {
 		"resource": {"type": "firmware_catalog"},
 		"context": {},
 	}
+	not authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "firmware.deploy.select",
+		"resource": {"type": "nodes", "id": "OUT-001", "owner_id": null},
+		"context": {},
+	}
+	not authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "firmware.deploy.attempt.read",
+		"resource": {"type": "nodes", "id": "OUT-001", "owner_id": null},
+		"context": {},
+	}
+	not authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "firmware.deploy.attempt.start",
+		"resource": {"type": "nodes", "id": "OUT-001", "owner_id": null},
+		"context": {},
+	}
+	not authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "firmware.deploy.attempt.update",
+		"resource": {"type": "nodes", "id": "OUT-001", "owner_id": null},
+		"context": {},
+	}
+	not authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "firmware.deploy.flash.read",
+		"resource": {"type": "firmware_catalog"},
+		"context": {},
+	}
+	not authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "nodes.update_hardware",
+		"resource": {"type": "nodes", "id": "OUT-001", "owner_id": null},
+		"context": {},
+	}
 }
 
 test_owner_can_read_owned_device if {

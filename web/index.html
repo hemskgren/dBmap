@@ -98,6 +98,13 @@
       .firmware-entry-metadata { flex: 1 0 100%; min-width: 0; }
       .firmware-entry-metadata > summary { cursor: pointer; font-weight: 650; }
       .firmware-entry-metadata pre { max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+      #browser-flash-panel { max-width: 960px; margin-bottom: 0.8rem; }
+      #browser-flash-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; align-items: end; }
+      #browser-flash-controls label { margin: 0; }
+      #browser-flash-panel input[type="checkbox"] { width: auto; }
+      #browser-flash-history { display: grid; gap: 0.4rem; }
+      .deployment-attempt { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem; padding: 0.55rem; border: 1px solid #e3e9f1; border-radius: 7px; }
+      .deployment-attempt strong { overflow-wrap: anywhere; }
       #tab-observations > section { margin-top: 0.6rem; padding: 0.75rem; }
       #tab-observations > section h3 { margin: 0 0 0.45rem; }
       #site-distance-details > summary { cursor: pointer; font-weight: 650; }
@@ -144,6 +151,7 @@
         #installation-form .actions { grid-column: auto; }
         .toolbar { align-items: flex-start; }
         #create-panel { grid-template-columns: 1fr; }
+        #browser-flash-controls { grid-template-columns: 1fr; }
         #firmware-upload-form { align-items: stretch; flex-direction: column; }
         #create-group-panel { align-items: stretch; flex-direction: column; }
         .group-member { grid-template-columns: minmax(0, 1fr); }
@@ -311,7 +319,47 @@
               <button type="submit">Upload candidate</button>
             </form>
           </section>
-          <p id="firmware-catalog-note" class="notice">Select a registered image for a future deployment workflow. No example or unsupported hardware combinations are assumed.</p>
+          <p id="firmware-catalog-note" class="notice">Registered firmware can be flashed by an administrator from a supported Chromium-based browser over HTTPS.</p>
+          <section id="browser-flash-panel" hidden>
+            <h3>Browser flashing (administrator)</h3>
+            <p>Choose an active device and compatible registered firmware. The safer option reads the dBmap device ID first. If that does not work, an administrator can explicitly confirm the physical device selection and continue; ESP Web Tools detects the chip family, not the dBmap node ID.</p>
+            <div id="browser-flash-controls">
+              <label for="flash-device">Active device
+                <select id="flash-device"><option value="">Loading devices…</option></select>
+              </label>
+              <label for="flash-firmware">Compatible registered firmware
+                <select id="flash-firmware" disabled><option value="">Select a device first</option></select>
+              </label>
+            </div>
+            <label><input id="flash-platform-ack" type="checkbox"> I acknowledge that this Hub cannot verify the device chip platform; the selected firmware's chip family must match the physical board.</label>
+            <label><input id="flash-identity-override" type="checkbox"> I have physically confirmed this is the selected Hub device, and I accept that the Hub cannot verify its dBmap node ID over serial. ESP Web Tools' chip/MAC detection is not a node identity check.</label>
+            <p class="notice">Do not choose the erase-data option in ESP Web Tools. Erasing clears NVS, including the Hub device identity and configuration. This flow flashes the registered image only; it does not inject Wi-Fi credentials.</p>
+            <div class="actions">
+              <button id="prepare-browser-flash" type="button" disabled>Verify USB identity and prepare flash</button>
+              <button id="prepare-browser-flash-override" class="secondary" type="button" disabled>Continue without ID verification</button>
+              <button id="refresh-deployment-history" class="secondary" type="button" disabled>Refresh attempts</button>
+              <span id="browser-flash-status" class="notice" role="status">Select an active device and compatible firmware.</span>
+            </div>
+            <div id="esp-web-tools-launch"></div>
+            <section id="deployment-outcome-panel" hidden>
+              <h4>Record the result after ESP Web Tools finishes</h4>
+              <label for="deployment-failure-code">If flashing failed, choose a reason
+                <select id="deployment-failure-code">
+                  <option value="flash_failed">Flash failed</option>
+                  <option value="serial_connection_lost">Serial connection lost</option>
+                  <option value="cancelled">Cancelled</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <div class="actions">
+                <button id="record-flash-success" type="button">Record success</button>
+                <button id="record-flash-failure" class="danger" type="button">Record failure</button>
+                <button id="record-flash-unknown" class="secondary" type="button">Outcome unknown</button>
+              </div>
+            </section>
+            <h4>Recent deployment attempts</h4>
+            <div id="browser-flash-history" aria-live="polite"></div>
+          </section>
           <div id="firmware-catalog-list" aria-live="polite"></div>
         </section>
         <section id="tab-users" role="tabpanel" aria-labelledby="tab-button-users" hidden>
@@ -1278,6 +1326,57 @@
         detail.append(grid);
 
         if (currentRole === 'admin') {
+          const hardwareEditor = el('section');
+          hardwareEditor.append(el('h3', 'Set verified hardware revision'));
+          hardwareEditor.append(el(
+            'p',
+            'Use the revision printed on the board or confirmed by its hardware documentation. This value controls firmware compatibility; do not copy a firmware revision unless it is verified for this physical device.',
+            'notice',
+          ));
+          const hardwareForm = el('form');
+          const revisionLabel = el('label', 'Hardware revision');
+          const revisionInput = document.createElement('input');
+          revisionInput.name = 'hardware_revision';
+          revisionInput.required = true;
+          revisionInput.maxLength = 128;
+          revisionInput.value = device.hardware_revision;
+          revisionLabel.append(revisionInput);
+          const hardwareSave = el('button', 'Save verified revision');
+          hardwareSave.type = 'submit';
+          const hardwareStatus = el('span', '', 'notice');
+          hardwareStatus.setAttribute('role', 'status');
+          const hardwareActions = el('div', undefined, 'actions');
+          hardwareActions.append(hardwareSave, hardwareStatus);
+          hardwareForm.append(revisionLabel, hardwareActions);
+          hardwareForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            hardwareSave.disabled = true;
+            hardwareStatus.textContent = 'Saving…';
+            hardwareStatus.className = 'notice';
+            try {
+              const updated = await api(
+                `/api/v1/nodes/${encodeURIComponent(device.node_id)}/hardware-revision`,
+                {
+                  method: 'PUT',
+                  body: JSON.stringify({ hardware_revision: revisionInput.value }),
+                },
+              );
+              renderDeviceDetail(updated);
+              await refreshDevices();
+              if (document.getElementById('flash-device').value === device.node_id) {
+                await refreshCompatibleFirmware();
+              }
+              showStatus(`Verified hardware revision updated for ${device.node_id}.`);
+            } catch (error) {
+              hardwareStatus.textContent = error.message;
+              hardwareStatus.className = 'notice error';
+            } finally {
+              hardwareSave.disabled = false;
+            }
+          });
+          hardwareEditor.append(hardwareForm);
+          detail.append(hardwareEditor);
+
           const editor = el('section');
           editor.append(el('h3', 'Edit installation'));
           const form = el('form');
@@ -1429,12 +1528,13 @@
         });
       }
 
-      async function readDeviceIdentity(port) {
+      async function readDeviceIdentity(port, onPortOpen = () => {}) {
         await port.open({ baudRate: 115200 });
+        onPortOpen();
         const reader = port.readable.getReader();
         const decoder = new TextDecoder();
         let output = '';
-        const deadline = Date.now() + 20000;
+        const deadline = Date.now() + 30000;
         try {
           while (Date.now() < deadline) {
             let timeoutId;
@@ -1455,7 +1555,9 @@
           reader.releaseLock();
           await port.close().catch(() => {});
         }
-        throw new Error('No dBmap identity was reported. Confirm compatible firmware is installed, then try again and press the board reset button when prompted.');
+        throw new Error(
+          'No dBmap identity was received within 30 seconds. Press the board reset button after the serial port opens and try again. If it still times out, confirm the board is running dBmap firmware that reports DBMAP_DEVICE_ID at 115200 baud.',
+        );
       }
 
       document.getElementById('inspect-device').addEventListener('click', async (event) => {
@@ -1474,7 +1576,9 @@
           addDetailField(usbInspectionDetails, 'USB serial adapter product ID', inspectedUsbMetadata.product_id);
           usbInspectionDetails.hidden = false;
           usbInspectionStatus.textContent = 'Reading dBmap identity from firmware NVS. Press the board reset button now.';
-          detectedNodeId = await readDeviceIdentity(port);
+          detectedNodeId = await readDeviceIdentity(port, () => {
+            usbInspectionStatus.textContent = 'Serial port open at 115200 baud. Press the board reset button now to report its dBmap identity.';
+          });
           addDetailField(usbInspectionDetails, 'dBmap device identity', detectedNodeId === 'UNPROVISIONED' ? 'No dBmap node ID stored' : detectedNodeId);
           if (detectedNodeId === 'UNPROVISIONED') {
             usbInspectionStatus.textContent = 'Compatible firmware reports no stored dBmap identity. You can register this device as new.';
@@ -1638,6 +1742,275 @@
         }
       }
 
+      let currentDeploymentAttempt = null;
+      let deploymentBlobUrls = [];
+      let espWebToolsReady = null;
+
+      async function ensureEspWebToolsLoaded() {
+        if (!espWebToolsReady) {
+          espWebToolsReady = import(`${publicBasePath}/esp-web-tools/install-button.js`)
+            .then(() => customElements.whenDefined('esp-web-install-button'))
+            .catch((error) => {
+              espWebToolsReady = null;
+              throw new Error(`Could not load the locally hosted ESP Web Tools installer: ${error.message}`);
+            });
+        }
+        return espWebToolsReady;
+      }
+
+      function setBrowserFlashStatus(message, isError = false) {
+        const status = document.getElementById('browser-flash-status');
+        status.textContent = message;
+        status.className = isError ? 'notice error' : 'notice';
+      }
+
+      function syncBrowserFlashControls() {
+        const selected = currentRole === 'admin'
+          && Boolean(document.getElementById('flash-device').value)
+          && Boolean(document.getElementById('flash-firmware').value)
+          && document.getElementById('flash-platform-ack').checked
+          && Boolean(navigator.serial)
+          && !currentDeploymentAttempt;
+        document.getElementById('prepare-browser-flash').disabled = !selected;
+        document.getElementById('prepare-browser-flash-override').disabled = !(
+          selected && document.getElementById('flash-identity-override').checked
+        );
+        document.getElementById('refresh-deployment-history').disabled = !document.getElementById('flash-device').value;
+      }
+
+      async function refreshBrowserFlashDevices() {
+        const deviceSelect = document.getElementById('flash-device');
+        deviceSelect.replaceChildren(new Option('Loading active devices…', ''));
+        try {
+          const devices = await api('/api/v1/devices');
+          const activeDevices = devices.filter((device) => device.lifecycle_state === 'active');
+          deviceSelect.replaceChildren(new Option('Select an active device', ''));
+          for (const device of activeDevices) {
+            deviceSelect.append(new Option(
+              `${device.node_id} · ${device.node_type} · ${device.hardware_revision}`,
+              device.node_id,
+            ));
+          }
+          if (!activeDevices.length) deviceSelect.replaceChildren(new Option('No active devices', ''));
+          await refreshCompatibleFirmware();
+          await refreshDeploymentAttempts();
+        } catch (error) {
+          deviceSelect.replaceChildren(new Option('Could not load devices', ''));
+          setBrowserFlashStatus(`Could not load devices for browser flashing: ${error.message}`, true);
+        }
+      }
+
+      async function refreshCompatibleFirmware() {
+        const deviceId = document.getElementById('flash-device').value;
+        const firmwareSelect = document.getElementById('flash-firmware');
+        firmwareSelect.replaceChildren(new Option('Loading compatible firmware…', ''));
+        firmwareSelect.disabled = true;
+        if (!deviceId) {
+          firmwareSelect.replaceChildren(new Option('Select a device first', ''));
+          syncBrowserFlashControls();
+          return;
+        }
+        try {
+          const compatible = await api(`/api/v1/nodes/${encodeURIComponent(deviceId)}/compatible-firmware`);
+          firmwareSelect.replaceChildren(new Option('Select registered firmware', ''));
+          for (const firmware of compatible) {
+            firmwareSelect.append(new Option(
+              `${firmware.firmware_id} · ${firmware.firmware_version} · ${firmware.platform}`,
+              firmware.firmware_id,
+            ));
+          }
+          if (!compatible.length) firmwareSelect.replaceChildren(new Option('No compatible registered firmware', ''));
+          firmwareSelect.disabled = compatible.length === 0;
+          setBrowserFlashStatus(
+            compatible.length
+              ? 'Firmware matches the registered device type and hardware revision. Chip platform must still be confirmed physically.'
+              : 'No registered firmware matches this active device.',
+          );
+        } catch (error) {
+          firmwareSelect.replaceChildren(new Option('Could not load compatible firmware', ''));
+          setBrowserFlashStatus(`Could not load compatible firmware: ${error.message}`, true);
+        }
+        syncBrowserFlashControls();
+      }
+
+      async function refreshDeploymentAttempts() {
+        const deviceId = document.getElementById('flash-device').value;
+        const history = document.getElementById('browser-flash-history');
+        history.replaceChildren();
+        if (!deviceId) return;
+        try {
+          const attempts = await api(`/api/v1/nodes/${encodeURIComponent(deviceId)}/deployment-attempts`);
+          if (!attempts.length) {
+            history.append(el('p', 'No deployment attempts for this device.', 'notice'));
+            return;
+          }
+          for (const attempt of attempts) {
+            const row = el('article', undefined, 'deployment-attempt');
+            row.append(
+              el('strong', `${attempt.firmware_id} · ${attempt.firmware_version}`),
+              el('span', `${attempt.status} · ${attempt.stage} · ${attempt.progress_percent}%`),
+              el('span', `Started ${formatSeen(attempt.started_at)}`),
+            );
+            if (attempt.failure_code) row.append(el('span', `Reason: ${attempt.failure_code}`));
+            if (attempt.status === 'in_progress') {
+              row.append(el('span', 'Resolve this attempt if flashing did not finish.'));
+              for (const [label, result] of [
+                ['Mark failed', 'failed'],
+                ['Mark outcome unknown', 'unknown'],
+              ]) {
+                const button = el('button', label, result === 'failed' ? 'danger' : 'secondary');
+                button.type = 'button';
+                button.addEventListener('click', () => recordDeploymentOutcome(
+                  deviceId,
+                  attempt.attempt_id,
+                  result,
+                  result === 'failed' ? 'other' : 'browser_interrupted',
+                ));
+                row.append(button);
+              }
+            }
+            history.append(row);
+          }
+        } catch (error) {
+          history.append(el('p', `Could not load deployment attempts: ${error.message}`, 'notice error'));
+        }
+      }
+
+      async function recordDeploymentOutcome(nodeId, attemptId, result, failureCode) {
+        const update = result === 'succeeded'
+          ? { status: 'succeeded', stage: 'completed', progress_percent: 100 }
+          : {
+            status: result,
+            stage: result,
+            failure_code: failureCode,
+          };
+        try {
+          await api(`/api/v1/nodes/${encodeURIComponent(nodeId)}/deployment-attempts/${encodeURIComponent(attemptId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify(update),
+          });
+          if (currentDeploymentAttempt?.attempt_id === attemptId) {
+            currentDeploymentAttempt = null;
+            document.getElementById('deployment-outcome-panel').hidden = true;
+            document.getElementById('esp-web-tools-launch').replaceChildren();
+            for (const url of deploymentBlobUrls) URL.revokeObjectURL(url);
+            deploymentBlobUrls = [];
+            syncBrowserFlashControls();
+          }
+          setBrowserFlashStatus(`Recorded deployment outcome: ${result}.`);
+          await refreshDeploymentAttempts();
+        } catch (error) {
+          setBrowserFlashStatus(`Could not record deployment outcome: ${error.message}`, true);
+        }
+      }
+
+      async function prepareBrowserFlash(skipIdentityCheck = false) {
+        const deviceId = document.getElementById('flash-device').value;
+        const firmwareId = document.getElementById('flash-firmware').value;
+        if (skipIdentityCheck && !document.getElementById('flash-identity-override').checked) {
+          setBrowserFlashStatus('Explicit administrator confirmation is required to continue without a verified dBmap device ID.', true);
+          return;
+        }
+        const button = document.getElementById(
+          skipIdentityCheck ? 'prepare-browser-flash-override' : 'prepare-browser-flash',
+        );
+        let createdAttempt;
+        button.disabled = true;
+        try {
+          if (skipIdentityCheck) {
+            setBrowserFlashStatus('Admin override confirmed. Continue to registered-image validation; ESP Web Tools will request the USB port and detect the chip.');
+          } else {
+            setBrowserFlashStatus('Select the board’s USB serial port. Once it opens, press reset only if needed to read its dBmap device ID.');
+            const port = await navigator.serial.requestPort();
+            const observedDeviceId = await readDeviceIdentity(port, () => {
+              setBrowserFlashStatus('Serial port open at 115200 baud. Waiting up to 30 seconds for the device’s dBmap ID; press reset if required.');
+            });
+            if (observedDeviceId !== deviceId) {
+              throw new Error(`Connected device reports ${observedDeviceId}; selected device is ${deviceId}. No deployment attempt was created.`);
+            }
+          }
+          await api(`/api/v1/nodes/${encodeURIComponent(deviceId)}/firmware-selection`, {
+            method: 'POST',
+            body: JSON.stringify({
+              firmware_id: firmwareId,
+              acknowledge_unverified_platform: true,
+            }),
+          });
+          setBrowserFlashStatus('Identity and selection verified. Downloading and checking firmware components…');
+          const manifest = await api(`/api/v1/firmware/catalog/${encodeURIComponent(firmwareId)}/flash-manifest`);
+          const parts = manifest.builds[0].parts;
+          for (const part of parts) {
+            const response = await fetch(
+              `${publicBasePath}/api/v1/firmware/catalog/${encodeURIComponent(firmwareId)}/flash-images/${encodeURIComponent(part.path)}`,
+              { headers: { Authorization: `Bearer ${authToken.value}` }, cache: 'no-store' },
+            );
+            if (!response.ok) {
+              const responseBody = await response.json().catch(() => ({}));
+              throw new Error(responseBody.detail || `Firmware image request failed (${response.status}).`);
+            }
+            const image = await response.arrayBuffer();
+            const actualDigest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', image))]
+              .map((byte) => byte.toString(16).padStart(2, '0'))
+              .join('');
+            if (actualDigest !== response.headers.get('X-Content-SHA256')) {
+              throw new Error(`Firmware image ${part.path} failed its browser-side SHA-256 check.`);
+            }
+            const imageUrl = URL.createObjectURL(new Blob([image], { type: 'application/octet-stream' }));
+            deploymentBlobUrls.push(imageUrl);
+            part.path = imageUrl;
+          }
+          const manifestUrl = URL.createObjectURL(
+            new Blob([JSON.stringify(manifest)], { type: 'application/json' }),
+          );
+          deploymentBlobUrls.push(manifestUrl);
+          await ensureEspWebToolsLoaded();
+          createdAttempt = await api(`/api/v1/nodes/${encodeURIComponent(deviceId)}/deployment-attempts`, {
+            method: 'POST',
+            body: JSON.stringify({
+              firmware_id: firmwareId,
+              acknowledge_unverified_platform: true,
+              flasher_version: skipIdentityCheck
+                ? 'EWT 10.4.0; identity override'
+                : 'EWT 10.4.0; ID verified',
+            }),
+          });
+          currentDeploymentAttempt = createdAttempt;
+          const installer = document.createElement('esp-web-install-button');
+          installer.setAttribute('manifest', manifestUrl);
+          const launch = el('button', 'Open ESP Web Tools installer');
+          launch.type = 'button';
+          launch.addEventListener('click', () => {
+            document.getElementById('deployment-outcome-panel').hidden = false;
+            setBrowserFlashStatus('ESP Web Tools is handling serial flashing and progress. Record an outcome only after its dialog reports the result.');
+          }, { once: true });
+          installer.append(launch);
+          document.getElementById('esp-web-tools-launch').replaceChildren(installer);
+          document.getElementById('deployment-outcome-panel').hidden = true;
+          setBrowserFlashStatus(
+            skipIdentityCheck
+              ? `Deployment attempt ${createdAttempt.attempt_id} is ready. ESP Web Tools will now request the USB port and detect the chip; confirm the board is ${deviceId}.`
+              : `Deployment attempt ${createdAttempt.attempt_id} is ready. Select the same USB device in ESP Web Tools.`,
+          );
+          await refreshDeploymentAttempts();
+        } catch (error) {
+          if (!createdAttempt) {
+            for (const url of deploymentBlobUrls) URL.revokeObjectURL(url);
+            deploymentBlobUrls = [];
+          } else {
+            currentDeploymentAttempt = createdAttempt;
+            document.getElementById('deployment-outcome-panel').hidden = false;
+            await refreshDeploymentAttempts();
+          }
+          if (error.name === 'NotFoundError') {
+            setBrowserFlashStatus('No USB serial device was selected. No deployment attempt was created.');
+          } else {
+            setBrowserFlashStatus(error.message, true);
+          }
+        } finally {
+          syncBrowserFlashControls();
+        }
+      }
+
       async function promoteFirmwareCandidate(firmwareId) {
         if (!window.confirm(`Promote ${firmwareId} to registered firmware available for deployment?`)) return;
         try {
@@ -1693,6 +2066,47 @@
       });
 
       document.getElementById('refresh-firmware-catalog').addEventListener('click', refreshFirmwareCatalog);
+      document.getElementById('flash-device').addEventListener('change', () => {
+        refreshCompatibleFirmware();
+        refreshDeploymentAttempts();
+      });
+      document.getElementById('flash-firmware').addEventListener('change', syncBrowserFlashControls);
+      document.getElementById('flash-platform-ack').addEventListener('change', syncBrowserFlashControls);
+      document.getElementById('flash-identity-override').addEventListener('change', syncBrowserFlashControls);
+      document.getElementById('prepare-browser-flash').addEventListener('click', prepareBrowserFlash);
+      document.getElementById('prepare-browser-flash-override').addEventListener('click', () => {
+        prepareBrowserFlash(true);
+      });
+      document.getElementById('refresh-deployment-history').addEventListener('click', refreshDeploymentAttempts);
+      document.getElementById('record-flash-success').addEventListener('click', () => {
+        if (currentDeploymentAttempt) {
+          recordDeploymentOutcome(
+            currentDeploymentAttempt.node_id,
+            currentDeploymentAttempt.attempt_id,
+            'succeeded',
+          );
+        }
+      });
+      document.getElementById('record-flash-failure').addEventListener('click', () => {
+        if (currentDeploymentAttempt) {
+          recordDeploymentOutcome(
+            currentDeploymentAttempt.node_id,
+            currentDeploymentAttempt.attempt_id,
+            'failed',
+            document.getElementById('deployment-failure-code').value,
+          );
+        }
+      });
+      document.getElementById('record-flash-unknown').addEventListener('click', () => {
+        if (currentDeploymentAttempt) {
+          recordDeploymentOutcome(
+            currentDeploymentAttempt.node_id,
+            currentDeploymentAttempt.attempt_id,
+            'unknown',
+            'browser_interrupted',
+          );
+        }
+      });
 
       function showDashboard(role) {
         currentRole = role;
@@ -1704,6 +2118,10 @@
         document.getElementById('tab-button-firmware').hidden = !['admin', 'viewer'].includes(role);
         if (role === 'admin') {
           loadCreateOwners();
+          document.getElementById('browser-flash-panel').hidden = false;
+          refreshBrowserFlashDevices();
+        } else {
+          document.getElementById('browser-flash-panel').hidden = true;
         }
         refreshFirmwareCatalog();
         document.getElementById('tab-button-users').hidden = !['admin', 'viewer'].includes(role);
@@ -1905,6 +2323,9 @@
       });
       document.getElementById('logout').addEventListener('click', () => {
         window.clearInterval(refreshTimer);
+        for (const url of deploymentBlobUrls) URL.revokeObjectURL(url);
+        deploymentBlobUrls = [];
+        currentDeploymentAttempt = null;
         authToken.value = '';
         currentRole = '';
         document.getElementById('dashboard').hidden = true;
@@ -1915,6 +2336,14 @@
         document.getElementById('tab-button-firmware').hidden = true;
         document.getElementById('user-controls').hidden = true;
         document.getElementById('firmware-catalog-list').replaceChildren();
+        document.getElementById('esp-web-tools-launch').replaceChildren();
+        document.getElementById('browser-flash-history').replaceChildren();
+        document.getElementById('browser-flash-panel').hidden = true;
+        document.getElementById('deployment-outcome-panel').hidden = true;
+        document.getElementById('flash-device').replaceChildren(new Option('Select an active device', ''));
+        document.getElementById('flash-firmware').replaceChildren(new Option('Select a device first', ''));
+        document.getElementById('flash-platform-ack').checked = false;
+        document.getElementById('flash-identity-override').checked = false;
         const createdToken = document.getElementById('created-token');
         createdToken.hidden = true;
         createdToken.replaceChildren();

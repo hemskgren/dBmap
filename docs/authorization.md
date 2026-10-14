@@ -15,6 +15,7 @@ The Hub API authenticates the current local admin/viewer bearer tokens, then ask
 | `nodes.read_detail` | `nodes/{node_id}` | Allow | Deny |
 | `nodes.update_desired` | `nodes/{node_id}` | Allow | Deny |
 | `nodes.update_lifecycle` | `nodes/{node_id}` | Allow | Deny |
+| `nodes.update_hardware` | `nodes/{node_id}` | Allow | Deny |
 | `nodes.update_installation` | `nodes/{node_id}` | Allow | Deny |
 | `nodes.read_ownership` | `nodes/{node_id}/ownership` | Allow | Deny |
 | `nodes.update_ownership` | `nodes/{node_id}/ownership` | Allow | Deny |
@@ -30,10 +31,15 @@ The Hub API authenticates the current local admin/viewer bearer tokens, then ask
 | `firmware.catalog.upload` | `firmware_catalog` | Allow | Deny |
 | `firmware.catalog.promote` | `firmware_catalog` | Allow | Deny |
 | `firmware.catalog.delete` | `firmware_catalog` | Allow | Deny |
+| `firmware.deploy.select` | `nodes/{node_id}` | Allow | Deny |
+| `firmware.deploy.attempt.read` | `nodes/{node_id}` | Allow | Deny |
+| `firmware.deploy.attempt.start` | `nodes/{node_id}` | Allow | Deny |
+| `firmware.deploy.attempt.update` | `nodes/{node_id}` | Allow | Deny |
+| `firmware.deploy.flash.read` | `firmware_catalog` | Allow | Deny |
 
-The admin rule grants every action to an authenticated admin. A viewer can read the session, Hub status, device summaries, observations, internal user directory, group directory, and all firmware catalog entries, including unregistered candidates, but cannot read device details or change Hub state, user records, groups, or firmware catalog records. Firmware uploads, promotion, and deletion are admin-only. Authentication still happens in the API; OPA never receives the bearer token.
+The admin rule grants every action to an authenticated admin. A viewer can read the session, Hub status, device summaries, observations, internal user directory, group directory, and all firmware catalog entries, including unregistered candidates, but cannot read device details or change Hub state, user records, groups, or firmware catalog records. Firmware uploads, promotion, deletion, and device-specific firmware selection are admin-only. Authentication still happens in the API; OPA never receives the bearer token.
 
-The firmware catalog is served by the Hub API. Admins upload external firmware bundles as candidates and explicitly promote them after review; viewers can list and download all bundles, including candidates, without changing catalog state. The optional local ESP-IDF builder is not part of normal Compose startup or the current catalog workflow. Individual user sessions are not implemented, so there is no owner-scoped firmware compatibility selection or ordinary-user deployment flow.
+The firmware catalog is served by the Hub API. Admins upload external firmware bundles as candidates and explicitly promote them after review; viewers can list and download all bundles, including candidates, without changing catalog state. Admins can record a device's verified hardware revision; the admin must confirm it from the physical board or hardware documentation. Compatibility listing and selection validation require exact node type and hardware revision matches. Because the node record does not independently store a verified chip platform, the API reports that compatibility dimension as unknown and requires explicit admin acknowledgment before selection validation succeeds. Deployment attempts can be created only for a registered, compatible release after verifying its stored artifact checksum. Attempt history, progress events, terminal outcomes, and the manifest/component endpoints used by browser flashing are admin-only; retrying creates a separate attempt for the same device. The browser verifies the device ID before starting an attempt and uses locally hosted ESP Web Tools for USB access. Individual user sessions are not implemented, so ordinary-user firmware selection and deployment authorization are not available yet.
 
 ## Operating modes
 
@@ -45,7 +51,7 @@ Multi-user sign-in is not enabled yet. The user and external-identity tables are
 
 `users.user_id` is a dBmap-generated UUID and remains stable if a display name changes. `external_identities` links a user to a provider using the provider's stable subject, with a uniqueness constraint on `(provider, provider_subject)`. One internal user can have multiple identities. The schema stores no email address or provider access token. Disabling an identity changes its status and retains the identity row; it does not cascade through the internal user's data. First-time user creation, explicit linking, session handling, and account lifecycle are not implemented yet.
 
-At startup, `init_db()` calls SQLAlchemy `create_all`, so these additive tables are created in an existing database without changing existing node IDs, installations, or observations. No table migration is required for this step.
+At startup, `init_db()` calls SQLAlchemy `create_all`, so these additive user, ownership, firmware deployment-attempt, and event tables are created in an existing database without changing existing node IDs, installations, or observations. No table migration is required for these additions.
 
 The current user API is `GET/POST /api/v1/users`, `GET /api/v1/users/{user_id}`, `PUT /api/v1/users/{user_id}/status`, `POST /api/v1/users/{user_id}/identities`, and `PUT /api/v1/users/{user_id}/identities/{identity_id}/status`. Group management uses `GET/POST /api/v1/groups`, `PUT /api/v1/groups/{group_id}/members/{user_id}`, `DELETE /api/v1/groups/{group_id}/members/{user_id}`, and `PUT /api/v1/groups/{group_id}/status`. These management operations require the local admin token and OPA; viewers can read group and user directories. There is no deletion operation for users or groups. Linking requires an explicit GitHub numeric subject and never merges accounts by display name or email. This API does not authenticate GitHub users.
 

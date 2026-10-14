@@ -23,10 +23,83 @@ class CreateNodeRequest(BaseModel):
         return self
 
 
+class HardwareRevisionBody(BaseModel):
+    hardware_revision: str = Field(min_length=1, max_length=128)
+
+    @field_validator("hardware_revision")
+    @classmethod
+    def normalize_hardware_revision(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("hardware_revision must not be blank")
+        return normalized
+
+
 class CreateNodeResponse(BaseModel):
     node_id: str
     bootstrap_token: str
     provisioning_state: str
+
+
+class FirmwareSelectionBody(BaseModel):
+    firmware_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    acknowledge_unverified_platform: bool = False
+
+
+class DeploymentAttemptCreateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    firmware_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    acknowledge_unverified_platform: bool = False
+    flasher_version: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class DeploymentAttemptUpdateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["in_progress", "succeeded", "failed", "unknown"]
+    stage: Literal[
+        "connecting",
+        "erasing",
+        "writing",
+        "verifying",
+        "completed",
+        "failed",
+        "unknown",
+    ]
+    progress_percent: int | None = Field(default=None, ge=0, le=100)
+    failure_code: Literal[
+        "device_not_connected",
+        "serial_connection_lost",
+        "flash_failed",
+        "cancelled",
+        "browser_interrupted",
+        "integrity_failed",
+        "other",
+    ] | None = None
+
+    @model_validator(mode="after")
+    def validate_attempt_state(self) -> "DeploymentAttemptUpdateBody":
+        terminal_stages = {"completed", "failed", "unknown"}
+        if self.status == "in_progress":
+            if self.stage in terminal_stages or self.progress_percent is None or self.failure_code:
+                raise ValueError("in-progress updates require a non-terminal stage and progress percentage")
+            if self.progress_percent >= 100:
+                raise ValueError("in-progress deployment attempts cannot be 100 percent complete")
+        elif self.status == "succeeded":
+            if self.stage != "completed" or self.progress_percent != 100 or self.failure_code:
+                raise ValueError("successful attempts require completed stage and 100 percent progress")
+        elif self.status == "failed":
+            if self.stage != "failed" or self.failure_code is None:
+                raise ValueError("failed attempts require failed stage and a failure code")
+            if self.progress_percent == 100:
+                raise ValueError("failed attempts cannot report 100 percent completion")
+        elif self.status == "unknown":
+            if self.stage != "unknown" or self.failure_code is None:
+                raise ValueError("unknown attempts require unknown stage and a failure code")
+            if self.progress_percent == 100:
+                raise ValueError("unknown attempts cannot report 100 percent completion")
+        return self
 
 
 class ProvisionRequest(BaseModel):

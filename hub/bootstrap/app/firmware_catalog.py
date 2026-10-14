@@ -20,6 +20,18 @@ EXPECTED_COMPONENTS = {
     "partition-table.bin": "0x8000",
     "esp-output.bin": "0x10000",
 }
+ESP_WEB_TOOLS_CHIP_FAMILIES = {
+    "esp32": "ESP32",
+    "esp32c2": "ESP32-C2",
+    "esp32c3": "ESP32-C3",
+    "esp32c5": "ESP32-C5",
+    "esp32c6": "ESP32-C6",
+    "esp32c61": "ESP32-C61",
+    "esp32h2": "ESP32-H2",
+    "esp32p4": "ESP32-P4",
+    "esp32s2": "ESP32-S2",
+    "esp32s3": "ESP32-S3",
+}
 MAX_COMPONENT_BYTES = 32 * 1024 * 1024
 METADATA_FIELDS = {
     "firmware_id",
@@ -44,6 +56,22 @@ class FirmwareAlreadyExists(Exception):
 
 
 class FirmwareNotFound(Exception):
+    pass
+
+
+class FirmwareNotCompatible(Exception):
+    pass
+
+
+class FirmwareArtifactIntegrityError(Exception):
+    pass
+
+
+class FirmwarePlatformUnsupported(Exception):
+    pass
+
+
+class FirmwarePlatformUnverified(Exception):
     pass
 
 
@@ -217,6 +245,77 @@ def list_entries(db: Session, catalog_dir: Path, include_candidates: bool) -> li
     return [public_entry(entry, catalog_dir) for entry in entries]
 
 
+def list_compatible_entries(
+    db: Session,
+    catalog_dir: Path,
+    node_type: str,
+    hardware_revision: str,
+) -> list[dict]:
+    if not node_type or node_type == "unknown" or not hardware_revision or hardware_revision == "unknown":
+        return []
+    registered = list_entries(db, catalog_dir, include_candidates=False)
+    matches = [
+        entry
+        for entry in registered
+        if entry["node_type"] == node_type
+        and entry["hardware_revision"] == hardware_revision
+    ]
+    return [
+        {
+            **entry,
+            "compatibility": {
+                "node_type": "matched",
+                "hardware_revision": "matched",
+                "hardware_reference": "registered_device_record",
+                "platform": "unknown",
+            },
+            "requires_platform_review": True,
+        }
+        for entry in matches
+    ]
+
+
+def validate_selection(
+    db: Session,
+    catalog_dir: Path,
+    device_id: str,
+    firmware_id: str,
+    node_type: str,
+    hardware_revision: str,
+    acknowledge_unverified_platform: bool,
+) -> dict:
+    entry = get_entry(db, catalog_dir, firmware_id, include_candidate=False)
+    metadata = json.loads(entry.metadata_json)
+    if not node_type or node_type == "unknown" or not hardware_revision or hardware_revision == "unknown":
+        raise FirmwareNotCompatible(
+            "The registered device is missing a known node type or hardware revision."
+        )
+    if metadata["node_type"] != node_type:
+        raise FirmwareNotCompatible("Firmware node_type does not match the registered device.")
+    if metadata["hardware_revision"] != hardware_revision:
+        raise FirmwareNotCompatible(
+            "Firmware hardware_revision does not match the registered device."
+        )
+    if not acknowledge_unverified_platform:
+        raise FirmwarePlatformUnverified(
+            "The registered device has no verified chip platform; an administrator must "
+            "explicitly acknowledge this compatibility limitation."
+        )
+    return {
+        **public_entry(entry, catalog_dir),
+        "device_id": device_id,
+        "compatibility": {
+            "node_type": "matched",
+            "hardware_revision": "matched",
+            "hardware_reference": "registered_device_record",
+            "platform": "unknown",
+        },
+        "acknowledged_unverified_platform": True,
+        "selection_persisted": False,
+        "flashing_started": False,
+    }
+
+
 def get_entry(
     db: Session,
     catalog_dir: Path,
@@ -232,6 +331,89 @@ def get_entry(
     if not artifact.is_file():
         raise FirmwareNotFound
     return entry
+
+
+def verify_artifact_integrity(entry: FirmwareCatalogEntry, catalog_dir: Path) -> None:
+    artifact = catalog_dir / f"{entry.firmware_id}.zip"
+    if not artifact.is_file():
+        raise FirmwareNotFound
+    with artifact.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    if digest != entry.artifact_sha256:
+        raise FirmwareArtifactIntegrityError(
+            f"Stored firmware artifact {entry.firmware_id} failed its SHA-256 integrity check."
+        )
+
+
+def get_flash_manifest(entry: FirmwareCatalogEntry, catalog_dir: Path) -> dict:
+    metadata, manifest, _ = _read_validated_bundle(entry, catalog_dir)
+    platform_key = metadata["platform"].lower().replace("-", "")
+    chip_family = ESP_WEB_TOOLS_CHIP_FAMILIES.get(platform_key)
+    if chip_family is None:
+        raise FirmwarePlatformUnsupported(
+            f"ESP Web Tools does not support firmware platform {metadata['platform']}."
+        )
+    return {
+        "name": f"dBmap {metadata['node_type']}",
+        "version": metadata["firmware_version"],
+        "new_install_prompt_erase": True,
+        "new_install_improv_wait_time": 0,
+        "builds": [
+            {
+                "chipFamily": chip_family,
+                "parts": [
+                    {"path": component["name"], "offset": int(component["offset"], 16)}
+                    for component in manifest["flash_components"]
+                ],
+            }
+        ],
+    }
+
+
+def get_flash_image(
+    entry: FirmwareCatalogEntry,
+    catalog_dir: Path,
+    component_name: str,
+) -> tuple[bytes, str]:
+    if component_name not in EXPECTED_COMPONENTS:
+        raise FirmwareNotFound
+    _, manifest, images = _read_validated_bundle(entry, catalog_dir)
+    component = next(
+        item for item in manifest["flash_components"] if item["name"] == component_name
+    )
+    return images[component_name], component["sha256"]
+
+
+def _read_validated_bundle(
+    entry: FirmwareCatalogEntry,
+    catalog_dir: Path,
+) -> tuple[dict, dict, dict[str, bytes]]:
+    artifact = catalog_dir / f"{entry.firmware_id}.zip"
+    if not artifact.is_file():
+        raise FirmwareNotFound
+    if artifact.stat().st_size > MAX_BUNDLE_BYTES:
+        raise FirmwareArtifactIntegrityError(
+            f"Stored firmware artifact {entry.firmware_id} exceeds the maximum bundle size."
+        )
+    bundle = artifact.read_bytes()
+    try:
+        metadata, digest = validate_upload(
+            entry.firmware_id,
+            bundle,
+            entry.metadata_json.encode("utf-8"),
+        )
+    except InvalidFirmwareBundle as exc:
+        raise FirmwareArtifactIntegrityError(
+            f"Stored firmware artifact {entry.firmware_id} failed validation."
+        ) from exc
+    if digest != entry.artifact_sha256:
+        raise FirmwareArtifactIntegrityError(
+            f"Stored firmware artifact {entry.firmware_id} does not match its catalog checksum."
+        )
+    with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        images = {name: archive.read(name) for name in EXPECTED_COMPONENTS}
+    return metadata, manifest, images
 
 
 def promote_entry(db: Session, catalog_dir: Path, firmware_id: str) -> dict:

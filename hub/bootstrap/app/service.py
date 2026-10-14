@@ -206,6 +206,19 @@ def set_node_lifecycle(
     return node_view(db, node)
 
 
+def set_hardware_revision(
+    db: Session,
+    node_id: str,
+    hardware_revision: str,
+) -> NodeView:
+    node = db.get(Node, node_id.upper())
+    if node is None:
+        raise KeyError(node_id)
+    node.hardware_revision = hardware_revision
+    db.commit()
+    return node_view(db, node)
+
+
 def set_installation(db: Session, node_id: str, body: InstallationMetadataBody) -> NodeView:
     node = db.get(Node, node_id.upper())
     if node is None:

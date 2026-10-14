@@ -1,0 +1,9 @@
+ESP Web Tools browser assets
+
+Package: esp-web-tools 10.4.0
+Source: https://github.com/esphome/esp-web-tools
+Package: https://registry.npmjs.org/esp-web-tools/-/esp-web-tools-10.4.0.tgz
+License: Apache-2.0 (see LICENSE)
+
+The archive SHA-512 integrity was verified before extracting dist/web:
+sha512-3pwkeFFm5Fj7UQo8SJNYK5RXrtNCpq6X9QoI6bMT4GBZWgrJqjn0YvM9ihG74BtMoSFYXfmDtkehuxe50PTMPQ==

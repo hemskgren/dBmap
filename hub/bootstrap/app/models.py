@@ -166,6 +166,65 @@ class FirmwareCatalogEntry(Base):
     registered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class DeploymentAttempt(Base):
+    __tablename__ = "deployment_attempts"
+    __table_args__ = (
+        CheckConstraint("status IN ('in_progress', 'succeeded', 'failed', 'unknown')"),
+        CheckConstraint(
+            "current_stage IN "
+            "('connecting', 'erasing', 'writing', 'verifying', 'completed', 'failed', 'unknown')"
+        ),
+        CheckConstraint("progress_percent >= 0 AND progress_percent <= 100"),
+        Index("ix_deployment_attempts_node_started", "node_id", "started_at"),
+        Index(
+            "uq_deployment_attempts_node_active",
+            "node_id",
+            unique=True,
+            sqlite_where=text("status = 'in_progress'"),
+            postgresql_where=text("status = 'in_progress'"),
+        ),
+    )
+
+    attempt_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    node_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("nodes.node_id", ondelete="RESTRICT")
+    )
+    firmware_id: Mapped[str] = mapped_column(String(64))
+    firmware_version: Mapped[str] = mapped_column(String(64))
+    artifact_sha256: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="in_progress")
+    current_stage: Mapped[str] = mapped_column(String(16), default="connecting")
+    progress_percent: Mapped[int] = mapped_column(Integer, default=0)
+    failure_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    initiated_by: Mapped[str] = mapped_column(String(64))
+    flasher_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class DeploymentAttemptEvent(Base):
+    __tablename__ = "deployment_attempt_events"
+    __table_args__ = (
+        CheckConstraint("status IN ('in_progress', 'succeeded', 'failed', 'unknown')"),
+        CheckConstraint(
+            "stage IN "
+            "('connecting', 'erasing', 'writing', 'verifying', 'completed', 'failed', 'unknown')"
+        ),
+        CheckConstraint("progress_percent >= 0 AND progress_percent <= 100"),
+        Index("ix_deployment_attempt_events_attempt_created", "attempt_id", "created_at"),
+    )
+
+    event_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    attempt_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("deployment_attempts.attempt_id", ondelete="CASCADE")
+    )
+    status: Mapped[str] = mapped_column(String(16))
+    stage: Mapped[str] = mapped_column(String(16))
+    progress_percent: Mapped[int] = mapped_column(Integer)
+    failure_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class InstallationMetadata(Base):
     __tablename__ = "installation_metadata"
 
