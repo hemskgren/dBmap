@@ -1,4 +1,6 @@
-from pydantic import Field
+from urllib.parse import urlsplit
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +27,18 @@ class Settings(BaseSettings):
     advertised_mqtt_host: str = "hub.local"
     advertised_mqtt_port: int = 8883
     advertised_mqtt_use_tls: bool = True
+    local_mqtt_host: str = "hub.local"
+    local_mqtt_port: int = 8883
+    public_hub_url: str = ""
+
+    @field_validator("public_hub_url")
+    @classmethod
+    def validate_public_hub_url(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        parsed = urlsplit(value)
+        if value and (parsed.scheme != "https" or not parsed.hostname or parsed.query or parsed.fragment):
+            raise ValueError("public_hub_url must be an HTTPS base URL without query or fragment")
+        return value
 
     site_id: str = Field(
         default="local-01",

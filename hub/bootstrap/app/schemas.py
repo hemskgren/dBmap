@@ -8,6 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 class CreateNodeRequest(BaseModel):
     node_type: Literal["ear", "output"] = "output"
     hardware_revision: str = "unknown"
+    firmware_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
     desired_firmware_version: str = ""
     desired_config_version: int = 0
     simulated: bool = False
@@ -114,6 +120,7 @@ class ProvisionRequest(BaseModel):
     bootstrap_token: str
     hardware_revision: str = "unknown"
     firmware_version: str = "0.0.0"
+    mqtt_profile: Literal["local", "external"] | None = None
 
 
 class MqttEndpoint(BaseModel):

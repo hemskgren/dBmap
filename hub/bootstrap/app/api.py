@@ -685,6 +685,14 @@ def get_hub_status(db: Session = Depends(get_db)) -> dict:
     return {
         "mode": "Local Hub",
         "hub_id": settings.site_id,
+        "addresses": {
+            "external_hub_url": settings.public_hub_url.strip().rstrip("/") or None,
+            "local_mqtt": {"host": settings.local_mqtt_host, "port": settings.local_mqtt_port, "use_tls": True},
+            "external_mqtt": (
+                {"host": settings.advertised_mqtt_host, "port": settings.advertised_mqtt_port, "use_tls": settings.advertised_mqtt_use_tls}
+                if settings.public_hub_url.strip() else None
+            ),
+        },
         "components": [
             {"name": "Hub API", "status": "online"},
             {"name": "Database", "status": "online"},
@@ -774,7 +782,33 @@ def create_node(
     db: Session = Depends(get_db),
 ) -> CreateNodeResponse:
     try:
+        if body.firmware_id:
+            entry = firmware_catalog.get_entry(
+                db,
+                FIRMWARE_CATALOG_DIR,
+                body.firmware_id,
+                include_candidate=False,
+            )
+            metadata = firmware_catalog.public_entry(entry, FIRMWARE_CATALOG_DIR)
+            if metadata["status"] != "registered":
+                raise HTTPException(status_code=422, detail="Select an approved firmware release.")
+            if metadata["node_type"] != body.node_type:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Firmware is not supported for the selected device type.",
+                )
+            if (
+                metadata["hardware_revision"] != "generic"
+                and metadata["hardware_revision"] != body.hardware_revision
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Firmware is not supported for the selected hardware revision.",
+                )
+            body.desired_firmware_version = metadata["firmware_version"]
         return service.create_node(db, body, str(idempotency_key) if idempotency_key else None)
+    except firmware_catalog.FirmwareNotFound:
+        raise HTTPException(status_code=422, detail="Selected firmware is no longer available or approved.") from None
     except ownership_service.OwnershipTargetNotFound:
         db.rollback()
         raise HTTPException(status_code=404, detail="unknown or disabled owner") from None

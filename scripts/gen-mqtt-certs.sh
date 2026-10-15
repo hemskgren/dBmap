@@ -9,6 +9,8 @@ if [[ "${1:-}" == "--rotate-ca" ]]; then
 fi
 OUT="${1:-"$ROOT/mqtt/certs"}"
 LAN_IP="${DBMAP_LAN_IP:-}"
+PUBLIC_HUB_HOST="${DBMAP_PUBLIC_HUB_HOST:-}"
+EXTERNAL_MQTT_HOST="${DBMAP_ADVERTISED_MQTT_HOST:-hub.local}"
 if [[ -z "$LAN_IP" ]]; then
   echo "Set DBMAP_LAN_IP (the hub's LAN IPv4 address) before generating certificates." >&2
   exit 1
@@ -41,11 +43,24 @@ if [[ ! -e "$OUT/ca.crt" ]]; then
     -addext "keyUsage=critical,keyCertSign,cRLSign"
 fi
 
+SERVER_SAN="DNS:hub.local,DNS:mosquitto,DNS:localhost,IP:127.0.0.1,IP:${LAN_IP}"
+for host in "$PUBLIC_HUB_HOST" "$EXTERNAL_MQTT_HOST"; do
+  [[ -z "$host" || "$host" == "hub.local" ]] && continue
+  if [[ "$host" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    SERVER_SAN+=",IP:${host}"
+  elif [[ "$host" =~ ^[A-Za-z0-9.-]+$ ]]; then
+    SERVER_SAN+=",DNS:${host}"
+  else
+    echo "External Hub and MQTT hosts must be DNS names or IPv4 addresses." >&2
+    exit 1
+  fi
+done
+
 openssl req -newkey rsa:2048 -nodes \
   -keyout "$OUT/server.key" \
   -out "$OUT/server.csr" \
   -subj "/CN=${DBMAP_MQTT_CN:-hub.local}" \
-  -addext "subjectAltName=DNS:hub.local,DNS:mosquitto,DNS:localhost,IP:127.0.0.1,IP:${LAN_IP}" \
+  -addext "subjectAltName=${SERVER_SAN}" \
   -addext "basicConstraints=critical,CA:FALSE" \
   -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
   -addext "extendedKeyUsage=serverAuth"

@@ -271,6 +271,7 @@ class DesiredState(Base):
     __tablename__ = "desired_state"
 
     node_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    firmware_id: Mapped[str] = mapped_column(String(64), default="")
     firmware_version: Mapped[str] = mapped_column(String(32), default="")
     config_version: Mapped[int] = mapped_column(Integer, default=0)
     calibration_version: Mapped[int] = mapped_column(Integer, default=0)

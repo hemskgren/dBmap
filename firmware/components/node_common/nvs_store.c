@@ -38,6 +38,7 @@ esp_err_t dbmap_nvs_load(dbmap_effective_t *cfg)
         get_str(h, "ssid", cfg->network.ssid, sizeof(cfg->network.ssid));
         get_str(h, "wifi_pw", cfg->network.password, sizeof(cfg->network.password));
         get_str(h, "hub_http", cfg->network.hub_http_url, sizeof(cfg->network.hub_http_url));
+        get_str(h, "mqtt_profile", cfg->network.mqtt_profile, sizeof(cfg->network.mqtt_profile));
         get_str(h, "mqtt_host", cfg->network.mqtt_host, sizeof(cfg->network.mqtt_host));
         get_str(h, "mqtt_user", cfg->network.mqtt_username, sizeof(cfg->network.mqtt_username));
         get_str(h, "mqtt_pw", cfg->network.mqtt_password, sizeof(cfg->network.mqtt_password));
@@ -85,6 +86,9 @@ esp_err_t dbmap_nvs_save_identity_network(const dbmap_effective_t *cfg)
     err = nvs_set_str(h, "ssid", cfg->network.ssid);
     if (err == ESP_OK) err = nvs_set_str(h, "wifi_pw", cfg->network.password);
     if (err == ESP_OK) err = nvs_set_str(h, "hub_http", cfg->network.hub_http_url);
+
+    if (err == ESP_OK) err = nvs_set_str(h, "mqtt_profile", cfg->network.mqtt_profile);
+
     if (err == ESP_OK) err = nvs_set_str(h, "mqtt_host", cfg->network.mqtt_host);
     if (err == ESP_OK) err = nvs_set_u16(h, "mqtt_port", cfg->network.mqtt_port);
     if (err == ESP_OK) err = nvs_set_u8(h, "mqtt_tls", cfg->network.mqtt_use_tls ? 1 : 0);

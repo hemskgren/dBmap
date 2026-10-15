@@ -144,10 +144,14 @@ esp_err_t dbmap_serial_config_wait(dbmap_effective_t *cfg, int timeout_seconds)
                                       sizeof(candidate.network.password), true) &&
                      copy_json_string(configuration, "hub_url", candidate.network.hub_http_url,
                                       sizeof(candidate.network.hub_http_url), false) &&
+                     copy_json_string(configuration, "mqtt_profile", candidate.network.mqtt_profile,
+                                      sizeof(candidate.network.mqtt_profile), false) &&
                      copy_json_string(configuration, "bootstrap_token", candidate.bootstrap_token,
                                       sizeof(candidate.bootstrap_token), false) &&
                      strncmp(candidate.network.hub_http_url, "https://", 8) == 0 &&
                      candidate.network.hub_http_url[8] != '\0';
+        valid = valid && (strcmp(candidate.network.mqtt_profile, "local") == 0 ||
+                          strcmp(candidate.network.mqtt_profile, "external") == 0);
         cJSON_Delete(request);
         if (!valid) {
             result(request_id, "error", "invalid_configuration");
