@@ -18,6 +18,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _migrate_bootstrap_token_active_index()
     _migrate_device_ownership_to_user_or_group()
+    _migrate_desired_state_firmware_id()
     node_columns = {column["name"] for column in inspect(engine).get_columns("nodes")}
     if "lifecycle_state" not in node_columns:
         with engine.begin() as connection:
@@ -31,6 +32,15 @@ def init_db() -> None:
     if "mqtt_password_plain_once" in columns:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE node_credentials DROP COLUMN mqtt_password_plain_once"))
+
+
+def _migrate_desired_state_firmware_id() -> None:
+    columns = {column["name"] for column in inspect(engine).get_columns("desired_state")}
+    if "firmware_id" not in columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE desired_state ADD COLUMN firmware_id VARCHAR(64) NOT NULL DEFAULT ''")
+            )
 
 
 def _migrate_bootstrap_token_active_index() -> None:

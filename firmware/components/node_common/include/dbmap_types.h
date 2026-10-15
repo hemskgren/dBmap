@@ -19,6 +19,7 @@ typedef struct {
     char ssid[33];
     char password[65];
     char hub_http_url[DBMAP_HOST_MAX];
+    char mqtt_profile[16];
     char mqtt_host[DBMAP_HOST_MAX];
     uint16_t mqtt_port;
     bool mqtt_use_tls;

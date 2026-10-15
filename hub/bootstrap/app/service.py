@@ -87,6 +87,7 @@ def create_node(
     db.add(
         DesiredState(
             node_id=node_id,
+            firmware_id=body.firmware_id or "",
             firmware_version=body.desired_firmware_version,
             config_version=body.desired_config_version,
         )
@@ -136,6 +137,8 @@ def rotate_pending_bootstrap_token(db: Session, node_id: str) -> str:
 
 
 def provision(db: Session, body: ProvisionRequest) -> ProvisionResponse:
+    if body.mqtt_profile == "external" and not settings.public_hub_url.strip():
+        raise ValueError("external call-home route is not configured")
     row = db.get(BootstrapToken, token_hash(body.bootstrap_token))
     if row is None or row.consumed_at is not None:
         raise ValueError("invalid or consumed bootstrap token")
@@ -176,9 +179,9 @@ def provision(db: Session, body: ProvisionRequest) -> ProvisionResponse:
         node_id=node.node_id,
         node_type=node.node_type,
         mqtt=MqttEndpoint(
-            host=settings.advertised_mqtt_host,
-            port=settings.advertised_mqtt_port,
-            use_tls=settings.advertised_mqtt_use_tls,
+            host=(settings.local_mqtt_host if body.mqtt_profile == "local" else settings.advertised_mqtt_host),
+            port=(settings.local_mqtt_port if body.mqtt_profile == "local" else settings.advertised_mqtt_port),
+            use_tls=(settings.advertised_mqtt_use_tls if body.mqtt_profile is None else True),
             username=username,
             password=password,
         ),
@@ -365,6 +368,7 @@ def node_view(db: Session, node: Node) -> NodeView:
     installation = db.get(InstallationMetadata, node.node_id)
     owner = get_current_owner(db, node.node_id)
     desired_dict = {
+        "firmware_id": desired.firmware_id if desired else "",
         "firmware_version": desired.firmware_version if desired else "",
         "config_version": desired.config_version if desired else 0,
         "calibration_version": desired.calibration_version if desired else 0,

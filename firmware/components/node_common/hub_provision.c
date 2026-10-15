@@ -40,6 +40,8 @@ esp_err_t dbmap_hub_provision(dbmap_effective_t *cfg)
         return ESP_OK;
     }
 
+    ESP_LOGI(TAG, "using %s call-home route", cfg->network.mqtt_profile[0] ? cfg->network.mqtt_profile : "legacy");
+
     if (strncmp(cfg->network.hub_http_url, "https://", 8) != 0) {
         ESP_LOGE(TAG, "bootstrap URL must use HTTPS");
         return ESP_ERR_INVALID_ARG;
@@ -52,6 +54,9 @@ esp_err_t dbmap_hub_provision(dbmap_effective_t *cfg)
     cJSON_AddStringToObject(req, "bootstrap_token", cfg->bootstrap_token);
     cJSON_AddStringToObject(req, "hardware_revision", cfg->identity.hardware_revision);
     cJSON_AddStringToObject(req, "firmware_version", CONFIG_DBMAP_FIRMWARE_VERSION);
+    if (cfg->network.mqtt_profile[0] != '\0') {
+        cJSON_AddStringToObject(req, "mqtt_profile", cfg->network.mqtt_profile);
+    }
     char *body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
 
