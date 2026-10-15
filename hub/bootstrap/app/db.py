@@ -16,6 +16,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
+    _migrate_bootstrap_token_active_index()
     _migrate_device_ownership_to_user_or_group()
     node_columns = {column["name"] for column in inspect(engine).get_columns("nodes")}
     if "lifecycle_state" not in node_columns:
@@ -30,6 +31,14 @@ def init_db() -> None:
     if "mqtt_password_plain_once" in columns:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE node_credentials DROP COLUMN mqtt_password_plain_once"))
+
+
+def _migrate_bootstrap_token_active_index() -> None:
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_bootstrap_tokens_one_unconsumed_per_node "
+            "ON bootstrap_tokens (node_id) WHERE consumed_at IS NULL"
+        )
 
 
 def _migrate_device_ownership_to_user_or_group() -> None:

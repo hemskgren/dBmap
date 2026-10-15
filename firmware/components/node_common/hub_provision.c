@@ -88,7 +88,7 @@ esp_err_t dbmap_hub_provision(dbmap_effective_t *cfg)
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
     if (status != 200) {
-        ESP_LOGE(TAG, "provision HTTP %d: %s", status, resp);
+        ESP_LOGE(TAG, "provision request rejected (HTTP %d)", status);
         return ESP_FAIL;
     }
 
@@ -146,7 +146,13 @@ esp_err_t dbmap_hub_provision(dbmap_effective_t *cfg)
     }
     cJSON_Delete(json);
     cfg->provisioned = true;
-    dbmap_nvs_save_identity_network(cfg);
+    cfg->bootstrap_token[0] = '\0';
+    esp_err_t save_err = dbmap_nvs_save_identity_network(cfg);
+    if (save_err != ESP_OK) {
+        cfg->provisioned = false;
+        ESP_LOGE(TAG, "Hub provisioning succeeded but device configuration could not be saved");
+        return save_err;
+    }
     ESP_LOGI(TAG, "provisioned as %s", cfg->identity.node_id);
     return ESP_OK;
 }

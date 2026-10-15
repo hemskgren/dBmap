@@ -5,7 +5,7 @@ This guide separates two different tasks:
 1. Build and flash firmware directly to a device for a one-off local test.
 2. Upload a reusable firmware ZIP to the Hub catalog for review and later use.
 
-These are not currently one continuous browser deployment flow. The Firmware tab manages ZIP files in the catalog; it does not build or flash firmware. Browser-based flashing and post-flash provisioning are not implemented. For setting up the Hub itself, first follow [Local deployment](./local-deployment.md).
+The Hub supports two device paths: a manual per-device ESP-IDF build, and browser flashing of a previously built, registered catalog image. The browser flow does not build firmware or inject Wi-Fi credentials. For setting up the Hub itself, first follow [Local deployment](./local-deployment.md).
 
 ## How often do I do each part?
 
@@ -21,7 +21,7 @@ This guide applies to the first device and later devices. Reuse the same registe
 | Enter Wi-Fi credentials and that device's bootstrap token in `menuconfig`, then build and flash using the manual flow in section 5 | For every device in this current manual workflow, because those device-specific values are compiled into the image. |
 | Add the Linux user to `dialout` | Once per Linux user/computer, if needed for serial access. |
 
-The reusable catalog image and the manual per-device image are intentionally different: the catalog image should not contain a device's Wi-Fi password or bootstrap token; the current manual test does. The catalog can hold a single firmware release for device 1 through device 100, but this release does not yet implement browser flashing or compatibility-based deployment.
+The reusable catalog image and the manual per-device image are intentionally different: the catalog image should not contain a device's Wi-Fi password or bootstrap token; the current manual test does. A registered release can be reused for compatible devices, but the current browser flow does not provision Wi-Fi or bootstrap credentials.
 
 ## Contents
 
@@ -39,7 +39,8 @@ The reusable catalog image and the manual per-device image are intentionally dif
   - [5.1. Install ESP-IDF](#51-install-esp-idf)
   - [5.2. Configure and build for this device](#52-configure-and-build-for-this-device)
   - [5.3. Flash and verify](#53-flash-and-verify)
-- [6. Current limits and future deployment work](#6-current-limits-and-future-deployment-work)
+- [6. Browser flash a registered release](#6-browser-flash-a-registered-release)
+- [7. Current limits and future deployment work](#7-current-limits-and-future-deployment-work)
 
 ## 1. Check prerequisites
 
@@ -60,7 +61,21 @@ Choose the path that matches what you want to do:
 | Test firmware directly on a connected device | `idf.py build` creates separate `.bin` files under `firmware/esp-output/build/` | The later `idf.py flash` command writes those files to the device. It does **not** create a ZIP or add anything to the catalog. |
 | Add reusable firmware to the Hub catalog | A validated `<firmware_id>.zip` plus `<firmware_id>.json` sidecar | Uploads the pair as an unregistered candidate. An admin must review and promote it before it is registered. Viewers can see and download candidates but cannot change them. This does **not** flash a device. |
 
-The manual ESP-IDF build outputs separate components, including `build/bootloader/bootloader.bin`, `build/partition_table/partition-table.bin`, and `build/esp-output.bin`. Those raw build files are not accepted by the catalog uploader. The current catalog validator supports this ESP-Output layout: exactly those three components plus `manifest.json`, with the expected flash offsets, component hashes, and `nvs_preserved: true`.
+The manual ESP-IDF build outputs separate components, including `build/bootloader/bootloader.bin`, `build/partition_table/partition-table.bin`, and `build/esp-output.bin`. Those raw build files are not accepted by the catalog uploader. The current Output target packages those three components plus `manifest.json`; each target defines its flash component map, and the builder and Hub catalog validate the component list, offsets, hashes, and `nvs_preserved: true` against the target's registered layout.
+
+### 2.1. Build a reusable image from the Firmware tab
+
+The local builder is optional and currently supports the `output-esp32` target (ESP32, generic hardware profile) with the pinned ESP-IDF v5.4.4 toolchain. The target list is data-driven; each target supplies its own project, chip, node type, hardware profile, toolchain, and flash component map. A future target such as `ear-esp32-s3` can be added with its own project and component map in both the builder and Hub target registries. The builder clears Wi-Fi and bootstrap-token settings before compilation, so the artifact contains no per-device credentials. A generic hardware profile can match a device whose board revision is unknown, while board-specific images can continue to require an exact revision. Build a release once, upload and approve it once, then reuse that catalog release across compatible devices; do not build once per device. It does not flash or configure a device. The browser controls and downloads artifacts; compilation runs in the local `firmware-builder` container.
+
+Start the builder profile and recreate Nginx to attach it to the private builder network:
+
+```bash
+docker compose --profile firmware-build up -d firmware-builder nginx
+```
+
+Sign in to the Hub with the local admin token and open **Firmware → Build reusable firmware**. Select the supported target and start the build. The panel reports the builder's persisted stage and result. Each build log is collapsed by default; expand it to load the full output, including successful builds. While a build is running, use **Refresh log** to load newer output. Logs are retained privately with the build and deleted when its artifact is deleted. Builds started before full-log support do not have a retained full log. Successful builds offer **Download firmware ZIP** and **Download matching metadata JSON**; filenames share the ID format `dbmap-output-esp32-<version>-<8 SHA-256 hex characters>`, where the suffix is derived from the exact ZIP artifact. The JSON sidecar uses the same ID and contains the ZIP checksum and build metadata. Select both files in the catalog upload form. Failed builds can be removed from history. Build artifacts remain in the `firmware-artifacts` Docker volume until deleted. The same build controls are unavailable to viewers, and the builder independently checks the bearer token.
+
+Upload the matching pair as an unregistered firmware candidate, then review and promote it before browser flashing. The current image is for the Output ESP32 target only; other board families are not supported by this builder path.
 
 The retained `firmware-builder` can produce a ZIP named `firmware.zip` at `/artifacts/<build-id>/firmware.zip` inside its Docker volume (`firmware-artifacts`). That file is inside Docker storage, not automatically in the repository or on your computer. `<build-id>` is generated for each build; do not type the placeholder literally. First list successful builds with an artifact in the persistent volume:
 
@@ -142,7 +157,7 @@ uv run python scripts/hub_firmware.py list
 
 The uploaded item is an **unregistered candidate**, not yet an available catalog image. In the Firmware tab, inspect its target and metadata. Promote it only after verifying it is the expected build. Admins can see candidates and manage entries; viewers can see and download every entry, including candidates, without changing catalog state.
 
-This upload and promotion is done once for that firmware ZIP, not once per device. The current catalog does not filter firmware by device compatibility. It is an admin-managed store, not yet a regular-user deployment selector.
+This upload and promotion is done once for that firmware ZIP, not once per device. Viewers can see candidates, but only registered releases are considered for normal compatibility selection. Administrators can also select an exact-compatible candidate in the Browser flashing panel to test it before promotion; it is clearly marked and requires explicit confirmation. Testing does not promote the candidate. A registered release can be returned to candidate status from its catalog row if a problem is found; the image and deployment history remain, and the action is blocked while a deployment attempt is active.
 
 ## 4. Register the physical device
 
@@ -161,7 +176,7 @@ set +a
 export CURL_CA_BUNDLE=mqtt/certs/ca.crt
 curl -sS -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"node_type":"output","hardware_revision":"OUTPUT-DEV-V1"}' \
+  -d '{"node_type":"output"}' \
   "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes"
 ```
 
@@ -169,15 +184,34 @@ The API response contains the new node ID and bootstrap token. The web registrat
 
 ### 4.2. Save the bootstrap token
 
-The Hub stores only a hash of the token and cannot show it again. Save it immediately in a private password manager or other protected store. Do not put it in chat, source control, or logs. Do not reuse one device's token for another device.
+The Hub stores only a hash of the token and cannot show it again. Save it immediately in a private password manager or other protected store. Do not put it in chat, source control, or logs. Do not reuse one device's token for another device. An administrator can issue a replacement for a node that is still `pending` from its Devices detail view; this invalidates any earlier unused token, and the replacement is shown only once in the current page.
 
 ### 4.3. If the token is lost or the device is erased
 
-A bootstrap token cannot be recovered or reissued for its existing node. If a pending device's token is lost, or a provisioned board is fully erased, create a replacement node and save its new token before provisioning it again.
+If a pending device's token is lost, an administrator can issue a replacement from the node's Devices detail view. The previous unused token is invalidated immediately. A token cannot be rotated after the node has been provisioned; this prevents an already consumed token from creating another provisioning session. A fully erased, already provisioned board needs a separate recovery procedure; do not create a duplicate node as a workaround.
 
 If the old device may still be operating, deactivate its Hub node before relying on a replacement. Deactivation suspends MQTT access while retaining its identity, observations, and history. See [Administer Hub nodes](./local-deployment.md#administer-hub-nodes).
 
 If the device still has its NVS identity and credentials, reflashing without erasing NVS should preserve the same Hub node; a new registration is not needed. `erase-flash` clears that local state.
+
+### 4.4. Check firmware compatibility for a registered device
+
+The Hub provides admin-only compatibility and selection-validation endpoints:
+
+- `GET /api/v1/nodes/{node_id}/compatible-firmware` lists registered releases with a matching node type and either a generic hardware profile or an exact hardware revision. Candidates are excluded.
+- `POST /api/v1/nodes/{node_id}/firmware-selection` validates a selected registered release again on the server. This does not start flashing or save deployment state.
+
+The node record does not independently store a verified ESP chip platform. The API compares node type and hardware profile with the registered device record (not a live USB reading), and marks platform compatibility as `unknown`; an administrator must explicitly set `acknowledge_unverified_platform` to `true` in the selection-validation request. This is a documented acceptance of unverified chip compatibility, not proof that the connected chip matches. A release marked `generic` can be selected when the node's board revision is unknown; board-specific releases still require the recorded revision to match exactly. Viewer tokens cannot change the device record or access these device-specific endpoints.
+
+### 4.5. Record deployment attempts
+
+The Hub now records admin-started attempts against an existing node and registered firmware release:
+
+- `POST /api/v1/nodes/{node_id}/deployment-attempts` starts an attempt only after the server rechecks release compatibility, requires explicit acknowledgment of the unverified platform, and verifies the stored ZIP checksum. Include the selected `firmware_id`, `acknowledge_unverified_platform: true`, and optionally the browser flasher version.
+- `GET /api/v1/nodes/{node_id}/deployment-attempts` lists the device's recent attempts; `GET /api/v1/nodes/{node_id}/deployment-attempts/{attempt_id}` returns one attempt and its persisted progress events.
+- `PATCH /api/v1/nodes/{node_id}/deployment-attempts/{attempt_id}` records an in-progress stage (`connecting`, `erasing`, `writing`, or `verifying`) and monotonically increasing percentage, or a terminal outcome (`succeeded`, `failed`, or `unknown`). Terminal failure codes are `device_not_connected`, `serial_connection_lost`, `flash_failed`, `cancelled`, `browser_interrupted`, `integrity_failed`, and `other`. The API rejects free-text diagnostics so credentials and raw serial logs are not stored.
+
+Only one attempt can be in progress for a node. After a failed or unknown outcome, retry by starting another attempt for the same node; registration and ownership remain unchanged. A terminal result cannot be overwritten. If the browser disappears before it can report an outcome, the attempt remains `in_progress` until an administrator records `unknown`; the server does not yet infer a result from a lost browser connection. The attempt API is an audit/state layer only: it does not connect to USB, flash firmware, or independently prove that the browser's reported result is true. Web flashing and reporting real progress are still to be implemented. Viewer tokens cannot read or change attempts, and regular-user deployment authorization remains unavailable until ordinary-user sessions exist.
 
 ## 5. Manually build, flash, and verify a one-off device
 
@@ -187,7 +221,7 @@ ESPConnect is a separate power-user tool at `https://hub.local:${DBMAP_HTTPS_POR
 
 ### 5.1. Install ESP-IDF
 
-`idf.py` comes from Espressif's ESP-IDF toolchain; it is not a Python project dependency. Install the Linux prerequisites and ESP-IDF v5.4.2 once per build computer. You do not need to repeat this setup for each device:
+`idf.py` comes from Espressif's ESP-IDF toolchain; it is not a Python project dependency. Install the Linux prerequisites and ESP-IDF v5.4.4 once per build computer. You do not need to repeat this setup for each device:
 
 ```bash
 sudo apt-get update
@@ -195,7 +229,7 @@ sudo apt-get install -y git wget flex bison gperf python3 python3-pip python3-ve
   cmake ninja-build ccache libffi-dev libssl-dev dfu-util libusb-1.0-0
 
 mkdir -p ~/esp
-git clone --recursive --branch v5.4.2 \
+git clone --recursive --branch v5.4.4 \
   https://github.com/espressif/esp-idf.git ~/esp/esp-idf
 cd ~/esp/esp-idf
 ./install.sh esp32
@@ -231,7 +265,7 @@ In `idf.py menuconfig`, open **dBmap node** and set:
 - **Wi-Fi SSID** and **Wi-Fi password** for the network the device will join.
 - **Hub bootstrap base URL** to `https://<mini-PC-LAN-IP>:8443`, replacing the placeholder with the Hub's actual numeric LAN IP and using the configured HTTPS port if it differs. Do not use `localhost`; that would refer to the device itself.
 - **One-time bootstrap token** to the token saved in section 4.
-- **Hardware revision** to `OUTPUT-DEV-V1` for this ESP32-WROOM-32 test.
+- Leave **Hardware compatibility profile** at `generic` for this reusable ESP32 test image. Use a specific profile only when the board design has a verified revision that requires a distinct image.
 
 The web registration form's Wi-Fi fields do not get sent to the Hub or injected into the firmware. Enter them here for this manual test. Never commit the generated `sdkconfig` or share the built firmware while it contains credentials.
 
@@ -268,8 +302,22 @@ curl -sS -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" \
   "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes"
 ```
 
-## 6. Current limits and future deployment work
+## 6. Browser flash a registered release
 
-The Devices tab currently supports local-admin USB identity inspection and node registration. The Firmware tab supports upload, review, promotion, listing, and download of catalog ZIPs. These are separate workflows: catalog upload does not flash, and the manual `idf.py` flow does not upload to the catalog.
+Browser flashing is available to local administrators from the Firmware tab. It uses the locally hosted ESP Web Tools 10.4.0 installer; it does not send the Hub access token to a third-party flasher service.
 
-Browser flashing, secure device-specific post-flash provisioning, end-to-end deployment verification, and regular-user compatibility-filtered firmware selection are not implemented yet. The optional builder does not inject Wi-Fi or bootstrap credentials into reusable artifacts. For the planned implementation phases, see [Codex implementation instruction: Steps 4–6](./codex-device-deployment-steps-4-6.md).
+1. To deploy a release for reuse, make sure it is promoted to **registered** status. An admin may instead select a marked **candidate** for pre-promotion hardware verification. Candidate flashing is limited to the administrator panel, requires a confirmation, and leaves the catalog status unchanged. A generic-profile release can be selected when a device's board revision is `unknown`; board-specific releases require a verified exact revision. Use a release intended for the device's node type and ESP chip family.
+2. Open **Firmware** and select the active Hub device and compatible firmware release. The Hub cannot independently verify the physical chip platform, so confirm the board's ESP32 family and acknowledge the limitation.
+3. Prefer **Verify USB identity and prepare flash**: select the board's serial port and let the Hub check whether it reports a matching `DBMAP_DEVICE_ID`. This check may require the app firmware to be running and is separate from ESP Web Tools' bootloader connection.
+4. If the Hub cannot read the ID, an administrator can check the explicit override confirmation and choose **Continue without ID verification**. This skips only the dBmap node-ID check; it still validates the registered firmware and image hashes. The administrator must physically confirm the board is the selected Hub device. ESP Web Tools detects chip family and MAC address, not the dBmap node ID, so this override is less certain and is recorded in the attempt's flasher-version field.
+5. Click **Open ESP Web Tools installer** and select the board's serial port in the ESP Web Tools chooser. Its dialog owns the serial connection and reports its own connection and flash progress.
+6. Do **not** select erase-data in the ESP Web Tools prompt. Erasing clears NVS, including the dBmap identity and configuration. If the browser is interrupted or the outcome is unclear, choose **Outcome unknown**. The saved attempt history also lets an administrator resolve an attempt that remained in progress.
+7. After ESP Web Tools reports completion, record success or failure in the Hub page. ESP Web Tools does not provide this page with a supported public completion/progress callback, so the result is an explicit administrator confirmation, not an automatic verification.
+
+The registered image is flashed as-is. This browser flow does not inject Wi-Fi SSID/password, create a new bootstrap token, build firmware, or prove that the device subsequently connected to the Hub. It is therefore suitable only when the image's existing configuration is appropriate. If device-specific credentials need to be embedded, use the manual flow in section 5 and treat its build files as sensitive. Do not erase an existing device merely because its token was lost: create a replacement Hub registration/token and intentionally reconfigure the device instead.
+
+## 7. Current limits and future deployment work
+
+The Devices tab supports USB identity inspection and node registration. The Firmware tab supports upload, review, promotion, withdrawal to candidate status, listing, download, and administrator-only browser flashing of registered images or explicitly selected candidates for verification. The browser can check device identity before an attempt or proceed only after an explicit admin-confirmed identity override; it verifies downloaded image hashes and stores attempt history, but it cannot observe ESP Web Tools' internal progress or determine success automatically.
+
+Secure device-specific post-flash provisioning, Wi-Fi credential injection, automatic end-to-end deployment verification, and regular-user compatibility-filtered deployment are not implemented. The optional builder does not inject Wi-Fi or bootstrap credentials into reusable artifacts. An administrator must confirm the chip family and manually record the final flashing result. The proposed serial-to-NVS provisioning boundary and recovery requirements are documented in [Browser device provisioning design](./device-provisioning-design.md).

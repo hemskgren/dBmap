@@ -373,3 +373,40 @@ def test_node_policy_input_uses_database_owner_not_client_input(monkeypatch) -> 
 
     assert response.status_code == 200
     assert inputs[-1]["resource"]["owner_id"] == user["user_id"]
+
+
+def test_admin_can_rotate_only_a_pending_nodes_bootstrap_token() -> None:
+    client = TestClient(create_app())
+    admin_headers = {"Authorization": "Bearer test-admin"}
+    viewer_headers = {"Authorization": "Bearer test-viewer"}
+    created = client.post("/api/v1/nodes", json={"node_type": "output"}, headers=admin_headers)
+    assert created.status_code == 200, created.text
+    node_id = created.json()["node_id"]
+    original_token = created.json()["bootstrap_token"]
+
+    unauthorized = client.post(
+        f"/api/v1/nodes/{node_id}/bootstrap-token", headers=viewer_headers
+    )
+    assert unauthorized.status_code == 403
+    assert client.post(f"/api/v1/nodes/{node_id}/bootstrap-token").status_code == 401
+
+    rotated = client.post(f"/api/v1/nodes/{node_id}/bootstrap-token", headers=admin_headers)
+    assert rotated.status_code == 200, rotated.text
+    assert rotated.headers["cache-control"] == "no-store"
+    replacement_token = rotated.json()["bootstrap_token"]
+    assert replacement_token != original_token
+    assert rotated.json()["provisioning_state"] == "pending"
+
+    old_token = client.post(
+        "/api/v1/provision",
+        json={"bootstrap_token": original_token, "hardware_revision": "OUTPUT-DEV-V1"},
+    )
+    assert old_token.status_code == 400
+
+    provisioned = client.post(
+        "/api/v1/provision",
+        json={"bootstrap_token": replacement_token, "hardware_revision": "OUTPUT-DEV-V1"},
+    )
+    assert provisioned.status_code == 200, provisioned.text
+    refused = client.post(f"/api/v1/nodes/{node_id}/bootstrap-token", headers=admin_headers)
+    assert refused.status_code == 409

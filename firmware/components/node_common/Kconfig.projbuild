@@ -17,12 +17,12 @@ menu "dBmap node"
         default ""
 
     config DBMAP_HARDWARE_REVISION
-        string "Hardware revision"
-        default "OUTPUT-DEV-V1"
+        string "Hardware compatibility profile"
+        default "generic"
 
     config DBMAP_FIRMWARE_VERSION
         string "Firmware version"
-        default "0.1.0"
+        default "0.1.4"
 
     config DBMAP_NODE_TYPE_OUTPUT
         bool "This firmware is ESP-Output"

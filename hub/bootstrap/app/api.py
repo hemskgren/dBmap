@@ -14,11 +14,12 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from app import (
+    deployment_service,
     firmware_catalog,
     group_service,
     identity_service,
@@ -29,21 +30,27 @@ from app import (
 from app.config import settings
 from app.db import get_db
 from app.ids import timing_safe_eq
+from app.models import Node
 from app.mqtt_listener import get_broker_metrics, is_connected
 from app.mqtt_security import MqttSecurityError
 from app.policy import PolicyUnavailable
 from app.schemas import (
+    BootstrapTokenResponse,
     CreateGroupBody,
     CreateNodeRequest,
     CreateNodeResponse,
     CreateUserBody,
+    DeploymentAttemptCreateBody,
+    DeploymentAttemptUpdateBody,
     DesiredStateBody,
     DeviceOwnerBody,
     DeviceOwnershipView,
     DeviceSummaryView,
+    FirmwareSelectionBody,
     GroupMemberBody,
     GroupStatusBody,
     GroupView,
+    HardwareRevisionBody,
     InstallationMetadataBody,
     LinkExternalIdentityBody,
     NodeLifecycleBody,
@@ -353,11 +360,72 @@ def download_firmware_artifact(
         )
     except firmware_catalog.FirmwareNotFound:
         raise HTTPException(status_code=404, detail="registered firmware not found") from None
+    try:
+        firmware_catalog.verify_artifact_integrity(entry, FIRMWARE_CATALOG_DIR)
+    except firmware_catalog.FirmwareArtifactIntegrityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     return FileResponse(
         FIRMWARE_CATALOG_DIR / f"{entry.firmware_id}.zip",
         media_type="application/zip",
         filename=f"{entry.firmware_id}.zip",
         headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/api/v1/firmware/catalog/{firmware_id}/flash-manifest")
+def get_firmware_flash_manifest(
+    firmware_id: str,
+    allow_candidate: bool = Query(default=False),
+    _: Principal = Depends(require_policy("firmware.deploy.flash.read", "firmware_catalog")),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        entry = firmware_catalog.get_entry(
+            db,
+            FIRMWARE_CATALOG_DIR,
+            firmware_id,
+            include_candidate=allow_candidate,
+        )
+        return firmware_catalog.get_flash_manifest(entry, FIRMWARE_CATALOG_DIR)
+    except firmware_catalog.FirmwareNotFound:
+        raise HTTPException(status_code=404, detail="registered firmware not found") from None
+    except firmware_catalog.FirmwareArtifactIntegrityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except firmware_catalog.FirmwarePlatformUnsupported as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+@router.get("/api/v1/firmware/catalog/{firmware_id}/flash-images/{component_name}")
+def download_firmware_flash_image(
+    firmware_id: str,
+    component_name: str,
+    allow_candidate: bool = Query(default=False),
+    _: Principal = Depends(require_policy("firmware.deploy.flash.read", "firmware_catalog")),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        entry = firmware_catalog.get_entry(
+            db,
+            FIRMWARE_CATALOG_DIR,
+            firmware_id,
+            include_candidate=allow_candidate,
+        )
+        image, digest = firmware_catalog.get_flash_image(
+            entry,
+            FIRMWARE_CATALOG_DIR,
+            component_name,
+        )
+    except firmware_catalog.FirmwareNotFound:
+        raise HTTPException(status_code=404, detail="registered firmware image not found") from None
+    except firmware_catalog.FirmwareArtifactIntegrityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return Response(
+        content=image,
+        media_type="application/octet-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-SHA256": digest,
+        },
     )
 
 
@@ -409,6 +477,20 @@ def promote_firmware_candidate(
         raise HTTPException(status_code=404, detail="firmware candidate not found") from None
 
 
+@router.post("/api/v1/firmware/catalog/{firmware_id}/unregister")
+def return_firmware_to_candidate(
+    firmware_id: str,
+    _: Principal = Depends(require_policy("firmware.catalog.unpromote", "firmware_catalog")),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        return firmware_catalog.return_to_candidate(db, FIRMWARE_CATALOG_DIR, firmware_id)
+    except firmware_catalog.FirmwareNotFound:
+        raise HTTPException(status_code=404, detail="firmware entry not found") from None
+    except firmware_catalog.FirmwareDeploymentInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
 @router.delete("/api/v1/firmware/catalog/{firmware_id}", status_code=204)
 def delete_firmware_entry(
     firmware_id: str,
@@ -419,6 +501,172 @@ def delete_firmware_entry(
         firmware_catalog.delete_entry(db, FIRMWARE_CATALOG_DIR, firmware_id)
     except firmware_catalog.FirmwareNotFound:
         raise HTTPException(status_code=404, detail="firmware entry not found") from None
+
+
+@router.get("/api/v1/nodes/{node_id}/compatible-firmware")
+def list_compatible_firmware(
+    node_id: str,
+    include_candidates: bool = Query(default=False),
+    _: Principal = Depends(require_policy("firmware.deploy.select", "nodes")),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    node = db.get(Node, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="unknown device") from None
+    if node.lifecycle_state != "active":
+        raise HTTPException(status_code=409, detail="firmware cannot be selected for an inactive device")
+    return firmware_catalog.list_compatible_entries(
+        db,
+        FIRMWARE_CATALOG_DIR,
+        node.node_type,
+        node.hardware_revision,
+        include_candidates=include_candidates,
+    )
+
+
+@router.post("/api/v1/nodes/{node_id}/firmware-selection")
+def validate_firmware_selection(
+    node_id: str,
+    body: FirmwareSelectionBody,
+    _: Principal = Depends(require_policy("firmware.deploy.select", "nodes")),
+    db: Session = Depends(get_db),
+) -> dict:
+    node = db.get(Node, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="unknown device") from None
+    if node.lifecycle_state != "active":
+        raise HTTPException(status_code=409, detail="firmware cannot be selected for an inactive device")
+    try:
+        return firmware_catalog.validate_selection(
+            db,
+            FIRMWARE_CATALOG_DIR,
+            node_id,
+            body.firmware_id,
+            node.node_type,
+            node.hardware_revision,
+            body.acknowledge_unverified_platform,
+            allow_candidate=body.allow_candidate,
+        )
+    except firmware_catalog.FirmwareNotFound:
+        raise HTTPException(status_code=404, detail="registered firmware not found") from None
+    except firmware_catalog.FirmwareNotCompatible as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except firmware_catalog.FirmwarePlatformUnverified as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@router.post("/api/v1/nodes/{node_id}/deployment-attempts", status_code=201)
+def start_deployment_attempt(
+    node_id: str,
+    body: DeploymentAttemptCreateBody,
+    principal: Principal = Depends(require_policy("firmware.deploy.attempt.start", "nodes")),
+    db: Session = Depends(get_db),
+) -> dict:
+    node = db.get(Node, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="unknown device") from None
+    if node.lifecycle_state != "active":
+        raise HTTPException(status_code=409, detail="firmware cannot be deployed to an inactive device")
+    try:
+        firmware_catalog.validate_selection(
+            db,
+            FIRMWARE_CATALOG_DIR,
+            node_id,
+            body.firmware_id,
+            node.node_type,
+            node.hardware_revision,
+            body.acknowledge_unverified_platform,
+            allow_candidate=body.allow_candidate,
+        )
+        entry = firmware_catalog.get_entry(
+            db,
+            FIRMWARE_CATALOG_DIR,
+            body.firmware_id,
+            include_candidate=body.allow_candidate,
+        )
+        firmware_catalog.verify_artifact_integrity(entry, FIRMWARE_CATALOG_DIR)
+    except firmware_catalog.FirmwareNotFound:
+        raise HTTPException(status_code=404, detail="registered firmware not found") from None
+    except firmware_catalog.FirmwareNotCompatible as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except (
+        firmware_catalog.FirmwareArtifactIntegrityError,
+        firmware_catalog.FirmwarePlatformUnverified,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+    metadata = json.loads(entry.metadata_json)
+    try:
+        attempt = deployment_service.create_attempt(
+            db=db,
+            node_id=node_id,
+            firmware_id=entry.firmware_id,
+            firmware_version=metadata["firmware_version"],
+            artifact_sha256=entry.artifact_sha256,
+            initiated_by=principal.subject_id,
+            flasher_version=body.flasher_version,
+        )
+    except deployment_service.AttemptAlreadyInProgress:
+        raise HTTPException(status_code=409, detail="a deployment attempt is already in progress") from None
+    return deployment_service.public_attempt(db, attempt)
+
+
+@router.get("/api/v1/nodes/{node_id}/deployment-attempts")
+def list_deployment_attempts(
+    node_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    _: Principal = Depends(require_policy("firmware.deploy.attempt.read", "nodes")),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    if db.get(Node, node_id) is None:
+        raise HTTPException(status_code=404, detail="unknown device") from None
+    attempts = deployment_service.list_attempts(db, node_id, limit)
+    return [deployment_service.public_attempt(db, attempt) for attempt in attempts]
+
+
+@router.get("/api/v1/nodes/{node_id}/deployment-attempts/{attempt_id}")
+def get_deployment_attempt(
+    node_id: str,
+    attempt_id: str,
+    _: Principal = Depends(require_policy("firmware.deploy.attempt.read", "nodes")),
+    db: Session = Depends(get_db),
+) -> dict:
+    if db.get(Node, node_id) is None:
+        raise HTTPException(status_code=404, detail="unknown device") from None
+    try:
+        attempt = deployment_service.get_attempt(db, node_id, attempt_id)
+    except deployment_service.AttemptNotFound:
+        raise HTTPException(status_code=404, detail="deployment attempt not found") from None
+    return deployment_service.public_attempt(db, attempt)
+
+
+@router.patch("/api/v1/nodes/{node_id}/deployment-attempts/{attempt_id}")
+def update_deployment_attempt(
+    node_id: str,
+    attempt_id: str,
+    body: DeploymentAttemptUpdateBody,
+    _: Principal = Depends(require_policy("firmware.deploy.attempt.update", "nodes")),
+    db: Session = Depends(get_db),
+) -> dict:
+    if db.get(Node, node_id) is None:
+        raise HTTPException(status_code=404, detail="unknown device") from None
+    try:
+        attempt = deployment_service.update_attempt(
+            db,
+            node_id,
+            attempt_id,
+            body.status,
+            body.stage,
+            body.progress_percent,
+            body.failure_code,
+        )
+    except deployment_service.AttemptNotFound:
+        raise HTTPException(status_code=404, detail="deployment attempt not found") from None
+    except deployment_service.AttemptAlreadyFinished:
+        raise HTTPException(status_code=409, detail="deployment attempt is already complete") from None
+    except deployment_service.AttemptProgressRegressed:
+        raise HTTPException(status_code=409, detail="deployment progress cannot move backwards") from None
+    return deployment_service.public_attempt(db, attempt)
 
 
 @router.get(
@@ -553,6 +801,31 @@ def get_node(node_id: str, db: Session = Depends(get_db)) -> NodeView:
         raise HTTPException(status_code=404, detail="unknown node") from None
 
 
+@router.post(
+    "/api/v1/nodes/{node_id}/bootstrap-token",
+    response_model=BootstrapTokenResponse,
+    dependencies=[Depends(require_policy("nodes.bootstrap_token.rotate", "nodes"))],
+)
+def rotate_node_bootstrap_token(
+    node_id: str,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> BootstrapTokenResponse:
+    try:
+        token = service.rotate_pending_bootstrap_token(db, node_id)
+        node = service.get_node(db, node_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="unknown node") from None
+    except service.BootstrapTokenRotationUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    response.headers["Cache-Control"] = "no-store"
+    return BootstrapTokenResponse(
+        node_id=node.node_id,
+        bootstrap_token=token,
+        provisioning_state=node.provisioning_state,
+    )
+
+
 @router.get(
     "/api/v1/nodes/{node_id}/ownership",
     response_model=DeviceOwnershipView,
@@ -614,6 +887,22 @@ def put_node_lifecycle(
         else:
             detail = "MQTT ACL suspension failed; the node remains active in Hub state."
         raise HTTPException(status_code=503, detail=detail) from exc
+
+
+@router.put(
+    "/api/v1/nodes/{node_id}/hardware-revision",
+    response_model=NodeView,
+    dependencies=[Depends(require_policy("nodes.update_hardware", "nodes"))],
+)
+def put_node_hardware_revision(
+    node_id: str,
+    body: HardwareRevisionBody,
+    db: Session = Depends(get_db),
+) -> NodeView:
+    try:
+        return service.set_hardware_revision(db, node_id, body.hardware_revision)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="unknown node") from None
 
 
 @router.put(
