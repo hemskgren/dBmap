@@ -23,8 +23,12 @@ FIRMWARE_ROOT = Path(os.environ.get("DBMAP_FIRMWARE_ROOT", "/firmware"))
 FIRMWARE_SOURCE = Path(os.environ.get("DBMAP_FIRMWARE_SOURCE", str(FIRMWARE_ROOT / "esp-output")))
 HUB_CA_FILE = Path(os.environ.get("DBMAP_HUB_CA_FILE", "/certs/ca.crt"))
 ADMIN_TOKEN = os.environ.get("DBMAP_ADMIN_TOKEN", "")
+NTP_SERVER = os.environ.get("DBMAP_NTP_SERVER", "se.pool.ntp.org").strip()
 BUILD_TIMEOUT_SECONDS = 1800
 FIRMWARE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+FIRMWARE_VERSION_PATTERN = re.compile(
+    r"(?P<major>0|[1-9][0-9]*)\.(?P<minor>0|[1-9][0-9]*)\.(?P<patch>0|[1-9][0-9]*)(?:[-+][0-9A-Za-z.-]+)?\Z"
+)
 TARGETS = {
     "output-esp32": {
         "project": FIRMWARE_SOURCE,
@@ -195,11 +199,57 @@ def _sdkconfig_string(sdkconfig: Path, name: str) -> str:
     raise RuntimeError(f"Missing firmware version setting {name}.")
 
 
+def _set_sdkconfig_string(sdkconfig: Path, name: str, value: str) -> None:
+    prefix = f"{name}="
+    lines = sdkconfig.read_text(encoding="utf-8").splitlines()
+    matches = 0
+    for index, line in enumerate(lines):
+        if line.startswith(prefix):
+            lines[index] = f"{name}={json.dumps(value)}"
+            matches += 1
+    if matches != 1:
+        raise RuntimeError(f"Expected one firmware setting {name}; found {matches}.")
+    sdkconfig.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _version_tuple(version: str) -> tuple[int, int, int] | None:
+    match = FIRMWARE_VERSION_PATTERN.fullmatch(version)
+    if match is None:
+        return None
+    return tuple(int(match.group(part)) for part in ("major", "minor", "patch"))
+
+
+def _next_firmware_version(base_version: str) -> str:
+    base = _version_tuple(base_version)
+    if base is None or "-" in base_version or "+" in base_version:
+        raise RuntimeError("Configured firmware version must be a numeric MAJOR.MINOR.PATCH version.")
+
+    used_versions = []
+    for job_path in JOBS.glob("*.json"):
+        try:
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        version = job.get("firmware_version")
+        if isinstance(version, str):
+            parsed = _version_tuple(version)
+            if parsed is not None:
+                used_versions.append(parsed)
+
+    if not used_versions or base > max(used_versions):
+        next_version = base
+    else:
+        major, minor, patch = max(used_versions)
+        next_version = (major, minor, patch + 1)
+    return ".".join(str(part) for part in next_version)
+
+
 def _release_firmware_id(manifest: dict, artifact_sha256: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{64}", artifact_sha256):
         raise ValueError("Build artifact SHA-256 is invalid.")
+    hardware_revision = manifest.get("hardware_revision", "unknown")
     firmware_id = (
-        f"dbmap-{manifest['target']}-{manifest['firmware_version']}-"
+        f"dbmap-{manifest['target']}-{hardware_revision}-{manifest['firmware_version']}-"
         f"{artifact_sha256[:8]}"
     )
     if not FIRMWARE_ID_PATTERN.fullmatch(firmware_id):
@@ -254,6 +304,15 @@ def _build(job_id: str, target: str) -> None:
         if code != 0:
             raise RuntimeError("ESP-IDF target configuration failed.\n" + output)
         _clear_device_secrets(work_dir / "sdkconfig")
+        sdkconfig = work_dir / "sdkconfig"
+        if not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", NTP_SERVER):
+            raise RuntimeError("DBMAP_NTP_SERVER must be a valid DNS name or IPv4 address.")
+        _set_sdkconfig_string(sdkconfig, "CONFIG_DBMAP_NTP_SERVER", NTP_SERVER)
+        base_version = _sdkconfig_string(sdkconfig, "CONFIG_DBMAP_FIRMWARE_VERSION")
+        firmware_version = _next_firmware_version(base_version)
+        _set_sdkconfig_string(sdkconfig, "CONFIG_DBMAP_FIRMWARE_VERSION", firmware_version)
+        job.update(firmware_version=firmware_version)
+        _persist(job)
 
         job.update(stage="building")
         _persist(job)
@@ -531,6 +590,7 @@ class Handler(BaseHTTPRequestHandler):
             job = {
                 "id": job_id,
                 "target": body["target"],
+                "hardware_revision": TARGETS[body["target"]]["hardware_revision"],
                 "status": "queued",
                 "stage": "queued",
                 "created_at": time.time(),
@@ -583,6 +643,9 @@ def _get_job(job_id: str) -> dict | None:
 
 def _public_job(job: dict) -> dict:
     public = {key: value for key, value in job.items() if key != "idempotency_key"}
+    target = TARGETS.get(str(job.get("target", "")))
+    if not public.get("hardware_revision") and target:
+        public["hardware_revision"] = target["hardware_revision"]
     if not public.get("firmware_version") and job.get("status") == "succeeded":
         bundle = ARTIFACTS / str(job.get("id", "")) / "firmware.zip"
         try:

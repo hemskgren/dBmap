@@ -4,6 +4,7 @@ idf_component_register(
         "nvs_store.c"
         "serial_config.c"
         "net_wifi.c"
+        "time_sync.c"
         "hub_provision.c"
         "hub_mqtt.c"
         "health.c"

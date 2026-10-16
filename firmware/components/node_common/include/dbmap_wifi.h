@@ -4,3 +4,4 @@
 #include "esp_err.h"
 
 esp_err_t dbmap_wifi_start(const dbmap_network_t *net);
+esp_err_t dbmap_wifi_get_rssi(int *rssi_dbm);

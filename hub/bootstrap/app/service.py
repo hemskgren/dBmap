@@ -341,9 +341,7 @@ def apply_reported(db: Session, node_id: str, payload: dict) -> None:
         "calibration_version": int(payload.get("calibration_version", reported.calibration_version) or 0),
         "classifier_version": payload.get("classifier_version", reported.classifier_version),
     }
-    pending = payload.get("pending_configuration_change")
-    if pending is None:
-        pending = pending_configuration_change(merged, desired_dict)
+    pending = pending_configuration_change(merged, desired_dict)
 
     reported.firmware_version = str(merged["firmware_version"])
     reported.hardware_revision = str(payload.get("hardware_revision", reported.hardware_revision))
@@ -386,6 +384,7 @@ def node_view(db: Session, node: Node) -> NodeView:
         "payload": json.loads(reported.payload_json) if reported and reported.payload_json else {},
     }
     pending = pending_configuration_change(reported_dict, desired_dict)
+    reported_dict["pending_configuration_change"] = pending
     installation_view = None
     if installation is not None:
         try:

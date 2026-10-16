@@ -5,6 +5,7 @@
 #include "dbmap_nvs.h"
 #include "dbmap_provision.h"
 #include "dbmap_serial_config.h"
+#include "dbmap_time.h"
 #include "dbmap_types.h"
 #include "dbmap_wifi.h"
 #include "esp_log.h"
@@ -53,6 +54,13 @@ void app_main(void)
         esp_restart();
     }
 
+    esp_err_t time_err = dbmap_time_sync(10000);
+    if (time_err == ESP_OK) {
+        ESP_LOGI(TAG, "system time synchronized with NTP");
+    } else {
+        ESP_LOGW(TAG, "system time not synchronized yet: %s", esp_err_to_name(time_err));
+    }
+
     if (!s_cfg.provisioned) {
         esp_err_t perr = dbmap_hub_provision(&s_cfg);
         if (perr != ESP_OK) {
@@ -62,6 +70,7 @@ void app_main(void)
         }
     }
 
+    ESP_ERROR_CHECK(output_command_init());
     ESP_ERROR_CHECK(dbmap_mqtt_start(&s_cfg, output_handle_command, &s_cfg));
 
     int backoff_ms = 1000;

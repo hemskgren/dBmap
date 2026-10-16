@@ -24,6 +24,10 @@ menu "dBmap node"
         string "Firmware version"
         default "0.1.4"
 
+    config DBMAP_NTP_SERVER
+        string "Network time server"
+        default "se.pool.ntp.org"
+
     config DBMAP_NODE_TYPE_OUTPUT
         bool "This firmware is ESP-Output"
         default y
