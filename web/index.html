@@ -1391,11 +1391,52 @@
         grid.append(ownership);
 
         if (currentRole === 'admin') {
+          const stateFields = {
+            desired: [
+              ['Firmware ID', 'firmware_id'],
+              ['Firmware version', 'firmware_version'],
+              ['Configuration version', 'config_version'],
+              ['Calibration version', 'calibration_version'],
+              ['Classifier version', 'classifier_version'],
+            ],
+            reported: [
+              ['Firmware version', 'firmware_version'],
+              ['Hardware revision', 'hardware_revision'],
+              ['Configuration version', 'config_version'],
+              ['Calibration version', 'calibration_version'],
+              ['Classifier version', 'classifier_version'],
+              ['Uptime (s)', 'uptime_s'],
+              ['Wi-Fi RSSI (dBm)', 'wifi_rssi_dbm'],
+              ['Pending configuration change', 'pending_configuration_change'],
+            ],
+          };
+          const payloadKeys = new Set([
+            'node_id', 'firmware_id', 'firmware_version', 'hardware_revision',
+            'config_version', 'calibration_version', 'classifier_version',
+            'uptime_s', 'wifi_rssi_dbm', 'pending_configuration_change',
+          ]);
           for (const [title, key] of [['Desired state', 'desired'], ['Reported state', 'reported']]) {
             const panel = el('section');
             panel.append(el('h3', title));
-            const data = el('pre', JSON.stringify(device[key] || {}, null, 2));
-            panel.append(data);
+            const state = device[key] || {};
+            const metadata = el('dl', undefined, 'meta');
+            for (const [label, field] of stateFields[key]) {
+              const value = field === 'wifi_rssi_dbm' ? state.payload?.[field] : state[field];
+              addDetailField(metadata, label, value);
+            }
+            panel.append(metadata);
+
+            const payload = state.payload && typeof state.payload === 'object' ? state.payload : {};
+            const additional = Object.fromEntries(
+              Object.entries(payload).filter(([field]) => !payloadKeys.has(field)),
+            );
+            if (Object.keys(additional).length > 0) {
+              const payloadDetails = document.createElement('details');
+              payloadDetails.append(el('summary', 'Additional reported values'));
+              const payloadData = el('pre', JSON.stringify(additional, null, 2));
+              payloadDetails.append(payloadData);
+              panel.append(payloadDetails);
+            }
             grid.append(panel);
           }
         }
@@ -2061,7 +2102,7 @@
             });
             row.append(logDetails);
           }
-          row.querySelector('[data-build-status]').textContent = `${job.target}${job.firmware_version ? ` · ${job.firmware_version}` : ''} · ${job.status} · ${job.stage}`;
+          row.querySelector('[data-build-status]').textContent = `${job.target}${job.hardware_revision ? ` · ${job.hardware_revision}` : ''}${job.firmware_version ? ` · ${job.firmware_version}` : ''} · ${job.status} · ${job.stage}`;
           row.querySelector('[data-build-started]').textContent = `Build ${job.id} · started ${formatSeen(new Date((job.started_at || job.created_at) * 1000))}`;
           const error = row.querySelector('[data-build-error]');
           error.textContent = job.error || '';

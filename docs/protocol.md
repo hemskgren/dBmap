@@ -156,12 +156,31 @@ remain unimplemented.
 The current ESP-Output sends JSON state on `hello`, `health`, and
 `keepalive`, including `node_id`, `firmware_version`, `hardware_revision`,
 `config_version`, `calibration_version`, `classifier_version`, `uptime_s`,
-and `pending_configuration_change`. These existing messages are not yet
+and the optional `wifi_rssi_dbm` signal level. The Hub derives
+`pending_configuration_change` by comparing reported state with desired state;
+the device does not report that flag. These existing messages are not yet
 wrapped in the version-1 observation envelope.
 
 The Output command contract is not yet implemented as a stable, versioned
-schema. Commands that are defined for implementation must include an absolute
-`expires_at_utc` timestamp:
+schema. The current firmware supports a pilot relay subset. `RELAY_1_ON` needs
+an integer `duration_s` from 1 through 3600, drives GPIO15 high for that many
+seconds, and blinks the onboard GPIO2 LED during the interval. `RELAY_1_OFF`
+switches both outputs off immediately. The firmware logs the received JSON and
+publishes the action result to the acknowledgement and status topics. Commands
+without a supported action or valid duration are rejected. GPIO15 is assumed
+active-high; verify the relay module's electrical polarity before connecting
+it. The optional `action_type: "output-test"` field selects a short double-pulse
+GPIO2 pattern for testing. A missing field or any other value uses the standard
+alert blink pattern.
+
+The Output firmware synchronizes its UTC clock through SNTP and includes the
+UTC receive time in command console logs. The NTP server is set by
+`DBMAP_NTP_SERVER` at firmware build time; the default is the Swedish NTP Pool
+zone. If the clock has not synchronized yet, the log identifies the timestamp
+as unsynchronized.
+
+The intended versioned command schema includes an absolute `expires_at_utc`
+timestamp:
 
 ```json
 {
@@ -172,24 +191,17 @@ schema. Commands that are defined for implementation must include an absolute
 ```
 
 `expires_at_utc` is the semantic validity deadline, independent of transport.
-It must be an ISO 8601 timestamp with an explicit timezone. Output must check
-the deadline itself immediately before performing an action and reject the
-command when its current UTC time is at or past the deadline. If Output cannot
-establish a trustworthy UTC time, it must fail closed and reject the command;
-it must not execute based only on MQTT delivery. This device-side check is
-required even when the broker can discard expired messages.
-
-The current firmware does not yet validate `expires_at_utc`: it only logs the
-action and returns a simple acknowledgement and status payload:
+It must be an ISO 8601 timestamp with an explicit timezone. Device-side expiry
+validation is not implemented yet. The pilot acknowledgement and status
+payload looks like:
 
 ```json
-{"node_id": "OUT-001", "action": "RELAY_1_ON", "result": "accepted"}
+{"node_id": "OUT-011", "action": "RELAY_1_ON", "result": "relay_1_on", "duration_s": 5}
 ```
 
-Relays remain a firmware stub; `accepted` does not confirm physical switching.
 Command, acknowledgement, and status payloads do not yet have a stable,
-versioned schema. Once expiry handling is implemented, acknowledgements should
-distinguish an expired command from one accepted for execution.
+versioned schema. An acknowledgement reports that the firmware issued GPIO
+operations; it does not independently confirm the relay's physical state.
 
 ## Delivery and timing
 

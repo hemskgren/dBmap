@@ -166,6 +166,7 @@ services:
     restart: unless-stopped
     environment:
       DBMAP_ADMIN_TOKEN: ${DBMAP_ADMIN_TOKEN:?Set DBMAP_ADMIN_TOKEN in .env}
+      DBMAP_NTP_SERVER: ${DBMAP_NTP_SERVER:-se.pool.ntp.org}
       DBMAP_FIRMWARE_ROOT: /firmware
       DBMAP_FIRMWARE_ARTIFACTS: /artifacts
     expose:

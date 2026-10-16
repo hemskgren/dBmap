@@ -73,3 +73,12 @@ esp_err_t dbmap_wifi_start(const dbmap_network_t *net)
     ESP_LOGI(TAG, "Wi-Fi up");
     return ESP_OK;
 }
+
+esp_err_t dbmap_wifi_get_rssi(int *rssi_dbm)
+{
+    if (rssi_dbm == NULL) return ESP_ERR_INVALID_ARG;
+    wifi_ap_record_t ap_info;
+    esp_err_t err = esp_wifi_sta_get_ap_info(&ap_info);
+    if (err == ESP_OK) *rssi_dbm = ap_info.rssi;
+    return err;
+}

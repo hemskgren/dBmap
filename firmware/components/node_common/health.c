@@ -4,6 +4,7 @@
 
 #include "cJSON.h"
 #include "dbmap_mqtt.h"
+#include "dbmap_wifi.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
 
@@ -17,7 +18,10 @@ static char *build_keepalive(const dbmap_effective_t *cfg)
     cJSON_AddNumberToObject(o, "calibration_version", cfg->config.calibration_version);
     cJSON_AddStringToObject(o, "classifier_version", cfg->config.classifier_version);
     cJSON_AddNumberToObject(o, "uptime_s", (double)(esp_timer_get_time() / 1000000ULL));
-    cJSON_AddBoolToObject(o, "pending_configuration_change", false);
+    int rssi_dbm;
+    if (dbmap_wifi_get_rssi(&rssi_dbm) == ESP_OK) {
+        cJSON_AddNumberToObject(o, "wifi_rssi_dbm", rssi_dbm);
+    }
     char *s = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     return s;
