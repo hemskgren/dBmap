@@ -56,6 +56,8 @@ from app.schemas import (
     NodeLifecycleBody,
     NodeView,
     ObservationView,
+    OutputCommandBody,
+    OutputCommandView,
     ProvisionRequest,
     ProvisionResponse,
     UserStatusBody,
@@ -953,6 +955,24 @@ def put_installation(
         return service.set_installation(db, node_id, body)
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown node") from None
+
+
+@router.post(
+    "/api/v1/nodes/{node_id}/commands",
+    response_model=OutputCommandView,
+    dependencies=[Depends(require_policy("nodes.send_command", "nodes"))],
+)
+def post_node_command(
+    node_id: str,
+    body: OutputCommandBody,
+    db: Session = Depends(get_db),
+) -> OutputCommandView:
+    try:
+        return service.send_output_command(db, node_id, body)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="unknown node") from None
+    except service.OutputCommandUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 @router.get(

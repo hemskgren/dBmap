@@ -63,8 +63,16 @@
       pre { overflow: auto; padding: 0.8rem; border-radius: 7px; background: #f3f6fa; font-size: 0.85rem; }
       .online { color: #157347; font-weight: 700; }
       .offline { color: #a83232; font-weight: 700; }
-      .actions { display: flex; gap: 0.5rem; margin-top: 0.85rem; }
-      #browser-flash-panel .actions { flex-wrap: wrap; align-items: center; }
+      .actions { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.85rem; }
+      .actions button { flex: 0 0 auto; }
+      .actions .notice { margin: 0; min-height: auto; }
+      #browser-flash-panel .actions { flex-wrap: wrap; }
+      dialog.command-dialog { border: 1px solid #d8e0eb; border-radius: 12px; background: #fff; box-shadow: 0 12px 32px rgb(15 23 42 / 20%); padding: 1.25rem; max-width: 520px; width: min(92vw, 520px); }
+      dialog.command-dialog::backdrop { background: rgba(15, 23, 42, 0.45); }
+      dialog.command-dialog h3 { margin-top: 0; margin-bottom: 0.5rem; }
+      dialog.command-dialog .dialog-body { margin: 0.75rem 0; }
+      dialog.command-dialog pre { margin: 0.5rem 0 0.8rem; }
+      dialog.command-dialog .actions { justify-content: flex-end; }
       .tab-list { display: flex; gap: 0.45rem; overflow-x: auto; margin: 0 0 0.6rem; padding-bottom: 0.2rem; }
       .tab-list button { flex: 0 0 auto; color: #183153; background: #e6edf7; }
       .tab-list button[aria-selected="true"] { color: #fff; background: #2457a7; }
@@ -1449,6 +1457,96 @@
         installation.append(installationMeta);
         grid.append(installation);
         detail.append(grid);
+
+        if (device.node_type === 'output') {
+          const commandPanel = el('section');
+          commandPanel.id = 'output-commands-panel';
+          commandPanel.append(el('h3', 'Output commands'));
+          commandPanel.append(el(
+            'p',
+            'GPIO15 is assumed active-high; verify relay module polarity before connecting. GPIO2 blinks the onboard LED. Output test runs a 5-second pulse with double-blink pattern. Dispatch acknowledgement confirms delivery to the broker, not physical contact closure.',
+            'notice',
+          ));
+          if (currentRole === 'admin') {
+            const actions = el('div', undefined, 'actions');
+            const testButton = el('button', 'Test Output');
+            testButton.type = 'button';
+            testButton.id = 'btn-output-test';
+            const commandStatus = el('span', '', 'notice');
+            commandStatus.id = 'output-command-status';
+            commandStatus.setAttribute('role', 'status');
+
+            function openCommandPreview(title, body) {
+              const dialog = el('dialog', undefined, 'command-dialog');
+              dialog.append(el('h3', title));
+              dialog.append(el('p', `Target node: ${device.node_id}. Review the command payload to be published over MQTT:`, 'dialog-body'));
+              const codePre = el('pre');
+              const codeBlock = el('code', JSON.stringify(body, null, 2));
+              codePre.append(codeBlock);
+              dialog.append(codePre);
+              dialog.append(el('p', `Expires at: ${formatSeen(body.expires_at_utc)} (30s validity window).`, 'notice'));
+
+              const dialogActions = el('div', undefined, 'actions');
+              const cancelBtn = el('button', 'Cancel', 'secondary');
+              cancelBtn.type = 'button';
+              const sendBtn = el('button', 'Send Command');
+              sendBtn.type = 'button';
+              sendBtn.id = 'btn-confirm-send-command';
+              const dialogStatus = el('span', '', 'notice');
+              dialogStatus.setAttribute('role', 'status');
+
+              cancelBtn.addEventListener('click', () => dialog.close());
+
+              sendBtn.addEventListener('click', async () => {
+                sendBtn.disabled = true;
+                cancelBtn.disabled = true;
+                dialogStatus.textContent = 'Publishing…';
+                dialogStatus.className = 'notice';
+                try {
+                  const result = await api(`/api/v1/nodes/${encodeURIComponent(device.node_id)}/commands`, {
+                    method: 'POST',
+                    body: JSON.stringify(body),
+                  });
+                  dialog.close();
+                  commandStatus.textContent = `Command ${result.action} published (expires ${formatSeen(result.expires_at_utc)}).`;
+                  commandStatus.className = 'notice';
+                } catch (error) {
+                  dialogStatus.textContent = error.message;
+                  dialogStatus.className = 'notice error';
+                  sendBtn.disabled = false;
+                  cancelBtn.disabled = false;
+                }
+              });
+
+              dialogActions.append(cancelBtn, sendBtn, dialogStatus);
+              dialog.append(dialogActions);
+              dialog.addEventListener('close', () => dialog.remove());
+
+              document.body.append(dialog);
+              if (typeof dialog.showModal === 'function') {
+                dialog.showModal();
+              } else {
+                dialog.open = true;
+              }
+            }
+
+            testButton.addEventListener('click', () => {
+              const expiresAt = new Date(Date.now() + 30 * 1000).toISOString();
+              openCommandPreview('Confirm Output Test Command', {
+                action: 'RELAY_1_ON',
+                duration_s: 5,
+                action_type: 'output-test',
+                expires_at_utc: expiresAt,
+              });
+            });
+
+            actions.append(testButton, commandStatus);
+            commandPanel.append(actions);
+          } else {
+            commandPanel.append(el('p', 'Administrative role required to dispatch output commands.', 'notice'));
+          }
+          detail.append(commandPanel);
+        }
 
         if (currentRole === 'admin') {
           if (device.provisioning_state === 'pending') {

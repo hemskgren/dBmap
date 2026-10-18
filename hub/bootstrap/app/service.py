@@ -35,6 +35,8 @@ from app.schemas import (
     NodeView,
     ObservationBody,
     ObservationView,
+    OutputCommandBody,
+    OutputCommandView,
     ProvisionRequest,
     ProvisionResponse,
     Topics,
@@ -47,6 +49,10 @@ DEVICE_ONLINE_WINDOW = timedelta(seconds=90)
 class DuplicateRegistration(Exception):
     def __init__(self, node_id: str) -> None:
         self.node_id = node_id
+
+
+class OutputCommandUnavailable(ValueError):
+    """Raised when an Output command cannot be accepted or published."""
 
 
 class BootstrapTokenRotationUnavailable(Exception):
@@ -424,4 +430,51 @@ def node_view(db: Session, node: Node) -> NodeView:
         owner_type=owner[0] if owner else None,
         owner_id=owner[1] if owner else None,
         owner_display_name=owner[2] if owner else None,
+    )
+
+
+def send_output_command(db: Session, node_id: str, body: OutputCommandBody) -> OutputCommandView:
+    from app.mqtt_listener import MqttPublishError, publish_json
+
+    node = db.get(Node, node_id.upper())
+    if node is None:
+        raise KeyError(node_id)
+    if node.node_type != "output":
+        raise OutputCommandUnavailable("commands are only supported for Output nodes")
+    if node.lifecycle_state != "active":
+        raise OutputCommandUnavailable("deactivated nodes cannot receive commands")
+    if node.provisioning_state not in {"provisioned", "active"}:
+        raise OutputCommandUnavailable("the node has not completed Hub provisioning")
+
+    now = datetime.now(timezone.utc)
+    if body.expires_at_utc is None:
+        lifetime_s = body.duration_s + 30 if body.duration_s else 60
+        expires_at = now + timedelta(seconds=lifetime_s)
+    else:
+        expires_at = body.expires_at_utc
+    if expires_at <= now:
+        raise OutputCommandUnavailable("expires_at_utc is already in the past")
+
+    payload: dict = {
+        "action": body.action,
+        "expires_at_utc": expires_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    if body.duration_s is not None:
+        payload["duration_s"] = body.duration_s
+    if body.action_type is not None:
+        payload["action_type"] = body.action_type
+
+    topic = topics_for(node.node_type, node.node_id)["command"]
+    try:
+        publish_json(topic, payload, qos=1)
+    except MqttPublishError as exc:
+        raise OutputCommandUnavailable(str(exc)) from exc
+    return OutputCommandView(
+        node_id=node.node_id,
+        topic=topic,
+        action=body.action,
+        duration_s=body.duration_s,
+        action_type=body.action_type,
+        expires_at_utc=expires_at,
+        published=True,
     )

@@ -164,6 +164,45 @@ class NodeLifecycleBody(BaseModel):
     lifecycle_state: Literal["active", "deactivated"]
 
 
+class OutputCommandBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["RELAY_1_ON", "RELAY_1_OFF"]
+    duration_s: int | None = Field(default=None, ge=1, le=3600)
+    action_type: Literal["output-test"] | None = None
+    expires_at_utc: datetime | None = None
+
+    @field_validator("expires_at_utc")
+    @classmethod
+    def require_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("expires_at_utc must include a timezone")
+        return value.astimezone(timezone.utc)
+
+    @model_validator(mode="after")
+    def validate_command_fields(self) -> "OutputCommandBody":
+        if self.action == "RELAY_1_ON":
+            if self.duration_s is None:
+                raise ValueError("RELAY_1_ON requires duration_s")
+        elif self.duration_s is not None:
+            raise ValueError("RELAY_1_OFF does not take duration_s")
+        if self.action_type is not None and self.action != "RELAY_1_ON":
+            raise ValueError("action_type is only valid for RELAY_1_ON")
+        return self
+
+
+class OutputCommandView(BaseModel):
+    node_id: str
+    topic: str
+    action: str
+    duration_s: int | None = None
+    action_type: str | None = None
+    expires_at_utc: datetime
+    published: Literal[True] = True
+
+
 class InstallationMetadataBody(BaseModel):
     latitude: float = Field(ge=-90, le=90, description="WGS84 latitude in decimal degrees")
     longitude: float = Field(ge=-180, le=180, description="WGS84 longitude in decimal degrees")

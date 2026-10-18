@@ -11,6 +11,7 @@ def _test_policy(input_data: dict) -> bool:
     return subject.get("role") == "viewer" and input_data.get("action") in {
         "session.read",
         "devices.list_summary",
+        "nodes.read_detail",
         "users.read",
         "groups.read",
         "firmware.catalog.read",
