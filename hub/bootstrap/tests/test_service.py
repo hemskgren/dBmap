@@ -136,9 +136,11 @@ def test_viewer_can_read_device_summaries_but_not_admin_api() -> None:
     assert "desired" not in device
     assert "reported" not in device
     assert client.get("/api/v1/nodes", headers=viewer_headers).status_code == 403
-    assert client.get(
+    node_detail = client.get(
         f"/api/v1/nodes/{created.json()['node_id']}", headers=viewer_headers
-    ).status_code == 403
+    )
+    assert node_detail.status_code == 200
+    assert "reported" in node_detail.json()
     assert client.put(
         f"/api/v1/nodes/{created.json()['node_id']}/installation",
         json={"latitude": 59.9, "longitude": 10.7},
@@ -641,3 +643,136 @@ def test_mqtt_listener_routes_and_rejects_retained_observations(monkeypatch) -> 
     )
 
     assert received == [("EAR-007", payload)]
+
+
+def test_output_node_commands(monkeypatch) -> None:
+    client = TestClient(create_app())
+    admin_headers = {"Authorization": f"Bearer {settings.admin_token}"}
+    viewer_headers = {"Authorization": f"Bearer {settings.viewer_token}"}
+
+    created = client.post("/api/v1/nodes", json={"node_type": "output"}, headers=admin_headers)
+    assert created.status_code == 200
+    node_id = created.json()["node_id"]
+    token = created.json()["bootstrap_token"]
+
+    blocked_pending = client.post(
+        f"/api/v1/nodes/{node_id}/commands",
+        json={"action": "RELAY_1_ON", "duration_s": 5, "action_type": "output-test"},
+        headers=admin_headers,
+    )
+    assert blocked_pending.status_code == 409
+    assert "not completed Hub provisioning" in blocked_pending.json()["detail"]
+
+    prov_res = client.post(
+        "/api/v1/provision",
+        json={"bootstrap_token": token, "hardware_revision": "OUTPUT-DEV-V1", "firmware_version": "0.1.0"},
+    )
+    assert prov_res.status_code == 200
+
+    published_messages = []
+
+    def fake_publish_json(topic, payload, qos=1):
+        published_messages.append((topic, payload, qos))
+
+    monkeypatch.setattr(mqtt_listener, "publish_json", fake_publish_json)
+
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
+    test_cmd = client.post(
+        f"/api/v1/nodes/{node_id}/commands",
+        json={
+            "action": "RELAY_1_ON",
+            "duration_s": 5,
+            "action_type": "output-test",
+            "expires_at_utc": expires_at,
+        },
+        headers=admin_headers,
+    )
+    assert test_cmd.status_code == 200, test_cmd.text
+    cmd_data = test_cmd.json()
+    assert cmd_data["node_id"] == node_id
+    assert cmd_data["action"] == "RELAY_1_ON"
+    assert cmd_data["duration_s"] == 5
+    assert cmd_data["action_type"] == "output-test"
+    assert cmd_data["published"] is True
+    assert len(published_messages) == 1
+    topic, payload, qos = published_messages[0]
+    assert topic == f"esp-output/local/{node_id.lower()}/command"
+    assert payload["action"] == "RELAY_1_ON"
+    assert payload["duration_s"] == 5
+    assert payload["action_type"] == "output-test"
+    assert "expires_at_utc" in payload
+    assert qos == 1
+
+    off_cmd = client.post(
+        f"/api/v1/nodes/{node_id}/commands",
+        json={"action": "RELAY_1_OFF"},
+        headers=admin_headers,
+    )
+    assert off_cmd.status_code == 200, off_cmd.text
+    assert len(published_messages) == 2
+    topic, payload, qos = published_messages[1]
+    assert payload["action"] == "RELAY_1_OFF"
+    assert "duration_s" not in payload
+
+    viewer_cmd = client.post(
+        f"/api/v1/nodes/{node_id}/commands",
+        json={"action": "RELAY_1_OFF"},
+        headers=viewer_headers,
+    )
+    assert viewer_cmd.status_code == 403
+
+    assert client.post(f"/api/v1/nodes/{node_id}/commands", json={"action": "RELAY_1_OFF"}).status_code == 401
+
+    bad_payload = client.post(
+        f"/api/v1/nodes/{node_id}/commands",
+        json={"action": "RELAY_1_ON"},
+        headers=admin_headers,
+    )
+    assert bad_payload.status_code == 422
+
+    client.put(
+        f"/api/v1/nodes/{node_id}/lifecycle",
+        json={"lifecycle_state": "deactivated"},
+        headers=admin_headers,
+    )
+    deact_cmd = client.post(
+        f"/api/v1/nodes/{node_id}/commands",
+        json={"action": "RELAY_1_OFF"},
+        headers=admin_headers,
+    )
+    assert deact_cmd.status_code == 409
+    assert "deactivated" in deact_cmd.json()["detail"]
+
+
+def test_publish_json_success(monkeypatch) -> None:
+    mock_client = Mock()
+    mock_info = Mock()
+    mock_info.rc = 0
+    mock_info.is_published.return_value = True
+    mock_client.publish.return_value = mock_info
+
+    monkeypatch.setattr(mqtt_listener, "_client", mock_client)
+    monkeypatch.setattr(mqtt_listener, "_connected", True)
+
+    mqtt_listener.publish_json("esp-output/local/out-1/command", {"action": "RELAY_1_ON"})
+    mock_client.publish.assert_called_once_with(
+        "esp-output/local/out-1/command",
+        '{"action":"RELAY_1_ON"}',
+        qos=1,
+        retain=False,
+    )
+    mock_info.wait_for_publish.assert_called_once_with(timeout=5)
+
+
+def test_publish_json_timeout(monkeypatch) -> None:
+    mock_client = Mock()
+    mock_info = Mock()
+    mock_info.rc = 0
+    mock_info.is_published.return_value = False
+    mock_client.publish.return_value = mock_info
+
+    monkeypatch.setattr(mqtt_listener, "_client", mock_client)
+    monkeypatch.setattr(mqtt_listener, "_connected", True)
+
+    with pytest.raises(mqtt_listener.MqttPublishError, match="timed out publishing MQTT command"):
+        mqtt_listener.publish_json("esp-output/local/out-1/command", {"action": "RELAY_1_ON"})

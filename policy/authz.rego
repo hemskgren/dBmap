@@ -10,11 +10,20 @@ allow if {
 	input.subject.role == "admin"
 }
 
-# Local viewers can read shared status and the internal user directory.
+# Local viewers can read shared status, device details, and the internal user directory.
 allow if {
 	input.subject.authenticated == true
 	input.subject.role == "viewer"
-	input.action in {"session.read", "devices.list_summary", "hub.status.read", "observations.read", "users.read", "groups.read", "firmware.catalog.read"}
+	input.action in {
+		"session.read",
+		"devices.list_summary",
+		"nodes.read_detail",
+		"hub.status.read",
+		"observations.read",
+		"users.read",
+		"groups.read",
+		"firmware.catalog.read",
+	}
 }
 
 # Authenticated external users may see the shared device summary, but not details.

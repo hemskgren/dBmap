@@ -17,6 +17,11 @@ from app.topics import parse_node_id_from_topic, parse_observation_topic
 log = logging.getLogger("hub-bootstrap.mqtt")
 _connection_lock = threading.Lock()
 _connected = False
+_client: mqtt.Client | None = None
+
+
+class MqttPublishError(RuntimeError):
+    """Raised when the Hub cannot publish a command to the broker."""
 _broker_metric_topics = {
     "$SYS/broker/clients/connected": "connected_clients",
     "$SYS/broker/clients/total": "total_client_sessions",
@@ -40,6 +45,24 @@ def is_connected() -> bool:
         return _connected
 
 
+def publish_json(topic: str, payload: dict, qos: int = 1) -> None:
+    body = json.dumps(payload, separators=(",", ":"))
+    with _connection_lock:
+        client = _client
+        connected = _connected
+    if client is None or not connected:
+        raise MqttPublishError("MQTT broker is not connected")
+    info = client.publish(topic, body, qos=qos, retain=False)
+    if info.rc != mqtt.MQTT_ERR_SUCCESS:
+        raise MqttPublishError("MQTT publish was not accepted")
+    try:
+        info.wait_for_publish(timeout=5)
+    except (RuntimeError, ValueError) as exc:
+        raise MqttPublishError(str(exc)) from exc
+    if not info.is_published():
+        raise MqttPublishError("timed out publishing MQTT command")
+
+
 def get_broker_metrics() -> dict[str, str | int | None]:
     with _connection_lock:
         return {
@@ -52,6 +75,12 @@ def _set_connected(connected: bool) -> None:
     global _connected
     with _connection_lock:
         _connected = connected
+
+
+def _set_client(client: mqtt.Client | None) -> None:
+    global _client
+    with _connection_lock:
+        _client = client
 
 
 def _on_connect(client: mqtt.Client, userdata, flags, reason_code, properties=None) -> None:
@@ -174,11 +203,15 @@ def _run() -> None:
         client.on_connect = _on_connect
         client.on_disconnect = _on_disconnect
         client.on_message = _on_message
+        _set_client(client)
         try:
             client.connect(settings.mqtt_host, settings.mqtt_port, keepalive=30)
             backoff = 1
             client.loop_forever()
         except Exception:
             log.exception("mqtt loop ended")
+        finally:
+            _set_connected(False)
+            _set_client(None)
         time.sleep(backoff)
         backoff = min(backoff * 2, 120)
