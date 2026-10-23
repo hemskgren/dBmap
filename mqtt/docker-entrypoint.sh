@@ -11,7 +11,7 @@ HEALTH_OPTIONS=/mosquitto/data/mosquitto-health.options
 
 mkdir -p /mosquitto/config /mosquitto/data "$CERT_DIR" "$RUNTIME_DIR"
 
-if [ ! -f "$CERT_DIR/ca.crt" ] || [ ! -f "$CERT_DIR/server.crt" ] || [ ! -f "$CERT_DIR/server.key" ]; then
+if [ ! -f "$CERT_DIR/ca.crt" ] || [ ! -f "$CERT_DIR/mosquitto.crt" ] || [ ! -f "$CERT_DIR/mosquitto.key" ]; then
   echo "MQTT TLS certs missing in $CERT_DIR. Run scripts/gen-mqtt-certs.sh on the host." >&2
   exit 1
 fi
@@ -23,11 +23,12 @@ fi
 rm -f /mosquitto/data/dynamic-security-password-init
 
 cp "$CERT_DIR/ca.crt" "$RUNTIME_DIR/ca.crt"
-cp "$CERT_DIR/server.crt" "$RUNTIME_DIR/server.crt"
-cp "$CERT_DIR/server.key" "$RUNTIME_DIR/server.key"
+cp "$CERT_DIR/mosquitto.crt" "$RUNTIME_DIR/mosquitto.crt"
+cp "$CERT_DIR/mosquitto.key" "$RUNTIME_DIR/mosquitto.key"
+rm -f "$RUNTIME_DIR/server.crt" "$RUNTIME_DIR/server.key"
 chown -R mosquitto:mosquitto /mosquitto/data
-chmod 0600 "$RUNTIME_DIR/server.key"
-chmod 0644 "$RUNTIME_DIR/ca.crt" "$RUNTIME_DIR/server.crt"
+chmod 0600 "$RUNTIME_DIR/mosquitto.key"
+chmod 0644 "$RUNTIME_DIR/ca.crt" "$RUNTIME_DIR/mosquitto.crt"
 
 if [ -f "$DYNSEC_HARDENED" ] && [ ! -s "$DYNSEC_CONFIG" ]; then
   echo "Dynamic-security configuration is missing after broker hardening." >&2

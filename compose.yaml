@@ -34,7 +34,7 @@ services:
         - CMD
         - python
         - -c
-        - "import ssl, urllib.request; urllib.request.urlopen('https://dbmap-web/', context=ssl.create_default_context(cafile='/certs/ca.crt'), timeout=3)"
+        - "import ssl, urllib.request; urllib.request.urlopen('https://dbmap-web/health', context=ssl.create_default_context(cafile='/certs/ca.crt'), timeout=3)"
       interval: 15s
       timeout: 5s
       retries: 5
@@ -115,9 +115,9 @@ services:
       - --port
       - "8443"
       - --ssl-certfile
-      - /certs/server.crt
+      - /certs/hub-bootstrap.crt
       - --ssl-keyfile
-      - /certs/server.key
+      - /certs/hub-bootstrap.key
     environment:
       DBMAP_ADMIN_TOKEN: ${DBMAP_ADMIN_TOKEN:?Set DBMAP_ADMIN_TOKEN in .env}
       DBMAP_VIEWER_TOKEN: ${DBMAP_VIEWER_TOKEN:?Set DBMAP_VIEWER_TOKEN in .env}
@@ -139,13 +139,17 @@ services:
       DBMAP_SITE_ID: ${DBMAP_SITE_ID:-local-01}
       DBMAP_DATABASE_URL: sqlite:////data/bootstrap.db
       DBMAP_FIRMWARE_CATALOG_DIR: /firmware-catalog
+      DBMAP_PUBLIC_BASE_PATH: ${DBMAP_PUBLIC_BASE_PATH:-}
+      DBMAP_NGINX_PROBE_PORT: ${DBMAP_HTTPS_PORT:-8443}
     volumes:
       - bootstrap-data:/data
       - firmware-catalog:/firmware-catalog
       - ./mqtt/certs:/certs:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - default
       - opa-private
+      - firmware-private
     healthcheck:
       test: ["CMD", "python", "-c", "import ssl, urllib.request; urllib.request.urlopen('https://localhost:8443/health', context=ssl.create_default_context(cafile='/certs/ca.crt'))"]
       interval: 10s
