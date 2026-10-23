@@ -14,6 +14,17 @@ class Settings(BaseSettings):
     opa_decision_url: str = "https://opa:8181/v1/data/dbmap/authz/allow"
     opa_ca_file: str = "/certs/ca.crt"
     opa_timeout_s: float = 2.0
+    public_base_path: str = ""
+    nginx_probe_host: str = "nginx"
+    nginx_probe_port: int = 8443
+    nginx_probe_name: str = "hub.local"
+    web_probe_host: str = "dbmap-web"
+    web_probe_port: int = 443
+    firmware_probe_host: str = "firmware-builder"
+    firmware_probe_port: int = 8443
+    edge_probe_timeout_s: float = 2.0
+    docker_socket: str = "/var/run/docker.sock"
+    compose_project: str = ""
 
     mqtt_host: str = "mosquitto"
     mqtt_port: int = 8883

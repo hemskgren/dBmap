@@ -82,11 +82,14 @@
       .overview-card span { display: block; color: #526078; font-size: 0.88rem; }
       .overview-card strong { display: block; margin-top: 0.35rem; font-size: 1.3rem; overflow-wrap: anywhere; }
       .component-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; }
-      .component { display: flex; justify-content: space-between; gap: 1rem; padding: 0.8rem; border: 1px solid #e3e9f1; border-radius: 8px; }
+      .component { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.8rem; border: 1px solid #e3e9f1; border-radius: 8px; }
+      .component-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.35rem; }
+      .component-actions button { padding: 0.35rem 0.55rem; font-size: 0.85rem; }
+      .component-log { max-height: 16rem; overflow: auto; margin: 0; padding: 0.75rem; border-radius: 8px; background: #f4f6f8; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.82rem; }
       .component-status { font-weight: 700; text-transform: capitalize; }
       .component-status.online { color: #157347; }
       .component-status.offline, .component-status.error { color: #a83232; }
-      .component-status.unknown, .component-status.disabled { color: #526078; }
+      .component-status.unknown, .component-status.disabled, .component-status.unavailable { color: #526078; }
       .espconnect-callout { max-width: 780px; }
       .espconnect-callout .actions { flex-wrap: wrap; }
       .distance-list { display: grid; gap: 0.35rem; padding-left: 1.25rem; }
@@ -525,7 +528,7 @@
       let refreshTimer;
       let selectedDeviceId = '';
       let activeTabName = 'hub';
-      let openComponentDetail = '';
+      let openComponentPanel = '';
       let hubAddresses = null;
       const publicBasePath = document.querySelector('meta[name="dbmap-base-path"]')?.content || '';
       const espconnectLink = document.getElementById('espconnect-link');
@@ -750,18 +753,22 @@
           row.append(el('span', component.name));
           const state = el('span', component.status, `component-status ${component.status}`);
           row.append(state);
-          const detailsKey = {
-            'Hub API': 'hub-api',
-            Database: 'database',
-            'Policy engine': 'opa',
-            'MQTT broker': 'mosquitto',
-          }[component.name];
-          if (detailsKey) {
-            const button = el('button', openComponentDetail === detailsKey ? 'Hide details' : 'Details', 'secondary');
-            button.type = 'button';
-            button.dataset.detailComponent = detailsKey;
-            button.addEventListener('click', () => toggleComponentDetails(detailsKey));
-            row.append(button);
+          const componentId = component.id;
+          if (componentId) {
+            const actions = el('div', undefined, 'component-actions');
+            const detailsButton = el('button', openComponentPanel === `${componentId}:details` ? 'Hide details' : 'Details', 'secondary');
+            detailsButton.type = 'button';
+            detailsButton.dataset.detailComponent = componentId;
+            detailsButton.addEventListener('click', () => toggleComponentPanel(componentId, 'details'));
+            actions.append(detailsButton);
+            if (component.logs && currentRole === 'admin') {
+              const logsButton = el('button', openComponentPanel === `${componentId}:logs` ? 'Hide logs' : 'Logs', 'secondary');
+              logsButton.type = 'button';
+              logsButton.dataset.logComponent = componentId;
+              logsButton.addEventListener('click', () => toggleComponentPanel(componentId, 'logs'));
+              actions.append(logsButton);
+            }
+            row.append(actions);
           }
           components.append(row);
         }
@@ -821,6 +828,15 @@
             ['Statistics received', formatSeen(details.updated_at)],
           ]) addDetailField(metadata, label, value);
           panel.append(metadata);
+        } else if (component === 'nginx' || component === 'web' || component === 'firmware-builder') {
+          for (const [label, value] of [
+            ['Status', details.status], ['Listener', details.listener], ['Browser route', details.browser_route],
+            ['Profile', details.profile], ['Check', details.check], ['HTTP status', details.http_status],
+            ['Message', details.message],
+          ]) {
+            if (value !== null && value !== undefined && value !== '') addDetailField(metadata, label, value);
+          }
+          panel.append(metadata);
         } else {
           for (const [label, value] of [
             ['Status', details.status], ['Endpoint security', details.endpoint_scheme?.toUpperCase()],
@@ -831,27 +847,47 @@
         }
       }
 
-      async function toggleComponentDetails(component) {
+      function renderComponentLogs(body) {
         const panel = document.getElementById('component-details');
-        if (openComponentDetail === component && !panel.hidden) {
+        panel.replaceChildren();
+        panel.append(el('h4', `${body.service} logs`));
+        panel.append(el('p', `Latest container log lines, up to ${body.line_limit || 10}.`, 'notice'));
+        const lines = Array.isArray(body.lines) ? body.lines : [];
+        panel.append(el('pre', lines.join('\n') || 'No recent log lines.', 'component-log'));
+      }
+
+      function syncComponentButtons() {
+        document.querySelectorAll('[data-detail-component]').forEach((button) => {
+          button.textContent = openComponentPanel === `${button.dataset.detailComponent}:details` ? 'Hide details' : 'Details';
+        });
+        document.querySelectorAll('[data-log-component]').forEach((button) => {
+          button.textContent = openComponentPanel === `${button.dataset.logComponent}:logs` ? 'Hide logs' : 'Logs';
+        });
+      }
+
+      async function toggleComponentPanel(component, mode) {
+        const panel = document.getElementById('component-details');
+        const token = `${component}:${mode}`;
+        if (openComponentPanel === token && !panel.hidden) {
           panel.hidden = true;
-          openComponentDetail = '';
-          document.querySelectorAll('[data-detail-component]').forEach((button) => {
-            button.textContent = 'Details';
-          });
+          openComponentPanel = '';
+          syncComponentButtons();
           return;
         }
-        openComponentDetail = component;
-        document.querySelectorAll('[data-detail-component]').forEach((button) => {
-          button.textContent = button.dataset.detailComponent === component ? 'Hide details' : 'Details';
-        });
+        openComponentPanel = token;
+        syncComponentButtons();
         panel.hidden = false;
-        panel.replaceChildren(el('p', 'Loading details…', 'notice'));
+        panel.replaceChildren(el('p', mode === 'logs' ? 'Loading logs…' : 'Loading details…', 'notice'));
         try {
-          const details = await api(`/api/v1/hub/components/${component}/details`);
-          if (openComponentDetail === component) renderComponentDetails(component, details);
+          if (mode === 'logs') {
+            const body = await api(`/api/v1/hub/components/${component}/logs`);
+            if (openComponentPanel === token) renderComponentLogs(body);
+          } else {
+            const details = await api(`/api/v1/hub/components/${component}/details`);
+            if (openComponentPanel === token) renderComponentDetails(component, details);
+          }
         } catch (error) {
-          if (openComponentDetail === component) panel.replaceChildren(el('p', error.message, 'notice error'));
+          if (openComponentPanel === token) panel.replaceChildren(el('p', error.message, 'notice error'));
         }
       }
 

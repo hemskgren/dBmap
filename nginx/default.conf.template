@@ -15,8 +15,8 @@ server {
     set $firmware_builder_upstream firmware-builder:8443;
     set $dbmap_public_base_path "${DBMAP_PUBLIC_BASE_PATH}";
 
-    ssl_certificate /certs/server.crt;
-    ssl_certificate_key /certs/server.key;
+    ssl_certificate /certs/nginx.crt;
+    ssl_certificate_key /certs/nginx.key;
 
     error_page 404 /dbmap-404.html;
     error_page 500 502 503 504 /dbmap-unavailable.html;
@@ -86,7 +86,7 @@ server {
         if ($request_base != $dbmap_public_base_path) { return 404; }
         proxy_pass https://$hub_bootstrap_upstream$health_uri;
         proxy_ssl_server_name on;
-        proxy_ssl_name hub.local;
+        proxy_ssl_name hub-bootstrap;
         proxy_ssl_verify on;
         proxy_ssl_trusted_certificate /certs/ca.crt;
         proxy_set_header Host $host;
@@ -122,7 +122,7 @@ server {
         if ($api_uri !~ ^/api/v1/) { return 404; }
         proxy_pass https://$hub_bootstrap_upstream$api_uri$is_args$args;
         proxy_ssl_server_name on;
-        proxy_ssl_name hub.local;
+        proxy_ssl_name hub-bootstrap;
         proxy_ssl_verify on;
         proxy_ssl_trusted_certificate /certs/ca.crt;
         proxy_set_header Host $host;

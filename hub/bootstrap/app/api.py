@@ -19,7 +19,9 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from app import (
+    container_logs,
     deployment_service,
+    edge_status,
     firmware_catalog,
     group_service,
     identity_service,
@@ -695,12 +697,7 @@ def get_hub_status(db: Session = Depends(get_db)) -> dict:
                 if settings.public_hub_url.strip() else None
             ),
         },
-        "components": [
-            {"name": "Hub API", "status": "online"},
-            {"name": "Database", "status": "online"},
-            {"name": "Policy engine", "status": "online"},
-            {"name": "MQTT broker", "status": mqtt_status},
-        ],
+        "components": _hub_components(mqtt_status, edge_status.statuses()),
         "summary": {
             "device_count": len(nodes),
             "devices_by_type": dict(sorted(Counter(node.node_type for node in nodes).items())),
@@ -727,6 +724,9 @@ def get_hub_status(db: Session = Depends(get_db)) -> dict:
     dependencies=[Depends(require_policy("hub.status.read", "hub"))],
 )
 def get_hub_component_details(component: str, db: Session = Depends(get_db)) -> dict:
+    probed = edge_status.detail(component)
+    if probed is not None:
+        return probed
     if component == "hub-api":
         return {
             "service": "Hub API",
@@ -775,6 +775,33 @@ def get_hub_component_details(component: str, db: Session = Depends(get_db)) -> 
         row_count = db.execute(text(f"SELECT COUNT(*) FROM {quoted_name}")).scalar_one()
         details["tables"].append({"name": table_name, "rows": row_count})
     return details
+
+
+def _hub_components(mqtt_status: str, edge: dict[str, str]) -> list[dict]:
+    return [
+        {"id": "nginx", "name": "Nginx", "status": edge["nginx"], "logs": True},
+        {"id": "web", "name": "Web", "status": edge["web"], "logs": True},
+        {"id": "hub-api", "name": "Hub API", "status": "online", "logs": True},
+        {"id": "database", "name": "Database", "status": "online", "logs": False},
+        {"id": "opa", "name": "Policy engine", "status": "online", "logs": True},
+        {"id": "mosquitto", "name": "MQTT broker", "status": mqtt_status, "logs": True},
+        {"id": "firmware-builder", "name": "Firmware builder", "status": edge["firmware-builder"], "logs": True},
+    ]
+
+
+@router.get(
+    "/api/v1/hub/components/{component}/logs",
+    dependencies=[Depends(require_policy("hub.logs.read", "hub"))],
+)
+def get_hub_component_logs(component: str) -> dict:
+    try:
+        return container_logs.read_tail(component)
+    except container_logs.UnknownComponent:
+        raise HTTPException(status_code=404, detail="unknown Hub component") from None
+    except container_logs.ContainerNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except container_logs.ContainerLogsUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
 
 
 @router.post("/api/v1/nodes", response_model=CreateNodeResponse, dependencies=[Depends(require_policy("nodes.create", "nodes"))])

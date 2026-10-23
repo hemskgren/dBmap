@@ -12,6 +12,21 @@ test_admin_can_perform_any_action if {
 	}
 }
 
+test_viewer_can_read_hub_status_but_not_container_logs if {
+	authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "hub.status.read",
+		"resource": {"type": "hub"},
+		"context": {},
+	}
+	not authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "hub.logs.read",
+		"resource": {"type": "hub"},
+		"context": {},
+	}
+}
+
 test_viewer_can_read_summary_and_session if {
 	authz.allow with input as {
 		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
