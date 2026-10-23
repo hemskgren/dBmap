@@ -12,7 +12,7 @@ server {
     resolver 127.0.0.11 valid=10s ipv6=off;
     set $hub_bootstrap_upstream hub-bootstrap:8443;
     set $dbmap_web_upstream dbmap-web:443;
-    set $firmware_builder_upstream firmware-builder:8090;
+    set $firmware_builder_upstream firmware-builder:8443;
     set $dbmap_public_base_path "${DBMAP_PUBLIC_BASE_PATH}";
 
     ssl_certificate /certs/server.crt;
@@ -96,10 +96,15 @@ server {
         proxy_set_header X-Forwarded-Port $server_port;
     }
 
+    # Proxy firmware builder API via HTTPS (firmware-builder terminates TLS with its own cert)
     location ~ ^(?<build_request_base>/[^/]+(?:/[^/]+)*)?(?<build_api_uri>/api/v1/firmware/(?:targets|builds(?:/.*)?))$ {
         if ($build_request_base != $dbmap_public_base_path) { return 404; }
         error_page 502 503 504 = @firmware_builder_unavailable;
-        proxy_pass http://$firmware_builder_upstream$build_api_uri$is_args$args;
+        proxy_pass https://$firmware_builder_upstream$build_api_uri$is_args$args;
+        proxy_ssl_server_name on;
+        proxy_ssl_name firmware-builder;
+        proxy_ssl_verify on;
+        proxy_ssl_trusted_certificate /certs/ca.crt;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto https;

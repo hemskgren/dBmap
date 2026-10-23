@@ -80,11 +80,6 @@ services:
       context: ./nginx
     platform: linux/amd64
     restart: unless-stopped
-    depends_on:
-      dbmap-web:
-        condition: service_started
-      hub-bootstrap:
-        condition: service_started
     ports:
       - "${DBMAP_LAN_IP:?Set DBMAP_LAN_IP in .env}:${DBMAP_HTTPS_PORT:-8443}:${DBMAP_HTTPS_PORT:-8443}"
     environment:
@@ -170,7 +165,7 @@ services:
       DBMAP_FIRMWARE_ROOT: /firmware
       DBMAP_FIRMWARE_ARTIFACTS: /artifacts
     expose:
-      - "8090"
+      - "8443"
     volumes:
       - ./firmware:/firmware:ro
       - ./mqtt/certs:/certs:ro
@@ -178,7 +173,7 @@ services:
     networks:
       - firmware-private
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "import ssl, urllib.request; urllib.request.urlopen('https://firmware-builder:8443/health', context=ssl.create_default_context(cafile='/certs/ca.crt'), timeout=3)"]
       interval: 15s
       timeout: 5s
       retries: 5

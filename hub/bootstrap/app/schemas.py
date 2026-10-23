@@ -167,6 +167,8 @@ class NodeLifecycleBody(BaseModel):
 class OutputCommandBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    protocol_version: Literal[1] = 1
+    message_type: Literal["output-test"] | None = None
     action: Literal["RELAY_1_ON", "RELAY_1_OFF"]
     duration_s: int | None = Field(default=None, ge=1, le=3600)
     action_type: Literal["output-test"] | None = None
@@ -188,8 +190,17 @@ class OutputCommandBody(BaseModel):
                 raise ValueError("RELAY_1_ON requires duration_s")
         elif self.duration_s is not None:
             raise ValueError("RELAY_1_OFF does not take duration_s")
-        if self.action_type is not None and self.action != "RELAY_1_ON":
-            raise ValueError("action_type is only valid for RELAY_1_ON")
+        if (
+            self.action_type is not None
+            and self.message_type is not None
+            and self.action_type != self.message_type
+        ):
+            raise ValueError("action_type and message_type must match")
+        message_type = self.message_type or self.action_type
+        if message_type is not None and self.action != "RELAY_1_ON":
+            raise ValueError("message_type is only valid for RELAY_1_ON")
+        if message_type != self.message_type:
+            return self.model_copy(update={"message_type": message_type})
         return self
 
 
@@ -198,6 +209,8 @@ class OutputCommandView(BaseModel):
     topic: str
     action: str
     duration_s: int | None = None
+    protocol_version: Literal[1] = 1
+    message_type: str | None = None
     action_type: str | None = None
     expires_at_utc: datetime
     published: Literal[True] = True

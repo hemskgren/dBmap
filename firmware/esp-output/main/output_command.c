@@ -17,7 +17,7 @@
 #include "freertos/portmacro.h"
 
 static const char *TAG = "output_cmd";
-static const gpio_num_t RELAY_1_GPIO = GPIO_NUM_15;
+static const gpio_num_t RELAY_1_GPIO = GPIO_NUM_16;
 static const gpio_num_t ONBOARD_LED_GPIO = GPIO_NUM_2;
 static const int64_t LED_UPDATE_INTERVAL_US = 50000;
 static const int64_t OUTPUT_TEST_PATTERN_PERIOD_US = 2000000;
@@ -143,10 +143,45 @@ void output_handle_command(const char *payload, int len, void *ctx)
         ESP_LOGW(TAG, "command payload is not valid JSON");
         return;
     }
+    const cJSON *protocol_version = cJSON_GetObjectItemCaseSensitive(json, "protocol_version");
+    if (!cJSON_IsNumber(protocol_version) || protocol_version->valuedouble != 1.0) {
+        if (protocol_version == NULL) {
+            ESP_LOGW(TAG, "missing protocol_version; ignoring command");
+        } else if (cJSON_IsNumber(protocol_version)) {
+            ESP_LOGW(TAG, "unsupported protocol_version=%g; ignoring command", protocol_version->valuedouble);
+        } else if (cJSON_IsString(protocol_version) && protocol_version->valuestring != NULL) {
+            ESP_LOGW(TAG, "unsupported protocol_version=%s; ignoring command", protocol_version->valuestring);
+        } else {
+            ESP_LOGW(TAG, "unsupported protocol_version; ignoring command");
+        }
+        cJSON_Delete(json);
+        return;
+    }
     const cJSON *action = cJSON_GetObjectItemCaseSensitive(json, "action");
     const char *act = cJSON_IsString(action) ? action->valuestring : "";
-    const cJSON *action_type = cJSON_GetObjectItemCaseSensitive(json, "action_type");
-    const char *type = cJSON_IsString(action_type) ? action_type->valuestring : "";
+    // ----- Q‑03 expiry handling ------------------------------------------------
+    const cJSON *expires = cJSON_GetObjectItemCaseSensitive(json, "expires_at_utc");
+    if (cJSON_IsString(expires) && expires->valuestring != NULL) {
+        // Parse ISO‑8601 timestamp to epoch microseconds.
+        int64_t expires_us = 0;
+        // dbmap_time_parse_iso8601 returns ESP_OK on success (if available)
+        esp_err_t parse_res = dbmap_time_parse_iso8601(expires->valuestring, &expires_us);
+        if (parse_res == ESP_OK) {
+            // Get current UTC epoch in microseconds.
+            int64_t now_us = 0;
+            dbmap_time_get_epoch_us(&now_us);
+            if (now_us >= expires_us) {
+                ESP_LOGW(TAG, "received expired command (expires_at_utc=%s); ignoring", expires->valuestring);
+                cJSON_Delete(json);
+                return;
+            }
+        } else {
+            ESP_LOGW(TAG, "failed to parse expires_at_utc=%s; ignoring expiry check", expires->valuestring);
+        }
+    }
+    // --------------------------------------------------------------------------
+    const cJSON *message_type = cJSON_GetObjectItemCaseSensitive(json, "message_type");
+    const char *type = cJSON_IsString(message_type) ? message_type->valuestring : "";
     const cJSON *duration = cJSON_GetObjectItemCaseSensitive(json, "duration_s");
     const char *result = "unsupported_action";
     bool output_ok = true;
@@ -171,8 +206,8 @@ void output_handle_command(const char *payload, int len, void *ctx)
     cJSON_AddStringToObject(ack, "node_id", cfg->identity.node_id);
     cJSON_AddStringToObject(ack, "action", act);
     cJSON_AddStringToObject(ack, "result", result);
-    if (cJSON_IsString(action_type)) cJSON_AddStringToObject(ack, "action_type", type);
-    if (duration_s > 0) cJSON_AddNumberToObject(ack, "duration_s", duration_s);
+    if (cJSON_IsString(message_type)) cJSON_AddStringToObject(ack, "message_type", type);
+    cJSON_AddNumberToObject(ack, "protocol_version", 1);
     char *s = cJSON_PrintUnformatted(ack);
     if (s != NULL) {
         ESP_LOGI(TAG, "command result action=%s result=%s", act, result);

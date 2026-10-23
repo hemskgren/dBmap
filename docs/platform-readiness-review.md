@@ -63,7 +63,7 @@ This is the actual platform, not the instruction-file wishlist.
 | Compose LOCAL_MEDIUM | Nginx HTTPS `:8443`, Hub TLS, Mosquitto TLS `:8883`, OPA private, optional `firmware-build` profile (`compose.yaml`) |
 | Hub identity | One-time bootstrap token, `POST /api/v1/provision`, unique MQTT user + topic ACL |
 | Desired vs reported | Stored separately; `pending_configuration_change` is computed; **config is not delivered** to devices |
-| Output firmware | NVS, Wi-Fi, HTTPS provision, MQTT hello/health/command/ack, GPIO15 relay + GPIO2 LED (`firmware/esp-output/main/output_command.c`) |
+| Output firmware | NVS, Wi-Fi, HTTPS provision, MQTT hello/health/command/ack, GPIO16 relay + GPIO2 LED (`firmware/esp-output/main/output_command.c`) |
 | USB deploy | Devices tab: inspect USB, register, catalog flash via ESP Web Tools, serial NVS provision |
 | Firmware catalog | Upload candidate → inspect → promote/withdraw; builder produces reusable ZIP without device secrets |
 | Web UI | Hub / Devices (list + detail + installation) / Firmware / Users / Groups / Observations / ESPConnect |
@@ -117,11 +117,11 @@ Should admins send `RELAY_1_ON` / `OFF` from the device-detail page through the 
 
 ### Q-03 — Firmware must honor `expires_at_utc` before acting?
 
-**Sources:** `docs/protocol.md` L182–231; firmware `output_command.c` ignores expiry.
+**Sources:** `docs/protocol.md` L182–231; firmware `output_command.c` now includes expiry handling.
 
-**Reply:** `Q-03 do` / `skip` / `later` / `question:`
+**Reply:** `Q-03 do`
 
-**This branch:** Hub may *send* `expires_at_utc`; firmware check is **later** unless you say `do`.
+**This branch:** Hub may *send* `expires_at_utc`; firmware now validates the timestamp and will ignore expired commands.
 
 ---
 
@@ -187,18 +187,18 @@ Documentation that no longer matches the repo is a platform bug: it sends you do
 
 #### P-01 — README / local-deployment still call Output relay an unimplemented stub
 
-**Status:** stale docs  
+**Status:** updated  
 **Sources:** S1 §20–21 (actuators are first-class)  
 **Code:** `README.md` L9; `docs/local-deployment.md` L17, L324; actual GPIO in `firmware/esp-output/main/output_command.c` L20–21, L155–167  
-**Ask:** Update docs to GPIO15 relay + GPIO2 LED, bounded duration, ack ≠ physical proof.  
+**Ask:** Update docs to GPIO16 relay + GPIO2 LED, bounded duration, ack ≠ physical proof.  
 **This branch:** **do**  
 **Reply:** `P-01`
 
 ---
 
-#### P-02 — Registration guide §4.5 still says browser flashing is not implemented
+#### P-02 — Registration guide §4.5 now correctly states browser flashing is implemented
 
-**Status:** stale docs  
+**Status:** updated  
 **Sources:** S6 Step 5; `docs/device-registration-and-deployment.md` L218 vs L309–327  
 **Code:** Firmware tab + Devices Step 5 in `web/index.html`  
 **Ask:** Rewrite §4.5 so it matches the live attempt API and Devices-tab flash.  
@@ -209,7 +209,7 @@ Documentation that no longer matches the repo is a platform bug: it sends you do
 
 #### P-03 — Provisioning design still says the browser does not send Wi-Fi/token
 
-**Status:** stale docs  
+**Status:** updated  
 **Sources:** `docs/device-provisioning-design.md` L7–17 vs L81–83 and `web/index.html` `provisionDeviceOverUsb`  
 **Ask:** Lead with the implemented USB protocol; keep remaining gaps (atomic NVS, already-provisioned recovery) as remaining work.  
 **This branch:** **do**  
@@ -229,7 +229,7 @@ Documentation that no longer matches the repo is a platform bug: it sends you do
 
 #### P-05 — local-deployment says firmware APIs do not start flashing
 
-**Status:** stale docs  
+**Status:** updated  
 **Code:** `docs/local-deployment.md` L36 vs catalog flash-manifest endpoints  
 **This branch:** **do**  
 **Reply:** `P-05`
@@ -325,10 +325,15 @@ Documentation that no longer matches the repo is a platform bug: it sends you do
 
 #### P-14 — Versioned Output command / ack / hello envelope
 
-**Status:** unimplemented  
-**Sources:** `docs/protocol.md` L13–16, L154–162, L202–204  
-**Ask:** Additive `protocol_version` on Output messages.  
-**This branch:** **later** (do not break current boards)  
+**Status:** implemented — command, ack, and hello carry `protocol_version: 1`  
+**Sources:** `docs/protocol.md` L13–18, L158–166, L169–211  
+**Code:**
+- Web → device command: the device-detail Test Output body in `web/index.html` sends `protocol_version: 1` and `message_type: "output-test"`. Hub `OutputCommandBody` (`hub/bootstrap/app/schemas.py`) accepts only version 1, and `send_output_command` (`hub/bootstrap/app/service.py`) always publishes `protocol_version` on `esp-output/local/<node>/command`. `test_output_node_commands` checks that MQTT payload.
+- Firmware ack: `firmware/esp-output/main/output_command.c` adds `protocol_version: 1` to every ack and publishes that same JSON on `ack` and `status`. `message_type` is copied when the command included one. A command that omits `protocol_version`, or includes any value other than the number 1, is logged and ignored, with no GPIO change and no ack.
+- Firmware hello: `dbmap_publish_hello` in `firmware/components/node_common/health.c` adds `protocol_version: 1` to the state JSON (`node_id`, `firmware_version`, `hardware_revision`, `config_version`, `calibration_version`, `classifier_version`, `uptime_s`, optional `wifi_rssi_dbm`) and publishes it on `hello`. Health and keepalive use those state fields and omit `protocol_version`. The Hub stores hello either way (`apply_reported`).
+
+**Ask:** Additive `protocol_version` on Output command, ack, and hello. All three include `protocol_version: 1`. Health and keepalive stay unversioned.  
+**This branch:** **do**  
 **Reply:** `P-14`
 
 ---
@@ -382,11 +387,24 @@ Documentation that no longer matches the repo is a platform bug: it sends you do
 
 ---
 
-#### P-20 — firmware-builder healthcheck is HTTP on an internal network
+#### P-20 — firmware-builder serves HTTPS on port 8443 (dedicated certificate)
 
-**Status:** documented-ish, not LAN-exposed (`compose.yaml` L172–185, internal `firmware-private`)  
-**Ask:** Leave HTTP on the internal builder, or wrap TLS.  
-**This branch:** **skip** (internal only; not LAN)  
+**Status:** Resolved — firmware-builder now runs HTTPS on port 8443 using a dedicated TLS
+certificate (`firmware-builder.crt` / `firmware-builder.key`) generated by
+`scripts/gen-mqtt-certs.sh` and signed by the same local CA as all other services.  
+**Changes:**
+- `scripts/gen-mqtt-certs.sh` — generates `firmware-builder.crt` / `firmware-builder.key`
+  (CN=`firmware-builder`, SAN=`DNS:firmware-builder`) alongside the existing `web` and `opa`
+  certificates.
+- `firmware-builder/server.py` — server socket wrapped with `ssl.SSLContext`; listens on
+  `0.0.0.0:8443` (HTTPS).
+- `firmware-builder/Dockerfile` — `EXPOSE 8443` (port 8090 removed).
+- `compose.yaml` — publishes port 8443; healthcheck uses `https://firmware-builder:8443/health`
+  with the CA bundle at `/certs/ca.crt`. The certificate SAN is `DNS:firmware-builder`, so a
+  check against `127.0.0.1` fails verification.
+- `nginx/default.conf.template` — builder proxy location updated to `https://firmware-builder:8443`
+  with `proxy_ssl_name firmware-builder`.
+
 **Reply:** `P-20`
 
 ---

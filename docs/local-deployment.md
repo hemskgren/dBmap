@@ -14,7 +14,7 @@ The architecture document still says “Pi first” and “V0-A single Ear”. H
 
 `hub-bootstrap` owns node identity, one-time bootstrap tokens, desired/reported state, and initial MQTT telemetry ingestion.
 
-ESP-Output firmware supports NVS identity/configuration, Wi-Fi STA, HTTPS provisioning, MQTT hello/health/command/ack, and relay/audio stubs (no pin map yet).
+ESP-Output firmware supports NVS identity/configuration, Wi-Fi STA, HTTPS provisioning, MQTT hello/health/command/ack, and relay (GPIO16) / audio stubs (no pin map yet).
 
 The broker is TLS-only on port `8883`; the web UI and API are served through Nginx over HTTPS on port `8443` by default. `DBMAP_HTTPS_PORT` can change that listener and host port together. Hub bootstrap, web, and OPA listeners are internal to Compose. Each provisioned node gets a unique MQTT login and topic-scoped permissions. Hub services use a separate broker identity. The local CA is trusted by firmware and clients; keep its private key and `.env` secrets private.
 
@@ -318,10 +318,10 @@ Replace `out-xxx` with the actual node ID from the API response, written in lowe
 mosquitto_pub --cafile mqtt/certs/ca.crt -h "$DBMAP_LAN_IP" -p 8883 \
   -u hub-bootstrap -P "$DBMAP_MQTT_HUB_PASSWORD" \
   -t esp-output/local/out-xxx/command -q 1 \
-  -m '{"action":"RELAY_1_ON","duration_s":5}'
+  -m '{"protocol_version":1,"action":"RELAY_1_ON","duration_s":5}'
 ```
 
-The relay remains a firmware stub. This verifies command delivery, not physical switching.
+`protocol_version` must be the number 1. The firmware logs and ignores a command that omits it or uses another value, and it does not drive the relay or publish an acknowledgement. This verifies command delivery, not physical switching.
 
 ## Moving from the earlier lab setup
 

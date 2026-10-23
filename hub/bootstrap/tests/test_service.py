@@ -680,9 +680,10 @@ def test_output_node_commands(monkeypatch) -> None:
     test_cmd = client.post(
         f"/api/v1/nodes/{node_id}/commands",
         json={
+            "protocol_version": 1,
+            "message_type": "output-test",
             "action": "RELAY_1_ON",
             "duration_s": 5,
-            "action_type": "output-test",
             "expires_at_utc": expires_at,
         },
         headers=admin_headers,
@@ -692,16 +693,28 @@ def test_output_node_commands(monkeypatch) -> None:
     assert cmd_data["node_id"] == node_id
     assert cmd_data["action"] == "RELAY_1_ON"
     assert cmd_data["duration_s"] == 5
+    assert cmd_data["protocol_version"] == 1
+    assert cmd_data["message_type"] == "output-test"
     assert cmd_data["action_type"] == "output-test"
     assert cmd_data["published"] is True
     assert len(published_messages) == 1
     topic, payload, qos = published_messages[0]
     assert topic == f"esp-output/local/{node_id.lower()}/command"
+    assert payload["protocol_version"] == 1
+    assert payload["message_type"] == "output-test"
     assert payload["action"] == "RELAY_1_ON"
     assert payload["duration_s"] == 5
-    assert payload["action_type"] == "output-test"
     assert "expires_at_utc" in payload
     assert qos == 1
+
+    alias_cmd = client.post(
+        f"/api/v1/nodes/{node_id}/commands",
+        json={"action": "RELAY_1_ON", "duration_s": 5, "action_type": "output-test"},
+        headers=admin_headers,
+    )
+    assert alias_cmd.status_code == 200, alias_cmd.text
+    assert published_messages[-1][1]["message_type"] == "output-test"
+    assert published_messages[-1][1]["protocol_version"] == 1
 
     off_cmd = client.post(
         f"/api/v1/nodes/{node_id}/commands",
@@ -709,8 +722,8 @@ def test_output_node_commands(monkeypatch) -> None:
         headers=admin_headers,
     )
     assert off_cmd.status_code == 200, off_cmd.text
-    assert len(published_messages) == 2
-    topic, payload, qos = published_messages[1]
+    assert len(published_messages) == 3
+    topic, payload, qos = published_messages[2]
     assert payload["action"] == "RELAY_1_OFF"
     assert "duration_s" not in payload
 

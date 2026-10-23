@@ -8,7 +8,7 @@
 #include "esp_timer.h"
 #include "sdkconfig.h"
 
-static char *build_keepalive(const dbmap_effective_t *cfg)
+static cJSON *build_state(const dbmap_effective_t *cfg)
 {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "node_id", cfg->identity.node_id[0] ? cfg->identity.node_id : "UNPROVISIONED");
@@ -22,6 +22,12 @@ static char *build_keepalive(const dbmap_effective_t *cfg)
     if (dbmap_wifi_get_rssi(&rssi_dbm) == ESP_OK) {
         cJSON_AddNumberToObject(o, "wifi_rssi_dbm", rssi_dbm);
     }
+    return o;
+}
+
+static char *build_keepalive(const dbmap_effective_t *cfg)
+{
+    cJSON *o = build_state(cfg);
     char *s = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     return s;
@@ -29,7 +35,10 @@ static char *build_keepalive(const dbmap_effective_t *cfg)
 
 esp_err_t dbmap_publish_hello(const dbmap_effective_t *cfg)
 {
-    char *json = build_keepalive(cfg);
+    cJSON *o = build_state(cfg);
+    cJSON_AddNumberToObject(o, "protocol_version", 1);
+    char *json = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
     esp_err_t err = dbmap_mqtt_publish_json(cfg->topics.hello, json, 1);
     free(json);
     return err;

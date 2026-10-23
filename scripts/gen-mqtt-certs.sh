@@ -43,7 +43,7 @@ if [[ ! -e "$OUT/ca.crt" ]]; then
     -addext "keyUsage=critical,keyCertSign,cRLSign"
 fi
 
-SERVER_SAN="DNS:hub.local,DNS:mosquitto,DNS:localhost,IP:127.0.0.1,IP:${LAN_IP}"
+SERVER_SAN="DNS:hub.local,DNS:localhost,IP:127.0.0.1,IP:${LAN_IP}"
 for host in "$PUBLIC_HUB_HOST" "$EXTERNAL_MQTT_HOST"; do
   [[ -z "$host" || "$host" == "hub.local" ]] && continue
   if [[ "$host" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
@@ -68,6 +68,9 @@ openssl req -newkey rsa:2048 -nodes \
 openssl x509 -req -in "$OUT/server.csr" -CA "$OUT/ca.crt" -CAkey "$OUT/ca.key" \
   -CAcreateserial -out "$OUT/server.crt" -days 825 -copy_extensions copy
 
+# print sans for verification
+openssl x509 -in "$OUT/server.crt" -noout -ext subjectAltName
+
 openssl req -newkey rsa:2048 -nodes \
   -keyout "$OUT/web.key" \
   -out "$OUT/web.csr" \
@@ -79,6 +82,9 @@ openssl req -newkey rsa:2048 -nodes \
 
 openssl x509 -req -in "$OUT/web.csr" -CA "$OUT/ca.crt" -CAkey "$OUT/ca.key" \
   -CAcreateserial -out "$OUT/web.crt" -days 825 -copy_extensions copy
+
+# print sans for verification
+openssl x509 -in "$OUT/web.crt" -noout -ext subjectAltName
 
 openssl req -newkey rsa:2048 -nodes \
   -keyout "$OUT/opa.key" \
@@ -92,6 +98,24 @@ openssl req -newkey rsa:2048 -nodes \
 openssl x509 -req -in "$OUT/opa.csr" -CA "$OUT/ca.crt" -CAkey "$OUT/ca.key" \
   -CAcreateserial -out "$OUT/opa.crt" -days 825 -copy_extensions copy
 
-rm -f "$OUT/server.csr" "$OUT/web.csr" "$OUT/opa.csr"
-chmod 600 "$OUT/ca.key" "$OUT/server.key" "$OUT/web.key" "$OUT/opa.key"
+# print sans for verification
+openssl x509 -in "$OUT/opa.crt" -noout -ext subjectAltName
+
+openssl req -newkey rsa:2048 -nodes \
+  -keyout "$OUT/firmware-builder.key" \
+  -out "$OUT/firmware-builder.csr" \
+  -subj "/CN=firmware-builder" \
+  -addext "subjectAltName=DNS:firmware-builder" \
+  -addext "basicConstraints=critical,CA:FALSE" \
+  -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+  -addext "extendedKeyUsage=serverAuth"
+
+openssl x509 -req -in "$OUT/firmware-builder.csr" -CA "$OUT/ca.crt" -CAkey "$OUT/ca.key" \
+  -CAcreateserial -out "$OUT/firmware-builder.crt" -days 825 -copy_extensions copy
+
+# print sans for verification
+openssl x509 -in "$OUT/firmware-builder.crt" -noout -ext subjectAltName
+
+rm -f "$OUT/server.csr" "$OUT/web.csr" "$OUT/opa.csr" "$OUT/firmware-builder.csr"
+chmod 600 "$OUT/ca.key" "$OUT/server.key" "$OUT/web.key" "$OUT/opa.key" "$OUT/firmware-builder.key"
 echo "Wrote dBmap TLS material to $OUT"
