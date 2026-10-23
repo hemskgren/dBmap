@@ -150,6 +150,17 @@ def test_sdkconfig_string_reads_firmware_version(tmp_path):
     assert server._sdkconfig_string(sdkconfig, "CONFIG_DBMAP_FIRMWARE_VERSION") == "1.2.3"
 
 
+def test_short_error_keeps_job_list_to_one_line():
+    dump = "ESP-IDF firmware build failed.\n[969/1011] Building C object esp-idf/spiffs\n" + ("x" * 400)
+    assert server._short_error(dump) == "ESP-IDF firmware build failed."
+    assert "Building C object" not in server._short_error(dump)
+    long_line = "error: " + ("a" * 200)
+    summary = server._short_error(long_line)
+    assert "\n" not in summary
+    assert len(summary) <= 160
+    assert summary.endswith("…")
+
+
 def test_toolchain_check_requires_pinned_esp_idf_version(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_run_stage", lambda command, cwd, log_path: (0, "ESP-IDF v5.4.4"))
     server._check_toolchain("output-esp32", tmp_path)

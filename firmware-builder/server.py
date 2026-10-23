@@ -13,6 +13,7 @@ import uuid
 import zipfile
 from collections import deque
 from datetime import datetime, timezone
+import ssl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -99,6 +100,13 @@ def _append_log(path: Path, message: str) -> None:
             log_file.write(f"\n{message}\n")
     except OSError:
         pass
+
+
+def _short_error(error: BaseException | str, limit: int = 160) -> str:
+    text = str(error).strip().splitlines()[0] if str(error).strip() else "Build failed."
+    if len(text) > limit:
+        return text[: limit - 1].rstrip() + "…"
+    return text
 
 
 def _run_stage(command: list[str], cwd: Path, log_path: Path) -> tuple[int, str]:
@@ -260,7 +268,7 @@ def _release_firmware_id(manifest: dict, artifact_sha256: str) -> str:
 def _check_toolchain(target: str, work_dir: Path, log_path: Path) -> None:
     code, output = _run_stage(["idf.py", "--version"], work_dir, log_path)
     if code != 0 or TARGETS[target]["idf_version"] not in output:
-        raise RuntimeError("The pinned ESP-IDF toolchain check failed.\n" + output)
+        raise RuntimeError("The pinned ESP-IDF toolchain check failed.")
 
 
 def _build(job_id: str, target: str) -> None:
@@ -302,7 +310,7 @@ def _build(job_id: str, target: str) -> None:
         _persist(job)
         code, output = _run_stage(["idf.py", "set-target", TARGETS[target]["chip"]], work_dir, log_path)
         if code != 0:
-            raise RuntimeError("ESP-IDF target configuration failed.\n" + output)
+            raise RuntimeError("ESP-IDF target configuration failed.")
         _clear_device_secrets(work_dir / "sdkconfig")
         sdkconfig = work_dir / "sdkconfig"
         if not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", NTP_SERVER):
@@ -318,7 +326,7 @@ def _build(job_id: str, target: str) -> None:
         _persist(job)
         code, output = _run_stage(["idf.py", "build"], work_dir, log_path)
         if code != 0:
-            raise RuntimeError("ESP-IDF firmware build failed.\n" + output)
+            raise RuntimeError("ESP-IDF firmware build failed.")
 
         generated_config = (work_dir / "sdkconfig").read_text(encoding="utf-8")
         if any(f'{name}=""' not in generated_config for name in SECRET_CONFIG):
@@ -371,8 +379,9 @@ def _build(job_id: str, target: str) -> None:
         _persist(job)
         shutil.rmtree(artifact_dir, ignore_errors=True)
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError, zipfile.BadZipFile) as error:
-        _append_log(log_path, f"Build failed: {error}")
-        job.update(status="failed", stage="failed", error=str(error), finished_at=time.time())
+        summary = _short_error(error)
+        _append_log(log_path, f"Build failed: {summary}")
+        job.update(status="failed", stage="failed", error=summary, finished_at=time.time())
         _persist(job)
         shutil.rmtree(artifact_dir, ignore_errors=True)
     finally:
@@ -671,5 +680,12 @@ if __name__ == "__main__":
     ARTIFACTS.chmod(0o700)
     JOBS.chmod(0o700)
     _load_jobs(recover_interrupted=True)
-    server = ThreadingHTTPServer(("0.0.0.0", 8090), Handler)
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.load_cert_chain(
+        certfile="/certs/firmware-builder.crt",
+        keyfile="/certs/firmware-builder.key",
+    )
+    server = ThreadingHTTPServer(("0.0.0.0", 8443), Handler)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    print("Firmware builder listening on https://0.0.0.0:8443")
     server.serve_forever()

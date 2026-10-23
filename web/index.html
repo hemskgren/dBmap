@@ -107,6 +107,8 @@
       #firmware-catalog-list { display: grid; gap: 0.45rem; margin-top: 0.5rem; }
       #firmware-build-jobs { display: grid; gap: 0.45rem; margin-top: 0.75rem; }
       .firmware-build-job { display: grid; gap: 0.35rem; padding: 0.75rem; border: 1px solid #bbb; border-radius: 0.5rem; }
+      .firmware-build-job [data-build-error] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .firmware-build-log > summary { cursor: pointer; }
       .firmware-build-log pre { max-height: 26rem; overflow: auto; padding: 0.75rem; background: #f4f6f8; white-space: pre-wrap; overflow-wrap: anywhere; }
       .firmware-entry { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem 0.7rem; padding: 0.55rem; border: 1px solid #e3e9f1; border-radius: 7px; }
       .firmware-entry-metadata { flex: 1 0 100%; min-width: 0; }
@@ -315,8 +317,8 @@
               </div>
             </section>
             <details id="build-handoff" hidden>
-              <summary>Step 2 build handoff preview (not implemented)</summary>
-              <p class="notice">This allowlisted preview excludes Wi-Fi credentials, the bootstrap token, and the Hub access token. Firmware building is not implemented here; browser flashing is available in Step 5.</p>
+              <summary>Handoff preview</summary>
+              <p class="notice">This allowlisted preview excludes Wi-Fi credentials, the bootstrap token, and the Hub access token.</p>
               <pre id="build-handoff-json"></pre>
             </details>
           </section>
@@ -541,13 +543,36 @@
         }
       });
 
+      function formatApiDetail(detail) {
+        if (detail == null || detail === '') return '';
+        if (typeof detail === 'string') return detail;
+        if (Array.isArray(detail)) {
+          return detail.map((item) => {
+            if (typeof item === 'string') return item;
+            if (item && typeof item === 'object') {
+              const location = Array.isArray(item.loc)
+                ? item.loc.filter((part) => part !== 'body' && part !== 'query').join('.')
+                : '';
+              const message = item.msg || item.message;
+              if (location && message) return `${location}: ${message}`;
+              if (message) return message;
+            }
+            return '';
+          }).filter(Boolean).join('; ');
+        }
+        if (typeof detail === 'object') return detail.msg || detail.message || '';
+        return String(detail);
+      }
+
       async function api(path, options = {}) {
         const headers = new Headers(options.headers || {});
         headers.set('Authorization', `Bearer ${authToken.value}`);
         if (options.body) headers.set('Content-Type', 'application/json');
         const response = await fetch(`${publicBasePath}${path}`, { ...options, headers, cache: 'no-store' });
         const body = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(body.detail || `Request failed (${response.status}).`);
+        if (!response.ok) {
+          throw new Error(formatApiDetail(body.detail) || `Request failed (${response.status}).`);
+        }
         return body;
       }
 
@@ -1464,7 +1489,7 @@
           commandPanel.append(el('h3', 'Output commands'));
           commandPanel.append(el(
             'p',
-            'GPIO15 is assumed active-high; verify relay module polarity before connecting. GPIO2 blinks the onboard LED. Output test runs a 5-second pulse with double-blink pattern. Dispatch acknowledgement confirms delivery to the broker, not physical contact closure.',
+            'GPIO16 drives the relay. GPIO2 blinks the onboard LED. Output test runs a 5-second pulse with double-blink pattern. Dispatch acknowledgement confirms delivery to the broker, not physical contact closure.',
             'notice',
           ));
           if (currentRole === 'admin') {
@@ -1533,9 +1558,10 @@
             testButton.addEventListener('click', () => {
               const expiresAt = new Date(Date.now() + 30 * 1000).toISOString();
               openCommandPreview('Confirm Output Test Command', {
+                protocol_version: 1,
+                message_type: 'output-test',
                 action: 'RELAY_1_ON',
                 duration_s: 5,
-                action_type: 'output-test',
                 expires_at_utc: expiresAt,
               });
             });
@@ -2119,6 +2145,18 @@
         }
       }
 
+      function firmwareBuildErrorSummary(error) {
+        if (!error) return '';
+        const firstLine = String(error).split(/\r?\n/, 1)[0].trim();
+        return firstLine.length > 160 ? `${firstLine.slice(0, 159).trimEnd()}…` : firstLine;
+      }
+
+      function firmwareBuildLogTitle(status) {
+        if (status === 'succeeded') return 'Full successful build log';
+        if (status === 'failed') return 'Full failed build log';
+        return 'Build log';
+      }
+
       function renderFirmwareBuilds(jobs) {
         const list = document.getElementById('firmware-build-jobs');
         const buildButton = document.getElementById('start-firmware-build');
@@ -2203,8 +2241,9 @@
           row.querySelector('[data-build-status]').textContent = `${job.target}${job.hardware_revision ? ` · ${job.hardware_revision}` : ''}${job.firmware_version ? ` · ${job.firmware_version}` : ''} · ${job.status} · ${job.stage}`;
           row.querySelector('[data-build-started]').textContent = `Build ${job.id} · started ${formatSeen(new Date((job.started_at || job.created_at) * 1000))}`;
           const error = row.querySelector('[data-build-error]');
-          error.textContent = job.error || '';
-          error.hidden = !job.error;
+          error.textContent = firmwareBuildErrorSummary(job.error);
+          error.hidden = !error.textContent;
+          error.title = error.textContent;
           const artifact = row.querySelector('[data-build-artifact]');
           artifact.textContent = job.artifact
             ? `SHA-256 ${job.artifact.sha256} · ${formatBytes(job.artifact.size_bytes)}`
@@ -2215,7 +2254,7 @@
           row.querySelector('[data-build-action="delete-artifact"]').hidden = !job.artifact;
           row.querySelector('[data-build-action="remove-failed"]').hidden = job.status !== 'failed';
           const logDetails = row.querySelector('details[data-build-log]');
-          logDetails.querySelector('summary').textContent = job.status === 'succeeded' ? 'Full successful build log' : 'Build log';
+          logDetails.querySelector('summary').textContent = firmwareBuildLogTitle(job.status);
           if (logDetails.open) {
             expandedFirmwareBuildLogs.add(job.id);
             const lastRefresh = Number(logDetails.dataset.lastRefreshAt || 0);

@@ -456,13 +456,14 @@ def send_output_command(db: Session, node_id: str, body: OutputCommandBody) -> O
         raise OutputCommandUnavailable("expires_at_utc is already in the past")
 
     payload: dict = {
+        "protocol_version": body.protocol_version,
         "action": body.action,
         "expires_at_utc": expires_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     if body.duration_s is not None:
         payload["duration_s"] = body.duration_s
-    if body.action_type is not None:
-        payload["action_type"] = body.action_type
+    if body.message_type is not None:
+        payload["message_type"] = body.message_type
 
     topic = topics_for(node.node_type, node.node_id)["command"]
     try:
@@ -474,7 +475,9 @@ def send_output_command(db: Session, node_id: str, body: OutputCommandBody) -> O
         topic=topic,
         action=body.action,
         duration_s=body.duration_s,
-        action_type=body.action_type,
+        protocol_version=body.protocol_version,
+        message_type=body.message_type,
+        action_type=body.message_type,
         expires_at_utc=expires_at,
         published=True,
     )

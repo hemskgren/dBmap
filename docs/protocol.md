@@ -10,10 +10,11 @@ The current observation message protocol is version 1. The fields
 `protocol_version` and `message_type` are required on observations. The hub
 rejects unsupported versions and message types.
 
-Other MQTT messages from the existing ESP-Output firmware predate this
-versioned envelope and do not yet carry `protocol_version` or `message_type`.
-Do not assume those messages follow the observation envelope until a
-versioned upgrade is specified and deployed.
+Output `hello`, command, and acknowledgement messages carry
+`protocol_version: 1`. Hello uses that field alone. Health and keepalive
+keep the unversioned state payload. These messages are separate from the
+observation envelope. The hub accepts hello, health, and keepalive with or
+without `protocol_version` and stores the reported state either way.
 
 Incompatible changes require a new protocol version. Receivers must reject
 unknown versions rather than silently interpreting them as version 1.
@@ -156,22 +157,28 @@ remain unimplemented.
 The current ESP-Output sends JSON state on `hello`, `health`, and
 `keepalive`, including `node_id`, `firmware_version`, `hardware_revision`,
 `config_version`, `calibration_version`, `classifier_version`, `uptime_s`,
-and the optional `wifi_rssi_dbm` signal level. The Hub derives
+and the optional `wifi_rssi_dbm` signal level. Hello also includes
+`protocol_version: 1`. Health and keepalive use the same state fields
+without that version field. The Hub derives
 `pending_configuration_change` by comparing reported state with desired state;
-the device does not report that flag. These existing messages are not yet
-wrapped in the version-1 observation envelope.
+the device does not report that flag. These messages are not wrapped in the
+version-1 observation envelope.
 
 The Output command contract is not yet implemented as a stable, versioned
-schema. The current firmware supports a pilot relay subset. `RELAY_1_ON` needs
-an integer `duration_s` from 1 through 3600, drives GPIO15 high for that many
-seconds, and blinks the onboard GPIO2 LED during the interval. `RELAY_1_OFF`
-switches both outputs off immediately. The firmware logs the received JSON and
-publishes the action result to the acknowledgement and status topics. Commands
-without a supported action or valid duration are rejected. GPIO15 is assumed
-active-high; verify the relay module's electrical polarity before connecting
-it. The optional `action_type: "output-test"` field selects a short double-pulse
-GPIO2 pattern for testing. A missing field or any other value uses the standard
-alert blink pattern.
+schema. The current firmware supports a pilot relay subset. Commands carry
+`protocol_version: 1`. A command that omits `protocol_version`, or includes
+any other value, is logged and ignored: the firmware does not drive GPIO and
+does not publish an acknowledgement.
+`RELAY_1_ON` needs an integer `duration_s` from 1
+through 3600, drives GPIO16 high for that many seconds, and blinks the onboard
+GPIO2 LED during the interval. `RELAY_1_OFF` switches both outputs off
+immediately. The firmware logs the received JSON and publishes the action
+result to the acknowledgement and status topics. Commands without a supported
+action or valid duration are rejected. GPIO16 is assumed active-high; verify
+the relay module's electrical polarity before connecting it. The optional
+`message_type: "output-test"` field selects a short double-pulse GPIO2 pattern
+for testing. A missing field or any other value uses the standard alert blink
+pattern.
 
 The Output firmware synchronizes its UTC clock through SNTP and includes the
 UTC receive time in command console logs. The NTP server is set by
@@ -184,6 +191,8 @@ timestamp:
 
 ```json
 {
+  "protocol_version": 1,
+  "message_type": "output-test",
   "action": "RELAY_1_ON",
   "duration_s": 5,
   "expires_at_utc": "2026-10-06T10:05:00Z"
@@ -192,8 +201,8 @@ timestamp:
 
 `expires_at_utc` is the semantic validity deadline, independent of transport.
 It must be an ISO 8601 timestamp with an explicit timezone. Device-side expiry
-validation is not implemented yet. The pilot acknowledgement and status
-payload looks like:
+validation is now implemented; the firmware checks the timestamp and ignores
+expired commands. The pilot acknowledgement and status payload looks like:
 
 ```json
 {"node_id": "OUT-011", "action": "RELAY_1_ON", "result": "relay_1_on", "duration_s": 5}
