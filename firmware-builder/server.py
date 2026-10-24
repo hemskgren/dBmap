@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
+import sys
 import threading
 import time
 import uuid
 import zipfile
 from collections import deque
 from datetime import datetime, timezone
-import ssl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -390,11 +392,35 @@ def _build(job_id: str, target: str) -> None:
             active_build = None
 
 
+def _logged_client_ip(headers, fallback: str) -> str:
+    """Use the client address nginx recorded when it is a single IP."""
+    forwarded = ""
+    if headers is not None:
+        raw = headers.get("X-Forwarded-For") or headers.get("X-Real-IP") or ""
+        forwarded = raw.split(",", 1)[0].strip()
+    if forwarded:
+        try:
+            return str(ipaddress.ip_address(forwarded))
+        except ValueError:
+            return fallback
+    return fallback
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "dBmapFirmwareBuilder/1.0"
 
+    def address_string(self) -> str:
+        return _logged_client_ip(getattr(self, "headers", None), self.client_address[0])
+
     def log_message(self, format: str, *args: object) -> None:
-        print("firmware-builder", self.address_string(), format % args)
+        sys.stderr.write(
+            "{} - - [{}] {}\n".format(
+                self.address_string(),
+                self.log_date_time_string(),
+                format % args,
+            )
+        )
+        sys.stderr.flush()
 
     def _authorized(self) -> bool:
         scheme, separator, token = self.headers.get("Authorization", "").partition(" ")
@@ -687,5 +713,6 @@ if __name__ == "__main__":
     )
     server = ThreadingHTTPServer(("0.0.0.0", 8443), Handler)
     server.socket = context.wrap_socket(server.socket, server_side=True)
-    print("Firmware builder listening on https://0.0.0.0:8443")
+    sys.stderr.write("Firmware builder listening on https://0.0.0.0:8443\n")
+    sys.stderr.flush()
     server.serve_forever()

@@ -1,5 +1,6 @@
 """Serve the static dBmap UI over HTTPS inside the Compose network."""
 
+import ipaddress
 import os
 import ssl
 import sys
@@ -21,7 +22,24 @@ def _is_client_disconnect(exc: BaseException | None) -> bool:
     return False
 
 
+def _logged_client_ip(headers, fallback: str) -> str:
+    """Use the client address nginx recorded when it is a single IP."""
+    forwarded = ""
+    if headers is not None:
+        raw = headers.get("X-Forwarded-For") or headers.get("X-Real-IP") or ""
+        forwarded = raw.split(",", 1)[0].strip()
+    if forwarded:
+        try:
+            return str(ipaddress.ip_address(forwarded))
+        except ValueError:
+            return fallback
+    return fallback
+
+
 class StaticHandler(SimpleHTTPRequestHandler):
+    def address_string(self) -> str:
+        return _logged_client_ip(getattr(self, "headers", None), self.client_address[0])
+
     def handle(self) -> None:
         try:
             super().handle()

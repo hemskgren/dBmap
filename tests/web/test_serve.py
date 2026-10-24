@@ -12,6 +12,28 @@ assert spec.loader is not None
 spec.loader.exec_module(serve)
 
 
+def test_access_log_uses_the_forwarded_client(capsys) -> None:
+    handler = serve.StaticHandler.__new__(serve.StaticHandler)
+    handler.client_address = ("172.19.0.8", 45864)
+    handler.headers = {"X-Forwarded-For": "203.0.113.9"}
+    handler.log_message('"%s" %s %s', "GET / HTTP/1.1", "200", "-")
+
+    captured = capsys.readouterr()
+    assert "203.0.113.9" in captured.err
+    assert "172.19.0.8" not in captured.err
+
+
+def test_access_log_ignores_a_spoofed_forwarded_header(capsys) -> None:
+    handler = serve.StaticHandler.__new__(serve.StaticHandler)
+    handler.client_address = ("172.19.0.8", 45864)
+    handler.headers = {"X-Forwarded-For": "203.0.113.9\ninjected", "X-Real-IP": "not-an-ip"}
+    handler.log_message("%s", "GET / HTTP/1.1")
+
+    captured = capsys.readouterr()
+    assert "172.19.0.8" in captured.err
+    assert "injected" not in captured.err
+
+
 def test_health_returns_a_short_body() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), serve.StaticHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
