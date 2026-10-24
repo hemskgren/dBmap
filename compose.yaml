@@ -118,6 +118,9 @@ services:
       - /certs/hub-bootstrap.crt
       - --ssl-keyfile
       - /certs/hub-bootstrap.key
+      # nginx sets X-Forwarded-For to the client. Trust it so access logs are not the proxy container IP.
+      - --forwarded-allow-ips
+      - "*"
     environment:
       DBMAP_ADMIN_TOKEN: ${DBMAP_ADMIN_TOKEN:?Set DBMAP_ADMIN_TOKEN in .env}
       DBMAP_VIEWER_TOKEN: ${DBMAP_VIEWER_TOKEN:?Set DBMAP_VIEWER_TOKEN in .env}

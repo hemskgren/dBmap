@@ -53,6 +53,30 @@ def request(builder, method, path, body=None, token=None, idempotency_key=None):
         return response.status, result
 
 
+def test_access_log_uses_the_forwarded_client(capsys) -> None:
+    handler = server.Handler.__new__(server.Handler)
+    handler.client_address = ("172.19.0.8", 45864)
+    handler.headers = {"X-Real-IP": "2001:db8::10"}
+    handler.log_message('"%s" %s', "GET /health HTTP/1.1", "200")
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "2001:db8::10 - - [" in captured.err
+    assert '"GET /health HTTP/1.1" 200' in captured.err
+    assert "172.19.0.8" not in captured.err
+
+
+def test_access_log_keeps_the_peer_when_forwarding_is_absent(capsys) -> None:
+    handler = server.Handler.__new__(server.Handler)
+    handler.client_address = ("172.19.0.8", 45864)
+    handler.headers = {}
+    handler.log_message("%s", "GET /health HTTP/1.1")
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "172.19.0.8 - - [" in captured.err
+
+
 def test_builder_requires_admin_token(builder):
     assert request(builder, "GET", "/api/v1/firmware/targets")[0] == 401
     assert request(builder, "GET", "/api/v1/firmware/targets", token="viewer-token")[0] == 403
