@@ -1,14 +1,13 @@
-import logging
-
 from fastapi import FastAPI
 
 from app.api import router
 from app.config import settings
 from app.db import init_db
+from app.logging_config import configure_logging
 from app.mqtt_listener import start_mqtt_thread
 from app.mqtt_security import ensure_broker_security
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+configure_logging()
 
 
 def _validate_security_settings() -> None:
