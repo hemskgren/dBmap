@@ -96,11 +96,11 @@ set +a
 docker compose up --build -d
 ```
 
-The certificate generator preserves an existing local CA and issues a separate certificate for each TLS listener. Nginx covers `hub.local`, `localhost`, `127.0.0.1`, `DBMAP_LAN_IP`, `DBMAP_PUBLIC_HUB_HOST`, and `DBMAP_LOCAL_MQTT_HOST`. Mosquitto covers `mosquitto`, `127.0.0.1`, `DBMAP_LAN_IP`, `DBMAP_LOCAL_MQTT_HOST`, and `DBMAP_ADVERTISED_MQTT_HOST`. Hub bootstrap covers only `hub-bootstrap` and `localhost`. Service-to-service HTTPS uses separate `dbmap-web`, `opa`, and `firmware-builder` certificates. OPA uses HTTPS only and remains unpublished to the host. If it reports that an existing CA is unsuitable, run `./scripts/gen-mqtt-certs.sh --rotate-ca` to replace it. CA rotation invalidates trust on previously flashed devices; copy the new CA and erase/reflash each device.
+The certificate generator writes material under `shared/`: public trust at `shared/trust/ca.crt` (for host tools and browsers), the CA private key host-only at `shared/ca/ca.key` (never mounted into containers), and each Compose service's leaf cert/key plus a copy of `ca.crt` under `shared/<service>/certs/`. Compose mounts only that service directory read-only, so no container sees peer private keys or `ca.key`. An existing CA in the legacy `mqtt/certs/` layout is migrated automatically on the next generator run. Nginx covers `hub.local`, `localhost`, `127.0.0.1`, `DBMAP_LAN_IP`, `DBMAP_PUBLIC_HUB_HOST`, and `DBMAP_LOCAL_MQTT_HOST`. Mosquitto covers `mosquitto`, `127.0.0.1`, `DBMAP_LAN_IP`, `DBMAP_LOCAL_MQTT_HOST`, and `DBMAP_ADVERTISED_MQTT_HOST`. Hub bootstrap covers only `hub-bootstrap` and `localhost`. Service-to-service HTTPS uses separate `dbmap-web`, `opa`, and `firmware-builder` certificates. OPA uses HTTPS only and remains unpublished to the host. If it reports that an existing CA is unsuitable, run `./scripts/gen-mqtt-certs.sh --rotate-ca` to replace it. CA rotation invalidates trust on previously flashed devices; copy the new CA and erase/reflash each device.
 
 When applying the OPA policy watcher or web healthcheck to an existing deployment, recreate those services with `docker compose up -d --force-recreate opa dbmap-web`. Later changes under `policy/` are reloaded by OPA automatically. `docker compose ps` reports the web service's health.
 
-The local CA is not automatically trusted by browsers or operating systems. Install `mqtt/certs/ca.crt` in the trusted root store on each client using that platform's documented process, then browse to `hub.local` or the certificate-covered LAN IP. For command-line requests, pass `--cacert mqtt/certs/ca.crt`. The Nginx certificate covers `hub.local`, `localhost`, `127.0.0.1`, the configured LAN IP, `DBMAP_PUBLIC_HUB_HOST`, and `DBMAP_LOCAL_MQTT_HOST`. Do not treat a browser certificate warning as successful verification.
+The local CA is not automatically trusted by browsers or operating systems. Install `shared/trust/ca.crt` in the trusted root store on each client using that platform's documented process, then browse to `hub.local` or the certificate-covered LAN IP. For command-line requests, pass `--cacert shared/trust/ca.crt`. The Nginx certificate covers `hub.local`, `localhost`, `127.0.0.1`, the configured LAN IP, `DBMAP_PUBLIC_HUB_HOST`, and `DBMAP_LOCAL_MQTT_HOST`. Do not treat a browser certificate warning as successful verification.
 
 Optional mDNS publishing can be started on a host with Avahi installed:
 
@@ -112,7 +112,7 @@ Keep the publisher running while you need the name; it stops advertising when th
 
 Device registration supports paired **Local Hub** and **External Hub** call-home routes. Local uses the Hub URL opened in the browser and `DBMAP_LOCAL_MQTT_HOST`/`DBMAP_LOCAL_MQTT_PORT`. External uses `DBMAP_PUBLIC_HUB_URL` for HTTPS bootstrap and `DBMAP_ADVERTISED_MQTT_HOST`/`DBMAP_ADVERTISED_MQTT_PORT` for MQTT. Configure both external endpoints and make them resolve and route to this Hub from the remote device's network. The Hub overview shows configured endpoint values; registration includes the selected pair in its handoff preview and sends the selected profile to the device over USB.
 
-The builder embeds `mqtt/certs/ca.crt` into firmware. Nginx's certificate includes `DBMAP_PUBLIC_HUB_HOST`. Mosquitto's certificate includes `DBMAP_LOCAL_MQTT_HOST` and `DBMAP_ADVERTISED_MQTT_HOST`. Set `DBMAP_PUBLIC_HUB_HOST` to the DNS name used in `DBMAP_PUBLIC_HUB_URL`. Re-run `scripts/gen-mqtt-certs.sh` after changing these values, then rebuild firmware so it embeds the current CA. This local-CA setup requires remote devices to use firmware built with that CA; browsers opening an external Hub URL also need to trust it. A public CA/browser-trusted external deployment needs a separately managed certificate and firmware trust chain.
+The builder embeds `shared/trust/ca.crt` into firmware. Nginx's certificate includes `DBMAP_PUBLIC_HUB_HOST`. Mosquitto's certificate includes `DBMAP_LOCAL_MQTT_HOST` and `DBMAP_ADVERTISED_MQTT_HOST`. Set `DBMAP_PUBLIC_HUB_HOST` to the DNS name used in `DBMAP_PUBLIC_HUB_URL`. Re-run `scripts/gen-mqtt-certs.sh` after changing these values, then rebuild firmware so it embeds the current CA. This local-CA setup requires remote devices to use firmware built with that CA; browsers opening an external Hub URL also need to trust it. A public CA/browser-trusted external deployment needs a separately managed certificate and firmware trust chain.
 
 For a local-only device deployment, `DBMAP_ADVERTISED_MQTT_HOST` remains the route for older firmware that does not send a route profile; set it to a host/IP reachable by the device and covered by the Mosquitto certificate. Current firmware sends the selected profile during provisioning, and the Hub returns the matching MQTT endpoint. After changing `.env` or certificates, apply the configuration and restart services:
 
@@ -137,7 +137,7 @@ The local ESP32-WROOM-32 test uses the `esp32` target and 4 MB flash, not the pl
 Installation metadata is stored by the hub, not reported by ESP firmware. Each record must include the node's geographic position as WGS84 latitude and longitude in decimal degrees; other placement details are optional. Replace the example coordinates below with the actual installation coordinates:
 
 ```bash
-curl -sS --cacert mqtt/certs/ca.crt \
+curl -sS --cacert shared/trust/ca.crt \
   -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
   -H "Content-Type: application/json" \
   -X PUT \
@@ -168,7 +168,7 @@ uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
 The simulator reports a node ID and observation ID, not the credentials. Query the authenticated observations API:
 
 ```bash
-curl -sS --cacert mqtt/certs/ca.crt \
+curl -sS --cacert shared/trust/ca.crt \
   -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" \
   "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/observations?node_id=<node-id-from-simulator>"
 ```
@@ -276,7 +276,7 @@ For a concise, authenticated list of Hub service statuses, run:
 uv run python scripts/hub_summary.py list
 ```
 
-All `scripts/hub_*.py` command-line tools use the same Hub connection defaults from the project-root `.env`: `DBMAP_LAN_IP`, `DBMAP_HTTPS_PORT` (default `8443`), `DBMAP_PUBLIC_BASE_PATH`, and `DBMAP_ADMIN_TOKEN`. The local CA defaults to `mqtt/certs/ca.crt`. Exported shell values take precedence; options such as `--hub-host`, `--hub-port`, `--base-path`, and `--ca` are optional overrides.
+All `scripts/hub_*.py` command-line tools use the same Hub connection defaults from the project-root `.env`: `DBMAP_LAN_IP`, `DBMAP_HTTPS_PORT` (default `8443`), `DBMAP_PUBLIC_BASE_PATH`, and `DBMAP_ADMIN_TOKEN`. The local CA defaults to `shared/trust/ca.crt`. Exported shell values take precedence; options such as `--hub-host`, `--hub-port`, `--base-path`, and `--ca` are optional overrides.
 
 The `list` command shows the Hub mode and ID, one status line for each Hub component, and a concise device summary with counts by type, lifecycle, availability, and installation state. Use `list --output json` for machine-readable output from the Hub status endpoint. Use `watch` to poll service statuses every 15 seconds; text mode reports service changes, while JSON mode emits one JSON object per poll. Use `watch --interval-seconds 30` to change the interval. Component details such as broker metrics remain available on demand in the web UI. Stop watch mode with `Ctrl+C`.
 
@@ -315,7 +315,7 @@ To send an Output command from the hub, use the authenticated TLS broker account
 Replace `out-xxx` with the actual node ID from the API response, written in lowercase.
 
 ```bash
-mosquitto_pub --cafile mqtt/certs/ca.crt -h "$DBMAP_LAN_IP" -p 8883 \
+mosquitto_pub --cafile shared/trust/ca.crt -h "$DBMAP_LAN_IP" -p 8883 \
   -u hub-bootstrap -P "$DBMAP_MQTT_HUB_PASSWORD" \
   -t esp-output/local/out-xxx/command -q 1 \
   -m '{"protocol_version":1,"action":"RELAY_1_ON","duration_s":5}'

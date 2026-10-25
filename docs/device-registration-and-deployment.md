@@ -145,7 +145,7 @@ uv run python scripts/hub_firmware.py \
   upload "$ZIP" "path/to/${FIRMWARE_ID}.json"
 ```
 
-The helper loads `DBMAP_LAN_IP`, `DBMAP_ADMIN_TOKEN`, `DBMAP_HTTPS_PORT`, and `DBMAP_PUBLIC_BASE_PATH` from the project-root `.env` automatically; values already exported in the shell take precedence. The port defaults to `8443`, and the CA defaults to `mqtt/certs/ca.crt`. You can omit connection options for both listing and upload. `--hub-host`, `--hub-port`, `--base-path`, and `--ca` remain available as overrides. Run `uv run python scripts/hub_firmware.py` with no arguments to display help. Listing includes candidates. Keep `.env`, Wi-Fi passwords, bootstrap tokens, and firmware credentials private.
+The helper loads `DBMAP_LAN_IP`, `DBMAP_ADMIN_TOKEN`, `DBMAP_HTTPS_PORT`, and `DBMAP_PUBLIC_BASE_PATH` from the project-root `.env` automatically; values already exported in the shell take precedence. The port defaults to `8443`, and the CA defaults to `shared/trust/ca.crt`. You can omit connection options for both listing and upload. `--hub-host`, `--hub-port`, `--base-path`, and `--ca` remain available as overrides. Run `uv run python scripts/hub_firmware.py` with no arguments to display help. Listing includes candidates. Keep `.env`, Wi-Fi passwords, bootstrap tokens, and firmware credentials private.
 
 List catalog entries without specifying the Hub host:
 
@@ -177,7 +177,7 @@ Alternatively, load `.env` and create an Output node using the API:
 set -a
 . ./.env
 set +a
-export CURL_CA_BUNDLE=mqtt/certs/ca.crt
+export CURL_CA_BUNDLE=shared/trust/ca.crt
 curl -sS -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"node_type":"output"}' \
@@ -246,10 +246,10 @@ Activate ESP-IDF in each terminal used to build:
 idf.py --version
 ```
 
-Install `mqtt/certs/ca.crt` in the client trust store as described in [Local deployment](./local-deployment.md). Copy it into the firmware project so the device can verify Hub and MQTT certificates:
+Install `shared/trust/ca.crt` in the client trust store as described in [Local deployment](./local-deployment.md). Copy it into the firmware project so the device can verify Hub and MQTT certificates:
 
 ```bash
-cp mqtt/certs/ca.crt firmware/esp-output/main/root_ca.pem
+cp shared/trust/ca.crt firmware/esp-output/main/root_ca.pem
 ```
 
 On Linux, if the serial device is owned by group `dialout`, add your user to that group once, then fully log out and back in:
@@ -301,7 +301,7 @@ Expect Wi-Fi connection, a `provisioned as OUT-...` message, and a verified TLS 
 set -a
 . ./.env
 set +a
-export CURL_CA_BUNDLE=mqtt/certs/ca.crt
+export CURL_CA_BUNDLE=shared/trust/ca.crt
 curl -sS -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" \
   "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes"
 ```

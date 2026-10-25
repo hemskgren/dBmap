@@ -26,7 +26,7 @@ Message fields are in the [protocol reference](./protocol.md). Authorization act
 
 ## Laptop opens one device
 
-An administrator opens the UI, then one device. The viewer path is the same shape with `GET /api/v1/devices` and the `devices.list_summary` action. Viewer tokens do not receive `GET /api/v1/nodes/{node_id}`.
+An administrator opens the UI, then one device. The viewer path is the same shape with `GET /api/v1/devices` and the `devices.list_summary` action, plus `GET /api/v1/nodes/{node_id}` for detailed status. Viewers still cannot list or change nodes.
 
 ```mermaid
 flowchart LR

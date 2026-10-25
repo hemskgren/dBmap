@@ -192,7 +192,7 @@ def _install_hub_ca(project_dir: Path) -> None:
     if not HUB_CA_FILE.is_file() or HUB_CA_FILE.stat().st_size == 0:
         raise RuntimeError(
             f"Hub CA certificate is missing or empty at {HUB_CA_FILE}; "
-            "mount mqtt/certs into firmware-builder."
+            "mount shared/trust/ca.crt into firmware-builder."
         )
     destination = project_dir / "main" / "root_ca.pem"
     destination.parent.mkdir(parents=True, exist_ok=True)

@@ -59,8 +59,8 @@ def add_hub_connection_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--ca",
-        default=os.environ.get("DBMAP_CA_FILE", "mqtt/certs/ca.crt"),
-        help="Path to the local Hub CA (default: mqtt/certs/ca.crt)",
+        default=os.environ.get("DBMAP_CA_FILE", "shared/trust/ca.crt"),
+        help="Path to the local Hub CA (default: shared/trust/ca.crt)",
     )
 
 

@@ -163,7 +163,7 @@ def test_install_hub_ca_fails_with_actionable_message(tmp_path, monkeypatch):
         ca_file.touch(exist_ok=True)
         monkeypatch.setattr(server, "HUB_CA_FILE", ca_file)
 
-        with pytest.raises(RuntimeError, match="mount mqtt/certs into firmware-builder"):
+        with pytest.raises(RuntimeError, match="mount shared/trust/ca.crt into firmware-builder"):
             server._install_hub_ca(tmp_path / "project")
 
 

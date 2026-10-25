@@ -78,7 +78,7 @@ def main() -> int:
         description="Publish a TLS keepalive for an existing simulated Ear (without creating a device)."
     )
     parser.add_argument("--credentials-file", default="/tmp/dbmap-ear-simulator-credentials.json")
-    parser.add_argument("--ca", default="mqtt/certs/ca.crt", help="Path to the local hub CA")
+    parser.add_argument("--ca", default="shared/trust/ca.crt", help="Path to the local hub CA")
     parser.add_argument("--watch", action="store_true", help="Keep the simulated Ear online until Ctrl+C")
     parser.add_argument(
         "--interval-seconds",
