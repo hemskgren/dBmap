@@ -343,7 +343,7 @@
             </div>
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Device</th><th>Type</th><th>Status</th><th>Lifecycle</th><th>Assigned owner</th><th>Location</th><th></th></tr></thead>
+                <thead><tr><th>Device</th><th>Type</th><th>Status</th><th>Provisioning</th><th>Lifecycle</th><th>Assigned owner</th><th>Location</th><th></th></tr></thead>
                 <tbody id="device-list" aria-live="polite"></tbody>
               </table>
             </div>
@@ -1260,7 +1260,7 @@
         if (!filteredDevices.length) {
           const row = el('tr');
           const cell = el('td', devices.length ? 'No devices match these filters.' : 'No devices are registered yet.');
-          cell.colSpan = 7;
+          cell.colSpan = 8;
           row.append(cell);
           list.append(row);
         }
@@ -1269,6 +1269,7 @@
           const row = el('tr');
           row.append(el('td', device.node_id), el('td', device.node_type.toUpperCase()));
           row.append(el('td', device.status, device.status));
+          row.append(el('td', device.provisioning_state));
           row.append(el('td', device.lifecycle_state));
           row.append(el('td', device.owner_display_name || 'Unassigned'));
           row.append(el('td', device.installation
@@ -1611,11 +1612,11 @@
         }
 
         if (currentRole === 'admin') {
+          const tokenPanel = el('section');
+          tokenPanel.append(el('h3', 'Recover bootstrap token'));
           if (device.provisioning_state === 'pending') {
-            const tokenPanel = el('section');
             tokenPanel.append(
-              el('h3', 'Recover bootstrap token'),
-              el('p', 'Use this only for a device that has not completed Hub provisioning. Issuing a replacement immediately invalidates any earlier unused token. The new token is shown once in this page and is not saved by the browser.'),
+              el('p', 'This device is still pending, so its unused bootstrap token can be replaced. Issuing a replacement immediately invalidates any earlier unused token. The new token is shown once in this page and is not saved by the browser.'),
             );
             const tokenStatus = el('span', '', 'notice');
             tokenStatus.setAttribute('role', 'status');
@@ -1647,8 +1648,14 @@
               }
             });
             tokenPanel.append(issueToken, tokenStatus, tokenValue);
-            detail.append(tokenPanel);
+          } else {
+            tokenPanel.append(el(
+              'p',
+              `Not available for ${device.node_id}. This device already completed Hub provisioning (${device.provisioning_state}), so its one-time bootstrap token was consumed and cannot be recovered. A replacement can only be issued while a device is still pending.`,
+              'notice',
+            ));
           }
+          detail.append(tokenPanel);
           const hardwareEditor = el('section');
           hardwareEditor.append(el('h3', 'Set verified hardware revision'));
           hardwareEditor.append(el(

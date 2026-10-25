@@ -16,7 +16,7 @@ The architecture document still says “Pi first” and “V0-A single Ear”. H
 
 ESP-Output firmware supports NVS identity/configuration, Wi-Fi STA, HTTPS provisioning, MQTT hello/health/command/ack, and relay (GPIO16) / audio stubs (no pin map yet).
 
-The broker is TLS-only on port `8883`; the web UI and API are served through Nginx over HTTPS on port `8443` by default. Hop-by-hop clients, protocols, and ports are drawn in [Connectivity](./connectivity.md). `DBMAP_HTTPS_PORT` can change that listener and host port together. Hub bootstrap, web, and OPA listeners are internal to Compose. Each provisioned node gets a unique MQTT login and topic-scoped permissions. Hub services use a separate broker identity. The local CA is trusted by firmware and clients; keep its private key and `.env` secrets private.
+The broker is TLS-only on port `8883`; the web UI and API are served through Nginx over HTTPS on port `8443` by default. Hop-by-hop clients, protocols, and ports are drawn in [Connectivity](./connectivity.md). Import the Hub routes from [hub-api.openapi.yaml](./hub-api.openapi.yaml). `DBMAP_HTTPS_PORT` can change that listener and host port together. Hub bootstrap, web, and OPA listeners are internal to Compose. Each provisioned node gets a unique MQTT login and topic-scoped permissions. Hub services use a separate broker identity. The local CA is trusted by firmware and clients; keep its private key and `.env` secrets private.
 
 The local deployment now includes a minimal edge proxy and web frontend as part of the Phase A architecture refactor:
 
