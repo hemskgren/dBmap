@@ -109,7 +109,7 @@ def test_hub_host_defaults_to_environment(monkeypatch):
     assert args.command == "list"
     assert args.hub_host == "192.0.2.10"
     assert args.hub_port == 8443
-    assert args.ca == "mqtt/certs/ca.crt"
+    assert args.ca == "shared/trust/ca.crt"
 
 
 def test_project_env_defaults_are_loaded_without_overriding_environment(tmp_path, monkeypatch):

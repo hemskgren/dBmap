@@ -15,8 +15,8 @@ __pycache__/
 *.der
 *.csr
 artifacts/*
-mqtt/certs/*
-!mqtt/certs/.gitkeep
+# Legacy flat cert dir; TLS material now lives under shared/ (*.crt/*.key already ignored).
+mqtt/certs/
 hub/bootstrap/data/
 firmware/**/build/
 firmware/**/sdkconfig

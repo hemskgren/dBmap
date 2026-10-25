@@ -10,7 +10,7 @@ services:
     volumes:
       - ./mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./mqtt/docker-entrypoint.sh:/docker-entrypoint.sh:ro
-      - ./mqtt/certs:/mosquitto/certs:ro
+      - ./shared/mosquitto/certs:/mosquitto/certs:ro
       - mosquitto-data:/mosquitto/data
     entrypoint: ["/bin/sh", "/docker-entrypoint.sh"]
     healthcheck:
@@ -28,7 +28,7 @@ services:
     expose:
       - "443"
     volumes:
-      - ./mqtt/certs:/certs:ro
+      - ./shared/dbmap-web/certs:/certs:ro
     healthcheck:
       test:
         - CMD
@@ -56,7 +56,7 @@ services:
       - "8181"
     volumes:
       - ./policy:/policies:ro
-      - ./mqtt/certs:/certs:ro
+      - ./shared/opa/certs:/certs:ro
     networks:
       - opa-private
     healthcheck:
@@ -87,7 +87,7 @@ services:
       DBMAP_PUBLIC_BASE_PATH: ${DBMAP_PUBLIC_BASE_PATH:-}
       NGINX_ENVSUBST_FILTER: ^DBMAP_HTTPS_PORT$|^DBMAP_PUBLIC_BASE_PATH$
     volumes:
-      - ./mqtt/certs:/certs:ro
+      - ./shared/nginx/certs:/certs:ro
     networks:
       - default
       - firmware-private
@@ -147,7 +147,7 @@ services:
     volumes:
       - bootstrap-data:/data
       - firmware-catalog:/firmware-catalog
-      - ./mqtt/certs:/certs:ro
+      - ./shared/hub-bootstrap/certs:/certs:ro
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - default
@@ -175,7 +175,7 @@ services:
       - "8443"
     volumes:
       - ./firmware:/firmware:ro
-      - ./mqtt/certs:/certs:ro
+      - ./shared/firmware-builder/certs:/certs:ro
       - firmware-artifacts:/artifacts
     networks:
       - firmware-private

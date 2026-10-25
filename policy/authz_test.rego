@@ -42,10 +42,28 @@ test_viewer_can_read_summary_and_session if {
 	}
 }
 
-test_viewer_cannot_read_details_or_write if {
-	not authz.allow with input as {
+test_viewer_can_read_detail_but_not_write if {
+	authz.allow with input as {
 		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
 		"action": "nodes.read_detail",
+		"resource": {"type": "nodes", "id": "EAR-001"},
+		"context": {},
+	}
+	not authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "nodes.create",
+		"resource": {"type": "nodes"},
+		"context": {},
+	}
+	not authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "nodes.update_installation",
+		"resource": {"type": "nodes", "id": "EAR-001"},
+		"context": {},
+	}
+	not authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "nodes.update_lifecycle",
 		"resource": {"type": "nodes", "id": "EAR-001"},
 		"context": {},
 	}

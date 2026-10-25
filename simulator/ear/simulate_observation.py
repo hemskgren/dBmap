@@ -262,7 +262,7 @@ def main() -> int:
         default=os.environ.get("DBMAP_PUBLIC_BASE_PATH", ""),
         help="Optional public path prefix, for example /dbmap",
     )
-    parser.add_argument("--ca", default="mqtt/certs/ca.crt", help="Path to the local hub CA")
+    parser.add_argument("--ca", default="shared/trust/ca.crt", help="Path to the local hub CA")
     parser.add_argument(
         "--credentials-file",
         default="/tmp/dbmap-ear-simulator-credentials.json",

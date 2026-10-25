@@ -591,7 +591,7 @@ def main() -> int:
         default=1.0,
         help="Scale wall-clock waits; logical event times remain unchanged (default: 1)",
     )
-    parser.add_argument("--ca", default="mqtt/certs/ca.crt", help="Path to the local hub CA")
+    parser.add_argument("--ca", default="shared/trust/ca.crt", help="Path to the local hub CA")
     parser.add_argument(
         "--dry-run",
         action="store_true",
