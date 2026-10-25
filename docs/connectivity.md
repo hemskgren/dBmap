@@ -6,7 +6,7 @@ The browser page and the Hub API are different containers. Nginx is the only HTT
 
 OPA is consulted on every protected API call, including opening one device. The Policy engine details button adds a separate health request. Database details stay inside `hub-bootstrap`. Output boards and the Ear simulator publish MQTT to Mosquitto; `hub-bootstrap` writes SQLite from its own subscription. That write does not pass through Nginx or OPA.
 
-Message fields are in the [protocol reference](./protocol.md). Authorization actions are in [authorization](./authorization.md).
+Message fields are in the [protocol reference](./protocol.md). Authorization actions are in [authorization](./authorization.md). The Hub HTTPS routes are in [hub-api.openapi.yaml](./hub-api.openapi.yaml).
 
 ## Listeners
 
