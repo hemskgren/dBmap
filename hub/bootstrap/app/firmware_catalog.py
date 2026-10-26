@@ -19,13 +19,15 @@ TARGET_FLASH_LAYOUTS = {
     "output-esp32": {
         "bootloader.bin": "0x1000",
         "partition-table.bin": "0x8000",
-        "esp-output.bin": "0x10000",
+        "ota_data_initial.bin": "0x10000",
+        "esp-output.bin": "0x20000",
     },
-    # Keep catalog entries built before the release ID was renamed usable.
+    # Historical target id. Same ESP-Output OTA layout; older factory-offset ZIPs are rejected.
     "esp-output-esp32": {
         "bootloader.bin": "0x1000",
         "partition-table.bin": "0x8000",
-        "esp-output.bin": "0x10000",
+        "ota_data_initial.bin": "0x10000",
+        "esp-output.bin": "0x20000",
     },
 }
 ESP_WEB_TOOLS_CHIP_FAMILIES = {

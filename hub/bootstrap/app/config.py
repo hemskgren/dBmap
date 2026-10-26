@@ -35,12 +35,17 @@ class Settings(BaseSettings):
     mqtt_admin_password: str = ""
     mqtt_enabled: bool = True
 
-    advertised_mqtt_host: str = "hub.local"
-    advertised_mqtt_port: int = 8883
-    advertised_mqtt_use_tls: bool = True
+    public_mqtt_host: str = "hub.local"
+    public_mqtt_port: int = 8883
+    public_mqtt_use_tls: bool = True
     local_mqtt_host: str = "hub.local"
     local_mqtt_port: int = 8883
     public_hub_url: str = ""
+
+    def local_hub_url(self) -> str:
+        """Configured Local Hub HTTPS base for device call-home (not the browser origin)."""
+        base = self.public_base_path.strip().rstrip("/")
+        return f"https://{self.local_mqtt_host}:{self.nginx_probe_port}{base}"
 
     @field_validator("public_hub_url")
     @classmethod
@@ -51,7 +56,7 @@ class Settings(BaseSettings):
             raise ValueError("public_hub_url must be an HTTPS base URL without query or fragment")
         return value
 
-    site_id: str = Field(
+    hub_id: str = Field(
         default="local-01",
         min_length=1,
         max_length=64,

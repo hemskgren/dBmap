@@ -17,13 +17,15 @@ fi
 umask 077
 cat > "$ENV_FILE" <<EOF
 DBMAP_LAN_IP=$LAN_IP
-DBMAP_SITE_ID=local-01
+DBMAP_HUB_ID=local-01
 DBMAP_ADMIN_TOKEN=$(openssl rand -hex 32)
 DBMAP_VIEWER_TOKEN=$(openssl rand -hex 32)
 DBMAP_MQTT_HUB_PASSWORD=$(openssl rand -hex 32)
 DBMAP_DYNSEC_ADMIN_PASSWORD=$(openssl rand -hex 32)
-DBMAP_ADVERTISED_MQTT_HOST=hub.local
-DBMAP_ADVERTISED_MQTT_PORT=8883
+DBMAP_PUBLIC_MQTT_HOST=hub.local
+DBMAP_PUBLIC_MQTT_PORT=8883
+DBMAP_LOCAL_MQTT_HOST=hub.local
+DBMAP_LOCAL_MQTT_PORT=8883
 EOF
 chmod 0600 "$ENV_FILE"
 echo "Wrote generated secrets to $ENV_FILE (mode 0600). Keep this file private and backed up."

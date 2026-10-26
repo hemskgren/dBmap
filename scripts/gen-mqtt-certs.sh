@@ -14,7 +14,7 @@ CA_DIR="$SHARED/ca"
 LAN_IP="${DBMAP_LAN_IP:-}"
 PUBLIC_HUB_HOST="${DBMAP_PUBLIC_HUB_HOST:-}"
 LOCAL_MQTT_HOST="${DBMAP_LOCAL_MQTT_HOST:-hub.local}"
-ADVERTISED_MQTT_HOST="${DBMAP_ADVERTISED_MQTT_HOST:-hub.local}"
+PUBLIC_MQTT_HOST="${DBMAP_PUBLIC_MQTT_HOST:-${DBMAP_ADVERTISED_MQTT_HOST:-hub.local}}"
 if [[ -z "$LAN_IP" ]]; then
   echo "Set DBMAP_LAN_IP (the hub's LAN IPv4 address) before generating certificates." >&2
   exit 1
@@ -129,7 +129,7 @@ issue_cert hub-bootstrap hub-bootstrap "DNS:hub-bootstrap,DNS:localhost"
 # Broker. Internal clients use mosquitto; the entrypoint bootstrap uses 127.0.0.1.
 MOSQUITTO_SAN="DNS:mosquitto,IP:127.0.0.1,IP:${LAN_IP}"
 append_san MOSQUITTO_SAN "$LOCAL_MQTT_HOST"
-append_san MOSQUITTO_SAN "$ADVERTISED_MQTT_HOST"
+append_san MOSQUITTO_SAN "$PUBLIC_MQTT_HOST"
 issue_cert mosquitto mosquitto "$MOSQUITTO_SAN"
 
 issue_cert dbmap-web web "DNS:dbmap-web" dbmap-web

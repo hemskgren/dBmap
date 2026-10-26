@@ -8,6 +8,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "mdns.h"
 
 static const char *TAG = "dbmap_wifi";
 static EventGroupHandle_t s_wifi;
@@ -71,6 +72,23 @@ esp_err_t dbmap_wifi_start(const dbmap_network_t *net)
         return ESP_ERR_TIMEOUT;
     }
     ESP_LOGI(TAG, "Wi-Fi up");
+
+    /* Modem sleep commonly stalls MQTT/TLS keepalive writes on ESP32 station links. */
+    esp_err_t ps_err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (ps_err == ESP_OK) {
+        ESP_LOGI(TAG, "Wi-Fi power save disabled for stable MQTT");
+    } else {
+        ESP_LOGW(TAG, "could not disable Wi-Fi power save: %s", esp_err_to_name(ps_err));
+    }
+
+    esp_err_t mdns_err = mdns_init();
+    if (mdns_err == ESP_OK) {
+        ESP_LOGI(TAG, "mDNS client ready for *.local lookup");
+    } else if (mdns_err == ESP_ERR_INVALID_STATE) {
+        ESP_LOGI(TAG, "mDNS client already running");
+    } else {
+        ESP_LOGW(TAG, "mDNS init failed: %s; *.local names may not resolve", esp_err_to_name(mdns_err));
+    }
     return ESP_OK;
 }
 

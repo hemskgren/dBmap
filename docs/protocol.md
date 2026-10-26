@@ -289,7 +289,8 @@ The current relevant HTTPS API endpoints are:
 | `GET /api/v1/session` | Identify the role associated with a local access token. | Admin or viewer access token |
 | `GET /api/v1/devices` | Read basic device status and installation summaries. | Admin or viewer access token |
 | `POST /api/v1/nodes` | Create a node and issue its one-time bootstrap token. | Admin bearer token |
-| `POST /api/v1/provision` | Consume the bootstrap token and issue per-node MQTT credentials and topics. | One-time bootstrap token |
+| `POST /api/v1/provision` | Consume the bootstrap token and issue per-node MQTT credentials, topics, and a one-time device API token. Ordinary calls require `provisioning_state=pending`. | One-time bootstrap token |
+| `GET /api/v1/device/desired-firmware` | Read the authenticated device's Desired firmware id and version. ESP-Output calls this at boot and every 10 minutes and logs a match or a mismatch. It does not download firmware. | Device API token. Not OPA. |
 | `GET /api/v1/nodes` | List nodes with full identity and desired/reported state. | Admin bearer token |
 | `GET /api/v1/nodes/{node_id}` | Read one node's identity and desired/reported state. | Admin or viewer bearer token |
 | `PUT /api/v1/nodes/{node_id}/desired` | Replace desired configuration/version fields. | Admin bearer token |

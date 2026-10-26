@@ -108,6 +108,7 @@ class Node(Base):
     hardware_revision: Mapped[str] = mapped_column(String(64), default="unknown")
     provisioning_state: Mapped[str] = mapped_column(String(32), default="pending")
     lifecycle_state: Mapped[str] = mapped_column(String(16), default="active")
+    recovery_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     availability: Mapped[str] = mapped_column(String(32), default="SERVICE")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -260,11 +261,23 @@ class BootstrapToken(Base):
 
 class NodeCredential(Base):
     __tablename__ = "node_credentials"
-    __table_args__ = (UniqueConstraint("mqtt_username", name="uq_mqtt_username"),)
+    __table_args__ = (
+        UniqueConstraint("mqtt_username", name="uq_mqtt_username"),
+        Index(
+            "uq_node_credentials_device_api_token_hash",
+            "device_api_token_hash",
+            unique=True,
+            sqlite_where=text("device_api_token_hash IS NOT NULL"),
+            postgresql_where=text("device_api_token_hash IS NOT NULL"),
+        ),
+    )
 
     node_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     mqtt_username: Mapped[str] = mapped_column(String(128))
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    device_api_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    device_api_issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    device_api_revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class DesiredState(Base):

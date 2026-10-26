@@ -32,7 +32,7 @@ USB access is an explicit local physical action. The browser must use the dBmap 
 
 ## Serial protocol requirements
 
-The first implementation uses newline-framed JSON at 115200 baud. The firmware emits `DBMAP_PROVISION_READY` while it waits, then accepts a `protocol: 1`, `operation: configure` request containing a request ID and the SSID, Wi-Fi password, HTTPS Hub URL, and bootstrap token. It replies with a matching `DBMAP_PROVISION_RESULT:` JSON line and a generic error code. The browser keeps the serial port open through the result.
+The first implementation uses newline-framed JSON at 115200 baud. The firmware emits `DBMAP_PROVISION_READY` while it waits, then accepts a `protocol: 1`, `operation: configure` request containing a request ID plus SSID, Wi-Fi password, HTTPS Hub URL, and MQTT profile. Bootstrap token is optional; when omitted, the existing NVS value is kept. Optional `mqtt_host` / `mqtt_port` update the call-home MQTT endpoint while preserving existing MQTT username/password. It replies with a matching `DBMAP_PROVISION_RESULT:` JSON line and a generic error code. The browser keeps the serial port open through the result.
 
 The protocol must:
 

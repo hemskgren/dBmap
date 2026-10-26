@@ -39,6 +39,7 @@ TAGS_BY_PREFIX = (
     ("/api/v1/firmware", "Firmware"),
     ("/api/v1/observations", "Observations"),
     ("/api/v1/hub", "Hub"),
+    ("/api/v1/device", "Provisioning"),
     ("/api/v1/provision", "Provisioning"),
     ("/api/v1/nodes", "Nodes"),
 )
@@ -299,8 +300,47 @@ OPERATIONS = {
     ("POST", "/api/v1/provision"): {
         "operationId": "provisionNode",
         "summary": "Exchange a bootstrap token for MQTT credentials",
-        "description": "Device-facing. Authenticates with the one-time bootstrap token in the JSON body, not a bearer token.",
-        "errors": ["400", "503"],
+        "description": (
+            "Device-facing. Authenticates with the one-time bootstrap token in the JSON body, not a bearer token. "
+            "Initial provisioning is only accepted while the node is pending. An already provisioned node requires "
+            "an admin recovery bootstrap. The response includes a one-time device API token. MQTT password handling is unchanged."
+        ),
+        "errors": ["400", "409", "503"],
+    },
+    ("GET", "/api/v1/device/desired-firmware"): {
+        "operationId": "getDeviceDesiredFirmware",
+        "summary": "Read Desired firmware for the authenticated device",
+        "description": (
+            "Device-facing. Authorization: Bearer <device API token> issued at provision or admin rotation. "
+            "The Hub identifies the node from that token. This route does not use admin/viewer tokens or OPA. "
+            "Returns only that device's desired firmware id and version."
+        ),
+        "response": "DeviceDesiredFirmware",
+        "errors": ["401", "403"],
+    },
+    ("POST", "/api/v1/nodes/{node_id}/device-api-token"): {
+        "operationId": "rotateDeviceApiToken",
+        "summary": "Rotate the device HTTPS API token",
+        "description": "Admin only. Returns the new plaintext token once and revokes the previous one. Does not change MQTT credentials.",
+        "response": "DeviceApiTokenResponse",
+        "errors": ["401", "403", "404", "409", "503"],
+    },
+    ("POST", "/api/v1/nodes/{node_id}/device-api-token/revoke"): {
+        "operationId": "revokeDeviceApiToken",
+        "summary": "Revoke the device HTTPS API token",
+        "description": "Admin only. Clears the stored hash. Does not reopen provisioning and does not change MQTT credentials.",
+        "errors": ["401", "403", "404", "409", "503"],
+    },
+    ("POST", "/api/v1/nodes/{node_id}/recovery-provision"): {
+        "operationId": "openRecoveryProvision",
+        "summary": "Open an authorized re-provision",
+        "description": (
+            "Admin only. Issues a one-time bootstrap token for a device that is already provisioned. "
+            "The following POST /api/v1/provision rotates the device API token and the MQTT password. "
+            "This is not ordinary firmware reflashing."
+        ),
+        "response": "BootstrapTokenResponse",
+        "errors": ["401", "403", "404", "409", "503"],
     },
 }
 
@@ -329,6 +369,23 @@ EXTRA_SCHEMAS = {
         "properties": {
             "status": {"type": "string", "example": "ok"},
             "service": {"type": "string", "example": "hub-bootstrap"},
+        },
+    },
+    "DeviceDesiredFirmware": {
+        "type": "object",
+        "required": ["node_id", "firmware_id", "firmware_version"],
+        "properties": {
+            "node_id": {"type": "string"},
+            "firmware_id": {"type": "string"},
+            "firmware_version": {"type": "string"},
+        },
+    },
+    "DeviceApiTokenResponse": {
+        "type": "object",
+        "required": ["node_id", "device_api_token"],
+        "properties": {
+            "node_id": {"type": "string"},
+            "device_api_token": {"type": "string"},
         },
     },
     "SessionResponse": {
@@ -470,6 +527,7 @@ EXTRA_SCHEMAS = {
     "HubAddresses": {
         "type": "object",
         "properties": {
+            "local_hub_url": {"type": "string"},
             "external_hub_url": {"type": "string", "nullable": True},
             "local_mqtt": {"$ref": "#/components/schemas/MqttAddress"},
             "external_mqtt": {"allOf": [{"$ref": "#/components/schemas/MqttAddress"}], "nullable": True},
@@ -673,9 +731,10 @@ def build() -> dict:
             "Call `https://<hub-host>:<https-port>[<public-base-path>]/api/v1/...`. "
             "Local administrators and viewers send `Authorization: Bearer <token>`. "
             "The API checks the token, then asks OPA for the named action. "
-            "`GET /health` and `POST /api/v1/provision` are unauthenticated. "
+            "`GET /health` and `POST /api/v1/provision` do not use admin/viewer bearer tokens or OPA. "
             "Device provisioning uses a one-time bootstrap token in the JSON body. "
-            "Authorization actions are listed in docs/authorization.md."
+            "`GET /api/v1/device/desired-firmware` authenticates a separate device API token in the Hub database and does not call OPA. "
+            "Authorization actions for human tokens are listed in docs/authorization.md."
         ),
         "contact": {"name": "dBmap Hub"},
     }
@@ -709,7 +768,13 @@ def build() -> dict:
             "scheme": "bearer",
             "bearerFormat": "opaque",
             "description": "Local `DBMAP_ADMIN_TOKEN` or `DBMAP_VIEWER_TOKEN`. OPA then decides the action.",
-        }
+        },
+        "deviceApiAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "opaque",
+            "description": "Device API token from provisioning or admin rotation. The Hub hashes it and does not call OPA.",
+        },
     }
     components.setdefault("schemas", {}).update(EXTRA_SCHEMAS)
 
@@ -733,6 +798,8 @@ def build() -> dict:
                 operation.pop("parameters", None)
             if key in PUBLIC:
                 operation["security"] = []
+            elif key == ("GET", "/api/v1/device/desired-firmware"):
+                operation["security"] = [{"deviceApiAuth": []}]
             else:
                 operation["security"] = [{"bearerAuth": []}]
 

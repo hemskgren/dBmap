@@ -214,7 +214,8 @@ def test_artifact_flash_manifest_contains_only_nvs_preserving_offsets(tmp_path):
     components = {
         "0x1000": ("bootloader/bootloader.bin", b"bootloader"),
         "0x8000": ("partition_table/partition-table.bin", b"partitions"),
-        "0x10000": ("esp-output.bin", b"application"),
+        "0x10000": ("ota_data_initial.bin", b"otadata"),
+        "0x20000": ("esp-output.bin", b"application"),
     }
     flash_files = {}
     for offset, (relative_path, content) in components.items():
@@ -231,13 +232,15 @@ def test_artifact_flash_manifest_contains_only_nvs_preserving_offsets(tmp_path):
         {
             "0x1000": "bootloader.bin",
             "0x8000": "partition-table.bin",
-            "0x10000": "esp-output.bin",
+            "0x10000": "ota_data_initial.bin",
+            "0x20000": "esp-output.bin",
         },
     )
     assert [(entry["offset"], entry["name"]) for entry in entries] == [
         ("0x1000", "bootloader.bin"),
         ("0x8000", "partition-table.bin"),
-        ("0x10000", "esp-output.bin"),
+        ("0x10000", "ota_data_initial.bin"),
+        ("0x20000", "esp-output.bin"),
     ]
 
     flash_files["0x9000"] = "esp-output.bin"
@@ -251,7 +254,8 @@ def test_artifact_flash_manifest_contains_only_nvs_preserving_offsets(tmp_path):
             {
                 "0x1000": "bootloader.bin",
                 "0x8000": "partition-table.bin",
-                "0x10000": "esp-output.bin",
+                "0x10000": "ota_data_initial.bin",
+                "0x20000": "esp-output.bin",
             },
         )
 

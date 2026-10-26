@@ -369,9 +369,9 @@ Documentation that no longer matches the repo is a platform bug: it sends you do
 
 #### P-18 — `hub_id` column on nodes
 
-**Status:** site id is `DBMAP_SITE_ID` only  
-**Sources:** S3 §6; `docs/identity-and-operating-modes.md` L7  
-**This branch:** **later** (one Local Hub)  
+**Status:** Hub identity is configured `DBMAP_HUB_ID` / status API `hub_id` (default `local-01`). There is still no per-node `hub_id` column; this single Local Hub remains the association boundary.  
+**Sources:** S3 §6; `docs/identity-and-operating-modes.md`  
+**This branch:** **later** for a per-node column / multi-Hub association (config + status `hub_id` already in use)  
 **Reply:** `P-18`
 
 ---

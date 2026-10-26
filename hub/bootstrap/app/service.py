@@ -30,6 +30,9 @@ from app.schemas import (
     CreateNodeResponse,
     DesiredStateBody,
     InstallationMetadataBody,
+    DeviceApiCredential,
+    DeviceApiTokenResponse,
+    DeviceDesiredFirmware,
     MqttEndpoint,
     NodeLifecycleBody,
     NodeView,
@@ -56,6 +59,22 @@ class OutputCommandUnavailable(ValueError):
 
 
 class BootstrapTokenRotationUnavailable(Exception):
+    pass
+
+
+class AlreadyProvisioned(Exception):
+    pass
+
+
+class DeviceCredentialUnavailable(Exception):
+    pass
+
+
+class DeviceAuthError(Exception):
+    pass
+
+
+class DeviceForbidden(Exception):
     pass
 
 
@@ -155,6 +174,11 @@ def provision(db: Session, body: ProvisionRequest) -> ProvisionResponse:
     if node.lifecycle_state != "active":
         raise ValueError("node is deactivated")
 
+    initial = node.provisioning_state == "pending"
+    recovery = node.recovery_opened_at is not None and node.provisioning_state in {"provisioned", "active"}
+    if not initial and not recovery:
+        raise AlreadyProvisioned("device is already provisioned")
+
     password = new_token()
     username = node.node_id.lower()
     cred = db.get(NodeCredential, node.node_id)
@@ -163,10 +187,13 @@ def provision(db: Session, body: ProvisionRequest) -> ProvisionResponse:
         db.add(cred)
     cred.mqtt_username = username
     cred.issued_at = datetime.now(timezone.utc)
+    device_api_token = _store_device_api_token(cred)
     if settings.mqtt_enabled:
         ensure_node_security(node.node_type, node.node_id, password)
 
-    node.provisioning_state = "provisioned"
+    if initial:
+        node.provisioning_state = "provisioned"
+    node.recovery_opened_at = None
     node.hardware_revision = body.hardware_revision
     node.availability = "RECOVERING"
 
@@ -185,13 +212,105 @@ def provision(db: Session, body: ProvisionRequest) -> ProvisionResponse:
         node_id=node.node_id,
         node_type=node.node_type,
         mqtt=MqttEndpoint(
-            host=(settings.local_mqtt_host if body.mqtt_profile == "local" else settings.advertised_mqtt_host),
-            port=(settings.local_mqtt_port if body.mqtt_profile == "local" else settings.advertised_mqtt_port),
-            use_tls=(settings.advertised_mqtt_use_tls if body.mqtt_profile is None else True),
+            host=(settings.local_mqtt_host if body.mqtt_profile == "local" else settings.public_mqtt_host),
+            port=(settings.local_mqtt_port if body.mqtt_profile == "local" else settings.public_mqtt_port),
+            use_tls=(settings.public_mqtt_use_tls if body.mqtt_profile is None else True),
             username=username,
             password=password,
         ),
         topics=Topics(**t),
+        device_api=DeviceApiCredential(token=device_api_token),
+    )
+
+
+def _store_device_api_token(cred: NodeCredential) -> str:
+    """Replace the device HTTPS credential. Returns plaintext once; only the hash is stored."""
+    token = new_token()
+    cred.device_api_token_hash = token_hash(token)
+    cred.device_api_issued_at = datetime.now(timezone.utc)
+    cred.device_api_revoked_at = None
+    return token
+
+
+def _require_issued_device(db: Session, node_id: str) -> tuple[Node, NodeCredential]:
+    node = db.get(Node, node_id.upper())
+    if node is None:
+        raise KeyError(node_id)
+    if node.provisioning_state == "pending":
+        raise DeviceCredentialUnavailable("device has not completed provisioning")
+    cred = db.get(NodeCredential, node.node_id)
+    if cred is None:
+        raise DeviceCredentialUnavailable("device has no credential record")
+    return node, cred
+
+
+def rotate_device_api_token(db: Session, node_id: str) -> DeviceApiTokenResponse:
+    node, cred = _require_issued_device(db, node_id)
+    token = _store_device_api_token(cred)
+    db.commit()
+    return DeviceApiTokenResponse(node_id=node.node_id, device_api_token=token)
+
+
+def revoke_device_api_token(db: Session, node_id: str) -> None:
+    _node, cred = _require_issued_device(db, node_id)
+    if cred.device_api_token_hash is None:
+        raise DeviceCredentialUnavailable("device API token is already revoked")
+    cred.device_api_token_hash = None
+    cred.device_api_revoked_at = datetime.now(timezone.utc)
+    db.commit()
+
+
+def open_recovery_provision(db: Session, node_id: str) -> str:
+    node = db.get(Node, node_id.upper())
+    if node is None:
+        raise KeyError(node_id)
+    if node.lifecycle_state != "active":
+        raise DeviceCredentialUnavailable("node is deactivated")
+    if node.provisioning_state not in {"provisioned", "active"}:
+        raise DeviceCredentialUnavailable("recovery provisioning is only for an already provisioned device")
+
+    now = datetime.now(timezone.utc)
+    active_tokens = db.scalars(
+        select(BootstrapToken)
+        .where(BootstrapToken.node_id == node.node_id, BootstrapToken.consumed_at.is_(None))
+        .with_for_update()
+    ).all()
+    for row in active_tokens:
+        row.consumed_at = now
+    db.flush()
+    token = new_token()
+    db.add(BootstrapToken(token_hash=token_hash(token), node_id=node.node_id))
+    node.recovery_opened_at = now
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise DeviceCredentialUnavailable("a recovery bootstrap token was just issued; retry") from exc
+    return token
+
+
+def node_for_device_api_token(db: Session, token: str) -> Node:
+    if not token:
+        raise DeviceAuthError("device API token required")
+    cred = db.scalar(
+        select(NodeCredential).where(NodeCredential.device_api_token_hash == token_hash(token))
+    )
+    if cred is None:
+        raise DeviceAuthError("device API token required")
+    node = db.get(Node, cred.node_id)
+    if node is None:
+        raise DeviceAuthError("device API token required")
+    if node.lifecycle_state != "active":
+        raise DeviceForbidden("node is deactivated")
+    return node
+
+
+def device_desired_firmware(db: Session, node: Node) -> DeviceDesiredFirmware:
+    desired = db.get(DesiredState, node.node_id)
+    return DeviceDesiredFirmware(
+        node_id=node.node_id,
+        firmware_id=desired.firmware_id if desired else "",
+        firmware_version=desired.firmware_version if desired else "",
     )
 
 
@@ -222,6 +341,22 @@ def set_desired(db: Session, node_id: str, body: DesiredStateBody) -> NodeView:
     desired.payload_json = json.dumps(body.payload)
     db.commit()
     return node_view(db, node)
+
+
+def set_desired_firmware(db: Session, node_id: str, firmware_id: str, firmware_version: str) -> None:
+    """Record the firmware an admin selected for this node as Desired state.
+
+    Does not commit; callers that already validate a catalog entry decide when to commit.
+    """
+    node = db.get(Node, node_id.upper())
+    if node is None:
+        raise KeyError(node_id)
+    desired = db.get(DesiredState, node.node_id)
+    if desired is None:
+        desired = DesiredState(node_id=node.node_id)
+        db.add(desired)
+    desired.firmware_id = firmware_id
+    desired.firmware_version = firmware_version
 
 
 def set_node_lifecycle(
@@ -379,6 +514,12 @@ def node_view(db: Session, node: Node) -> NodeView:
         "classifier_version": desired.classifier_version if desired else "",
         "payload": json.loads(desired.payload_json) if desired else {},
     }
+    payload = json.loads(reported.payload_json) if reported and reported.payload_json else {}
+    if isinstance(payload, dict):
+        # Hub-only flag must never appear as device-reported telemetry.
+        payload.pop("pending_configuration_change", None)
+    else:
+        payload = {}
     reported_dict = {
         "firmware_version": reported.firmware_version if reported else "",
         "hardware_revision": reported.hardware_revision if reported else "",
@@ -386,11 +527,10 @@ def node_view(db: Session, node: Node) -> NodeView:
         "calibration_version": reported.calibration_version if reported else 0,
         "classifier_version": reported.classifier_version if reported else "",
         "uptime_s": reported.uptime_s if reported else 0,
-        "pending_configuration_change": bool(reported.pending_configuration_change) if reported else False,
-        "payload": json.loads(reported.payload_json) if reported and reported.payload_json else {},
+        "payload": payload,
     }
+    # Hub-computed only — exposed on NodeView, not inside reported.
     pending = pending_configuration_change(reported_dict, desired_dict)
-    reported_dict["pending_configuration_change"] = pending
     installation_view = None
     if installation is not None:
         try:

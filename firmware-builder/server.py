@@ -43,7 +43,8 @@ TARGETS = {
         "flash_components": {
             "0x1000": "bootloader.bin",
             "0x8000": "partition-table.bin",
-            "0x10000": "esp-output.bin",
+            "0x10000": "ota_data_initial.bin",
+            "0x20000": "esp-output.bin",
         },
     },
 }

@@ -20,7 +20,7 @@ def _validate_security_settings() -> None:
     for name, secret in required_secrets.items():
         if len(secret) < 32:
             raise RuntimeError(f"{name} must be a generated secret of at least 32 characters")
-    if not settings.advertised_mqtt_use_tls:
+    if not settings.public_mqtt_use_tls:
         raise RuntimeError("device MQTT connections must use TLS")
 
 

@@ -28,7 +28,8 @@ def make_firmware_pair(platform: str = "esp32") -> tuple[str, bytes, bytes]:
     components = {
         "bootloader.bin": ("0x1000", b"bootloader"),
         "partition-table.bin": ("0x8000", b"partition-table"),
-        "esp-output.bin": ("0x10000", b"application"),
+        "ota_data_initial.bin": ("0x10000", b"otadata"),
+        "esp-output.bin": ("0x20000", b"application"),
     }
     component_manifest = [
         {
@@ -178,7 +179,8 @@ def test_flash_manifest_and_images_require_registered_firmware_and_admin(catalog
                 "parts": [
                     {"path": "bootloader.bin", "offset": 0x1000},
                     {"path": "partition-table.bin", "offset": 0x8000},
-                    {"path": "esp-output.bin", "offset": 0x10000},
+                    {"path": "ota_data_initial.bin", "offset": 0x10000},
+                    {"path": "esp-output.bin", "offset": 0x20000},
                 ],
             }
         ],
@@ -188,6 +190,7 @@ def test_flash_manifest_and_images_require_registered_firmware_and_admin(catalog
     for component_name, expected_content in (
         ("bootloader.bin", b"bootloader"),
         ("partition-table.bin", b"partition-table"),
+        ("ota_data_initial.bin", b"otadata"),
         ("esp-output.bin", b"application"),
     ):
         response = client.get(
@@ -344,6 +347,13 @@ def test_firmware_compatibility_is_server_checked_and_admin_only(catalog_client)
     assert selection.json()["acknowledged_unverified_platform"] is True
     assert selection.json()["selection_persisted"] is False
     assert selection.json()["flashing_started"] is False
+    detail = client.get(
+        f"/api/v1/nodes/{node_id}",
+        headers={"Authorization": f"Bearer {settings.admin_token}"},
+    )
+    assert detail.status_code == 200
+    assert detail.json()["desired"]["firmware_id"] == firmware_id
+    assert detail.json()["desired"]["firmware_version"] == "1.2.3"
 
     viewer_selection = client.get(
         f"/api/v1/nodes/{node_id}/compatible-firmware",
@@ -421,6 +431,10 @@ def test_deployment_attempt_history_retry_and_admin_access(catalog_client):
     assert first_attempt["initiated_by"] == "local-admin"
     assert first_attempt["started_at"] and first_attempt["completed_at"] is None
     assert len(first_attempt["events"]) == 1
+    detail = client.get(f"/api/v1/nodes/{node_id}", headers=admin)
+    assert detail.status_code == 200
+    assert detail.json()["desired"]["firmware_id"] == firmware_id
+    assert detail.json()["desired"]["firmware_version"] == "1.2.3"
     assert client.post(attempts_path, headers=admin, json=request_body).status_code == 409
 
     attempt_path = f"{attempts_path}/{first_attempt_id}"

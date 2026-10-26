@@ -45,6 +45,8 @@ from app.schemas import (
     DeploymentAttemptCreateBody,
     DeploymentAttemptUpdateBody,
     DesiredStateBody,
+    DeviceApiTokenResponse,
+    DeviceDesiredFirmware,
     DeviceOwnerBody,
     DeviceOwnershipView,
     DeviceSummaryView,
@@ -541,7 +543,7 @@ def validate_firmware_selection(
     if node.lifecycle_state != "active":
         raise HTTPException(status_code=409, detail="firmware cannot be selected for an inactive device")
     try:
-        return firmware_catalog.validate_selection(
+        selection = firmware_catalog.validate_selection(
             db,
             FIRMWARE_CATALOG_DIR,
             node_id,
@@ -551,6 +553,21 @@ def validate_firmware_selection(
             body.acknowledge_unverified_platform,
             allow_candidate=body.allow_candidate,
         )
+        entry = firmware_catalog.get_entry(
+            db,
+            FIRMWARE_CATALOG_DIR,
+            body.firmware_id,
+            include_candidate=body.allow_candidate,
+        )
+        metadata = json.loads(entry.metadata_json)
+        service.set_desired_firmware(
+            db,
+            node_id,
+            entry.firmware_id,
+            str(metadata.get("firmware_version") or ""),
+        )
+        db.commit()
+        return selection
     except firmware_catalog.FirmwareNotFound:
         raise HTTPException(status_code=404, detail="registered firmware not found") from None
     except firmware_catalog.FirmwareNotCompatible as exc:
@@ -601,6 +618,12 @@ def start_deployment_attempt(
 
     metadata = json.loads(entry.metadata_json)
     try:
+        service.set_desired_firmware(
+            db,
+            node_id,
+            entry.firmware_id,
+            str(metadata.get("firmware_version") or ""),
+        )
         attempt = deployment_service.create_attempt(
             db=db,
             node_id=node_id,
@@ -688,12 +711,13 @@ def get_hub_status(db: Session = Depends(get_db)) -> dict:
     installation_completed_count = sum(node.installation is not None for node in nodes)
     return {
         "mode": "Local Hub",
-        "hub_id": settings.site_id,
+        "hub_id": settings.hub_id,
         "addresses": {
+            "local_hub_url": settings.local_hub_url(),
             "external_hub_url": settings.public_hub_url.strip().rstrip("/") or None,
             "local_mqtt": {"host": settings.local_mqtt_host, "port": settings.local_mqtt_port, "use_tls": True},
             "external_mqtt": (
-                {"host": settings.advertised_mqtt_host, "port": settings.advertised_mqtt_port, "use_tls": settings.advertised_mqtt_use_tls}
+                {"host": settings.public_mqtt_host, "port": settings.public_mqtt_port, "use_tls": settings.public_mqtt_use_tls}
                 if settings.public_hub_url.strip() else None
             ),
         },
@@ -1015,11 +1039,94 @@ def list_observations(
     return service.list_observations(db, node_id, limit)
 
 
-@router.post("/api/v1/provision", response_model=ProvisionResponse)
-def provision(body: ProvisionRequest, db: Session = Depends(get_db)) -> ProvisionResponse:
+def _device_api_token(authorization: str | None) -> str:
+    if authorization is None or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="device API token required")
+    token = authorization[7:].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="device API token required")
+    return token
+
+
+@router.get("/api/v1/device/desired-firmware", response_model=DeviceDesiredFirmware)
+def get_device_desired_firmware(
+    response: Response,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> DeviceDesiredFirmware:
+    """Device-scoped read. Identity comes from the device API token, not a path id or OPA role."""
+    token = _device_api_token(authorization)
     try:
-        return service.provision(db, body)
+        node = service.node_for_device_api_token(db, token)
+    except service.DeviceAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except service.DeviceForbidden as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    response.headers["Cache-Control"] = "no-store"
+    return service.device_desired_firmware(db, node)
+
+
+@router.post(
+    "/api/v1/nodes/{node_id}/device-api-token",
+    response_model=DeviceApiTokenResponse,
+    dependencies=[Depends(require_policy("nodes.device_api_token.rotate", "nodes"))],
+)
+def rotate_device_api_token(node_id: str, response: Response, db: Session = Depends(get_db)) -> DeviceApiTokenResponse:
+    try:
+        body = service.rotate_device_api_token(db, node_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="unknown node") from None
+    except service.DeviceCredentialUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    response.headers["Cache-Control"] = "no-store"
+    return body
+
+
+@router.post(
+    "/api/v1/nodes/{node_id}/device-api-token/revoke",
+    status_code=204,
+    dependencies=[Depends(require_policy("nodes.device_api_token.revoke", "nodes"))],
+)
+def revoke_device_api_token(node_id: str, db: Session = Depends(get_db)) -> Response:
+    try:
+        service.revoke_device_api_token(db, node_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="unknown node") from None
+    except service.DeviceCredentialUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return Response(status_code=204)
+
+
+@router.post(
+    "/api/v1/nodes/{node_id}/recovery-provision",
+    response_model=BootstrapTokenResponse,
+    dependencies=[Depends(require_policy("nodes.recovery_provision.open", "nodes"))],
+)
+def open_recovery_provision(node_id: str, response: Response, db: Session = Depends(get_db)) -> BootstrapTokenResponse:
+    try:
+        token = service.open_recovery_provision(db, node_id)
+        node = service.get_node(db, node_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="unknown node") from None
+    except service.DeviceCredentialUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    response.headers["Cache-Control"] = "no-store"
+    return BootstrapTokenResponse(
+        node_id=node.node_id,
+        bootstrap_token=token,
+        provisioning_state=node.provisioning_state,
+    )
+
+
+@router.post("/api/v1/provision", response_model=ProvisionResponse)
+def provision(body: ProvisionRequest, response: Response, db: Session = Depends(get_db)) -> ProvisionResponse:
+    try:
+        result = service.provision(db, body)
+    except service.AlreadyProvisioned as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except MqttSecurityError as exc:
         raise HTTPException(status_code=503, detail="MQTT credential provisioning failed") from exc
+    response.headers["Cache-Control"] = "no-store"
+    return result

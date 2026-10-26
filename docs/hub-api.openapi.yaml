@@ -5,7 +5,7 @@ openapi: 3.0.3
 info:
   title: dBmap Hub API
   version: v1
-  description: "HTTPS API served by `hub-bootstrap` and published on the LAN through Nginx. Call `https://<hub-host>:<https-port>[<public-base-path>]/api/v1/...`. Local administrators and viewers send `Authorization: Bearer <token>`. The API checks the token, then asks OPA for the named action. `GET /health` and `POST /api/v1/provision` are unauthenticated. Device provisioning uses a one-time bootstrap token in the JSON body. Authorization actions are listed in docs/authorization.md."
+  description: "HTTPS API served by `hub-bootstrap` and published on the LAN through Nginx. Call `https://<hub-host>:<https-port>[<public-base-path>]/api/v1/...`. Local administrators and viewers send `Authorization: Bearer <token>`. The API checks the token, then asks OPA for the named action. `GET /health` and `POST /api/v1/provision` do not use admin/viewer bearer tokens or OPA. Device provisioning uses a one-time bootstrap token in the JSON body. `GET /api/v1/device/desired-firmware` authenticates a separate device API token in the Hub database and does not call OPA. Authorization actions for human tokens are listed in docs/authorization.md."
   contact:
     name: dBmap Hub
 paths:
@@ -2304,6 +2304,189 @@ paths:
         - Observations
       security:
         - bearerAuth: []
+  /api/v1/device/desired-firmware:
+    get:
+      summary: Read Desired firmware for the authenticated device
+      description: "Device-facing. Authorization: Bearer <device API token> issued at provision or admin rotation. The Hub identifies the node from that token. This route does not use admin/viewer tokens or OPA. Returns only that device's desired firmware id and version."
+      operationId: getDeviceDesiredFirmware
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceDesiredFirmware"
+        "401":
+          description: Missing or invalid local bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "403":
+          description: "Authenticated, but OPA denied the action."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+      tags:
+        - Provisioning
+      security:
+        - deviceApiAuth: []
+  "/api/v1/nodes/{node_id}/device-api-token":
+    post:
+      summary: Rotate the device HTTPS API token
+      operationId: rotateDeviceApiToken
+      parameters:
+        - name: node_id
+          in: path
+          required: true
+          schema:
+            type: string
+            title: Node Id
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceApiTokenResponse"
+        "401":
+          description: Missing or invalid local bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "403":
+          description: "Authenticated, but OPA denied the action."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "404":
+          description: The requested resource was not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "409":
+          description: The request conflicts with current Hub state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "503":
+          description: "OPA, MQTT, or the Docker engine is unavailable."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+      tags:
+        - Nodes
+      description: Admin only. Returns the new plaintext token once and revokes the previous one. Does not change MQTT credentials.
+      security:
+        - bearerAuth: []
+  "/api/v1/nodes/{node_id}/device-api-token/revoke":
+    post:
+      summary: Revoke the device HTTPS API token
+      operationId: revokeDeviceApiToken
+      parameters:
+        - name: node_id
+          in: path
+          required: true
+          schema:
+            type: string
+            title: Node Id
+      responses:
+        "204":
+          description: Successful Response
+        "401":
+          description: Missing or invalid local bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "403":
+          description: "Authenticated, but OPA denied the action."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "404":
+          description: The requested resource was not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "409":
+          description: The request conflicts with current Hub state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "503":
+          description: "OPA, MQTT, or the Docker engine is unavailable."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+      tags:
+        - Nodes
+      description: Admin only. Clears the stored hash. Does not reopen provisioning and does not change MQTT credentials.
+      security:
+        - bearerAuth: []
+  "/api/v1/nodes/{node_id}/recovery-provision":
+    post:
+      summary: Open an authorized re-provision
+      operationId: openRecoveryProvision
+      parameters:
+        - name: node_id
+          in: path
+          required: true
+          schema:
+            type: string
+            title: Node Id
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BootstrapTokenResponse"
+        "401":
+          description: Missing or invalid local bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "403":
+          description: "Authenticated, but OPA denied the action."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "404":
+          description: The requested resource was not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "409":
+          description: The request conflicts with current Hub state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "503":
+          description: "OPA, MQTT, or the Docker engine is unavailable."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+      tags:
+        - Nodes
+      description: Admin only. Issues a one-time bootstrap token for a device that is already provisioned. The following POST /api/v1/provision rotates the device API token and the MQTT password. This is not ordinary firmware reflashing.
+      security:
+        - bearerAuth: []
   /api/v1/provision:
     post:
       summary: Exchange a bootstrap token for MQTT credentials
@@ -2327,6 +2510,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
+        "409":
+          description: The request conflicts with current Hub state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
         "503":
           description: "OPA, MQTT, or the Docker engine is unavailable."
           content:
@@ -2335,7 +2524,7 @@ paths:
                 $ref: "#/components/schemas/ErrorMessage"
       tags:
         - Provisioning
-      description: "Device-facing. Authenticates with the one-time bootstrap token in the JSON body, not a bearer token."
+      description: "Device-facing. Authenticates with the one-time bootstrap token in the JSON body, not a bearer token. Initial provisioning is only accepted while the node is pending. An already provisioned node requires an admin recovery bootstrap. The response includes a one-time device API token. MQTT password handling is unchanged."
       security: []
 components:
   schemas:
@@ -2555,6 +2744,38 @@ components:
           title: Payload
       type: object
       title: DesiredStateBody
+    DeviceApiCredential:
+      properties:
+        token:
+          type: string
+          title: Token
+      type: object
+      required:
+        - token
+      title: DeviceApiCredential
+    DeviceApiTokenResponse:
+      type: object
+      required:
+        - node_id
+        - device_api_token
+      properties:
+        node_id:
+          type: string
+        device_api_token:
+          type: string
+    DeviceDesiredFirmware:
+      type: object
+      required:
+        - node_id
+        - firmware_id
+        - firmware_version
+      properties:
+        node_id:
+          type: string
+        firmware_id:
+          type: string
+        firmware_version:
+          type: string
     DeviceOwnerBody:
       properties:
         owner_type:
@@ -3260,12 +3481,15 @@ components:
           $ref: "#/components/schemas/MqttEndpoint"
         topics:
           $ref: "#/components/schemas/Topics"
+        device_api:
+          $ref: "#/components/schemas/DeviceApiCredential"
       type: object
       required:
         - node_id
         - node_type
         - mqtt
         - topics
+        - device_api
       title: ProvisionResponse
     Topics:
       properties:
@@ -3646,6 +3870,8 @@ components:
     HubAddresses:
       type: object
       properties:
+        local_hub_url:
+          type: string
         external_hub_url:
           type: string
           nullable: true
@@ -3766,6 +3992,11 @@ components:
       scheme: bearer
       bearerFormat: opaque
       description: Local `DBMAP_ADMIN_TOKEN` or `DBMAP_VIEWER_TOKEN`. OPA then decides the action.
+    deviceApiAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: Device API token from provisioning or admin rotation. The Hub hashes it and does not call OPA.
 servers:
   - url: https://hub.local:8443
     description: Default local Hub URL through Nginx. Replace host and port from .env.

@@ -2,9 +2,10 @@
 
 ## Current implementation
 
-- A Local Hub has a stable `DBMAP_SITE_ID` (currently defaulting to `local-01`). The ID belongs to the Hub, not to a user.
+- A Local Hub has a stable configured `hub_id` (`DBMAP_HUB_ID`, default `local-01`). The ID belongs to the Hub, not to a user. Nodes are identified by `node_id` in this Hub's database; there is no per-node `hub_id` column or hub hierarchy yet—this deployment is the association boundary.
+- Device credentials stay separate. The bootstrap token is one-time and only authorizes `POST /api/v1/provision` while the node is `pending`, or after an admin opens recovery. Provisioning returns a distinct device API token once; the Hub stores `SHA-256` of it on `node_credentials` and the device stores the plaintext in NVS (`api_tok`). The MQTT password is still issued once into Mosquitto and NVS and is not an HTTP credential. Admin `POST /api/v1/nodes/{node_id}/device-api-token` rotates the HTTPS token without changing MQTT. `POST .../device-api-token/revoke` clears the hash. `POST .../recovery-provision` is the only way to provision again: it returns a new bootstrap token, and the following provision call rotates both the device API token and the MQTT password. A lost provision response cannot be retried with the consumed bootstrap token; open recovery again. Already-provisioned nodes keep working on MQTT with a null device API hash until an admin rotates a token into NVS. Plaintext tokens are not logged. `GET /api/v1/device/desired-firmware` identifies the node from the device API token and does not use OPA.
 - The Hub API authenticates configured local admin and viewer bearer tokens. These are deployment credentials, not individual user accounts. OPA authorizes their roles and fails closed when it cannot decide.
-- Nodes are identified by their existing `node_id` and live in this Local Hub's database. There is no `hub_id` column on each node or hierarchy between hubs yet; this deployment is the association boundary. Desired state, reported state, observations, installation metadata, and ownership are stored separately. Ownership is an optional, admin-managed relationship with retained assignment history; ordinary-user sessions are not implemented yet.
+- Desired state, reported state, observations, installation metadata, and ownership are stored separately. Ownership is an optional, admin-managed relationship with retained assignment history; ordinary-user sessions are not implemented yet.
 - The `users` and `external_identities` tables provide the internal identity model. Admins can create, inspect, disable, and explicitly link these records. Admins and local viewers can read the user directory; the Users tab is read-only for viewers. These records are not used for login yet.
 - Local Hub services, device communication, and local administration do not call GitHub. They use the local API, database, OPA, and MQTT services when internet access is unavailable.
 
@@ -36,7 +37,7 @@ Hub identity, node identity, user identity, ownership, and installation remain d
 
 | Concept | Current representation | Relationship |
 | --- | --- | --- |
-| Local Hub | `DBMAP_SITE_ID` / `settings.site_id` | One configured identity for this Hub; not a database user or node ID |
+| Local Hub | `DBMAP_HUB_ID` / `settings.hub_id` (status API `hub_id`) | One configured identity for this Hub; not a database user or node ID |
 | Device | `nodes.node_id` in the Local Hub database | Stable across user changes and installation updates; there is no per-node Hub association field yet |
 | Installation | `installation_metadata.node_id` | Current site/location facts keyed to the device; no owner relationship |
 | Ownership | `device_ownership` assignment rows | Optional owner relationship keyed to stable device and user IDs; reassignment retains prior rows |

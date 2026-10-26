@@ -5,13 +5,13 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "dbmap_hub_http.h"
 #include "dbmap_nvs.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "dbmap_prov";
-extern const uint8_t root_ca_pem_start[] asm("_binary_root_ca_pem_start");
 
 static esp_err_t collect_body(esp_http_client_handle_t client, char *buf, int buf_len)
 {
@@ -42,13 +42,11 @@ esp_err_t dbmap_hub_provision(dbmap_effective_t *cfg)
 
     ESP_LOGI(TAG, "using %s call-home route", cfg->network.mqtt_profile[0] ? cfg->network.mqtt_profile : "legacy");
 
-    if (strncmp(cfg->network.hub_http_url, "https://", 8) != 0) {
-        ESP_LOGE(TAG, "bootstrap URL must use HTTPS");
-        return ESP_ERR_INVALID_ARG;
-    }
-
     char url[192];
-    snprintf(url, sizeof(url), "%s/api/v1/provision", cfg->network.hub_http_url);
+    esp_err_t url_err = dbmap_hub_format_https_url(cfg->network.hub_http_url, "/api/v1/provision", url, sizeof(url));
+    if (url_err != ESP_OK) {
+        return url_err;
+    }
 
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "bootstrap_token", cfg->bootstrap_token);
@@ -64,7 +62,7 @@ esp_err_t dbmap_hub_provision(dbmap_effective_t *cfg)
         .url = url,
         .method = HTTP_METHOD_POST,
         .timeout_ms = 8000,
-        .cert_pem = (const char *)root_ca_pem_start,
+        .cert_pem = dbmap_hub_root_ca(),
     };
     esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
     esp_http_client_set_header(client, "Content-Type", "application/json");
@@ -134,6 +132,15 @@ esp_err_t dbmap_hub_provision(dbmap_effective_t *cfg)
     if (cJSON_IsString(pass)) {
         strncpy(cfg->network.mqtt_password, pass->valuestring, sizeof(cfg->network.mqtt_password) - 1);
     }
+    const cJSON *device_api = cJSON_GetObjectItem(json, "device_api");
+    const cJSON *api_token = cJSON_IsObject(device_api) ? cJSON_GetObjectItem(device_api, "token") : NULL;
+    if (!cJSON_IsString(api_token) || api_token->valuestring[0] == '\0') {
+        ESP_LOGE(TAG, "provision response did not include a device API credential");
+        cJSON_Delete(json);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    strncpy(cfg->device_api_token, api_token->valuestring, sizeof(cfg->device_api_token) - 1);
+    cfg->device_api_token[sizeof(cfg->device_api_token) - 1] = '\0';
     if (cJSON_IsObject(topics)) {
         const char *names[] = {"hello", "keepalive", "health", "status", "command", "ack", "config"};
         char *slots[] = {
@@ -158,6 +165,6 @@ esp_err_t dbmap_hub_provision(dbmap_effective_t *cfg)
         ESP_LOGE(TAG, "Hub provisioning succeeded but device configuration could not be saved");
         return save_err;
     }
-    ESP_LOGI(TAG, "provisioned as %s", cfg->identity.node_id);
+    ESP_LOGI(TAG, "provisioned as %s; device API credential stored", cfg->identity.node_id);
     return ESP_OK;
 }
