@@ -60,6 +60,7 @@ esp_err_t dbmap_nvs_load(dbmap_effective_t *cfg)
     }
     if (nvs_open("identity", NVS_READONLY, &h) == ESP_OK) {
         get_str(h, "boot_tok", cfg->bootstrap_token, sizeof(cfg->bootstrap_token));
+        get_str(h, "api_tok", cfg->device_api_token, sizeof(cfg->device_api_token));
         nvs_close(h);
     }
     cfg->provisioned = cfg->identity.node_id[0] != '\0' &&
@@ -77,6 +78,10 @@ esp_err_t dbmap_nvs_save_identity_network(const dbmap_effective_t *cfg)
     if (err == ESP_OK) err = nvs_set_str(h, "hw_rev", cfg->identity.hardware_revision);
     if (err == ESP_OK) err = nvs_set_str(h, "prov_state", cfg->identity.provisioning_state);
     if (err == ESP_OK) err = nvs_set_str(h, "boot_tok", cfg->bootstrap_token);
+    /* USB setup runs before the Hub issues a token. Do not plant or wipe api_tok with an empty value. */
+    if (err == ESP_OK && cfg->device_api_token[0] != '\0') {
+        err = nvs_set_str(h, "api_tok", cfg->device_api_token);
+    }
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     if (err != ESP_OK) return err;

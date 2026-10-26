@@ -14,8 +14,9 @@ __pycache__/
 *.pfx
 *.der
 *.csr
+*.srl
 artifacts/*
-# Legacy flat cert dir; TLS material now lives under shared/ (*.crt/*.key already ignored).
+# Legacy flat cert dir; TLS material now lives under shared/ (*.crt/*.key/*.srl already ignored).
 mqtt/certs/
 hub/bootstrap/data/
 firmware/**/build/

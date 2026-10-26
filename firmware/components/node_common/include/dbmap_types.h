@@ -50,6 +50,7 @@ typedef struct {
     dbmap_config_t config;
     dbmap_topics_t topics;
     char bootstrap_token[DBMAP_TOKEN_MAX];
+    char device_api_token[DBMAP_TOKEN_MAX];
     bool provisioned;
 } dbmap_effective_t;
 

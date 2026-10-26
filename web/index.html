@@ -81,6 +81,12 @@
       .overview-card { padding: 1rem; border: 1px solid #d8e0eb; border-radius: 10px; background: #fff; }
       .overview-card span { display: block; color: #526078; font-size: 0.88rem; }
       .overview-card strong { display: block; margin-top: 0.35rem; font-size: 1.3rem; overflow-wrap: anywhere; }
+      #tab-hub > section { margin-top: 0.6rem; padding: 0.55rem 0.75rem 0.75rem; }
+      #tab-hub > section > h3:first-child { margin: 0 0 0.4rem; line-height: 1.2; }
+      .call-home-routes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
+      .call-home-route { margin: 0; min-width: 0; }
+      .call-home-route > strong { display: block; margin: 0 0 0.3rem; font-size: 0.95rem; }
+      .call-home-route .meta { grid-template-columns: 4.25rem 1fr; gap: 0.2rem 0.55rem; }
       .component-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; }
       .component { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.8rem; border: 1px solid #e3e9f1; border-radius: 8px; }
       .component-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.35rem; }
@@ -120,6 +126,31 @@
       #browser-flash-panel { max-width: 960px; margin-bottom: 0.8rem; }
       #browser-flash-controls, #usb-provision-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; align-items: end; }
       #browser-flash-controls label, #usb-provision-controls label { margin: 0; }
+      dialog.usb-console-dialog {
+        border: 1px solid #d8e0eb;
+        border-radius: 12px;
+        background: #fff;
+        box-shadow: 0 12px 32px rgb(15 23 42 / 20%);
+        padding: 1rem 1.15rem 1.15rem;
+        width: min(92vw, 880px);
+        max-height: min(90vh, 720px);
+      }
+      dialog.usb-console-dialog::backdrop { background: rgba(15, 23, 42, 0.45); }
+      dialog.usb-console-dialog h3 { margin: 0 0 0.35rem; }
+      dialog.usb-console-dialog > .notice { margin: 0 0 0.65rem; }
+      #usb-console-output {
+        margin: 0.65rem 0 0;
+        max-height: min(55vh, 28rem);
+        overflow: auto;
+        padding: 0.75rem;
+        border-radius: 7px;
+        background: #0f172a;
+        color: #e2e8f0;
+        font: 0.78rem/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      #usb-console-output:empty::before { content: "USB serial output will appear here."; color: #94a3b8; }
       #browser-flash-panel input[type="checkbox"] { width: auto; }
       #browser-flash-history { display: grid; gap: 0.4rem; }
       .deployment-attempt { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem; padding: 0.55rem; border: 1px solid #e3e9f1; border-radius: 7px; }
@@ -167,7 +198,7 @@
       #installation-form .actions { grid-column: 1 / -1; }
       [hidden] { display: none !important; }
       @media (max-width: 760px) {
-        .detail-grid, #installation-form, .overview-grid, .component-list { grid-template-columns: 1fr; }
+        .detail-grid, #installation-form, .overview-grid, .component-list, .call-home-routes { grid-template-columns: 1fr; }
         #installation-form .actions { grid-column: auto; }
         .toolbar { align-items: flex-start; }
         #create-panel { grid-template-columns: 1fr; }
@@ -227,7 +258,16 @@
           </div>
           <section>
             <h3>Device call-home addresses</h3>
-            <dl id="hub-addresses" class="meta"><dt>Local HTTPS</dt><dd>Loading…</dd><dt>Local MQTT</dt><dd>Loading…</dd><dt>External route</dt><dd>Not configured</dd></dl>
+            <div id="hub-addresses" class="call-home-routes" aria-live="polite">
+              <div class="call-home-route">
+                <strong>Local:</strong>
+                <dl class="meta"><dt>HTTPS</dt><dd>Loading…</dd><dt>MQTT</dt><dd>Loading…</dd></dl>
+              </div>
+              <div class="call-home-route">
+                <strong>External:</strong>
+                <dl class="meta"><dt>HTTPS</dt><dd>Not configured</dd><dt>MQTT</dt><dd>Not configured</dd></dl>
+              </div>
+            </div>
           </section>
           <section>
             <h3>Components</h3>
@@ -255,8 +295,23 @@
             <p>Step 1: select a USB serial port, read its dBmap identity, assign its owner, and enter its Wi-Fi details. USB IDs identify only the serial adapter; browser-based firmware building and flashing are not part of this step.</p>
             <div class="actions">
               <button id="inspect-device" class="secondary" type="button">Read USB device identity</button>
+              <button id="usb-console-launch" class="secondary" type="button">Logs &amp; Console</button>
               <span id="usb-inspection-status" class="notice" role="status">USB inspection has not been started.</span>
             </div>
+            <dialog id="usb-console-dialog" class="usb-console-dialog" aria-labelledby="usb-console-title">
+              <h3 id="usb-console-title">Logs &amp; Console</h3>
+              <p class="notice">Live serial at 115200 baud. Close this before ESP Web Tools or USB provisioning needs the port; reopen afterward to watch Wi-Fi, mDNS, and Hub call-home.</p>
+              <div class="actions">
+                <button id="usb-console-open" class="secondary" type="button">Open USB console</button>
+                <button id="usb-console-reset" class="secondary" type="button" disabled>Reset device</button>
+                <button id="usb-console-clear" class="secondary" type="button" disabled>Clear</button>
+                <button id="usb-console-download" class="secondary" type="button" disabled>Download logs</button>
+                <button id="usb-console-close" class="secondary" type="button" disabled>Close console</button>
+                <button id="usb-console-dismiss" class="secondary" type="button">Close</button>
+                <span id="usb-console-status" class="notice" role="status">Console is closed.</span>
+              </div>
+              <pre id="usb-console-output" aria-live="polite"></pre>
+            </dialog>
             <dl id="usb-inspection-details" class="meta" hidden></dl>
             <label id="confirm-new-device-label" hidden>
               <input id="confirm-new-device" type="checkbox">
@@ -321,7 +376,7 @@
             </section>
             <details id="build-handoff" hidden>
               <summary>Handoff preview</summary>
-              <p class="notice">This allowlisted preview excludes Wi-Fi credentials, the bootstrap token, and the Hub access token.</p>
+              <p class="notice">This allowlisted preview excludes Wi-Fi credentials, the bootstrap token, the Hub access token, and the device API token. The device API token is issued once at HTTPS provisioning and stored only in device NVS.</p>
               <pre id="build-handoff-json"></pre>
             </details>
           </section>
@@ -425,16 +480,24 @@
             <div id="browser-flash-history" aria-live="polite"></div>
             <section id="usb-provision-panel" aria-labelledby="usb-provision-title">
               <h4 id="usb-provision-title">Configure device over USB</h4>
-              <p>For a registered device running firmware with dBmap USB provisioning support. Connect the board and reset it; provisioned devices advertise a 10-second configuration window after boot. No configuration is sent until the firmware prompt appears. The Wi-Fi password and bootstrap token are sent directly to the selected board and are not saved in Hub history or browser storage. A confirmed NVS write does not verify the device's authenticated Hub connection.</p>
+              <p>Admin-only. Writes Wi-Fi and call-home settings into device NVS over USB. Bootstrap token is optional: omit it to keep the device's existing NVS token. Provisioned boards open a 10-second USB window after reset. Secrets are sent only to the board and are not stored by the Hub. A confirmed NVS write does not prove Hub connectivity.</p>
               <div id="usb-provision-controls">
                 <label for="provision-ssid">Wi-Fi network name<input id="provision-ssid" maxlength="32" autocomplete="off"></label>
                 <label for="provision-wifi-password">Wi-Fi password<input id="provision-wifi-password" type="password" maxlength="64" autocomplete="new-password"></label>
-                <label for="provision-bootstrap-token">Bootstrap token<input id="provision-bootstrap-token" type="password" maxlength="127" autocomplete="off"></label>
+                <label for="provision-route">Call-home route
+                  <select id="provision-route">
+                    <option value="local">Local Hub</option>
+                  </select>
+                </label>
+                <label for="provision-bootstrap-token">Bootstrap token (optional)<input id="provision-bootstrap-token" type="password" maxlength="127" autocomplete="off"></label>
               </div>
-              <p id="provision-hub-url" class="notice"></p>
+              <h5>NVS write preview</h5>
+              <p class="notice">Review every field that will be sent. Secrets are masked here; empty Wi-Fi password is sent as empty.</p>
+              <dl id="provision-nvs-preview" class="meta"></dl>
+              <p id="provision-hub-url" class="notice" hidden></p>
               <div class="actions">
                 <button id="send-usb-provisioning" type="button">Send configuration to device</button>
-                <span id="usb-provision-status" class="notice" role="status">Select a pending registered device above.</span>
+                <span id="usb-provision-status" class="notice" role="status">Select an active device above.</span>
               </div>
             </section>
           </section>
@@ -720,15 +783,22 @@
         hubAddresses = status.addresses || {};
         document.getElementById('hub-mode').textContent = status.mode || 'Unknown';
         document.getElementById('hub-id').textContent = status.hub_id || 'Not set';
-        const localHubUrl = currentLocalHubUrl();
         const addressList = document.getElementById('hub-addresses');
+        function callHomeGroup(title, httpsUrl, mqtt) {
+          const group = el('div', undefined, 'call-home-route');
+          group.append(el('strong', title));
+          const meta = el('dl', undefined, 'meta');
+          meta.append(
+            el('dt', 'HTTPS'), el('dd', httpsUrl || 'Not configured'),
+            el('dt', 'MQTT'),
+            el('dd', mqtt?.host ? `${mqtt.host}:${mqtt.port}` : 'Not configured'),
+          );
+          group.append(meta);
+          return group;
+        }
         addressList.replaceChildren(
-          el('dt', 'Local HTTPS'), el('dd', localHubUrl),
-          el('dt', 'Local MQTT'), el('dd', `${hubAddresses.local_mqtt?.host || 'Not configured'}:${hubAddresses.local_mqtt?.port || ''}`),
-          el('dt', 'External route'),
-          el('dd', hubAddresses.external_hub_url
-            ? `${hubAddresses.external_hub_url} · MQTT ${hubAddresses.external_mqtt?.host || 'Not configured'}:${hubAddresses.external_mqtt?.port || ''}`
-            : 'Not configured'),
+          callHomeGroup('Local:', hubAddresses.local_hub_url, hubAddresses.local_mqtt),
+          callHomeGroup('External:', hubAddresses.external_hub_url, hubAddresses.external_mqtt),
         );
         const routeSelect = document.getElementById('registration-route');
         const priorRoute = routeSelect.value;
@@ -1365,7 +1435,6 @@
           ['Provisioning', device.provisioning_state], ['Lifecycle', device.lifecycle_state],
           ['Availability', device.availability || 'Unknown'], ['Status', device.status],
           ['Last seen', formatSeen(device.last_seen_at)],
-          ['Pending configuration change', device.pending_configuration_change === undefined ? 'Not available' : String(device.pending_configuration_change)],
         ]) addDetailField(metadata, label, value);
         summary.append(metadata);
         grid.append(summary);
@@ -1475,37 +1544,57 @@
               ['Configuration version', 'config_version'],
               ['Calibration version', 'calibration_version'],
               ['Classifier version', 'classifier_version'],
+              ['Protocol version', 'protocol_version'],
               ['Uptime (s)', 'uptime_s'],
               ['Wi-Fi RSSI (dBm)', 'wifi_rssi_dbm'],
-              ['Pending configuration change', 'pending_configuration_change'],
             ],
           };
-          const payloadKeys = new Set([
+          const payloadOnlyFields = new Set(['wifi_rssi_dbm', 'protocol_version']);
+          const knownPayloadKeys = new Set([
             'node_id', 'firmware_id', 'firmware_version', 'hardware_revision',
             'config_version', 'calibration_version', 'classifier_version',
-            'uptime_s', 'wifi_rssi_dbm', 'pending_configuration_change',
+            'protocol_version', 'uptime_s', 'wifi_rssi_dbm',
+            'pending_configuration_change',
           ]);
+          function formatDetailValue(value) {
+            if (value === null || value === undefined || value === '') return 'Not set';
+            if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+            return String(value);
+          }
+          function stateFieldValue(state, field) {
+            if (payloadOnlyFields.has(field)) {
+              const fromPayload = state.payload?.[field];
+              return fromPayload === undefined ? state[field] : fromPayload;
+            }
+            return state[field];
+          }
           for (const [title, key] of [['Desired state', 'desired'], ['Reported state', 'reported']]) {
             const panel = el('section');
             panel.append(el('h3', title));
             const state = device[key] || {};
             const metadata = el('dl', undefined, 'meta');
             for (const [label, field] of stateFields[key]) {
-              const value = field === 'wifi_rssi_dbm' ? state.payload?.[field] : state[field];
-              addDetailField(metadata, label, value);
+              metadata.append(el('dt', label), el('dd', formatDetailValue(stateFieldValue(state, field))));
+            }
+            if (key === 'desired') {
+              metadata.append(
+                el('dt', 'Pending configuration change'),
+                el('dd', formatDetailValue(device.pending_configuration_change)),
+              );
             }
             panel.append(metadata);
 
-            const payload = state.payload && typeof state.payload === 'object' ? state.payload : {};
-            const additional = Object.fromEntries(
-              Object.entries(payload).filter(([field]) => !payloadKeys.has(field)),
-            );
-            if (Object.keys(additional).length > 0) {
-              const payloadDetails = document.createElement('details');
-              payloadDetails.append(el('summary', 'Additional reported values'));
-              const payloadData = el('pre', JSON.stringify(additional, null, 2));
-              payloadDetails.append(payloadData);
-              panel.append(payloadDetails);
+            if (key === 'reported') {
+              const payload = state.payload && typeof state.payload === 'object' ? state.payload : {};
+              const additional = Object.fromEntries(
+                Object.entries(payload).filter(([field]) => !knownPayloadKeys.has(field)),
+              );
+              if (Object.keys(additional).length > 0) {
+                const payloadDetails = document.createElement('details');
+                payloadDetails.append(el('summary', 'Additional reported values'));
+                payloadDetails.append(el('pre', JSON.stringify(additional, null, 2)));
+                panel.append(payloadDetails);
+              }
             }
             grid.append(panel);
           }
@@ -1811,6 +1900,157 @@
       let registrationFlashInProgress = false;
       let registrationFlashBlobUrls = [];
       let pendingRegistrationProvisioning = null;
+      let usbConsolePort = null;
+      let usbConsoleReader = null;
+      let usbConsoleKeepReading = false;
+
+      const usbConsoleDialog = document.getElementById('usb-console-dialog');
+      const usbConsoleLaunchButton = document.getElementById('usb-console-launch');
+      const usbConsoleDismissButton = document.getElementById('usb-console-dismiss');
+      const usbConsoleOutput = document.getElementById('usb-console-output');
+      const usbConsoleStatus = document.getElementById('usb-console-status');
+      const usbConsoleOpenButton = document.getElementById('usb-console-open');
+      const usbConsoleCloseButton = document.getElementById('usb-console-close');
+      const usbConsoleResetButton = document.getElementById('usb-console-reset');
+      const usbConsoleClearButton = document.getElementById('usb-console-clear');
+      const usbConsoleDownloadButton = document.getElementById('usb-console-download');
+
+      function showUsbConsoleDialog() {
+        if (!usbConsoleDialog.open) usbConsoleDialog.showModal();
+      }
+
+      function syncUsbConsoleControls(open) {
+        usbConsoleOpenButton.disabled = open || !navigator.serial;
+        usbConsoleCloseButton.disabled = !open;
+        usbConsoleResetButton.disabled = !open;
+        usbConsoleClearButton.disabled = usbConsoleOutput.textContent.length === 0;
+        usbConsoleDownloadButton.disabled = usbConsoleOutput.textContent.length === 0;
+      }
+
+      function appendUsbConsoleText(text) {
+        if (!text) return;
+        usbConsoleOutput.textContent += text;
+        if (usbConsoleOutput.textContent.length > 200000) {
+          usbConsoleOutput.textContent = usbConsoleOutput.textContent.slice(-160000);
+        }
+        usbConsoleOutput.scrollTop = usbConsoleOutput.scrollHeight;
+        syncUsbConsoleControls(Boolean(usbConsolePort));
+      }
+
+      async function stopUsbConsole(message = 'Console is closed.') {
+        usbConsoleKeepReading = false;
+        const reader = usbConsoleReader;
+        const port = usbConsolePort;
+        usbConsoleReader = null;
+        usbConsolePort = null;
+        if (reader) {
+          try { await reader.cancel(); } catch (_) { /* ignore */ }
+          try { reader.releaseLock(); } catch (_) { /* ignore */ }
+        }
+        if (port) {
+          try { await port.close(); } catch (_) { /* ignore */ }
+        }
+        usbConsoleStatus.textContent = message;
+        usbConsoleStatus.className = 'notice';
+        syncUsbConsoleControls(false);
+      }
+
+      async function readUsbConsoleLoop() {
+        const decoder = new TextDecoder();
+        while (usbConsoleKeepReading && usbConsoleReader) {
+          try {
+            const { value, done } = await usbConsoleReader.read();
+            if (done) break;
+            appendUsbConsoleText(decoder.decode(value, { stream: true }));
+          } catch (error) {
+            if (usbConsoleKeepReading) {
+              usbConsoleStatus.textContent = `USB console stopped: ${error.message}`;
+              usbConsoleStatus.className = 'notice error';
+            }
+            break;
+          }
+        }
+        if (usbConsoleKeepReading) {
+          await stopUsbConsole('USB console disconnected.');
+        }
+      }
+
+      async function openUsbConsole(preferredPort = null) {
+        if (!navigator.serial) {
+          usbConsoleStatus.textContent = 'Web Serial is not available in this browser.';
+          usbConsoleStatus.className = 'notice error';
+          return;
+        }
+        await stopUsbConsole('Opening USB console…');
+        try {
+          const port = preferredPort || await navigator.serial.requestPort();
+          await port.open({ baudRate: 115200, bufferSize: 8192 });
+          usbConsolePort = port;
+          usbConsoleReader = port.readable.getReader();
+          usbConsoleKeepReading = true;
+          usbConsoleStatus.textContent = 'USB console open at 115200 baud. Press Reset on the board if logs do not appear.';
+          usbConsoleStatus.className = 'notice';
+          syncUsbConsoleControls(true);
+          readUsbConsoleLoop();
+        } catch (error) {
+          await stopUsbConsole(
+            error.name === 'NotFoundError'
+              ? 'No USB serial port was selected.'
+              : `Could not open USB console: ${error.message}`,
+          );
+          if (error.name !== 'NotFoundError') usbConsoleStatus.className = 'notice error';
+        }
+      }
+
+      usbConsoleLaunchButton.addEventListener('click', async () => {
+        showUsbConsoleDialog();
+        if (!usbConsolePort) await openUsbConsole(inspectedSerialPort);
+      });
+      usbConsoleDismissButton.addEventListener('click', () => usbConsoleDialog.close());
+      usbConsoleDialog.addEventListener('close', () => {
+        if (usbConsolePort) stopUsbConsole('Console is closed.');
+      });
+      usbConsoleOpenButton.addEventListener('click', () => openUsbConsole(inspectedSerialPort));
+      usbConsoleCloseButton.addEventListener('click', () => stopUsbConsole('Console is closed.'));
+      usbConsoleClearButton.addEventListener('click', () => {
+        usbConsoleOutput.textContent = '';
+        syncUsbConsoleControls(Boolean(usbConsolePort));
+      });
+      usbConsoleDownloadButton.addEventListener('click', () => {
+        const blob = new Blob([usbConsoleOutput.textContent], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'dbmap-usb-console.txt';
+        link.click();
+        URL.revokeObjectURL(url);
+      });
+      usbConsoleResetButton.addEventListener('click', async () => {
+        if (!usbConsolePort?.setSignals) return;
+        try {
+          await usbConsolePort.setSignals({ dataTerminalReady: false, requestToSend: true });
+          await new Promise((resolve) => window.setTimeout(resolve, 100));
+          await usbConsolePort.setSignals({ dataTerminalReady: true, requestToSend: false });
+          usbConsoleStatus.textContent = 'Reset pulse sent. Waiting for device serial output…';
+          usbConsoleStatus.className = 'notice';
+        } catch (error) {
+          usbConsoleStatus.textContent = `Could not reset device: ${error.message}`;
+          usbConsoleStatus.className = 'notice error';
+        }
+      });
+      if (!navigator.serial) {
+        usbConsoleLaunchButton.disabled = true;
+        usbConsoleOpenButton.disabled = true;
+        usbConsoleStatus.textContent = 'Web Serial is not available. Use a supported Chromium-based browser on a secure connection.';
+        usbConsoleStatus.className = 'notice error';
+      } else {
+        navigator.serial.addEventListener('disconnect', (event) => {
+          if (event.target === usbConsolePort) {
+            stopUsbConsole('USB device disconnected. Open the console again when ready.');
+          }
+        });
+      }
+      syncUsbConsoleControls(false);
 
       function syncCreateButton() {
         validateWifiSsid();
@@ -1908,6 +2148,7 @@
       document.getElementById('inspect-device').addEventListener('click', async (event) => {
         const button = event.currentTarget;
         button.disabled = true;
+        await stopUsbConsole('USB console closed for identity inspection. Open Logs & Console afterward to watch logs.');
         clearUsbInspection('Waiting for USB serial device selection…');
         try {
           const port = await navigator.serial.requestPort();
@@ -2487,7 +2728,7 @@
         if (result?.state === 'finished') {
           registrationFlashInProgress = false;
           const status = document.getElementById('registration-flash-status');
-          status.textContent = 'Firmware flash succeeded. The device can now be configured over USB.';
+          status.textContent = 'Firmware flash succeeded. Use Logs & Console for live serial output, then send configuration over USB.';
           status.className = 'notice';
           const button = document.querySelector('#registration-flash-launch [slot="activate"]');
           if (button) button.textContent = 'Flash again (same device)';
@@ -2495,7 +2736,7 @@
           if (pendingRegistrationProvisioning) {
             provisionStep.hidden = false;
             document.getElementById('registration-provision-button').disabled = false;
-            document.getElementById('registration-provision-status').textContent = 'Ready to send configuration to the inspected USB device.';
+            document.getElementById('registration-provision-status').textContent = 'Ready to send configuration to the inspected USB device. Open Logs & Console afterward to watch Hub call-home.';
             document.getElementById('registration-provision-status').className = 'notice';
           }
         } else if (result?.state === 'error') {
@@ -2565,6 +2806,7 @@
           launch.setAttribute('slot', 'activate');
           launch.type = 'button';
           launch.addEventListener('click', () => {
+            stopUsbConsole('USB console closed so ESP Web Tools can use the serial port. Open Logs & Console after flashing.');
             registrationFlashInProgress = true;
             document.getElementById('registration-provision-step').hidden = true;
             document.getElementById('registration-provision-button').disabled = true;
@@ -2616,24 +2858,120 @@
       }
 
 
-      function currentLocalHubUrl() {
-        const base = new URL(publicBasePath || '/', window.location.origin);
-        return `${base.origin}${base.pathname.replace(/\/$/, '')}`;
+      function callHomeRouteForProfile(profile) {
+        const selected = profile || 'local';
+        if (selected === 'external') {
+          return { profile: selected, hubUrl: hubAddresses?.external_hub_url || '', mqtt: hubAddresses?.external_mqtt || null };
+        }
+        return { profile: selected, hubUrl: hubAddresses?.local_hub_url || '', mqtt: hubAddresses?.local_mqtt || null };
       }
 
       function selectedCallHomeRoute() {
-        const profile = document.getElementById('registration-route').value || 'local';
-        if (profile === 'external') {
-          return { profile, hubUrl: hubAddresses?.external_hub_url || '', mqtt: hubAddresses?.external_mqtt || null };
+        return callHomeRouteForProfile(document.getElementById('registration-route').value || 'local');
+      }
+
+      function selectedProvisionCallHomeRoute() {
+        return callHomeRouteForProfile(document.getElementById('provision-route').value || 'local');
+      }
+
+      function selectedProvisionDevice() {
+        const nodeId = document.getElementById('flash-device').value;
+        return allDevices.find((device) => device.node_id === nodeId) || null;
+      }
+
+      function buildUsbConfigurationPayload(options = {}) {
+        const device = options.device || selectedProvisionDevice();
+        const route = options.route || selectedProvisionCallHomeRoute();
+        const ssid = options.ssid ?? document.getElementById('provision-ssid').value.trim();
+        const wifiPassword = options.wifiPassword ?? document.getElementById('provision-wifi-password').value;
+        const token = options.token ?? (
+          document.getElementById('provision-bootstrap-token').value ||
+          pendingBootstrapTokens.get(options.nodeId || device?.node_id || '') ||
+          ''
+        );
+        const configuration = {
+          ssid,
+          wifi_password: wifiPassword,
+          hub_url: route.hubUrl || '',
+          mqtt_profile: route.profile,
+        };
+        if (token) configuration.bootstrap_token = token;
+        if (route.mqtt?.host) {
+          configuration.mqtt_host = route.mqtt.host;
+          configuration.mqtt_port = Number(route.mqtt.port) || 8883;
         }
-        return { profile, hubUrl: currentLocalHubUrl(), mqtt: hubAddresses?.local_mqtt || null };
+        return {
+          device,
+          route,
+          configuration,
+          ready: Boolean(
+            (options.nodeId || device?.node_id) &&
+            ssid &&
+            route.hubUrl &&
+            route.mqtt?.host,
+          ),
+        };
+      }
+
+      function maskSecret(value) {
+        if (!value) return '(empty)';
+        if (value.length <= 2) return '•'.repeat(value.length);
+        return `${'•'.repeat(Math.min(12, value.length))} (${value.length} chars)`;
       }
 
       function updateProvisionHubUrl() {
-        const route = selectedCallHomeRoute();
-        document.getElementById('provision-hub-url').textContent =
-          `Selected ${route.profile} route · HTTPS ${route.hubUrl || 'not configured'} · MQTT ${route.mqtt ? `${route.mqtt.host}:${route.mqtt.port}` : 'not configured'}`;
+        syncProvisionRouteOptions();
+        const payload = buildUsbConfigurationPayload();
+        const preview = document.getElementById('provision-nvs-preview');
+        const cfg = payload.configuration;
+        const rows = [
+          ['Target device', payload.device ? `${payload.device.node_id} · ${payload.device.provisioning_state}` : 'None selected'],
+          ['Wi-Fi SSID', cfg.ssid || '(required)'],
+          ['Wi-Fi password', maskSecret(cfg.wifi_password)],
+          ['Call-home profile', cfg.mqtt_profile || '(required)'],
+          ['Hub HTTPS URL', cfg.hub_url || '(required)'],
+          ['MQTT host', cfg.mqtt_host || '(not set)'],
+          ['MQTT port', cfg.mqtt_port != null ? String(cfg.mqtt_port) : '(not set)'],
+          ['MQTT TLS', cfg.mqtt_host ? 'true' : '(unchanged on device)'],
+          [
+            'Bootstrap token',
+            cfg.bootstrap_token
+              ? maskSecret(cfg.bootstrap_token)
+              : '(omitted; keep existing NVS value)',
+          ],
+          [
+            'Identity / MQTT credentials',
+            payload.device?.provisioning_state === 'pending'
+              ? 'Pending device: Hub HTTPS provision still needs a token already stored on the device, or supply one here'
+              : 'Preserved on device (not overwritten by this USB write)',
+          ],
+        ];
+        preview.replaceChildren(...rows.flatMap(([label, value]) => [el('dt', label), el('dd', value)]));
+        const legacy = document.getElementById('provision-hub-url');
+        legacy.hidden = true;
+        legacy.textContent = '';
+        const status = document.getElementById('usb-provision-status');
+        if (!document.getElementById('flash-device').value) {
+          status.textContent = 'Select an active device above.';
+          status.className = 'notice';
+        } else if (!payload.ready) {
+          status.textContent = 'Enter Wi-Fi details and confirm the call-home route. Bootstrap token is optional.';
+          status.className = 'notice';
+        } else {
+          status.textContent = 'Preview looks ready. Reset the board if needed, then send the configuration over USB.';
+          status.className = 'notice';
+        }
+      }
 
+      function syncProvisionRouteOptions() {
+        const routeSelect = document.getElementById('provision-route');
+        if (!routeSelect) return;
+        const prior = routeSelect.value || 'local';
+        routeSelect.replaceChildren(new Option('Local Hub', 'local'));
+        if (hubAddresses?.external_hub_url && hubAddresses?.external_mqtt) {
+          routeSelect.append(new Option('External Hub', 'external'));
+        }
+        routeSelect.value = [...routeSelect.options].some((option) => option.value === prior) ? prior : 'local';
       }
 
       async function waitForSerialLine(reader, pattern, timeoutMs, description) {
@@ -2660,12 +2998,18 @@
         const nodeId = options.nodeId || document.getElementById('flash-device').value;
         const status = options.statusElement || document.getElementById('usb-provision-status');
         const button = options.buttonElement || document.getElementById('send-usb-provisioning');
-        const ssid = options.ssid ?? document.getElementById('provision-ssid').value;
-        const wifiPassword = options.wifiPassword ?? document.getElementById('provision-wifi-password').value;
-        const token = options.token || document.getElementById('provision-bootstrap-token').value || pendingBootstrapTokens.get(nodeId) || '';
-        if (!nodeId || !ssid || !token) {
-          status.textContent = 'Select a registered device and enter its Wi-Fi network name and bootstrap token.';
+        const payload = buildUsbConfigurationPayload({
+          nodeId,
+          device: options.device || (nodeId ? allDevices.find((device) => device.node_id === nodeId) : null),
+          route: options.route || (options.buttonElement ? selectedCallHomeRoute() : selectedProvisionCallHomeRoute()),
+          ssid: options.ssid,
+          wifiPassword: options.wifiPassword,
+          token: options.token,
+        });
+        if (!payload.ready) {
+          status.textContent = 'Select a registered device and enter its Wi-Fi network name and call-home route. Bootstrap token is optional.';
           status.className = 'notice error';
+          updateProvisionHubUrl();
           return;
         }
         if (currentRole !== 'admin' || !navigator.serial) {
@@ -2679,10 +3023,7 @@
         let writer;
         let configurationAccepted = false;
         try {
-          const route = options.route || selectedCallHomeRoute();
-          const hubUrl = route.hubUrl;
-          if (!hubUrl || !route.mqtt) throw new Error('The selected call-home route is not configured.');
-
+          await stopUsbConsole('USB console closed for provisioning. Open Logs & Console afterward to watch Hub call-home.');
           status.textContent = options.serialPort
             ? 'Opening the inspected USB port. Press Reset if the board is not waiting for configuration.'
             : 'Select the device USB serial port. Press reset if the board is not waiting for configuration.';
@@ -2698,9 +3039,7 @@
             protocol: 1,
             operation: 'configure',
             request_id: requestId,
-
-            configuration: { ssid, wifi_password: wifiPassword, hub_url: hubUrl, mqtt_profile: route.profile, bootstrap_token: token },
-
+            configuration: payload.configuration,
           };
           await writer.write(new TextEncoder().encode(`${JSON.stringify(request)}\n`));
           status.textContent = 'Configuration sent. Waiting for the firmware to confirm its NVS write…';
@@ -2715,14 +3054,17 @@
             throw new Error(result.error || 'The device did not accept this configuration.');
           }
           configurationAccepted = true;
-          status.textContent = 'Configuration saved to device NVS. Hub connection verification is skipped; check the device connection separately.';
+          status.textContent = payload.configuration.bootstrap_token
+            ? 'Configuration saved to device NVS. Hub connection verification is skipped; check the device connection separately.'
+            : 'Wi-Fi and call-home settings saved to device NVS. The board should restart; confirm connectivity in the Devices tab.';
           status.className = 'notice success';
-          pendingBootstrapTokens.delete(nodeId);
+          if (payload.configuration.bootstrap_token) pendingBootstrapTokens.delete(nodeId);
           pendingRegistrationProvisioning = null;
           document.getElementById('provision-bootstrap-token').value = '';
           document.getElementById('provision-wifi-password').value = '';
           document.getElementById('registration-provision-status').textContent = status.textContent;
           document.getElementById('registration-provision-status').className = status.className;
+          updateProvisionHubUrl();
         } catch (error) {
           status.textContent = error.message.includes('waiting for the device provisioning prompt')
             ? 'The device did not advertise the dBmap USB provisioning prompt. The installed image likely predates this protocol; a new generic firmware release with USB provisioning support is required. No configuration was sent.'
@@ -2925,6 +3267,7 @@
           launch.setAttribute('slot', 'activate');
           launch.type = 'button';
           launch.addEventListener('click', () => {
+            stopUsbConsole('USB console closed so ESP Web Tools can use the serial port. Open Logs & Console after flashing.');
             document.getElementById('deployment-outcome-panel').hidden = false;
             setBrowserFlashStatus('ESP Web Tools is handling serial flashing and progress. Record an outcome only after its dialog reports the result.');
           }, { once: true });
@@ -3039,7 +3382,12 @@
         refreshCompatibleFirmware();
         refreshDeploymentAttempts();
         document.getElementById('provision-bootstrap-token').value = pendingBootstrapTokens.get(document.getElementById('flash-device').value) || '';
+        updateProvisionHubUrl();
       });
+      document.getElementById('provision-ssid').addEventListener('input', updateProvisionHubUrl);
+      document.getElementById('provision-wifi-password').addEventListener('input', updateProvisionHubUrl);
+      document.getElementById('provision-bootstrap-token').addEventListener('input', updateProvisionHubUrl);
+      document.getElementById('provision-route').addEventListener('change', updateProvisionHubUrl);
       document.getElementById('send-usb-provisioning').addEventListener('click', provisionDeviceOverUsb);
       document.getElementById('registration-provision-button').addEventListener('click', () => {
         if (!pendingRegistrationProvisioning) return;
@@ -3220,6 +3568,7 @@
             hub_id: document.getElementById('hub-id').textContent,
             call_home: { profile: registrationCallHome.profile, https_url: registrationCallHome.hubUrl, mqtt: registrationCallHome.mqtt },
             wifi: { ssid: wifiSsid, password_supplied: Boolean(wifiPasswordInput.value) },
+            device_api: { token_issued_at_provision: true },
             previous_device_identity: detectedNodeId || null,
             usb_metadata: inspectedUsbMetadata,
           };
@@ -3341,6 +3690,7 @@
         window.clearInterval(refreshTimer);
         pendingBootstrapTokens.clear();
         pendingRegistrationProvisioning = null;
+        stopUsbConsole('Console is closed.');
         document.getElementById('registration-flash-step').hidden = true;
         document.getElementById('registration-provision-step').hidden = true;
         document.getElementById('provision-bootstrap-token').value = '';

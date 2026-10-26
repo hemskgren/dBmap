@@ -146,12 +146,36 @@ esp_err_t dbmap_serial_config_wait(dbmap_effective_t *cfg, int timeout_seconds)
                                       sizeof(candidate.network.hub_http_url), false) &&
                      copy_json_string(configuration, "mqtt_profile", candidate.network.mqtt_profile,
                                       sizeof(candidate.network.mqtt_profile), false) &&
-                     copy_json_string(configuration, "bootstrap_token", candidate.bootstrap_token,
-                                      sizeof(candidate.bootstrap_token), false) &&
                      strncmp(candidate.network.hub_http_url, "https://", 8) == 0 &&
                      candidate.network.hub_http_url[8] != '\0';
         valid = valid && (strcmp(candidate.network.mqtt_profile, "local") == 0 ||
                           strcmp(candidate.network.mqtt_profile, "external") == 0);
+
+        /* Bootstrap token is optional. When omitted or empty, keep the existing NVS value. */
+        const cJSON *token_item = cJSON_GetObjectItemCaseSensitive(configuration, "bootstrap_token");
+        if (cJSON_IsString(token_item) && token_item->valuestring != NULL && token_item->valuestring[0] != '\0') {
+            valid = valid && copy_json_string(configuration, "bootstrap_token", candidate.bootstrap_token,
+                                              sizeof(candidate.bootstrap_token), false);
+        }
+
+        /* Optional MQTT endpoint override so a provisioned device can switch local/external
+         * route without redeeming a new bootstrap token. Existing credentials are kept. */
+        const cJSON *mqtt_host_item = cJSON_GetObjectItemCaseSensitive(configuration, "mqtt_host");
+        if (cJSON_IsString(mqtt_host_item) && mqtt_host_item->valuestring != NULL) {
+            valid = valid && copy_json_string(configuration, "mqtt_host", candidate.network.mqtt_host,
+                                              sizeof(candidate.network.mqtt_host), false);
+        }
+        const cJSON *mqtt_port_item = cJSON_GetObjectItemCaseSensitive(configuration, "mqtt_port");
+        if (cJSON_IsNumber(mqtt_port_item)) {
+            int port = mqtt_port_item->valueint;
+            if (port < 1 || port > 65535) {
+                valid = false;
+            } else {
+                candidate.network.mqtt_port = (uint16_t)port;
+                candidate.network.mqtt_use_tls = true;
+            }
+        }
+
         cJSON_Delete(request);
         if (!valid) {
             result(request_id, "error", "invalid_configuration");

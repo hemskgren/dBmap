@@ -1,5 +1,6 @@
 #include <string.h>
 
+#include "dbmap_desired.h"
 #include "dbmap_health.h"
 #include "dbmap_mqtt.h"
 #include "dbmap_nvs.h"
@@ -29,6 +30,7 @@ void app_main(void)
         s_cfg.identity.node_id[0] != '\0' ? s_cfg.identity.node_id : "UNPROVISIONED"
     );
     ESP_LOGI(TAG, "boot hardware=%s provisioned=%d", s_cfg.identity.hardware_revision, (int)s_cfg.provisioned);
+    ESP_LOGI(TAG, "device API credential %s", s_cfg.device_api_token[0] != '\0' ? "present" : "absent");
 
     if (s_cfg.provisioned) {
         ESP_LOGI(TAG, "USB configuration window open for 10 seconds");
@@ -72,6 +74,7 @@ void app_main(void)
 
     ESP_ERROR_CHECK(output_command_init());
     ESP_ERROR_CHECK(dbmap_mqtt_start(&s_cfg, output_handle_command, &s_cfg));
+    dbmap_desired_poll_start(&s_cfg);
 
     int backoff_ms = 1000;
     while (1) {

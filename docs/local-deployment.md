@@ -55,13 +55,13 @@ Do **not** run `init-local-secrets.sh`; it creates `.env` only when the file doe
 DBMAP_LAN_IP=<mini-PC-LAN-IP>
 DBMAP_HTTPS_PORT=8443
 DBMAP_PUBLIC_BASE_PATH=
-DBMAP_SITE_ID=local-01
+DBMAP_HUB_ID=local-01
 DBMAP_ADMIN_TOKEN=<random-secret-1>
 DBMAP_VIEWER_TOKEN=<random-secret-2>
 DBMAP_MQTT_HUB_PASSWORD=<random-secret-3>
 DBMAP_DYNSEC_ADMIN_PASSWORD=<random-secret-4>
-DBMAP_ADVERTISED_MQTT_HOST=hub.local
-DBMAP_ADVERTISED_MQTT_PORT=8883
+DBMAP_PUBLIC_MQTT_HOST=hub.local
+DBMAP_PUBLIC_MQTT_PORT=8883
 DBMAP_LOCAL_MQTT_HOST=hub.local
 DBMAP_LOCAL_MQTT_PORT=8883
 DBMAP_PUBLIC_HUB_URL=
@@ -74,7 +74,7 @@ Replace the angle-bracket values with real values (do not type the brackets). Se
 chmod 600 .env
 ```
 
-`DBMAP_SITE_ID` is the stable local Hub ID shown in the UI and status API. It defaults to `local-01`; assign a distinct value to each Hub if you plan to connect multiple Hubs to a Regional Hub later (for example, `l-hub-agg-01`). It is configuration, not a first-boot database value: you can change it in `.env` later and recreate `hub-bootstrap` to apply it. The current local Hub does not yet configure a Regional Hub relationship.
+`DBMAP_HUB_ID` is the stable local Hub ID shown in the UI and status API (`hub_id`). It defaults to `local-01`; assign a distinct value to each Hub if you plan to connect multiple Hubs to a Regional Hub later (for example, `l-hub-agg-01`). It is configuration, not a first-boot database value: you can change it in `.env` later and recreate `hub-bootstrap` to apply it. The current local Hub does not yet configure a Regional Hub relationship.
 
 ### If `.env` does not exist
 
@@ -96,7 +96,7 @@ set +a
 docker compose up --build -d
 ```
 
-The certificate generator writes material under `shared/`: public trust at `shared/trust/ca.crt` (for host tools and browsers), the CA private key host-only at `shared/ca/ca.key` (never mounted into containers), and each Compose service's leaf cert/key plus a copy of `ca.crt` under `shared/<service>/certs/`. Compose mounts only that service directory read-only, so no container sees peer private keys or `ca.key`. An existing CA in the legacy `mqtt/certs/` layout is migrated automatically on the next generator run. Nginx covers `hub.local`, `localhost`, `127.0.0.1`, `DBMAP_LAN_IP`, `DBMAP_PUBLIC_HUB_HOST`, and `DBMAP_LOCAL_MQTT_HOST`. Mosquitto covers `mosquitto`, `127.0.0.1`, `DBMAP_LAN_IP`, `DBMAP_LOCAL_MQTT_HOST`, and `DBMAP_ADVERTISED_MQTT_HOST`. Hub bootstrap covers only `hub-bootstrap` and `localhost`. Service-to-service HTTPS uses separate `dbmap-web`, `opa`, and `firmware-builder` certificates. OPA uses HTTPS only and remains unpublished to the host. If it reports that an existing CA is unsuitable, run `./scripts/gen-mqtt-certs.sh --rotate-ca` to replace it. CA rotation invalidates trust on previously flashed devices; copy the new CA and erase/reflash each device.
+The certificate generator writes material under `shared/`: public trust at `shared/trust/ca.crt` (for host tools and browsers), the CA private key host-only at `shared/ca/ca.key` (never mounted into containers), and each Compose service's leaf cert/key plus a copy of `ca.crt` under `shared/<service>/certs/`. Compose mounts only that service directory read-only, so no container sees peer private keys or `ca.key`. An existing CA in the legacy `mqtt/certs/` layout is migrated automatically on the next generator run. Nginx covers `hub.local`, `localhost`, `127.0.0.1`, `DBMAP_LAN_IP`, `DBMAP_PUBLIC_HUB_HOST`, and `DBMAP_LOCAL_MQTT_HOST`. Mosquitto covers `mosquitto`, `127.0.0.1`, `DBMAP_LAN_IP`, `DBMAP_LOCAL_MQTT_HOST`, and `DBMAP_PUBLIC_MQTT_HOST`. Hub bootstrap covers only `hub-bootstrap` and `localhost`. Service-to-service HTTPS uses separate `dbmap-web`, `opa`, and `firmware-builder` certificates. OPA uses HTTPS only and remains unpublished to the host. If it reports that an existing CA is unsuitable, run `./scripts/gen-mqtt-certs.sh --rotate-ca` to replace it. CA rotation invalidates trust on previously flashed devices; copy the new CA and erase/reflash each device.
 
 When applying the OPA policy watcher or web healthcheck to an existing deployment, recreate those services with `docker compose up -d --force-recreate opa dbmap-web`. Later changes under `policy/` are reloaded by OPA automatically. `docker compose ps` reports the web service's health.
 
@@ -108,13 +108,13 @@ Optional mDNS publishing can be started on a host with Avahi installed:
 ./scripts/publish-hub-mdns.sh "$DBMAP_LAN_IP"
 ```
 
-Keep the publisher running while you need the name; it stops advertising when the process exits. Publishing is optional and a missing/unavailable Avahi installation does not affect the Hub. Compose publishes Nginx on `DBMAP_HTTPS_PORT` (default `8443`) and Mosquitto on `8883` at `DBMAP_LAN_IP`. The Hub API, web, and OPA ports remain internal to Compose. An existing Nginx can terminate public HTTPS on 443 and proxy to `https://<hub-host>:8443`, verifying the local CA.
+Keep the publisher running while you need the name; it stops advertising when the process exits. Publishing is optional and a missing/unavailable Avahi installation does not affect the Hub. Current device firmware includes an mDNS client so nodes can resolve `hub.local` on the LAN after Wi-Fi connects; the access point must allow multicast between the Hub host and devices. Compose publishes Nginx on `DBMAP_HTTPS_PORT` (default `8443`) and Mosquitto on `8883` at `DBMAP_LAN_IP`. The Hub API, web, and OPA ports remain internal to Compose. An existing Nginx can terminate public HTTPS on 443 and proxy to `https://<hub-host>:8443`, verifying the local CA.
 
-Device registration supports paired **Local Hub** and **External Hub** call-home routes. Local uses the Hub URL opened in the browser and `DBMAP_LOCAL_MQTT_HOST`/`DBMAP_LOCAL_MQTT_PORT`. External uses `DBMAP_PUBLIC_HUB_URL` for HTTPS bootstrap and `DBMAP_ADVERTISED_MQTT_HOST`/`DBMAP_ADVERTISED_MQTT_PORT` for MQTT. Configure both external endpoints and make them resolve and route to this Hub from the remote device's network. The Hub overview shows configured endpoint values; registration includes the selected pair in its handoff preview and sends the selected profile to the device over USB.
+Device registration supports paired **Local Hub** and **External Hub** call-home routes. Both pairs come from `.env`, not from the browser address bar. Local uses `https://$DBMAP_LOCAL_MQTT_HOST:$DBMAP_HTTPS_PORT` (plus an optional public base path) for HTTPS and `DBMAP_LOCAL_MQTT_HOST`/`DBMAP_LOCAL_MQTT_PORT` for MQTT. External uses `DBMAP_PUBLIC_HUB_URL` for HTTPS and `DBMAP_PUBLIC_MQTT_HOST`/`DBMAP_PUBLIC_MQTT_PORT` for MQTT. Configure both external endpoints and make them resolve and route to this Hub from the remote device's network. The Hub overview shows those configured values; registration and USB configure send the selected pair to the device.
 
-The builder embeds `shared/trust/ca.crt` into firmware. Nginx's certificate includes `DBMAP_PUBLIC_HUB_HOST`. Mosquitto's certificate includes `DBMAP_LOCAL_MQTT_HOST` and `DBMAP_ADVERTISED_MQTT_HOST`. Set `DBMAP_PUBLIC_HUB_HOST` to the DNS name used in `DBMAP_PUBLIC_HUB_URL`. Re-run `scripts/gen-mqtt-certs.sh` after changing these values, then rebuild firmware so it embeds the current CA. This local-CA setup requires remote devices to use firmware built with that CA; browsers opening an external Hub URL also need to trust it. A public CA/browser-trusted external deployment needs a separately managed certificate and firmware trust chain.
+The builder embeds `shared/trust/ca.crt` into firmware. Nginx's certificate includes `DBMAP_PUBLIC_HUB_HOST`. Mosquitto's certificate includes `DBMAP_LOCAL_MQTT_HOST` and `DBMAP_PUBLIC_MQTT_HOST`. Set `DBMAP_PUBLIC_HUB_HOST` to the DNS name or IP used in `DBMAP_PUBLIC_HUB_URL`. Re-run `scripts/gen-mqtt-certs.sh` after changing these values, then rebuild firmware so it embeds the current CA. This local-CA setup requires remote devices to use firmware built with that CA; browsers opening an external Hub URL also need to trust it. A public CA/browser-trusted external deployment needs a separately managed certificate and firmware trust chain.
 
-For a local-only device deployment, `DBMAP_ADVERTISED_MQTT_HOST` remains the route for older firmware that does not send a route profile; set it to a host/IP reachable by the device and covered by the Mosquitto certificate. Current firmware sends the selected profile during provisioning, and the Hub returns the matching MQTT endpoint. After changing `.env` or certificates, apply the configuration and restart services:
+For a local-only device deployment, set `DBMAP_PUBLIC_MQTT_HOST` to a host/IP reachable by the device and covered by the Mosquitto certificate when you also use External call-home, or leave Local selected. Current firmware sends the selected profile during provisioning, and the Hub returns the matching MQTT endpoint. After changing `.env` or certificates, apply the configuration and restart services:
 
 ```bash
 sudo docker compose up -d
@@ -214,7 +214,7 @@ uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
   --credentials-file /tmp/dbmap-ear-b.json
 ```
 
-The MQTT host is saved in each credentials file when that Ear is provisioned. Set `DBMAP_ADVERTISED_MQTT_HOST` in `.env` to a host/IP reachable from the machine running this scenario before provisioning; existing credentials are not updated when `.env` changes.
+The MQTT host is saved in each credentials file when that Ear is provisioned. Set `DBMAP_PUBLIC_MQTT_HOST` or `DBMAP_LOCAL_MQTT_HOST` in `.env` to a host/IP reachable from the machine running this scenario before provisioning; existing credentials are not updated when `.env` changes.
 
 Validate the scenario and credentials aliases locally before publishing. Dry-run does not need the Hub token, CA, broker, or credentials file contents:
 

@@ -143,11 +143,27 @@ class Topics(BaseModel):
     observation: str
 
 
+class DeviceApiCredential(BaseModel):
+    token: str
+
+
 class ProvisionResponse(BaseModel):
     node_id: str
     node_type: str
     mqtt: MqttEndpoint
     topics: Topics
+    device_api: DeviceApiCredential
+
+
+class DeviceDesiredFirmware(BaseModel):
+    node_id: str
+    firmware_id: str
+    firmware_version: str
+
+
+class DeviceApiTokenResponse(BaseModel):
+    node_id: str
+    device_api_token: str
 
 
 class DesiredStateBody(BaseModel):
