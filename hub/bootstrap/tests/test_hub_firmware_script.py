@@ -37,7 +37,9 @@ def test_create_metadata_matches_zip_and_normalizes_build_date(tmp_path):
     bundle_path = tmp_path / "esp-output-test.zip"
     bundle = _firmware_zip(bundle_path)
 
-    metadata_path = hub_firmware.create_metadata(bundle_path, "2026-10-13T10:00:00+02:00")
+    metadata_path = hub_firmware.create_metadata(
+        bundle_path, "2026-10-13T10:00:00+02:00"
+    )
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
 
     assert metadata_path.name == "esp-output-test.json"
@@ -88,7 +90,9 @@ def test_list_reads_catalog_and_validates_response(tmp_path):
     entries = [{"firmware_id": "firmware-1", "status": "candidate"}]
 
     with patch.object(hub_firmware, "_request", return_value=(200, entries)) as request:
-        result = hub_firmware.list_firmware(str(ca_path), "x" * 32, "https://hub.local:8443")
+        result = hub_firmware.list_firmware(
+            str(ca_path), "x" * 32, "https://hub.local:8443"
+        )
 
     assert result == entries
     assert request.call_args.args[3:5] == ("GET", "/api/v1/firmware/catalog")
@@ -112,7 +116,9 @@ def test_hub_host_defaults_to_environment(monkeypatch):
     assert args.ca == "shared/trust/ca.crt"
 
 
-def test_project_env_defaults_are_loaded_without_overriding_environment(tmp_path, monkeypatch):
+def test_project_env_defaults_are_loaded_without_overriding_environment(
+    tmp_path, monkeypatch
+):
     env_file = tmp_path / ".env"
     env_file.write_text(
         "DBMAP_LAN_IP=192.0.2.10\n"
@@ -140,7 +146,9 @@ def test_project_env_defaults_are_loaded_without_overriding_environment(tmp_path
         ("valid-id", "not-a-date"),
     ],
 )
-def test_create_metadata_rejects_invalid_id_or_build_date(tmp_path, firmware_id, build_date_utc):
+def test_create_metadata_rejects_invalid_id_or_build_date(
+    tmp_path, firmware_id, build_date_utc
+):
     bundle_path = tmp_path / f"{firmware_id}.zip"
     _firmware_zip(bundle_path)
 

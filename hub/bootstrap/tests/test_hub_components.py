@@ -19,14 +19,18 @@ def _frame(text: str, stream: int = 1) -> bytes:
 
 
 def test_decode_docker_logs_reads_multiplexed_frames_and_plain_text() -> None:
-    assert container_logs.decode_docker_logs(_frame("one\n") + _frame("two\n", stream=2)) == ["one", "two"]
+    assert container_logs.decode_docker_logs(
+        _frame("one\n") + _frame("two\n", stream=2)
+    ) == ["one", "two"]
     assert container_logs.decode_docker_logs(b"plain line\n") == ["plain line"]
     assert container_logs.decode_docker_logs(b"") == []
 
 
 def test_decode_docker_logs_keeps_the_last_ten_lines() -> None:
     lines = "".join(f"line-{index}\n" for index in range(12))
-    assert container_logs.decode_docker_logs(lines.encode()) == [f"line-{index}" for index in range(2, 12)]
+    assert container_logs.decode_docker_logs(lines.encode()) == [
+        f"line-{index}" for index in range(2, 12)
+    ]
 
 
 def test_read_tail_requests_only_the_named_compose_service(monkeypatch) -> None:
@@ -114,14 +118,26 @@ def test_hub_status_lists_web_nginx_and_firmware_builder(monkeypatch) -> None:
     monkeypatch.setattr(
         edge_status,
         "statuses",
-        lambda: {"nginx": "online", "web": "offline", "firmware-builder": "unavailable"},
+        lambda: {
+            "nginx": "online",
+            "web": "offline",
+            "firmware-builder": "unavailable",
+        },
     )
     client = TestClient(create_app())
-    response = client.get("/api/v1/hub/status", headers={"Authorization": f"Bearer {settings.admin_token}"})
+    response = client.get(
+        "/api/v1/hub/status",
+        headers={"Authorization": f"Bearer {settings.admin_token}"},
+    )
 
     assert response.status_code == 200, response.text
     components = {item["name"]: item for item in response.json()["components"]}
-    assert components["Nginx"] == {"id": "nginx", "name": "Nginx", "status": "online", "logs": True}
+    assert components["Nginx"] == {
+        "id": "nginx",
+        "name": "Nginx",
+        "status": "online",
+        "logs": True,
+    }
     assert components["Web"]["status"] == "offline"
     assert components["Web"]["logs"] is True
     assert components["Firmware builder"]["status"] == "unavailable"

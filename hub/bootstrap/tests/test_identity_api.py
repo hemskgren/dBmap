@@ -31,21 +31,32 @@ def test_admin_can_manage_users_and_github_identities_only() -> None:
     viewer_list = client.get("/api/v1/users", headers=viewer_headers)
     assert viewer_list.status_code == 200
     assert any(item["user_id"] == user["user_id"] for item in viewer_list.json())
-    viewer_detail = client.get(f"/api/v1/users/{user['user_id']}", headers=viewer_headers)
+    viewer_detail = client.get(
+        f"/api/v1/users/{user['user_id']}", headers=viewer_headers
+    )
     assert viewer_detail.status_code == 200
     assert viewer_detail.json()["user_id"] == user["user_id"]
     assert client.get("/api/v1/users").status_code == 401
-    assert client.post(
-        "/api/v1/users", json={"display_name": "Blocked"}, headers=viewer_headers
-    ).status_code == 403
-    assert client.put(
-        f"/api/v1/users/{user['user_id']}/status",
-        json={"status": "disabled"},
-        headers=viewer_headers,
-    ).status_code == 403
-    assert client.post(
-        "/api/v1/users", json={"display_name": "   "}, headers=admin_headers
-    ).status_code == 422
+    assert (
+        client.post(
+            "/api/v1/users", json={"display_name": "Blocked"}, headers=viewer_headers
+        ).status_code
+        == 403
+    )
+    assert (
+        client.put(
+            f"/api/v1/users/{user['user_id']}/status",
+            json={"status": "disabled"},
+            headers=viewer_headers,
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/api/v1/users", json={"display_name": "   "}, headers=admin_headers
+        ).status_code
+        == 422
+    )
 
     link_path = f"/api/v1/users/{user['user_id']}/identities"
     provider_subject = str(uuid4().int % (10**32))
@@ -73,7 +84,9 @@ def test_admin_can_manage_users_and_github_identities_only() -> None:
     )
     assert duplicate.status_code == 409
 
-    identity_path = f"/api/v1/users/{user['user_id']}/identities/{identity['identity_id']}/status"
+    identity_path = (
+        f"/api/v1/users/{user['user_id']}/identities/{identity['identity_id']}/status"
+    )
     disabled_identity = client.put(
         identity_path, json={"status": "disabled"}, headers=admin_headers
     )
@@ -87,7 +100,10 @@ def test_admin_can_manage_users_and_github_identities_only() -> None:
     )
     assert disabled_user.status_code == 200
     assert disabled_user.json()["status"] == "disabled"
-    assert disabled_user.json()["external_identities"][0]["identity_id"] == identity["identity_id"]
+    assert (
+        disabled_user.json()["external_identities"][0]["identity_id"]
+        == identity["identity_id"]
+    )
 
 
 def test_identity_management_returns_not_found_for_unknown_user() -> None:
@@ -126,11 +142,14 @@ def test_admin_can_manage_groups_and_viewer_can_read_group_directory() -> None:
         item["group_id"] == group["group_id"]
         for item in client.get("/api/v1/groups", headers=viewer_headers).json()
     )
-    assert client.post(
-        "/api/v1/groups",
-        json={"name": "Missing owner"},
-        headers=admin_headers,
-    ).status_code == 422
+    assert (
+        client.post(
+            "/api/v1/groups",
+            json={"name": "Missing owner"},
+            headers=admin_headers,
+        ).status_code
+        == 422
+    )
 
     added = client.put(
         f"/api/v1/groups/{group['group_id']}/members/{member['user_id']}",
@@ -145,7 +164,14 @@ def test_admin_can_manage_groups_and_viewer_can_read_group_directory() -> None:
         json={"role": "viewer"},
         headers=admin_headers,
     )
-    assert next(item for item in changed.json()["members"] if item["user_id"] == member["user_id"])["role"] == "viewer"
+    assert (
+        next(
+            item
+            for item in changed.json()["members"]
+            if item["user_id"] == member["user_id"]
+        )["role"]
+        == "viewer"
+    )
 
     removed = client.delete(
         f"/api/v1/groups/{group['group_id']}/members/{member['user_id']}",
@@ -168,11 +194,15 @@ def test_admin_can_manage_groups_and_viewer_can_read_group_directory() -> None:
     assert disabled.json()["status"] == "disabled"
 
 
-def test_admin_can_assign_reassign_and_clear_device_ownership_without_changing_device_id() -> None:
+def test_admin_can_assign_reassign_and_clear_device_ownership_without_changing_device_id() -> (
+    None
+):
     client = TestClient(create_app())
     admin_headers = {"Authorization": f"Bearer {settings.admin_token}"}
     viewer_headers = {"Authorization": f"Bearer {settings.viewer_token}"}
-    node = client.post("/api/v1/nodes", json={"node_type": "ear"}, headers=admin_headers)
+    node = client.post(
+        "/api/v1/nodes", json={"node_type": "ear"}, headers=admin_headers
+    )
     assert node.status_code == 200, node.text
     node_id = node.json()["node_id"]
     first_user = client.post(
@@ -191,9 +221,12 @@ def test_admin_can_assign_reassign_and_clear_device_ownership_without_changing_d
         "current_owner_display_name": None,
         "assignments": [],
     }
-    assert client.get(
-        f"/api/v1/nodes/{node_id}/ownership", headers=viewer_headers
-    ).status_code == 403
+    assert (
+        client.get(
+            f"/api/v1/nodes/{node_id}/ownership", headers=viewer_headers
+        ).status_code
+        == 403
+    )
 
     assigned = client.put(
         f"/api/v1/nodes/{node_id}/ownership",
@@ -227,7 +260,10 @@ def test_admin_can_assign_reassign_and_clear_device_ownership_without_changing_d
     assert unassigned.json()["current_owner_id"] is None
     assert len(unassigned.json()["assignments"]) == 2
     assert unassigned.json()["assignments"][1]["valid_to"] is not None
-    assert client.get(f"/api/v1/nodes/{node_id}", headers=admin_headers).json()["node_id"] == node_id
+    assert (
+        client.get(f"/api/v1/nodes/{node_id}", headers=admin_headers).json()["node_id"]
+        == node_id
+    )
 
     group = client.post(
         "/api/v1/groups",
@@ -252,7 +288,9 @@ def test_admin_can_assign_reassign_and_clear_device_ownership_without_changing_d
 def test_device_ownership_requires_existing_active_user() -> None:
     client = TestClient(create_app())
     admin_headers = {"Authorization": f"Bearer {settings.admin_token}"}
-    node = client.post("/api/v1/nodes", json={"node_type": "ear"}, headers=admin_headers)
+    node = client.post(
+        "/api/v1/nodes", json={"node_type": "ear"}, headers=admin_headers
+    )
     node_id = node.json()["node_id"]
     unknown = client.put(
         f"/api/v1/nodes/{node_id}/ownership",
@@ -345,7 +383,10 @@ def test_node_creation_assigns_owner_atomically_and_is_idempotent() -> None:
     viewer_create = client.post(
         "/api/v1/nodes",
         json=payload,
-        headers={"Authorization": "Bearer test-viewer", "Idempotency-Key": str(uuid4())},
+        headers={
+            "Authorization": "Bearer test-viewer",
+            "Idempotency-Key": str(uuid4()),
+        },
     )
     assert viewer_create.status_code == 403
 
@@ -355,7 +396,9 @@ def test_node_policy_input_uses_database_owner_not_client_input(monkeypatch) -> 
 
     client = TestClient(create_app())
     admin_headers = {"Authorization": f"Bearer {settings.admin_token}"}
-    node = client.post("/api/v1/nodes", json={"node_type": "ear"}, headers=admin_headers)
+    node = client.post(
+        "/api/v1/nodes", json={"node_type": "ear"}, headers=admin_headers
+    )
     user = client.post(
         "/api/v1/users", json={"display_name": "Assigned"}, headers=admin_headers
     ).json()
@@ -379,7 +422,9 @@ def test_admin_can_rotate_only_a_pending_nodes_bootstrap_token() -> None:
     client = TestClient(create_app())
     admin_headers = {"Authorization": "Bearer test-admin"}
     viewer_headers = {"Authorization": "Bearer test-viewer"}
-    created = client.post("/api/v1/nodes", json={"node_type": "output"}, headers=admin_headers)
+    created = client.post(
+        "/api/v1/nodes", json={"node_type": "output"}, headers=admin_headers
+    )
     assert created.status_code == 200, created.text
     node_id = created.json()["node_id"]
     original_token = created.json()["bootstrap_token"]
@@ -390,7 +435,9 @@ def test_admin_can_rotate_only_a_pending_nodes_bootstrap_token() -> None:
     assert unauthorized.status_code == 403
     assert client.post(f"/api/v1/nodes/{node_id}/bootstrap-token").status_code == 401
 
-    rotated = client.post(f"/api/v1/nodes/{node_id}/bootstrap-token", headers=admin_headers)
+    rotated = client.post(
+        f"/api/v1/nodes/{node_id}/bootstrap-token", headers=admin_headers
+    )
     assert rotated.status_code == 200, rotated.text
     assert rotated.headers["cache-control"] == "no-store"
     replacement_token = rotated.json()["bootstrap_token"]
@@ -405,8 +452,13 @@ def test_admin_can_rotate_only_a_pending_nodes_bootstrap_token() -> None:
 
     provisioned = client.post(
         "/api/v1/provision",
-        json={"bootstrap_token": replacement_token, "hardware_revision": "OUTPUT-DEV-V1"},
+        json={
+            "bootstrap_token": replacement_token,
+            "hardware_revision": "OUTPUT-DEV-V1",
+        },
     )
     assert provisioned.status_code == 200, provisioned.text
-    refused = client.post(f"/api/v1/nodes/{node_id}/bootstrap-token", headers=admin_headers)
+    refused = client.post(
+        f"/api/v1/nodes/{node_id}/bootstrap-token", headers=admin_headers
+    )
     assert refused.status_code == 409

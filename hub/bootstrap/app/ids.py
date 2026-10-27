@@ -22,7 +22,12 @@ def allocate_node_id(node_type: str, sequence: int, simulated: bool = False) -> 
 
 
 def pending_configuration_change(reported: dict, desired: dict) -> bool:
-    keys = ("config_version", "firmware_version", "calibration_version", "classifier_version")
+    keys = (
+        "config_version",
+        "firmware_version",
+        "calibration_version",
+        "classifier_version",
+    )
     return any(reported.get(k) != desired.get(k) for k in keys)
 
 

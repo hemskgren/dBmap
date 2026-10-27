@@ -107,7 +107,9 @@ def update_attempt(
     if attempt.status != "in_progress":
         raise AttemptAlreadyFinished
 
-    next_progress = attempt.progress_percent if progress_percent is None else progress_percent
+    next_progress = (
+        attempt.progress_percent if progress_percent is None else progress_percent
+    )
     if next_progress < attempt.progress_percent:
         raise AttemptProgressRegressed
     if (
@@ -160,7 +162,10 @@ def public_attempt(db: Session, attempt: DeploymentAttempt) -> dict:
     events = (
         db.query(DeploymentAttemptEvent)
         .filter(DeploymentAttemptEvent.attempt_id == attempt.attempt_id)
-        .order_by(DeploymentAttemptEvent.created_at.asc(), DeploymentAttemptEvent.event_id.asc())
+        .order_by(
+            DeploymentAttemptEvent.created_at.asc(),
+            DeploymentAttemptEvent.event_id.asc(),
+        )
         .all()
     )
     return {

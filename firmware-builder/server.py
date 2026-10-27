@@ -218,8 +218,29 @@ def _set_sdkconfig_string(sdkconfig: Path, name: str, value: str) -> None:
         if line.startswith(prefix):
             lines[index] = f"{name}={json.dumps(value)}"
             matches += 1
-    if matches != 1:
+        elif line == f"# {name} is not set":
+            lines[index] = f"{name}={json.dumps(value)}"
+            matches += 1
+    if matches == 0:
+        lines.append(f"{name}={json.dumps(value)}")
+    elif matches > 1:
         raise RuntimeError(f"Expected one firmware setting {name}; found {matches}.")
+    sdkconfig.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _ensure_sdkconfig_flag(sdkconfig: Path, name: str) -> None:
+    """Force a bool Kconfig option on (e.g. CONFIG_APP_PROJECT_VER_FROM_CONFIG)."""
+    lines = sdkconfig.read_text(encoding="utf-8").splitlines()
+    enabled = f"{name}=y"
+    disabled = f"# {name} is not set"
+    found = False
+    for index, line in enumerate(lines):
+        if line == enabled or line == disabled or line.startswith(f"{name}="):
+            lines[index] = enabled
+            found = True
+            break
+    if not found:
+        lines.append(enabled)
     sdkconfig.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -322,6 +343,11 @@ def _build(job_id: str, target: str) -> None:
         base_version = _sdkconfig_string(sdkconfig, "CONFIG_DBMAP_FIRMWARE_VERSION")
         firmware_version = _next_firmware_version(base_version)
         _set_sdkconfig_string(sdkconfig, "CONFIG_DBMAP_FIRMWARE_VERSION", firmware_version)
+        # Keep esp_app_desc.version in sync (builder workdir is not a git repo, so git describe is "1").
+        _ensure_sdkconfig_flag(sdkconfig, "CONFIG_APP_PROJECT_VER_FROM_CONFIG")
+        _set_sdkconfig_string(sdkconfig, "CONFIG_APP_PROJECT_VER", firmware_version)
+        if _sdkconfig_string(sdkconfig, "CONFIG_APP_PROJECT_VER") != firmware_version:
+            raise RuntimeError("Failed to sync CONFIG_APP_PROJECT_VER with the release firmware version.")
         job.update(firmware_version=firmware_version)
         _persist(job)
 

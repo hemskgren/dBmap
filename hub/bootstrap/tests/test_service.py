@@ -73,7 +73,9 @@ def test_create_provision_and_desired_state() -> None:
     client = TestClient(app)
     headers = {"Authorization": "Bearer test-admin"}
 
-    created = client.post("/api/v1/nodes", json={"node_type": "output"}, headers=headers)
+    created = client.post(
+        "/api/v1/nodes", json={"node_type": "output"}, headers=headers
+    )
     assert created.status_code == 200
     body = created.json()
     assert body["node_id"].startswith("OUT-")
@@ -81,7 +83,11 @@ def test_create_provision_and_desired_state() -> None:
 
     provisioned = client.post(
         "/api/v1/provision",
-        json={"bootstrap_token": token, "hardware_revision": "OUTPUT-DEV-V1", "firmware_version": "0.1.0"},
+        json={
+            "bootstrap_token": token,
+            "hardware_revision": "OUTPUT-DEV-V1",
+            "firmware_version": "0.1.0",
+        },
     )
     assert provisioned.status_code == 200
     prov = provisioned.json()
@@ -89,7 +95,10 @@ def test_create_provision_and_desired_state() -> None:
     assert prov["mqtt"]["password"]
     assert prov["mqtt"]["use_tls"] is True
     assert "esp-output/local/" in prov["topics"]["command"]
-    assert prov["topics"]["observation"] == f"esp-output/local/{prov['node_id'].lower()}/observation"
+    assert (
+        prov["topics"]["observation"]
+        == f"esp-output/local/{prov['node_id'].lower()}/observation"
+    )
     assert not hasattr(NodeCredential, "mqtt_password_plain_once")
 
     node = client.get(f"/api/v1/nodes/{prov['node_id']}", headers=headers)
@@ -127,7 +136,9 @@ def test_viewer_can_read_device_summaries_but_not_admin_api() -> None:
 
     devices = client.get("/api/v1/devices", headers=viewer_headers)
     assert devices.status_code == 200, devices.text
-    device = next(item for item in devices.json() if item["node_id"] == created.json()["node_id"])
+    device = next(
+        item for item in devices.json() if item["node_id"] == created.json()["node_id"]
+    )
     assert device["status"] == "offline"
     assert device["hardware_revision"] == "EAR-DEV-V1"
     assert device["owner_type"] is None
@@ -141,16 +152,22 @@ def test_viewer_can_read_device_summaries_but_not_admin_api() -> None:
     )
     assert node_detail.status_code == 200
     assert "reported" in node_detail.json()
-    assert client.put(
-        f"/api/v1/nodes/{created.json()['node_id']}/installation",
-        json={"latitude": 59.9, "longitude": 10.7},
-        headers=viewer_headers,
-    ).status_code == 403
-    assert client.post(
-        "/api/v1/nodes",
-        json={"node_type": "ear"},
-        headers=viewer_headers,
-    ).status_code == 403
+    assert (
+        client.put(
+            f"/api/v1/nodes/{created.json()['node_id']}/installation",
+            json={"latitude": 59.9, "longitude": 10.7},
+            headers=viewer_headers,
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/api/v1/nodes",
+            json={"node_type": "ear"},
+            headers=viewer_headers,
+        ).status_code
+        == 403
+    )
 
 
 def test_api_fails_closed_when_policy_service_is_unavailable(monkeypatch) -> None:
@@ -158,7 +175,9 @@ def test_api_fails_closed_when_policy_service_is_unavailable(monkeypatch) -> Non
     monkeypatch.setattr(
         policy,
         "evaluate",
-        Mock(side_effect=PolicyUnavailable("authorization policy service is unavailable")),
+        Mock(
+            side_effect=PolicyUnavailable("authorization policy service is unavailable")
+        ),
     )
 
     response = client.get(
@@ -213,12 +232,16 @@ def test_device_summary_status_uses_recent_keepalive() -> None:
 def test_init_db_drops_legacy_plaintext_password_column() -> None:
     with engine.begin() as connection:
         connection.execute(
-            text("ALTER TABLE node_credentials ADD COLUMN mqtt_password_plain_once VARCHAR")
+            text(
+                "ALTER TABLE node_credentials ADD COLUMN mqtt_password_plain_once VARCHAR"
+            )
         )
 
     init_db()
 
-    columns = {column["name"] for column in inspect(engine).get_columns("node_credentials")}
+    columns = {
+        column["name"] for column in inspect(engine).get_columns("node_credentials")
+    }
     assert "mqtt_password_plain_once" not in columns
 
 
@@ -243,7 +266,9 @@ def test_init_db_adds_lifecycle_state_to_existing_nodes() -> None:
     assert lifecycle_state == "active"
 
 
-def test_deactivated_node_blocks_provisioning_and_observations_until_reactivated() -> None:
+def test_deactivated_node_blocks_provisioning_and_observations_until_reactivated() -> (
+    None
+):
     client = TestClient(create_app())
     headers = {"Authorization": "Bearer test-admin"}
     created = client.post(
@@ -263,10 +288,16 @@ def test_deactivated_node_blocks_provisioning_and_observations_until_reactivated
     )
     assert deactivated.status_code == 200, deactivated.text
     assert deactivated.json()["lifecycle_state"] == "deactivated"
-    assert client.post(
-        "/api/v1/provision",
-        json={"bootstrap_token": bootstrap_token, "hardware_revision": "EAR-DEV-V1"},
-    ).status_code == 400
+    assert (
+        client.post(
+            "/api/v1/provision",
+            json={
+                "bootstrap_token": bootstrap_token,
+                "hardware_revision": "EAR-DEV-V1",
+            },
+        ).status_code
+        == 400
+    )
 
     reactivated = client.put(
         f"/api/v1/nodes/{node_id}/lifecycle",
@@ -308,7 +339,9 @@ def test_deactivated_node_blocks_provisioning_and_observations_until_reactivated
         db.close()
 
 
-def test_node_deactivation_reports_broker_acl_failure_without_changing_state(monkeypatch) -> None:
+def test_node_deactivation_reports_broker_acl_failure_without_changing_state(
+    monkeypatch,
+) -> None:
     client = TestClient(create_app())
     headers = {"Authorization": f"Bearer {settings.admin_token}"}
     created = client.post(
@@ -338,10 +371,14 @@ def test_node_deactivation_reports_broker_acl_failure_without_changing_state(mon
     assert fetched.json()["lifecycle_state"] == "active"
 
 
-def test_installation_requires_geographic_position_and_is_returned_by_node_api() -> None:
+def test_installation_requires_geographic_position_and_is_returned_by_node_api() -> (
+    None
+):
     client = TestClient(create_app())
     headers = {"Authorization": "Bearer test-admin"}
-    created = client.post("/api/v1/nodes", json={"node_type": "output"}, headers=headers)
+    created = client.post(
+        "/api/v1/nodes", json={"node_type": "output"}, headers=headers
+    )
     assert created.status_code == 200, created.text
     node_id = created.json()["node_id"]
 
@@ -434,7 +471,9 @@ def test_observations_are_validated_deduplicated_and_listed() -> None:
         assert observations[0].classification is not None
         assert observations[0].classification.source_family == "vehicle"
         assert observations[0].classification.confidence == 0.72
-        assert observations[0].classification.hints == {"simulated_source_id": "SIM-VEHICLE-001"}
+        assert observations[0].classification.hints == {
+            "simulated_source_id": "SIM-VEHICLE-001"
+        }
         assert observations[0].bearing is not None
         assert observations[0].bearing.deg == 180
         assert observations[0].bearing.reference == "node"
@@ -443,7 +482,9 @@ def test_observations_are_validated_deduplicated_and_listed() -> None:
         with pytest.raises(ValueError, match="does not match topic"):
             ingest_observation(db, "EAR-008", body)
         with pytest.raises(ValueError, match="registered Ear"):
-            ingest_observation(db, "OUT-003", body.model_copy(update={"node_id": "OUT-003"}))
+            ingest_observation(
+                db, "OUT-003", body.model_copy(update={"node_id": "OUT-003"})
+            )
 
     finally:
         db.close()
@@ -519,7 +560,9 @@ def test_observation_rejects_out_of_range_confidences_and_legacy_shape() -> None
         ("message_type", None),
     ],
 )
-def test_observation_rejects_missing_or_unsupported_protocol_envelope(field, value) -> None:
+def test_observation_rejects_missing_or_unsupported_protocol_envelope(
+    field, value
+) -> None:
     payload = valid_observation_payload()
     if value is None:
         payload.pop(field)
@@ -650,7 +693,9 @@ def test_output_node_commands(monkeypatch) -> None:
     admin_headers = {"Authorization": f"Bearer {settings.admin_token}"}
     viewer_headers = {"Authorization": f"Bearer {settings.viewer_token}"}
 
-    created = client.post("/api/v1/nodes", json={"node_type": "output"}, headers=admin_headers)
+    created = client.post(
+        "/api/v1/nodes", json={"node_type": "output"}, headers=admin_headers
+    )
     assert created.status_code == 200
     node_id = created.json()["node_id"]
     token = created.json()["bootstrap_token"]
@@ -665,7 +710,11 @@ def test_output_node_commands(monkeypatch) -> None:
 
     prov_res = client.post(
         "/api/v1/provision",
-        json={"bootstrap_token": token, "hardware_revision": "OUTPUT-DEV-V1", "firmware_version": "0.1.0"},
+        json={
+            "bootstrap_token": token,
+            "hardware_revision": "OUTPUT-DEV-V1",
+            "firmware_version": "0.1.0",
+        },
     )
     assert prov_res.status_code == 200
 
@@ -734,7 +783,12 @@ def test_output_node_commands(monkeypatch) -> None:
     )
     assert viewer_cmd.status_code == 403
 
-    assert client.post(f"/api/v1/nodes/{node_id}/commands", json={"action": "RELAY_1_OFF"}).status_code == 401
+    assert (
+        client.post(
+            f"/api/v1/nodes/{node_id}/commands", json={"action": "RELAY_1_OFF"}
+        ).status_code
+        == 401
+    )
 
     bad_payload = client.post(
         f"/api/v1/nodes/{node_id}/commands",
@@ -742,6 +796,24 @@ def test_output_node_commands(monkeypatch) -> None:
         headers=admin_headers,
     )
     assert bad_payload.status_code == 422
+
+    audio_cmd = client.post(
+        f"/api/v1/nodes/{node_id}/commands",
+        json={"action": "AUDIO_PLAY_HTTPS", "url": "https://example.com/alert.mp3"},
+        headers=admin_headers,
+    )
+    assert audio_cmd.status_code == 200, audio_cmd.text
+    assert audio_cmd.json()["action"] == "AUDIO_PLAY_HTTPS"
+    assert audio_cmd.json()["url"] == "https://example.com/alert.mp3"
+    assert published_messages[-1][1]["action"] == "AUDIO_PLAY_HTTPS"
+    assert published_messages[-1][1]["url"] == "https://example.com/alert.mp3"
+
+    bad_audio = client.post(
+        f"/api/v1/nodes/{node_id}/commands",
+        json={"action": "AUDIO_PLAY_HTTPS", "url": "http://example.com/alert.mp3"},
+        headers=admin_headers,
+    )
+    assert bad_audio.status_code == 422
 
     client.put(
         f"/api/v1/nodes/{node_id}/lifecycle",
@@ -767,7 +839,9 @@ def test_publish_json_success(monkeypatch) -> None:
     monkeypatch.setattr(mqtt_listener, "_client", mock_client)
     monkeypatch.setattr(mqtt_listener, "_connected", True)
 
-    mqtt_listener.publish_json("esp-output/local/out-1/command", {"action": "RELAY_1_ON"})
+    mqtt_listener.publish_json(
+        "esp-output/local/out-1/command", {"action": "RELAY_1_ON"}
+    )
     mock_client.publish.assert_called_once_with(
         "esp-output/local/out-1/command",
         '{"action":"RELAY_1_ON"}',
@@ -787,5 +861,9 @@ def test_publish_json_timeout(monkeypatch) -> None:
     monkeypatch.setattr(mqtt_listener, "_client", mock_client)
     monkeypatch.setattr(mqtt_listener, "_connected", True)
 
-    with pytest.raises(mqtt_listener.MqttPublishError, match="timed out publishing MQTT command"):
-        mqtt_listener.publish_json("esp-output/local/out-1/command", {"action": "RELAY_1_ON"})
+    with pytest.raises(
+        mqtt_listener.MqttPublishError, match="timed out publishing MQTT command"
+    ):
+        mqtt_listener.publish_json(
+            "esp-output/local/out-1/command", {"action": "RELAY_1_ON"}
+        )

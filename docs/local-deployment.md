@@ -300,19 +300,87 @@ Use `scripts/hub_admin.py`; it loads the Hub address and admin token from the pr
 
 ```bash
 uv run python scripts/hub_admin.py list
-uv run python scripts/hub_admin.py show SIM-EAR-001
-uv run python scripts/hub_admin.py set-desired SIM-EAR-001 --config-version 2
-uv run python scripts/hub_admin.py set-installation SIM-EAR-001 \
+uv run python scripts/hub_admin.py show OUT-009
+uv run python scripts/hub_admin.py set-desired OUT-009 --config-version 2
+uv run python scripts/hub_admin.py set-installation OUT-009 \
   --latitude 59.91 --longitude 10.75 --orientation-deg 180
-uv run python scripts/hub_admin.py deactivate SIM-EAR-001
-uv run python scripts/hub_admin.py reactivate SIM-EAR-001
+uv run python scripts/hub_admin.py deactivate OUT-009
+uv run python scripts/hub_admin.py reactivate OUT-009
 ```
 
 Installation updates preserve fields not supplied on the command line; latitude and longitude must already exist or be supplied together. Desired-state updates likewise preserve fields that are not explicitly changed. Both commands validate the resulting complete object through the Hub API. Keep `.env` and the local CA private.
 
-To send an Output command from the hub, use the authenticated TLS broker account:
+`PUT /api/v1/nodes/{node_id}/desired` replaces the Desired version fields (`firmware_version`, `config_version`, `calibration_version`, `classifier_version`, `payload`). It does **not** change `firmware_id`. When a `firmware_id` is already set, the Hub rejects a `firmware_version` that does not match that catalog entry (HTTP 422)—bumping only the version string would otherwise OTA-loop the same image. Send the complete object (omit only `payload` if empty). The CLI merges for you; with `curl`, GET the node first and reuse unchanged fields:
 
-Replace `out-xxx` with the actual node ID from the API response, written in lowercase.
+```bash
+curl -sS --cacert shared/trust/ca.crt \
+  -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
+  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes/<node-id>"
+
+curl -sS --cacert shared/trust/ca.crt \
+  -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -X PUT \
+  -d '{"firmware_version":"0.1.16","config_version":2,"calibration_version":0,"classifier_version":"","payload":{}}' \
+  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes/<node-id>/desired"
+```
+
+For device OTA, point Desired at a **registered** catalog release (both `firmware_id` and `firmware_version`). Uploads start as unregistered candidates; promote first, then select. Do not use `set-desired --firmware-version` alone:
+
+```bash
+# Promote the candidate once (Firmware tab or API):
+curl -sS --cacert shared/trust/ca.crt \
+  -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
+  -X POST \
+  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/firmware/catalog/<firmware_id>/promote"
+
+# Then set Desired on the node:
+curl -sS --cacert shared/trust/ca.crt \
+  -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{"firmware_id":"dbmap-output-esp32-generic-0.1.17-<build>","acknowledge_unverified_platform":true}' \
+  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes/<node-id>/firmware-selection"
+```
+
+To test an unregistered candidate without promoting, add `"allow_candidate":true` to the firmware-selection body. Without that flag, selection of a candidate returns HTTP 404 explaining that the entry is still a candidate.
+
+To send an Output command, use either the Hub API or the authenticated TLS broker account. Supported `action` values:
+
+| Action | Required fields | Notes |
+| --- | --- | --- |
+| `RELAY_1_ON` | `duration_s` (1–3600) | Pulses GPIO2 for the interval |
+| `RELAY_1_OFF` | — | Clears the relay immediately |
+| `AUDIO_PLAY_HTTPS` | `url` (`https://…`) | Streams MP3 over HTTPS to the MAX98357 |
+| `AUDIO_PLAY_FILE` | `path` | Plays a file under the LittleFS `/media` mount |
+| `AUDIO_STOP` | — | Stops playback |
+
+Prefer the Hub API: it authenticates with the admin token, validates the body, and publishes on the broker for you. Replace `<node-id>` with the Output node ID (for example `OUT-009`):
+
+```bash
+curl -sS --cacert shared/trust/ca.crt \
+  -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{"action":"RELAY_1_ON","duration_s":5}' \
+  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes/<node-id>/commands"
+
+curl -sS --cacert shared/trust/ca.crt \
+  -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{"action":"AUDIO_PLAY_HTTPS","url":"https://example.com/alert.mp3"}' \
+  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes/<node-id>/commands"
+
+curl -sS --cacert shared/trust/ca.crt \
+  -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d '{"action":"AUDIO_STOP"}' \
+  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes/<node-id>/commands"
+```
+
+To publish directly on the broker instead, use the hub TLS account. Replace `out-xxx` with the node ID in lowercase:
 
 ```bash
 mosquitto_pub --cafile shared/trust/ca.crt -h "$DBMAP_LAN_IP" -p 8883 \
@@ -321,7 +389,7 @@ mosquitto_pub --cafile shared/trust/ca.crt -h "$DBMAP_LAN_IP" -p 8883 \
   -m '{"protocol_version":1,"action":"RELAY_1_ON","duration_s":5}'
 ```
 
-`protocol_version` must be the number 1. The firmware logs and ignores a command that omits it or uses another value, and it does not drive the relay or publish an acknowledgement. This verifies command delivery, not physical switching.
+`protocol_version` must be the number 1. The firmware logs and ignores a command that omits it or uses another value, and it does not drive the relay or publish an acknowledgement. Direct MQTT verifies command delivery, not physical switching.
 
 ## Moving from the earlier lab setup
 

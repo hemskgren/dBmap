@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "dbmap_audio.h"
 #include "dbmap_health.h"
 #include "dbmap_mqtt.h"
 #include "dbmap_time.h"
@@ -119,7 +120,7 @@ static bool stop_relay(void)
 void output_handle_command(const char *payload, int len, void *ctx)
 {
     const dbmap_effective_t *cfg = ctx;
-    char buf[512];
+    char buf[768];
     if (payload == NULL || len <= 0) {
         ESP_LOGW(TAG, "received empty MQTT command");
         return;
@@ -183,6 +184,8 @@ void output_handle_command(const char *payload, int len, void *ctx)
     const cJSON *message_type = cJSON_GetObjectItemCaseSensitive(json, "message_type");
     const char *type = cJSON_IsString(message_type) ? message_type->valuestring : "";
     const cJSON *duration = cJSON_GetObjectItemCaseSensitive(json, "duration_s");
+    const cJSON *url = cJSON_GetObjectItemCaseSensitive(json, "url");
+    const cJSON *path = cJSON_GetObjectItemCaseSensitive(json, "path");
     const char *result = "unsupported_action";
     bool output_ok = true;
     int duration_s = 0;
@@ -200,6 +203,39 @@ void output_handle_command(const char *payload, int len, void *ctx)
     } else if (strcmp(act, "RELAY_1_OFF") == 0) {
         output_ok = stop_relay();
         result = output_ok ? "relay_1_off" : "gpio_error";
+    } else if (strcmp(act, "AUDIO_PLAY_HTTPS") == 0) {
+        const char *https_url = cJSON_IsString(url) ? url->valuestring : "";
+        if (https_url[0] == '\0' || strncmp(https_url, "https://", 8) != 0) {
+            result = "invalid_url";
+        } else {
+            esp_err_t play_err = dbmap_audio_play_https(https_url);
+            if (play_err == ESP_OK) {
+                result = "audio_play_started";
+            } else if (play_err == ESP_ERR_INVALID_STATE) {
+                result = "audio_unavailable";
+            } else {
+                result = "audio_play_failed";
+            }
+        }
+    } else if (strcmp(act, "AUDIO_PLAY_FILE") == 0) {
+        const char *file_path = cJSON_IsString(path) ? path->valuestring : "";
+        if (file_path[0] == '\0' || strstr(file_path, "..") != NULL) {
+            result = "invalid_path";
+        } else {
+            esp_err_t play_err = dbmap_audio_play_file(file_path);
+            if (play_err == ESP_OK) {
+                result = "audio_play_started";
+            } else if (play_err == ESP_ERR_NOT_FOUND) {
+                result = "audio_file_not_found";
+            } else if (play_err == ESP_ERR_INVALID_STATE) {
+                result = "audio_unavailable";
+            } else {
+                result = "audio_play_failed";
+            }
+        }
+    } else if (strcmp(act, "AUDIO_STOP") == 0) {
+        esp_err_t stop_err = dbmap_audio_stop();
+        result = (stop_err == ESP_OK || stop_err == ESP_ERR_TIMEOUT) ? "audio_stopped" : "audio_stop_failed";
     }
 
     cJSON *ack = cJSON_CreateObject();
@@ -207,6 +243,8 @@ void output_handle_command(const char *payload, int len, void *ctx)
     cJSON_AddStringToObject(ack, "action", act);
     cJSON_AddStringToObject(ack, "result", result);
     if (cJSON_IsString(message_type)) cJSON_AddStringToObject(ack, "message_type", type);
+    if (cJSON_IsString(url)) cJSON_AddStringToObject(ack, "url", url->valuestring);
+    if (cJSON_IsString(path)) cJSON_AddStringToObject(ack, "path", path->valuestring);
     cJSON_AddNumberToObject(ack, "protocol_version", 1);
     char *s = cJSON_PrintUnformatted(ack);
     if (s != NULL) {

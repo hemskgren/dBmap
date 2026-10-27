@@ -28,11 +28,17 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (CheckConstraint("status IN ('active', 'disabled')"),)
 
-    user_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
     display_name: Mapped[str] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(16), default="active")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
     external_identities: Mapped[list["ExternalIdentity"]] = relationship(
         back_populates="user", passive_deletes="all"
@@ -43,14 +49,20 @@ class Group(Base):
     __tablename__ = "groups"
     __table_args__ = (CheckConstraint("status IN ('active', 'disabled')"),)
 
-    group_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    group_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
     name: Mapped[str] = mapped_column(String(128))
     created_by_user_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.user_id", ondelete="RESTRICT"), index=True
     )
     status: Mapped[str] = mapped_column(String(16), default="active")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 
 class GroupMembership(Base):
@@ -68,7 +80,9 @@ class GroupMembership(Base):
         ),
     )
 
-    membership_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    membership_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
     group_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("groups.group_id", ondelete="RESTRICT"), index=True
     )
@@ -76,26 +90,38 @@ class GroupMembership(Base):
         String(36), ForeignKey("users.user_id", ondelete="RESTRICT"), index=True
     )
     role: Mapped[str] = mapped_column(String(16))
-    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    valid_to: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ExternalIdentity(Base):
     __tablename__ = "external_identities"
     __table_args__ = (
-        UniqueConstraint("provider", "provider_subject", name="uq_external_provider_subject"),
+        UniqueConstraint(
+            "provider", "provider_subject", name="uq_external_provider_subject"
+        ),
         CheckConstraint("status IN ('active', 'disabled')"),
     )
 
-    identity_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    identity_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
     user_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.user_id", ondelete="RESTRICT"), index=True
     )
     provider: Mapped[str] = mapped_column(String(32))
     provider_subject: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(16), default="active")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    last_authenticated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    last_authenticated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     user: Mapped[User] = relationship(back_populates="external_identities")
 
@@ -108,10 +134,16 @@ class Node(Base):
     hardware_revision: Mapped[str] = mapped_column(String(64), default="unknown")
     provisioning_state: Mapped[str] = mapped_column(String(32), default="pending")
     lifecycle_state: Mapped[str] = mapped_column(String(16), default="active")
-    recovery_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    recovery_opened_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     availability: Mapped[str] = mapped_column(String(32), default="SERVICE")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 
 class DeviceOwnership(Base):
@@ -132,39 +164,59 @@ class DeviceOwnership(Base):
         ),
     )
 
-    assignment_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    node_id: Mapped[str] = mapped_column(String(64), ForeignKey("nodes.node_id", ondelete="RESTRICT"), index=True)
+    assignment_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    node_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("nodes.node_id", ondelete="RESTRICT"), index=True
+    )
     owner_type: Mapped[str] = mapped_column(String(8), default="user")
     owner_user_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("users.user_id", ondelete="RESTRICT"), nullable=True, index=True
+        String(36),
+        ForeignKey("users.user_id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
     )
     owner_group_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("groups.group_id", ondelete="RESTRICT"), nullable=True, index=True
+        String(36),
+        ForeignKey("groups.group_id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
     )
-    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    valid_to: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class RegistrationRequest(Base):
     __tablename__ = "registration_requests"
 
     idempotency_key: Mapped[str] = mapped_column(String(36), primary_key=True)
-    node_id: Mapped[str] = mapped_column(String(64), ForeignKey("nodes.node_id", ondelete="RESTRICT"), unique=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    node_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("nodes.node_id", ondelete="RESTRICT"), unique=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
 
 
 class FirmwareCatalogEntry(Base):
     __tablename__ = "firmware_catalog"
-    __table_args__ = (
-        CheckConstraint("status IN ('candidate', 'registered')"),
-    )
+    __table_args__ = (CheckConstraint("status IN ('candidate', 'registered')"),)
 
     firmware_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     status: Mapped[str] = mapped_column(String(16), default="candidate")
     metadata_json: Mapped[str] = mapped_column(Text)
     artifact_sha256: Mapped[str] = mapped_column(String(64))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    registered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    registered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class DeploymentAttempt(Base):
@@ -186,7 +238,9 @@ class DeploymentAttempt(Base):
         ),
     )
 
-    attempt_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    attempt_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
     node_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("nodes.node_id", ondelete="RESTRICT")
     )
@@ -199,8 +253,12 @@ class DeploymentAttempt(Base):
     failure_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     initiated_by: Mapped[str] = mapped_column(String(64))
     flasher_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class DeploymentAttemptEvent(Base):
@@ -212,10 +270,14 @@ class DeploymentAttemptEvent(Base):
             "('connecting', 'erasing', 'writing', 'verifying', 'completed', 'failed', 'unknown')"
         ),
         CheckConstraint("progress_percent >= 0 AND progress_percent <= 100"),
-        Index("ix_deployment_attempt_events_attempt_created", "attempt_id", "created_at"),
+        Index(
+            "ix_deployment_attempt_events_attempt_created", "attempt_id", "created_at"
+        ),
     )
 
-    event_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    event_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
     attempt_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("deployment_attempts.attempt_id", ondelete="CASCADE")
     )
@@ -223,7 +285,9 @@ class DeploymentAttemptEvent(Base):
     stage: Mapped[str] = mapped_column(String(16))
     progress_percent: Mapped[int] = mapped_column(Integer)
     failure_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
 
 
 class InstallationMetadata(Base):
@@ -238,7 +302,9 @@ class InstallationMetadata(Base):
     mount_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     environment: Mapped[str | None] = mapped_column(String(64), nullable=True)
     orientation_deg: Mapped[float | None] = mapped_column(Float, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 
 class BootstrapToken(Base):
@@ -255,8 +321,12 @@ class BootstrapToken(Base):
 
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     node_id: Mapped[str] = mapped_column(String(64), index=True)
-    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
 
 
 class NodeCredential(Base):
@@ -276,8 +346,12 @@ class NodeCredential(Base):
     mqtt_username: Mapped[str] = mapped_column(String(128))
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     device_api_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    device_api_issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    device_api_revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    device_api_issued_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    device_api_revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class DesiredState(Base):
@@ -290,7 +364,9 @@ class DesiredState(Base):
     calibration_version: Mapped[int] = mapped_column(Integer, default=0)
     classifier_version: Mapped[str] = mapped_column(String(32), default="")
     payload_json: Mapped[str] = mapped_column(Text, default="{}")
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 
 class ReportedState(Base):
@@ -305,8 +381,12 @@ class ReportedState(Base):
     uptime_s: Mapped[int] = mapped_column(Integer, default=0)
     pending_configuration_change: Mapped[int] = mapped_column(Integer, default=0)
     payload_json: Mapped[str] = mapped_column(Text, default="{}")
-    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 
 class Observation(Base):
@@ -315,6 +395,10 @@ class Observation(Base):
     observation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     node_id: Mapped[str] = mapped_column(String(64), index=True)
     sequence_number: Mapped[int] = mapped_column(Integer)
-    event_time_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    received_time_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    event_time_utc: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    received_time_utc: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
     payload_json: Mapped[str] = mapped_column(Text)

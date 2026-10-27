@@ -174,6 +174,20 @@ def test_sdkconfig_string_reads_firmware_version(tmp_path):
     assert server._sdkconfig_string(sdkconfig, "CONFIG_DBMAP_FIRMWARE_VERSION") == "1.2.3"
 
 
+def test_sdkconfig_syncs_app_project_ver_from_defaults(tmp_path):
+    sdkconfig = tmp_path / "sdkconfig"
+    sdkconfig.write_text(
+        '# CONFIG_APP_PROJECT_VER_FROM_CONFIG is not set\n'
+        'CONFIG_APP_PROJECT_VER="0.1.4"\n',
+        encoding="utf-8",
+    )
+    server._ensure_sdkconfig_flag(sdkconfig, "CONFIG_APP_PROJECT_VER_FROM_CONFIG")
+    server._set_sdkconfig_string(sdkconfig, "CONFIG_APP_PROJECT_VER", "0.1.15")
+    text = sdkconfig.read_text(encoding="utf-8")
+    assert "CONFIG_APP_PROJECT_VER_FROM_CONFIG=y" in text
+    assert server._sdkconfig_string(sdkconfig, "CONFIG_APP_PROJECT_VER") == "0.1.15"
+
+
 def test_short_error_keeps_job_list_to_one_line():
     dump = "ESP-IDF firmware build failed.\n[969/1011] Building C object esp-idf/spiffs\n" + ("x" * 400)
     assert server._short_error(dump) == "ESP-IDF firmware build failed."

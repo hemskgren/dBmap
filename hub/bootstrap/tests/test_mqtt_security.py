@@ -29,7 +29,9 @@ def test_node_role_is_scoped_to_its_topics(monkeypatch) -> None:
     }
     assert all("#" not in acl["topic"] and "+" not in acl["topic"] for acl in acls)
 
-    client_command = next(body for body in commands if body["command"] == "createClient")
+    client_command = next(
+        body for body in commands if body["command"] == "createClient"
+    )
     assert client_command["username"] == "out-001"
     assert client_command["password"] == "node-password"
     assert client_command["roles"] == [{"rolename": "node-out-001", "priority": 1}]
@@ -51,7 +53,9 @@ def test_ear_role_can_publish_observations_on_its_own_topic(monkeypatch) -> None
 
     role_command = next(body for body in commands if body["command"] == "createRole")
     assert {
-        acl["topic"] for acl in role_command["acls"] if acl["acltype"] == "publishClientSend"
+        acl["topic"]
+        for acl in role_command["acls"]
+        if acl["acltype"] == "publishClientSend"
     } == {
         "esp-ear/local/ear-007/hello",
         "esp-ear/local/ear-007/keepalive",
@@ -61,12 +65,13 @@ def test_ear_role_can_publish_observations_on_its_own_topic(monkeypatch) -> None
         "esp-ear/local/ear-007/observation",
     }
     assert all(
-        acl["topic"] != "esp-ear/local/+/observation"
-        for acl in role_command["acls"]
+        acl["topic"] != "esp-ear/local/+/observation" for acl in role_command["acls"]
     )
 
 
-def test_node_lifecycle_suspends_and_restores_acls_without_changing_client(monkeypatch) -> None:
+def test_node_lifecycle_suspends_and_restores_acls_without_changing_client(
+    monkeypatch,
+) -> None:
     commands = []
 
     def command(body):
@@ -122,7 +127,9 @@ def test_hub_defaults_deny_and_scope_access_to_dbmap_topics(monkeypatch) -> None
     monkeypatch.setattr(mqtt_security, "_command", command)
     mqtt_security.ensure_broker_security()
 
-    defaults = next(body for body in commands if body["command"] == "setDefaultACLAccess")
+    defaults = next(
+        body for body in commands if body["command"] == "setDefaultACLAccess"
+    )
     assert all(acl["allow"] is False for acl in defaults["acls"])
 
     hub_role = next(body for body in commands if body["command"] == "createRole")

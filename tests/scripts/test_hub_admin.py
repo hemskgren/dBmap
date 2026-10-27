@@ -17,6 +17,50 @@ hub_admin = module_from_spec(spec)
 spec.loader.exec_module(hub_admin)
 
 
+def test_format_device_list_matches_web_columns() -> None:
+    text = hub_admin.format_device_list(
+        [
+            {
+                "node_id": "OUT-007",
+                "node_type": "output",
+                "status": "online",
+                "provisioning_state": "provisioned",
+                "lifecycle_state": "active",
+                "owner_display_name": None,
+                "installation": {"latitude": 59.91, "longitude": 10.75},
+            },
+            {
+                "node_id": "EAR-001",
+                "node_type": "ear",
+                "status": "offline",
+                "provisioning_state": "pending",
+                "lifecycle_state": "deactivated",
+                "owner_display_name": "Ops",
+                "installation": None,
+            },
+        ]
+    )
+
+    lines = text.splitlines()
+    assert lines[0].startswith("Device")
+    assert "Type" in lines[0]
+    assert "Status" in lines[0]
+    assert "Provisioning" in lines[0]
+    assert "Lifecycle" in lines[0]
+    assert "Assigned owner" in lines[0]
+    assert "Location" in lines[0]
+    assert lines[1].startswith("EAR-001")
+    assert "EAR" in lines[1]
+    assert "offline" in lines[1]
+    assert "Ops" in lines[1]
+    assert "Not set" in lines[1]
+    assert lines[2].startswith("OUT-007")
+    assert "OUTPUT" in lines[2]
+    assert "online" in lines[2]
+    assert "Unassigned" in lines[2]
+    assert "59.91, 10.75" in lines[2]
+
+
 def test_set_desired_preserves_fields_not_explicitly_changed(monkeypatch) -> None:
     monkeypatch.setattr(
         hub_admin,

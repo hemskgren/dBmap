@@ -8,3 +8,11 @@ CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
 CONFIG_MQTT_PROTOCOL_311=y
 # Resolve hub.local (and other *.local names) via one-shot multicast DNS.
 CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES=y
+# Dual-slot app rollback: new image stays pending until firmware marks it valid after MQTT.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# HTTPS MP3 streaming to non-Hub origins.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# esp_app_desc.version (PROJECT_VER). Builder overwrites to match CONFIG_DBMAP_FIRMWARE_VERSION.
+CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
+CONFIG_APP_PROJECT_VER="0.1.4"

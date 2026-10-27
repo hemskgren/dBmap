@@ -5,7 +5,7 @@ openapi: 3.0.3
 info:
   title: dBmap Hub API
   version: v1
-  description: "HTTPS API served by `hub-bootstrap` and published on the LAN through Nginx. Call `https://<hub-host>:<https-port>[<public-base-path>]/api/v1/...`. Local administrators and viewers send `Authorization: Bearer <token>`. The API checks the token, then asks OPA for the named action. `GET /health` and `POST /api/v1/provision` do not use admin/viewer bearer tokens or OPA. Device provisioning uses a one-time bootstrap token in the JSON body. `GET /api/v1/device/desired-firmware` authenticates a separate device API token in the Hub database and does not call OPA. Authorization actions for human tokens are listed in docs/authorization.md."
+  description: "HTTPS API served by `hub-bootstrap` and published on the LAN through Nginx. Call `https://<hub-host>:<https-port>[<public-base-path>]/api/v1/...`. Local administrators and viewers send `Authorization: Bearer <token>`. The API checks the token, then asks OPA for the named action. `GET /health` and `POST /api/v1/provision` do not use admin/viewer bearer tokens or OPA. Device provisioning uses a one-time bootstrap token in the JSON body. `GET /api/v1/device/desired-firmware` and `GET /api/v1/device/ota-image` authenticate a separate device API token in the Hub database and do not call OPA. Authorization actions for human tokens are listed in docs/authorization.md."
   contact:
     name: dBmap Hub
 paths:
@@ -2307,7 +2307,7 @@ paths:
   /api/v1/device/desired-firmware:
     get:
       summary: Read Desired firmware for the authenticated device
-      description: "Device-facing. Authorization: Bearer <device API token> issued at provision or admin rotation. The Hub identifies the node from that token. This route does not use admin/viewer tokens or OPA. Returns only that device's desired firmware id and version."
+      description: "Device-facing. Authorization: Bearer <device API token> issued at provision or admin rotation. The Hub identifies the node from that token. This route does not use admin/viewer tokens or OPA. Returns that device's Desired firmware id, version, and esp-output.bin SHA-256/size when the Desired catalog entry is present (candidates allowed when they are the Desired id)."
       operationId: getDeviceDesiredFirmware
       responses:
         "200":
@@ -2324,6 +2324,52 @@ paths:
                 $ref: "#/components/schemas/ErrorMessage"
         "403":
           description: "Authenticated, but OPA denied the action."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+      tags:
+        - Provisioning
+      security:
+        - deviceApiAuth: []
+  /api/v1/device/ota-image:
+    get:
+      summary: Download the Desired esp-output.bin for OTA
+      description: "Device-facing. Authorization: Bearer <device API token>. Serves only the authenticated node's Desired firmware app image (esp-output.bin). Candidates are allowed when they are the Desired id. Rejects images larger than the Output OTA slot (0x1C0000). Does not take a firmware_id query or path parameter."
+      operationId: getDeviceOtaImage
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+          headers:
+            X-Content-SHA256:
+              schema:
+                type: string
+              description: SHA-256 digest of the returned image.
+        "401":
+          description: Missing or invalid local bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "403":
+          description: "Authenticated, but OPA denied the action."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "404":
+          description: The requested resource was not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "409":
+          description: The request conflicts with current Hub state.
           content:
             application/json:
               schema:
@@ -2769,6 +2815,8 @@ components:
         - node_id
         - firmware_id
         - firmware_version
+        - app_sha256
+        - app_size_bytes
       properties:
         node_id:
           type: string
@@ -2776,6 +2824,12 @@ components:
           type: string
         firmware_version:
           type: string
+        app_sha256:
+          type: string
+          description: "SHA-256 of Desired esp-output.bin, or empty when Desired is unset or the catalog entry is missing."
+        app_size_bytes:
+          type: integer
+          description: "Size of Desired esp-output.bin in bytes, or 0 when unset or missing."
     DeviceOwnerBody:
       properties:
         owner_type:
@@ -3341,12 +3395,27 @@ components:
           enum:
             - RELAY_1_ON
             - RELAY_1_OFF
+            - AUDIO_PLAY_HTTPS
+            - AUDIO_PLAY_FILE
+            - AUDIO_STOP
           title: Action
         duration_s:
           title: Duration S
           type: integer
           maximum: 3600.0
           minimum: 1.0
+          nullable: true
+        url:
+          title: Url
+          type: string
+          maxLength: 384
+          minLength: 12
+          nullable: true
+        path:
+          title: Path
+          type: string
+          maxLength: 192
+          minLength: 1
           nullable: true
         action_type:
           title: Action Type
@@ -3378,6 +3447,14 @@ components:
         duration_s:
           title: Duration S
           type: integer
+          nullable: true
+        url:
+          title: Url
+          type: string
+          nullable: true
+        path:
+          title: Path
+          type: string
           nullable: true
         protocol_version:
           type: integer

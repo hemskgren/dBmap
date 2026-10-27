@@ -22,7 +22,9 @@ def test_policy_client_posts_input_and_returns_explicit_allow(monkeypatch) -> No
 
     monkeypatch.setattr("app.policy.urllib.request.urlopen", urlopen)
     monkeypatch.setattr("app.policy.ssl.create_default_context", make_context)
-    monkeypatch.setattr(settings, "opa_decision_url", "https://opa.test/v1/data/dbmap/authz/allow")
+    monkeypatch.setattr(
+        settings, "opa_decision_url", "https://opa.test/v1/data/dbmap/authz/allow"
+    )
     monkeypatch.setattr(settings, "opa_ca_file", "/certs/ca.crt")
     monkeypatch.setattr(settings, "opa_timeout_s", 1.5)
     input_data = {"action": "session.read"}
@@ -43,7 +45,9 @@ def test_policy_client_denies_explicit_false(monkeypatch) -> None:
     monkeypatch.setattr("app.policy.ssl.create_default_context", lambda cafile: context)
     monkeypatch.setattr(
         "app.policy.urllib.request.urlopen",
-        lambda request, context, timeout: BytesIO(json.dumps({"result": False}).encode()),
+        lambda request, context, timeout: BytesIO(
+            json.dumps({"result": False}).encode()
+        ),
     )
 
     assert evaluate({"action": "nodes.create"}) is False

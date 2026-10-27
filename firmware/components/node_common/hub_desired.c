@@ -5,6 +5,7 @@
 
 #include "cJSON.h"
 #include "dbmap_hub_http.h"
+#include "dbmap_ota.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -12,7 +13,7 @@
 #include "sdkconfig.h"
 
 static const char *TAG = "dbmap_desired";
-static const int kPollMs = 10 * 60 * 1000;
+static const int kPollMs = 60 * 60 * 1000;
 
 enum {
     kLogNone = 0,
@@ -111,7 +112,7 @@ static void check_desired(dbmap_effective_t *cfg)
         return;
     }
     (void)esp_http_client_fetch_headers(client);
-    char body[512];
+    char body[768];
     if (collect_body(client, body, sizeof(body)) != ESP_OK) {
         esp_http_client_cleanup(client);
         if (s_logged != kLogDown) {
@@ -147,8 +148,15 @@ static void check_desired(dbmap_effective_t *cfg)
     }
     const cJSON *firmware_id = cJSON_GetObjectItem(json, "firmware_id");
     const cJSON *firmware_version = cJSON_GetObjectItem(json, "firmware_version");
+    const cJSON *app_sha256 = cJSON_GetObjectItem(json, "app_sha256");
+    const cJSON *app_size_bytes = cJSON_GetObjectItem(json, "app_size_bytes");
     const char *desired_id = cJSON_IsString(firmware_id) ? firmware_id->valuestring : "";
     const char *desired_version = cJSON_IsString(firmware_version) ? firmware_version->valuestring : "";
+    const char *desired_sha = cJSON_IsString(app_sha256) ? app_sha256->valuestring : "";
+    uint32_t desired_size = 0;
+    if (cJSON_IsNumber(app_size_bytes) && app_size_bytes->valuedouble > 0) {
+        desired_size = (uint32_t)app_size_bytes->valuedouble;
+    }
     if (desired_version[0] == '\0') {
         if (s_logged != kLogEmpty) {
             ESP_LOGI(TAG, "desired firmware not set; running %s", CONFIG_DBMAP_FIRMWARE_VERSION);
@@ -162,7 +170,11 @@ static void check_desired(dbmap_effective_t *cfg)
             ESP_LOGI(TAG, "desired firmware matches running %s", CONFIG_DBMAP_FIRMWARE_VERSION);
             log_once(kLogMatch, desired_id, desired_version);
         }
-    } else if (s_logged != kLogMismatch || strcmp(s_logged_id, desired_id) != 0 || strcmp(s_logged_version, desired_version) != 0) {
+        cJSON_Delete(json);
+        return;
+    }
+
+    if (s_logged != kLogMismatch || strcmp(s_logged_id, desired_id) != 0 || strcmp(s_logged_version, desired_version) != 0) {
         ESP_LOGW(
             TAG,
             "desired firmware differs: running %s, desired %s, firmware_id %s",
@@ -171,6 +183,26 @@ static void check_desired(dbmap_effective_t *cfg)
             desired_id[0] != '\0' ? desired_id : "(none)"
         );
         log_once(kLogMismatch, desired_id, desired_version);
+    }
+
+    if (desired_id[0] != '\0' && desired_sha[0] != '\0' && desired_size > 0) {
+        ESP_LOGI(TAG, "starting OTA for desired %s (%s)", desired_version, desired_id);
+        esp_err_t ota_err = dbmap_ota_apply(cfg, desired_id, desired_version, desired_sha, desired_size);
+        if (ota_err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "OTA failed (%s); keeping running firmware %s",
+                esp_err_to_name(ota_err),
+                CONFIG_DBMAP_FIRMWARE_VERSION
+            );
+        }
+    } else {
+        ESP_LOGW(
+            TAG,
+            "desired mismatch without usable id/sha/size (id=%s); keeping running firmware %s",
+            desired_id[0] != '\0' ? desired_id : "(none)",
+            CONFIG_DBMAP_FIRMWARE_VERSION
+        );
     }
     cJSON_Delete(json);
 }
@@ -189,7 +221,7 @@ void dbmap_desired_poll_start(dbmap_effective_t *cfg)
     if (cfg == NULL || !cfg->provisioned) {
         return;
     }
-    if (xTaskCreate(poll_task, "desired", 8192, cfg, 5, NULL) != pdPASS) {
+    if (xTaskCreate(poll_task, "desired", 12288, cfg, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "could not start desired firmware check");
     }
 }

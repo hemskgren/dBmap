@@ -313,10 +313,23 @@ OPERATIONS = {
         "description": (
             "Device-facing. Authorization: Bearer <device API token> issued at provision or admin rotation. "
             "The Hub identifies the node from that token. This route does not use admin/viewer tokens or OPA. "
-            "Returns only that device's desired firmware id and version."
+            "Returns that device's Desired firmware id, version, and esp-output.bin SHA-256/size when the "
+            "Desired catalog entry is present (candidates allowed when they are the Desired id)."
         ),
         "response": "DeviceDesiredFirmware",
         "errors": ["401", "403"],
+    },
+    ("GET", "/api/v1/device/ota-image"): {
+        "operationId": "getDeviceOtaImage",
+        "summary": "Download the Desired esp-output.bin for OTA",
+        "description": (
+            "Device-facing. Authorization: Bearer <device API token>. Serves only the authenticated node's "
+            "Desired firmware app image (esp-output.bin). Candidates are allowed when they are the Desired id. "
+            "Rejects images larger than the Output OTA slot (0x1C0000). Does not take a firmware_id query or path parameter."
+        ),
+        "binary": "application/octet-stream",
+        "headers": {"X-Content-SHA256": "SHA-256 digest of the returned image."},
+        "errors": ["401", "403", "404", "409"],
     },
     ("POST", "/api/v1/nodes/{node_id}/device-api-token"): {
         "operationId": "rotateDeviceApiToken",
@@ -373,11 +386,19 @@ EXTRA_SCHEMAS = {
     },
     "DeviceDesiredFirmware": {
         "type": "object",
-        "required": ["node_id", "firmware_id", "firmware_version"],
+        "required": ["node_id", "firmware_id", "firmware_version", "app_sha256", "app_size_bytes"],
         "properties": {
             "node_id": {"type": "string"},
             "firmware_id": {"type": "string"},
             "firmware_version": {"type": "string"},
+            "app_sha256": {
+                "type": "string",
+                "description": "SHA-256 of Desired esp-output.bin, or empty when Desired is unset or the catalog entry is missing.",
+            },
+            "app_size_bytes": {
+                "type": "integer",
+                "description": "Size of Desired esp-output.bin in bytes, or 0 when unset or missing.",
+            },
         },
     },
     "DeviceApiTokenResponse": {
@@ -733,7 +754,8 @@ def build() -> dict:
             "The API checks the token, then asks OPA for the named action. "
             "`GET /health` and `POST /api/v1/provision` do not use admin/viewer bearer tokens or OPA. "
             "Device provisioning uses a one-time bootstrap token in the JSON body. "
-            "`GET /api/v1/device/desired-firmware` authenticates a separate device API token in the Hub database and does not call OPA. "
+            "`GET /api/v1/device/desired-firmware` and `GET /api/v1/device/ota-image` authenticate a separate "
+            "device API token in the Hub database and do not call OPA. "
             "Authorization actions for human tokens are listed in docs/authorization.md."
         ),
         "contact": {"name": "dBmap Hub"},
@@ -798,7 +820,10 @@ def build() -> dict:
                 operation.pop("parameters", None)
             if key in PUBLIC:
                 operation["security"] = []
-            elif key == ("GET", "/api/v1/device/desired-firmware"):
+            elif key in {
+                ("GET", "/api/v1/device/desired-firmware"),
+                ("GET", "/api/v1/device/ota-image"),
+            }:
                 operation["security"] = [{"deviceApiAuth": []}]
             else:
                 operation["security"] = [{"bearerAuth": []}]

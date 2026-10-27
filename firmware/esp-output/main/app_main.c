@@ -1,9 +1,11 @@
 #include <string.h>
 
+#include "dbmap_audio.h"
 #include "dbmap_desired.h"
 #include "dbmap_health.h"
 #include "dbmap_mqtt.h"
 #include "dbmap_nvs.h"
+#include "dbmap_ota.h"
 #include "dbmap_provision.h"
 #include "dbmap_serial_config.h"
 #include "dbmap_time.h"
@@ -73,7 +75,12 @@ void app_main(void)
     }
 
     ESP_ERROR_CHECK(output_command_init());
+    esp_err_t audio_err = dbmap_audio_init(s_cfg.network.hub_http_url);
+    if (audio_err != ESP_OK) {
+        ESP_LOGW(TAG, "audio init failed (%s); continuing without playback", esp_err_to_name(audio_err));
+    }
     ESP_ERROR_CHECK(dbmap_mqtt_start(&s_cfg, output_handle_command, &s_cfg));
+    dbmap_ota_mark_valid_after_mqtt();
     dbmap_desired_poll_start(&s_cfg);
 
     int backoff_ms = 1000;

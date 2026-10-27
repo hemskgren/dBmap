@@ -32,7 +32,7 @@ from app import (
 from app.config import settings
 from app.db import get_db
 from app.ids import timing_safe_eq
-from app.models import Node
+from app.models import DesiredState, Node
 from app.mqtt_listener import get_broker_metrics, is_connected
 from app.mqtt_security import MqttSecurityError
 from app.policy import PolicyUnavailable
@@ -104,7 +104,9 @@ def require_policy(action: str, resource_type: str):
     ) -> Principal:
         principal = _authenticate(authorization)
         resource = {"type": resource_type}
-        resource_id = request.path_params.get("node_id") or request.path_params.get("user_id")
+        resource_id = request.path_params.get("node_id") or request.path_params.get(
+            "user_id"
+        )
         if resource_id is None:
             resource_id = request.path_params.get("identity_id")
         if resource_id is not None:
@@ -134,7 +136,9 @@ def require_policy(action: str, resource_type: str):
 
 
 @router.get("/api/v1/session")
-def get_session(principal: Principal = Depends(require_policy("session.read", "session"))) -> dict[str, str]:
+def get_session(
+    principal: Principal = Depends(require_policy("session.read", "session")),
+) -> dict[str, str]:
     return {"role": principal.role}
 
 
@@ -173,7 +177,9 @@ def get_user(user_id: str, db: Session = Depends(get_db)) -> UserView:
     response_model=UserView,
     dependencies=[Depends(require_policy("users.update_status", "users"))],
 )
-def put_user_status(user_id: str, body: UserStatusBody, db: Session = Depends(get_db)) -> UserView:
+def put_user_status(
+    user_id: str, body: UserStatusBody, db: Session = Depends(get_db)
+) -> UserView:
     try:
         return identity_service.set_user_status(db, user_id, body.status)
     except identity_service.UserNotFound:
@@ -195,7 +201,9 @@ def link_user_identity(
     except identity_service.UserNotFound:
         raise HTTPException(status_code=404, detail="unknown user") from None
     except identity_service.IdentityConflict:
-        raise HTTPException(status_code=409, detail="identity is already linked or disabled") from None
+        raise HTTPException(
+            status_code=409, detail="identity is already linked or disabled"
+        ) from None
 
 
 @router.put(
@@ -210,7 +218,9 @@ def put_identity_status(
     db: Session = Depends(get_db),
 ) -> UserView:
     try:
-        return identity_service.set_identity_status(db, user_id, identity_id, body.status)
+        return identity_service.set_identity_status(
+            db, user_id, identity_id, body.status
+        )
     except identity_service.UserNotFound:
         raise HTTPException(status_code=404, detail="unknown user identity") from None
 
@@ -240,9 +250,13 @@ def create_group(body: CreateGroupBody, db: Session = Depends(get_db)) -> GroupV
             settings.group_creation_limit_per_user,
         )
     except group_service.InvalidGroupMember:
-        raise HTTPException(status_code=404, detail="unknown or disabled owner user") from None
+        raise HTTPException(
+            status_code=404, detail="unknown or disabled owner user"
+        ) from None
     except group_service.GroupCreationLimit:
-        raise HTTPException(status_code=409, detail="group creation limit reached") from None
+        raise HTTPException(
+            status_code=409, detail="group creation limit reached"
+        ) from None
 
 
 @router.put(
@@ -261,9 +275,13 @@ def put_group_member(
     except group_service.GroupNotFound:
         raise HTTPException(status_code=404, detail="unknown group") from None
     except group_service.InvalidGroupMember:
-        raise HTTPException(status_code=404, detail="unknown or disabled user") from None
+        raise HTTPException(
+            status_code=404, detail="unknown or disabled user"
+        ) from None
     except group_service.LastGroupOwner:
-        raise HTTPException(status_code=409, detail="a group must have at least one owner") from None
+        raise HTTPException(
+            status_code=409, detail="a group must have at least one owner"
+        ) from None
 
 
 @router.delete(
@@ -271,13 +289,17 @@ def put_group_member(
     response_model=GroupView,
     dependencies=[Depends(require_policy("groups.update", "groups"))],
 )
-def delete_group_member(group_id: str, user_id: str, db: Session = Depends(get_db)) -> GroupView:
+def delete_group_member(
+    group_id: str, user_id: str, db: Session = Depends(get_db)
+) -> GroupView:
     try:
         return group_service.remove_member(db, group_id, user_id)
     except group_service.GroupNotFound:
         raise HTTPException(status_code=404, detail="unknown group") from None
     except group_service.LastGroupOwner:
-        raise HTTPException(status_code=409, detail="a group must have at least one owner") from None
+        raise HTTPException(
+            status_code=409, detail="a group must have at least one owner"
+        ) from None
 
 
 @router.put(
@@ -323,7 +345,9 @@ def list_devices(db: Session = Depends(get_db)) -> list[DeviceSummaryView]:
 
 @router.get("/api/v1/firmware/catalog")
 def list_firmware_catalog(
-    principal: Principal = Depends(require_policy("firmware.catalog.read", "firmware_catalog")),
+    principal: Principal = Depends(
+        require_policy("firmware.catalog.read", "firmware_catalog")
+    ),
     db: Session = Depends(get_db),
 ) -> list[dict]:
     return firmware_catalog.list_entries(
@@ -336,7 +360,9 @@ def list_firmware_catalog(
 @router.get("/api/v1/firmware/catalog/{firmware_id}")
 def get_firmware_metadata(
     firmware_id: str,
-    principal: Principal = Depends(require_policy("firmware.catalog.read", "firmware_catalog")),
+    principal: Principal = Depends(
+        require_policy("firmware.catalog.read", "firmware_catalog")
+    ),
     db: Session = Depends(get_db),
 ) -> dict:
     try:
@@ -348,13 +374,17 @@ def get_firmware_metadata(
         )
         return firmware_catalog.public_entry(entry, FIRMWARE_CATALOG_DIR)
     except firmware_catalog.FirmwareNotFound:
-        raise HTTPException(status_code=404, detail="registered firmware not found") from None
+        raise HTTPException(
+            status_code=404, detail="registered firmware not found"
+        ) from None
 
 
 @router.get("/api/v1/firmware/catalog/{firmware_id}/artifact")
 def download_firmware_artifact(
     firmware_id: str,
-    principal: Principal = Depends(require_policy("firmware.catalog.read", "firmware_catalog")),
+    principal: Principal = Depends(
+        require_policy("firmware.catalog.read", "firmware_catalog")
+    ),
     db: Session = Depends(get_db),
 ) -> FileResponse:
     try:
@@ -365,7 +395,9 @@ def download_firmware_artifact(
             include_candidate=True,
         )
     except firmware_catalog.FirmwareNotFound:
-        raise HTTPException(status_code=404, detail="registered firmware not found") from None
+        raise HTTPException(
+            status_code=404, detail="registered firmware not found"
+        ) from None
     try:
         firmware_catalog.verify_artifact_integrity(entry, FIRMWARE_CATALOG_DIR)
     except firmware_catalog.FirmwareArtifactIntegrityError as exc:
@@ -382,7 +414,9 @@ def download_firmware_artifact(
 def get_firmware_flash_manifest(
     firmware_id: str,
     allow_candidate: bool = Query(default=False),
-    _: Principal = Depends(require_policy("firmware.deploy.flash.read", "firmware_catalog")),
+    _: Principal = Depends(
+        require_policy("firmware.deploy.flash.read", "firmware_catalog")
+    ),
     db: Session = Depends(get_db),
 ) -> dict:
     try:
@@ -394,7 +428,9 @@ def get_firmware_flash_manifest(
         )
         return firmware_catalog.get_flash_manifest(entry, FIRMWARE_CATALOG_DIR)
     except firmware_catalog.FirmwareNotFound:
-        raise HTTPException(status_code=404, detail="registered firmware not found") from None
+        raise HTTPException(
+            status_code=404, detail="registered firmware not found"
+        ) from None
     except firmware_catalog.FirmwareArtifactIntegrityError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     except firmware_catalog.FirmwarePlatformUnsupported as exc:
@@ -406,7 +442,9 @@ def download_firmware_flash_image(
     firmware_id: str,
     component_name: str,
     allow_candidate: bool = Query(default=False),
-    _: Principal = Depends(require_policy("firmware.deploy.flash.read", "firmware_catalog")),
+    _: Principal = Depends(
+        require_policy("firmware.deploy.flash.read", "firmware_catalog")
+    ),
     db: Session = Depends(get_db),
 ) -> Response:
     try:
@@ -422,7 +460,9 @@ def download_firmware_flash_image(
             component_name,
         )
     except firmware_catalog.FirmwareNotFound:
-        raise HTTPException(status_code=404, detail="registered firmware image not found") from None
+        raise HTTPException(
+            status_code=404, detail="registered firmware image not found"
+        ) from None
     except firmware_catalog.FirmwareArtifactIntegrityError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     return Response(
@@ -439,19 +479,33 @@ def download_firmware_flash_image(
 async def upload_firmware_candidate(
     firmware: UploadFile = File(),
     metadata: UploadFile = File(),
-    _: Principal = Depends(require_policy("firmware.catalog.upload", "firmware_catalog")),
+    _: Principal = Depends(
+        require_policy("firmware.catalog.upload", "firmware_catalog")
+    ),
     db: Session = Depends(get_db),
 ) -> dict:
     bundle = await firmware.read(MAX_BUNDLE_BYTES + 1)
     metadata_bytes = await metadata.read(MAX_METADATA_BYTES + 1)
     if len(bundle) > MAX_BUNDLE_BYTES or len(metadata_bytes) > MAX_METADATA_BYTES:
-        raise HTTPException(status_code=413, detail="Firmware ZIP or metadata JSON exceeds the upload size limit.")
+        raise HTTPException(
+            status_code=413,
+            detail="Firmware ZIP or metadata JSON exceeds the upload size limit.",
+        )
     try:
         parsed_metadata = json.loads(metadata_bytes)
-        firmware_id = parsed_metadata.get("firmware_id") if isinstance(parsed_metadata, dict) else None
+        firmware_id = (
+            parsed_metadata.get("firmware_id")
+            if isinstance(parsed_metadata, dict)
+            else None
+        )
         if not isinstance(firmware_id, str):
-            raise firmware_catalog.InvalidFirmwareBundle("Metadata must include a string firmware_id.")
-        if firmware.filename != f"{firmware_id}.zip" or metadata.filename != f"{firmware_id}.json":
+            raise firmware_catalog.InvalidFirmwareBundle(
+                "Metadata must include a string firmware_id."
+            )
+        if (
+            firmware.filename != f"{firmware_id}.zip"
+            or metadata.filename != f"{firmware_id}.json"
+        ):
             raise firmware_catalog.InvalidFirmwareBundle(
                 "Firmware and metadata filenames must match metadata firmware_id."
             )
@@ -468,31 +522,43 @@ async def upload_firmware_candidate(
     except firmware_catalog.InvalidFirmwareBundle as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     except (UnicodeDecodeError, json.JSONDecodeError):
-        raise HTTPException(status_code=422, detail="Metadata sidecar must contain valid UTF-8 JSON.") from None
+        raise HTTPException(
+            status_code=422, detail="Metadata sidecar must contain valid UTF-8 JSON."
+        ) from None
 
 
 @router.post("/api/v1/firmware/catalog/{firmware_id}/promote")
 def promote_firmware_candidate(
     firmware_id: str,
-    _: Principal = Depends(require_policy("firmware.catalog.promote", "firmware_catalog")),
+    _: Principal = Depends(
+        require_policy("firmware.catalog.promote", "firmware_catalog")
+    ),
     db: Session = Depends(get_db),
 ) -> dict:
     try:
         return firmware_catalog.promote_entry(db, FIRMWARE_CATALOG_DIR, firmware_id)
     except firmware_catalog.FirmwareNotFound:
-        raise HTTPException(status_code=404, detail="firmware candidate not found") from None
+        raise HTTPException(
+            status_code=404, detail="firmware candidate not found"
+        ) from None
 
 
 @router.post("/api/v1/firmware/catalog/{firmware_id}/unregister")
 def return_firmware_to_candidate(
     firmware_id: str,
-    _: Principal = Depends(require_policy("firmware.catalog.unpromote", "firmware_catalog")),
+    _: Principal = Depends(
+        require_policy("firmware.catalog.unpromote", "firmware_catalog")
+    ),
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        return firmware_catalog.return_to_candidate(db, FIRMWARE_CATALOG_DIR, firmware_id)
+        return firmware_catalog.return_to_candidate(
+            db, FIRMWARE_CATALOG_DIR, firmware_id
+        )
     except firmware_catalog.FirmwareNotFound:
-        raise HTTPException(status_code=404, detail="firmware entry not found") from None
+        raise HTTPException(
+            status_code=404, detail="firmware entry not found"
+        ) from None
     except firmware_catalog.FirmwareDeploymentInProgress as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
 
@@ -500,13 +566,17 @@ def return_firmware_to_candidate(
 @router.delete("/api/v1/firmware/catalog/{firmware_id}", status_code=204)
 def delete_firmware_entry(
     firmware_id: str,
-    _: Principal = Depends(require_policy("firmware.catalog.delete", "firmware_catalog")),
+    _: Principal = Depends(
+        require_policy("firmware.catalog.delete", "firmware_catalog")
+    ),
     db: Session = Depends(get_db),
 ) -> None:
     try:
         firmware_catalog.delete_entry(db, FIRMWARE_CATALOG_DIR, firmware_id)
     except firmware_catalog.FirmwareNotFound:
-        raise HTTPException(status_code=404, detail="firmware entry not found") from None
+        raise HTTPException(
+            status_code=404, detail="firmware entry not found"
+        ) from None
 
 
 @router.get("/api/v1/nodes/{node_id}/compatible-firmware")
@@ -520,7 +590,9 @@ def list_compatible_firmware(
     if node is None:
         raise HTTPException(status_code=404, detail="unknown device") from None
     if node.lifecycle_state != "active":
-        raise HTTPException(status_code=409, detail="firmware cannot be selected for an inactive device")
+        raise HTTPException(
+            status_code=409, detail="firmware cannot be selected for an inactive device"
+        )
     return firmware_catalog.list_compatible_entries(
         db,
         FIRMWARE_CATALOG_DIR,
@@ -541,7 +613,9 @@ def validate_firmware_selection(
     if node is None:
         raise HTTPException(status_code=404, detail="unknown device") from None
     if node.lifecycle_state != "active":
-        raise HTTPException(status_code=409, detail="firmware cannot be selected for an inactive device")
+        raise HTTPException(
+            status_code=409, detail="firmware cannot be selected for an inactive device"
+        )
     try:
         selection = firmware_catalog.validate_selection(
             db,
@@ -568,8 +642,18 @@ def validate_firmware_selection(
         )
         db.commit()
         return selection
+    except firmware_catalog.FirmwareNotRegistered:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "firmware is still a candidate; promote it first, or pass "
+                "allow_candidate=true for an admin test selection"
+            ),
+        ) from None
     except firmware_catalog.FirmwareNotFound:
-        raise HTTPException(status_code=404, detail="registered firmware not found") from None
+        raise HTTPException(
+            status_code=404, detail="registered firmware not found"
+        ) from None
     except firmware_catalog.FirmwareNotCompatible as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     except firmware_catalog.FirmwarePlatformUnverified as exc:
@@ -580,14 +664,18 @@ def validate_firmware_selection(
 def start_deployment_attempt(
     node_id: str,
     body: DeploymentAttemptCreateBody,
-    principal: Principal = Depends(require_policy("firmware.deploy.attempt.start", "nodes")),
+    principal: Principal = Depends(
+        require_policy("firmware.deploy.attempt.start", "nodes")
+    ),
     db: Session = Depends(get_db),
 ) -> dict:
     node = db.get(Node, node_id)
     if node is None:
         raise HTTPException(status_code=404, detail="unknown device") from None
     if node.lifecycle_state != "active":
-        raise HTTPException(status_code=409, detail="firmware cannot be deployed to an inactive device")
+        raise HTTPException(
+            status_code=409, detail="firmware cannot be deployed to an inactive device"
+        )
     try:
         firmware_catalog.validate_selection(
             db,
@@ -607,7 +695,9 @@ def start_deployment_attempt(
         )
         firmware_catalog.verify_artifact_integrity(entry, FIRMWARE_CATALOG_DIR)
     except firmware_catalog.FirmwareNotFound:
-        raise HTTPException(status_code=404, detail="registered firmware not found") from None
+        raise HTTPException(
+            status_code=404, detail="registered firmware not found"
+        ) from None
     except firmware_catalog.FirmwareNotCompatible as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     except (
@@ -634,7 +724,9 @@ def start_deployment_attempt(
             flasher_version=body.flasher_version,
         )
     except deployment_service.AttemptAlreadyInProgress:
-        raise HTTPException(status_code=409, detail="a deployment attempt is already in progress") from None
+        raise HTTPException(
+            status_code=409, detail="a deployment attempt is already in progress"
+        ) from None
     return deployment_service.public_attempt(db, attempt)
 
 
@@ -663,7 +755,9 @@ def get_deployment_attempt(
     try:
         attempt = deployment_service.get_attempt(db, node_id, attempt_id)
     except deployment_service.AttemptNotFound:
-        raise HTTPException(status_code=404, detail="deployment attempt not found") from None
+        raise HTTPException(
+            status_code=404, detail="deployment attempt not found"
+        ) from None
     return deployment_service.public_attempt(db, attempt)
 
 
@@ -688,11 +782,17 @@ def update_deployment_attempt(
             body.failure_code,
         )
     except deployment_service.AttemptNotFound:
-        raise HTTPException(status_code=404, detail="deployment attempt not found") from None
+        raise HTTPException(
+            status_code=404, detail="deployment attempt not found"
+        ) from None
     except deployment_service.AttemptAlreadyFinished:
-        raise HTTPException(status_code=409, detail="deployment attempt is already complete") from None
+        raise HTTPException(
+            status_code=409, detail="deployment attempt is already complete"
+        ) from None
     except deployment_service.AttemptProgressRegressed:
-        raise HTTPException(status_code=409, detail="deployment progress cannot move backwards") from None
+        raise HTTPException(
+            status_code=409, detail="deployment progress cannot move backwards"
+        ) from None
     return deployment_service.public_attempt(db, attempt)
 
 
@@ -715,16 +815,27 @@ def get_hub_status(db: Session = Depends(get_db)) -> dict:
         "addresses": {
             "local_hub_url": settings.local_hub_url(),
             "external_hub_url": settings.public_hub_url.strip().rstrip("/") or None,
-            "local_mqtt": {"host": settings.local_mqtt_host, "port": settings.local_mqtt_port, "use_tls": True},
+            "local_mqtt": {
+                "host": settings.local_mqtt_host,
+                "port": settings.local_mqtt_port,
+                "use_tls": True,
+            },
             "external_mqtt": (
-                {"host": settings.public_mqtt_host, "port": settings.public_mqtt_port, "use_tls": settings.public_mqtt_use_tls}
-                if settings.public_hub_url.strip() else None
+                {
+                    "host": settings.public_mqtt_host,
+                    "port": settings.public_mqtt_port,
+                    "use_tls": settings.public_mqtt_use_tls,
+                }
+                if settings.public_hub_url.strip()
+                else None
             ),
         },
         "components": _hub_components(mqtt_status, edge_status.statuses()),
         "summary": {
             "device_count": len(nodes),
-            "devices_by_type": dict(sorted(Counter(node.node_type for node in nodes).items())),
+            "devices_by_type": dict(
+                sorted(Counter(node.node_type for node in nodes).items())
+            ),
             "devices_by_lifecycle": dict(
                 sorted(Counter(node.lifecycle_state for node in nodes).items())
             ),
@@ -737,7 +848,8 @@ def get_hub_status(db: Session = Depends(get_db)) -> dict:
             "observation_count": len(observations),
             "observation_limit": 500,
             "latest_observation_at": max(
-                (item.received_time_utc.isoformat() for item in observations), default=None
+                (item.received_time_utc.isoformat() for item in observations),
+                default=None,
             ),
         },
     }
@@ -764,7 +876,11 @@ def get_hub_component_details(component: str, db: Session = Depends(get_db)) -> 
     if component == "mosquitto":
         return {
             "service": "Mosquitto broker",
-            "status": "disabled" if not settings.mqtt_enabled else "online" if is_connected() else "offline",
+            "status": "disabled"
+            if not settings.mqtt_enabled
+            else "online"
+            if is_connected()
+            else "offline",
             "connected": is_connected(),
             **get_broker_metrics(),
         }
@@ -809,7 +925,12 @@ def _hub_components(mqtt_status: str, edge: dict[str, str]) -> list[dict]:
         {"id": "database", "name": "Database", "status": "online", "logs": False},
         {"id": "opa", "name": "Policy engine", "status": "online", "logs": True},
         {"id": "mosquitto", "name": "MQTT broker", "status": mqtt_status, "logs": True},
-        {"id": "firmware-builder", "name": "Firmware builder", "status": edge["firmware-builder"], "logs": True},
+        {
+            "id": "firmware-builder",
+            "name": "Firmware builder",
+            "status": edge["firmware-builder"],
+            "logs": True,
+        },
     ]
 
 
@@ -828,7 +949,11 @@ def get_hub_component_logs(component: str) -> dict:
         raise HTTPException(status_code=503, detail=str(exc)) from None
 
 
-@router.post("/api/v1/nodes", response_model=CreateNodeResponse, dependencies=[Depends(require_policy("nodes.create", "nodes"))])
+@router.post(
+    "/api/v1/nodes",
+    response_model=CreateNodeResponse,
+    dependencies=[Depends(require_policy("nodes.create", "nodes"))],
+)
 def create_node(
     body: CreateNodeRequest,
     idempotency_key: UUID | None = Header(default=None, alias="Idempotency-Key"),
@@ -844,7 +969,9 @@ def create_node(
             )
             metadata = firmware_catalog.public_entry(entry, FIRMWARE_CATALOG_DIR)
             if metadata["status"] != "registered":
-                raise HTTPException(status_code=422, detail="Select an approved firmware release.")
+                raise HTTPException(
+                    status_code=422, detail="Select an approved firmware release."
+                )
             if metadata["node_type"] != body.node_type:
                 raise HTTPException(
                     status_code=422,
@@ -859,15 +986,24 @@ def create_node(
                     detail="Firmware is not supported for the selected hardware revision.",
                 )
             body.desired_firmware_version = metadata["firmware_version"]
-        return service.create_node(db, body, str(idempotency_key) if idempotency_key else None)
+        return service.create_node(
+            db, body, str(idempotency_key) if idempotency_key else None
+        )
     except firmware_catalog.FirmwareNotFound:
-        raise HTTPException(status_code=422, detail="Selected firmware is no longer available or approved.") from None
+        raise HTTPException(
+            status_code=422,
+            detail="Selected firmware is no longer available or approved.",
+        ) from None
     except ownership_service.OwnershipTargetNotFound:
         db.rollback()
-        raise HTTPException(status_code=404, detail="unknown or disabled owner") from None
+        raise HTTPException(
+            status_code=404, detail="unknown or disabled owner"
+        ) from None
     except ownership_service.InactiveOwner:
         db.rollback()
-        raise HTTPException(status_code=409, detail="disabled owners cannot own devices") from None
+        raise HTTPException(
+            status_code=409, detail="disabled owners cannot own devices"
+        ) from None
     except service.DuplicateRegistration as exc:
         raise HTTPException(
             status_code=409,
@@ -875,12 +1011,20 @@ def create_node(
         ) from None
 
 
-@router.get("/api/v1/nodes", response_model=list[NodeView], dependencies=[Depends(require_policy("nodes.list", "nodes"))])
+@router.get(
+    "/api/v1/nodes",
+    response_model=list[NodeView],
+    dependencies=[Depends(require_policy("nodes.list", "nodes"))],
+)
 def list_nodes(db: Session = Depends(get_db)) -> list[NodeView]:
     return service.list_nodes(db)
 
 
-@router.get("/api/v1/nodes/{node_id}", response_model=NodeView, dependencies=[Depends(require_policy("nodes.read_detail", "nodes"))])
+@router.get(
+    "/api/v1/nodes/{node_id}",
+    response_model=NodeView,
+    dependencies=[Depends(require_policy("nodes.read_detail", "nodes"))],
+)
 def get_node(node_id: str, db: Session = Depends(get_db)) -> NodeView:
     try:
         return service.get_node(db, node_id)
@@ -918,7 +1062,9 @@ def rotate_node_bootstrap_token(
     response_model=DeviceOwnershipView,
     dependencies=[Depends(require_policy("nodes.read_ownership", "nodes"))],
 )
-def get_node_ownership(node_id: str, db: Session = Depends(get_db)) -> DeviceOwnershipView:
+def get_node_ownership(
+    node_id: str, db: Session = Depends(get_db)
+) -> DeviceOwnershipView:
     try:
         return ownership_service.get_ownership(db, node_id)
     except ownership_service.OwnershipTargetNotFound:
@@ -940,15 +1086,25 @@ def put_node_ownership(
     except ownership_service.OwnershipTargetNotFound:
         raise HTTPException(status_code=404, detail="unknown node or owner") from None
     except ownership_service.InactiveOwner:
-        raise HTTPException(status_code=409, detail="disabled owners cannot own devices") from None
+        raise HTTPException(
+            status_code=409, detail="disabled owners cannot own devices"
+        ) from None
 
 
-@router.put("/api/v1/nodes/{node_id}/desired", response_model=NodeView, dependencies=[Depends(require_policy("nodes.update_desired", "nodes"))])
-def put_desired(node_id: str, body: DesiredStateBody, db: Session = Depends(get_db)) -> NodeView:
+@router.put(
+    "/api/v1/nodes/{node_id}/desired",
+    response_model=NodeView,
+    dependencies=[Depends(require_policy("nodes.update_desired", "nodes"))],
+)
+def put_desired(
+    node_id: str, body: DesiredStateBody, db: Session = Depends(get_db)
+) -> NodeView:
     try:
         return service.set_desired(db, node_id, body)
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown node") from None
+    except service.DesiredFirmwareInconsistent as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
 
 
 @router.put(
@@ -1066,12 +1222,80 @@ def get_device_desired_firmware(
     return service.device_desired_firmware(db, node)
 
 
+@router.get("/api/v1/device/ota-image")
+def get_device_ota_image(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Serve esp-output.bin for the authenticated node's Desired firmware only."""
+    token = _device_api_token(authorization)
+    try:
+        node = service.node_for_device_api_token(db, token)
+    except service.DeviceAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except service.DeviceForbidden as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    desired = db.get(DesiredState, node.node_id)
+    if desired is None or not desired.firmware_id:
+        raise HTTPException(status_code=404, detail="desired firmware not set")
+
+    try:
+        entry = firmware_catalog.get_entry(
+            db,
+            FIRMWARE_CATALOG_DIR,
+            desired.firmware_id,
+            include_candidate=True,
+        )
+        catalog_version = service.catalog_entry_firmware_version(entry)
+        if (
+            desired.firmware_version
+            and catalog_version
+            and catalog_version != desired.firmware_version
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "desired firmware_version does not match the catalog entry for "
+                    "firmware_id; select a catalog release before OTA"
+                ),
+            )
+        image, digest = firmware_catalog.get_flash_image(
+            entry,
+            FIRMWARE_CATALOG_DIR,
+            "esp-output.bin",
+        )
+    except firmware_catalog.FirmwareNotFound:
+        raise HTTPException(
+            status_code=404, detail="desired firmware image not found"
+        ) from None
+    except firmware_catalog.FirmwareArtifactIntegrityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+    if len(image) > firmware_catalog.ESP_OUTPUT_OTA_SLOT_BYTES:
+        raise HTTPException(
+            status_code=409,
+            detail="desired firmware image exceeds the Output OTA slot",
+        )
+
+    return Response(
+        content=image,
+        media_type="application/octet-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-SHA256": digest,
+        },
+    )
+
+
 @router.post(
     "/api/v1/nodes/{node_id}/device-api-token",
     response_model=DeviceApiTokenResponse,
     dependencies=[Depends(require_policy("nodes.device_api_token.rotate", "nodes"))],
 )
-def rotate_device_api_token(node_id: str, response: Response, db: Session = Depends(get_db)) -> DeviceApiTokenResponse:
+def rotate_device_api_token(
+    node_id: str, response: Response, db: Session = Depends(get_db)
+) -> DeviceApiTokenResponse:
     try:
         body = service.rotate_device_api_token(db, node_id)
     except KeyError:
@@ -1102,7 +1326,9 @@ def revoke_device_api_token(node_id: str, db: Session = Depends(get_db)) -> Resp
     response_model=BootstrapTokenResponse,
     dependencies=[Depends(require_policy("nodes.recovery_provision.open", "nodes"))],
 )
-def open_recovery_provision(node_id: str, response: Response, db: Session = Depends(get_db)) -> BootstrapTokenResponse:
+def open_recovery_provision(
+    node_id: str, response: Response, db: Session = Depends(get_db)
+) -> BootstrapTokenResponse:
     try:
         token = service.open_recovery_provision(db, node_id)
         node = service.get_node(db, node_id)
@@ -1119,7 +1345,9 @@ def open_recovery_provision(node_id: str, response: Response, db: Session = Depe
 
 
 @router.post("/api/v1/provision", response_model=ProvisionResponse)
-def provision(body: ProvisionRequest, response: Response, db: Session = Depends(get_db)) -> ProvisionResponse:
+def provision(
+    body: ProvisionRequest, response: Response, db: Session = Depends(get_db)
+) -> ProvisionResponse:
     try:
         result = service.provision(db, body)
     except service.AlreadyProvisioned as exc:
@@ -1127,6 +1355,8 @@ def provision(body: ProvisionRequest, response: Response, db: Session = Depends(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except MqttSecurityError as exc:
-        raise HTTPException(status_code=503, detail="MQTT credential provisioning failed") from exc
+        raise HTTPException(
+            status_code=503, detail="MQTT credential provisioning failed"
+        ) from exc
     response.headers["Cache-Control"] = "no-store"
     return result
