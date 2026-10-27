@@ -23,11 +23,15 @@ def health_summary() -> dict[str, Any]:
     status_code: int | None = None
     health_error: str | None = None
     try:
-        with urllib.request.urlopen(request, context=context, timeout=settings.opa_timeout_s) as response:
+        with urllib.request.urlopen(
+            request, context=context, timeout=settings.opa_timeout_s
+        ) as response:
             status_code = response.status
             body = json.load(response)
             if isinstance(body, dict):
-                health_error = body.get("error") if isinstance(body.get("error"), str) else None
+                health_error = (
+                    body.get("error") if isinstance(body.get("error"), str) else None
+                )
     except urllib.error.HTTPError as exc:
         status_code = exc.code
         try:
@@ -43,7 +47,11 @@ def health_summary() -> dict[str, Any]:
 
     return {
         "service": "Open Policy Agent",
-        "status": "healthy" if status_code == 200 else "unavailable" if status_code is None else "unhealthy",
+        "status": "healthy"
+        if status_code == 200
+        else "unavailable"
+        if status_code is None
+        else "unhealthy",
         "endpoint_scheme": decision.scheme,
         "decision_endpoint": decision.path,
         "health_check": "/health?plugins=true",

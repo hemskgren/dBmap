@@ -51,15 +51,22 @@ def create_group(
     if owner is None or owner.status != "active":
         raise InvalidGroupMember
     if creation_limit is not None:
-        owned_count = db.scalar(
-            select(func.count()).select_from(Group).where(Group.created_by_user_id == owner_user_id)
-        ) or 0
+        owned_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(Group)
+                .where(Group.created_by_user_id == owner_user_id)
+            )
+            or 0
+        )
         if owned_count >= creation_limit:
             raise GroupCreationLimit
     group = Group(name=name.strip(), created_by_user_id=owner_user_id)
     db.add(group)
     db.flush()
-    db.add(GroupMembership(group_id=group.group_id, user_id=owner_user_id, role="owner"))
+    db.add(
+        GroupMembership(group_id=group.group_id, user_id=owner_user_id, role="owner")
+    )
     db.commit()
     return _group_view(db, group)
 
@@ -110,7 +117,9 @@ def get_member_role(db: Session, group_id: str, user_id: str) -> str | None:
     return membership.role if membership else None
 
 
-def _current_membership(db: Session, group_id: str, user_id: str) -> GroupMembership | None:
+def _current_membership(
+    db: Session, group_id: str, user_id: str
+) -> GroupMembership | None:
     return db.scalar(
         select(GroupMembership).where(
             GroupMembership.group_id == group_id,
@@ -127,15 +136,18 @@ def _ensure_not_last_owner(
 ) -> None:
     if membership.role != "owner":
         return
-    owner_count = db.scalar(
-        select(func.count())
-        .select_from(GroupMembership)
-        .where(
-            GroupMembership.group_id == group_id,
-            GroupMembership.role == "owner",
-            GroupMembership.valid_to.is_(None),
+    owner_count = (
+        db.scalar(
+            select(func.count())
+            .select_from(GroupMembership)
+            .where(
+                GroupMembership.group_id == group_id,
+                GroupMembership.role == "owner",
+                GroupMembership.valid_to.is_(None),
+            )
         )
-    ) or 0
+        or 0
+    )
     if owner_count <= 1:
         raise LastGroupOwner
 
@@ -143,7 +155,10 @@ def _ensure_not_last_owner(
 def _group_view(db: Session, group: Group) -> GroupView:
     memberships = db.scalars(
         select(GroupMembership)
-        .where(GroupMembership.group_id == group.group_id, GroupMembership.valid_to.is_(None))
+        .where(
+            GroupMembership.group_id == group.group_id,
+            GroupMembership.valid_to.is_(None),
+        )
         .order_by(GroupMembership.role, GroupMembership.user_id)
     ).all()
     members = []

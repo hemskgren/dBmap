@@ -22,6 +22,8 @@ _client: mqtt.Client | None = None
 
 class MqttPublishError(RuntimeError):
     """Raised when the Hub cannot publish a command to the broker."""
+
+
 _broker_metric_topics = {
     "$SYS/broker/clients/connected": "connected_clients",
     "$SYS/broker/clients/total": "total_client_sessions",
@@ -83,7 +85,9 @@ def _set_client(client: mqtt.Client | None) -> None:
         _client = client
 
 
-def _on_connect(client: mqtt.Client, userdata, flags, reason_code, properties=None) -> None:
+def _on_connect(
+    client: mqtt.Client, userdata, flags, reason_code, properties=None
+) -> None:
     global _broker_metrics_updated_at
     log.info("mqtt connected rc=%s", reason_code)
     _set_connected(not reason_code.is_failure)
@@ -125,7 +129,9 @@ def _on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
     if metric_name is not None:
         try:
             value = msg.payload.decode().strip()
-            metric: str | int = int(value) if metric_name in _numeric_broker_metrics else value
+            metric: str | int = (
+                int(value) if metric_name in _numeric_broker_metrics else value
+            )
         except (UnicodeDecodeError, ValueError):
             log.warning("invalid Mosquitto metric on %s", msg.topic)
             return
@@ -175,7 +181,9 @@ def _ingest_observation(node_id: str, message: bytes) -> None:
     try:
         inserted = ingest_observation(db, node_id, body)
         if not inserted:
-            log.info("duplicate observation %s from %s ignored", body.observation_id, node_id)
+            log.info(
+                "duplicate observation %s from %s ignored", body.observation_id, node_id
+            )
     except ValueError as exc:
         log.warning("rejected observation from %s: %s", node_id, exc)
     except Exception:

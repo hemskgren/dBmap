@@ -1,10 +1,12 @@
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app import firmware_catalog
 from app.config import settings
 from app.ids import (
     allocate_node_id,
@@ -29,10 +31,10 @@ from app.schemas import (
     CreateNodeRequest,
     CreateNodeResponse,
     DesiredStateBody,
-    InstallationMetadataBody,
     DeviceApiCredential,
     DeviceApiTokenResponse,
     DeviceDesiredFirmware,
+    InstallationMetadataBody,
     MqttEndpoint,
     NodeLifecycleBody,
     NodeView,
@@ -58,6 +60,10 @@ class OutputCommandUnavailable(ValueError):
     """Raised when an Output command cannot be accepted or published."""
 
 
+class DesiredFirmwareInconsistent(ValueError):
+    """Raised when Desired firmware_version does not match the catalog entry for firmware_id."""
+
+
 class BootstrapTokenRotationUnavailable(Exception):
     pass
 
@@ -79,8 +85,15 @@ class DeviceForbidden(Exception):
 
 
 def _next_sequence(db: Session, node_type: str, simulated: bool = False) -> int:
-    prefix = "SIM-EAR-%" if simulated else ("OUT-%" if node_type == "output" else "EAR-%")
-    count = db.scalar(select(func.count()).select_from(Node).where(Node.node_id.like(prefix))) or 0
+    prefix = (
+        "SIM-EAR-%" if simulated else ("OUT-%" if node_type == "output" else "EAR-%")
+    )
+    count = (
+        db.scalar(
+            select(func.count()).select_from(Node).where(Node.node_id.like(prefix))
+        )
+        or 0
+    )
     return int(count) + 1
 
 
@@ -132,7 +145,9 @@ def create_node(
             if previous is not None:
                 raise DuplicateRegistration(previous.node_id) from exc
         raise
-    return CreateNodeResponse(node_id=node_id, bootstrap_token=token, provisioning_state="pending")
+    return CreateNodeResponse(
+        node_id=node_id, bootstrap_token=token, provisioning_state="pending"
+    )
 
 
 def rotate_pending_bootstrap_token(db: Session, node_id: str) -> str:
@@ -140,12 +155,16 @@ def rotate_pending_bootstrap_token(db: Session, node_id: str) -> str:
     if node is None:
         raise KeyError(node_id)
     if node.provisioning_state != "pending":
-        raise BootstrapTokenRotationUnavailable("bootstrap tokens can only be replaced while the device is pending")
+        raise BootstrapTokenRotationUnavailable(
+            "bootstrap tokens can only be replaced while the device is pending"
+        )
 
     now = datetime.now(timezone.utc)
     active_tokens = db.scalars(
         select(BootstrapToken)
-        .where(BootstrapToken.node_id == node.node_id, BootstrapToken.consumed_at.is_(None))
+        .where(
+            BootstrapToken.node_id == node.node_id, BootstrapToken.consumed_at.is_(None)
+        )
         .with_for_update()
     ).all()
     for row in active_tokens:
@@ -157,7 +176,9 @@ def rotate_pending_bootstrap_token(db: Session, node_id: str) -> str:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise BootstrapTokenRotationUnavailable("a bootstrap token was just issued; reload the device and retry") from exc
+        raise BootstrapTokenRotationUnavailable(
+            "a bootstrap token was just issued; reload the device and retry"
+        ) from exc
     return token
 
 
@@ -175,7 +196,10 @@ def provision(db: Session, body: ProvisionRequest) -> ProvisionResponse:
         raise ValueError("node is deactivated")
 
     initial = node.provisioning_state == "pending"
-    recovery = node.recovery_opened_at is not None and node.provisioning_state in {"provisioned", "active"}
+    recovery = node.recovery_opened_at is not None and node.provisioning_state in {
+        "provisioned",
+        "active",
+    }
     if not initial and not recovery:
         raise AlreadyProvisioned("device is already provisioned")
 
@@ -212,9 +236,19 @@ def provision(db: Session, body: ProvisionRequest) -> ProvisionResponse:
         node_id=node.node_id,
         node_type=node.node_type,
         mqtt=MqttEndpoint(
-            host=(settings.local_mqtt_host if body.mqtt_profile == "local" else settings.public_mqtt_host),
-            port=(settings.local_mqtt_port if body.mqtt_profile == "local" else settings.public_mqtt_port),
-            use_tls=(settings.public_mqtt_use_tls if body.mqtt_profile is None else True),
+            host=(
+                settings.local_mqtt_host
+                if body.mqtt_profile == "local"
+                else settings.public_mqtt_host
+            ),
+            port=(
+                settings.local_mqtt_port
+                if body.mqtt_profile == "local"
+                else settings.public_mqtt_port
+            ),
+            use_tls=(
+                settings.public_mqtt_use_tls if body.mqtt_profile is None else True
+            ),
             username=username,
             password=password,
         ),
@@ -267,12 +301,16 @@ def open_recovery_provision(db: Session, node_id: str) -> str:
     if node.lifecycle_state != "active":
         raise DeviceCredentialUnavailable("node is deactivated")
     if node.provisioning_state not in {"provisioned", "active"}:
-        raise DeviceCredentialUnavailable("recovery provisioning is only for an already provisioned device")
+        raise DeviceCredentialUnavailable(
+            "recovery provisioning is only for an already provisioned device"
+        )
 
     now = datetime.now(timezone.utc)
     active_tokens = db.scalars(
         select(BootstrapToken)
-        .where(BootstrapToken.node_id == node.node_id, BootstrapToken.consumed_at.is_(None))
+        .where(
+            BootstrapToken.node_id == node.node_id, BootstrapToken.consumed_at.is_(None)
+        )
         .with_for_update()
     ).all()
     for row in active_tokens:
@@ -285,7 +323,9 @@ def open_recovery_provision(db: Session, node_id: str) -> str:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise DeviceCredentialUnavailable("a recovery bootstrap token was just issued; retry") from exc
+        raise DeviceCredentialUnavailable(
+            "a recovery bootstrap token was just issued; retry"
+        ) from exc
     return token
 
 
@@ -293,7 +333,9 @@ def node_for_device_api_token(db: Session, token: str) -> Node:
     if not token:
         raise DeviceAuthError("device API token required")
     cred = db.scalar(
-        select(NodeCredential).where(NodeCredential.device_api_token_hash == token_hash(token))
+        select(NodeCredential).where(
+            NodeCredential.device_api_token_hash == token_hash(token)
+        )
     )
     if cred is None:
         raise DeviceAuthError("device API token required")
@@ -305,12 +347,55 @@ def node_for_device_api_token(db: Session, token: str) -> Node:
     return node
 
 
+def catalog_entry_firmware_version(entry: object) -> str:
+    metadata = json.loads(entry.metadata_json)
+    return str(metadata.get("firmware_version") or "")
+
+
 def device_desired_firmware(db: Session, node: Node) -> DeviceDesiredFirmware:
     desired = db.get(DesiredState, node.node_id)
+    firmware_id = desired.firmware_id if desired else ""
+    firmware_version = desired.firmware_version if desired else ""
+    app_sha256 = ""
+    app_size_bytes = 0
+    if firmware_id:
+        catalog_dir = Path(settings.firmware_catalog_dir)
+        try:
+            # Candidates are allowed when they are already the Desired id (admin intent).
+            entry = firmware_catalog.get_entry(
+                db,
+                catalog_dir,
+                firmware_id,
+                include_candidate=True,
+            )
+            catalog_version = catalog_entry_firmware_version(entry)
+            # Version-only Desired edits leave a stale firmware_id; withhold the image so the
+            # device cannot OTA-loop the same binary under a new Desired version string.
+            if (
+                firmware_version
+                and catalog_version
+                and catalog_version != firmware_version
+            ):
+                pass
+            else:
+                image, digest = firmware_catalog.get_flash_image(
+                    entry,
+                    catalog_dir,
+                    "esp-output.bin",
+                )
+                app_sha256 = digest
+                app_size_bytes = len(image)
+        except (
+            firmware_catalog.FirmwareNotFound,
+            firmware_catalog.FirmwareArtifactIntegrityError,
+        ):
+            pass
     return DeviceDesiredFirmware(
         node_id=node.node_id,
-        firmware_id=desired.firmware_id if desired else "",
-        firmware_version=desired.firmware_version if desired else "",
+        firmware_id=firmware_id or "",
+        firmware_version=firmware_version or "",
+        app_sha256=app_sha256,
+        app_size_bytes=app_size_bytes,
     )
 
 
@@ -334,6 +419,25 @@ def set_desired(db: Session, node_id: str, body: DesiredStateBody) -> NodeView:
     if desired is None:
         desired = DesiredState(node_id=node.node_id)
         db.add(desired)
+    if desired.firmware_id:
+        catalog_dir = Path(settings.firmware_catalog_dir)
+        try:
+            entry = firmware_catalog.get_entry(
+                db,
+                catalog_dir,
+                desired.firmware_id,
+                include_candidate=True,
+            )
+            catalog_version = catalog_entry_firmware_version(entry)
+            if catalog_version and body.firmware_version != catalog_version:
+                raise DesiredFirmwareInconsistent(
+                    "desired firmware_version "
+                    f"{body.firmware_version!r} does not match catalog entry "
+                    f"{desired.firmware_id!r} version {catalog_version!r}; "
+                    "use POST /api/v1/nodes/{node_id}/firmware-selection to change Desired firmware"
+                )
+        except firmware_catalog.FirmwareNotFound:
+            pass
     desired.firmware_version = body.firmware_version
     desired.config_version = body.config_version
     desired.calibration_version = body.calibration_version
@@ -343,7 +447,9 @@ def set_desired(db: Session, node_id: str, body: DesiredStateBody) -> NodeView:
     return node_view(db, node)
 
 
-def set_desired_firmware(db: Session, node_id: str, firmware_id: str, firmware_version: str) -> None:
+def set_desired_firmware(
+    db: Session, node_id: str, firmware_id: str, firmware_version: str
+) -> None:
     """Record the firmware an admin selected for this node as Desired state.
 
     Does not commit; callers that already validate a catalog entry decide when to commit.
@@ -393,7 +499,9 @@ def set_hardware_revision(
     return node_view(db, node)
 
 
-def set_installation(db: Session, node_id: str, body: InstallationMetadataBody) -> NodeView:
+def set_installation(
+    db: Session, node_id: str, body: InstallationMetadataBody
+) -> NodeView:
     node = db.get(Node, node_id.upper())
     if node is None:
         raise KeyError(node_id)
@@ -478,14 +586,22 @@ def apply_reported(db: Session, node_id: str, payload: dict) -> None:
     }
     merged = {
         "firmware_version": payload.get("firmware_version", reported.firmware_version),
-        "config_version": int(payload.get("config_version", reported.config_version) or 0),
-        "calibration_version": int(payload.get("calibration_version", reported.calibration_version) or 0),
-        "classifier_version": payload.get("classifier_version", reported.classifier_version),
+        "config_version": int(
+            payload.get("config_version", reported.config_version) or 0
+        ),
+        "calibration_version": int(
+            payload.get("calibration_version", reported.calibration_version) or 0
+        ),
+        "classifier_version": payload.get(
+            "classifier_version", reported.classifier_version
+        ),
     }
     pending = pending_configuration_change(merged, desired_dict)
 
     reported.firmware_version = str(merged["firmware_version"])
-    reported.hardware_revision = str(payload.get("hardware_revision", reported.hardware_revision))
+    reported.hardware_revision = str(
+        payload.get("hardware_revision", reported.hardware_revision)
+    )
     reported.config_version = int(merged["config_version"])
     reported.calibration_version = int(merged["calibration_version"])
     reported.classifier_version = str(merged["classifier_version"])
@@ -514,7 +630,9 @@ def node_view(db: Session, node: Node) -> NodeView:
         "classifier_version": desired.classifier_version if desired else "",
         "payload": json.loads(desired.payload_json) if desired else {},
     }
-    payload = json.loads(reported.payload_json) if reported and reported.payload_json else {}
+    payload = (
+        json.loads(reported.payload_json) if reported and reported.payload_json else {}
+    )
     if isinstance(payload, dict):
         # Hub-only flag must never appear as device-reported telemetry.
         payload.pop("pending_configuration_change", None)
@@ -573,7 +691,9 @@ def node_view(db: Session, node: Node) -> NodeView:
     )
 
 
-def send_output_command(db: Session, node_id: str, body: OutputCommandBody) -> OutputCommandView:
+def send_output_command(
+    db: Session, node_id: str, body: OutputCommandBody
+) -> OutputCommandView:
     from app.mqtt_listener import MqttPublishError, publish_json
 
     node = db.get(Node, node_id.upper())
@@ -588,7 +708,12 @@ def send_output_command(db: Session, node_id: str, body: OutputCommandBody) -> O
 
     now = datetime.now(timezone.utc)
     if body.expires_at_utc is None:
-        lifetime_s = body.duration_s + 30 if body.duration_s else 60
+        if body.duration_s is not None:
+            lifetime_s = body.duration_s + 30
+        elif body.action.startswith("AUDIO_"):
+            lifetime_s = 120
+        else:
+            lifetime_s = 60
         expires_at = now + timedelta(seconds=lifetime_s)
     else:
         expires_at = body.expires_at_utc
@@ -602,6 +727,10 @@ def send_output_command(db: Session, node_id: str, body: OutputCommandBody) -> O
     }
     if body.duration_s is not None:
         payload["duration_s"] = body.duration_s
+    if body.url is not None:
+        payload["url"] = body.url
+    if body.path is not None:
+        payload["path"] = body.path
     if body.message_type is not None:
         payload["message_type"] = body.message_type
 
@@ -615,6 +744,8 @@ def send_output_command(db: Session, node_id: str, body: OutputCommandBody) -> O
         topic=topic,
         action=body.action,
         duration_s=body.duration_s,
+        url=body.url,
+        path=body.path,
         protocol_version=body.protocol_version,
         message_type=body.message_type,
         action_type=body.message_type,

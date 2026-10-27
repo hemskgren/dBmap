@@ -52,7 +52,9 @@ class _UnixHTTPConnection(HTTPConnection):
 
 def _request(method: str, path: str) -> tuple[int, bytes]:
     if not os.path.exists(settings.docker_socket):
-        raise ContainerLogsUnavailable("Container logs are unavailable because the Hub cannot reach the Docker engine.")
+        raise ContainerLogsUnavailable(
+            "Container logs are unavailable because the Hub cannot reach the Docker engine."
+        )
     connection = _UnixHTTPConnection(settings.docker_socket, timeout=5)
     try:
         connection.request(method, path)
@@ -60,7 +62,9 @@ def _request(method: str, path: str) -> tuple[int, bytes]:
         body = response.read(1_000_000)
         return response.status, body
     except (OSError, TimeoutError, HTTPException) as exc:
-        raise ContainerLogsUnavailable("Container logs are unavailable because the Hub cannot reach the Docker engine.") from exc
+        raise ContainerLogsUnavailable(
+            "Container logs are unavailable because the Hub cannot reach the Docker engine."
+        ) from exc
     finally:
         connection.close()
 
@@ -71,14 +75,24 @@ def _api_prefix() -> str:
         if _api_version is None:
             status, body = _request("GET", "/version")
             if status != 200:
-                raise ContainerLogsUnavailable("Container logs are unavailable because the Hub cannot reach the Docker engine.")
+                raise ContainerLogsUnavailable(
+                    "Container logs are unavailable because the Hub cannot reach the Docker engine."
+                )
             try:
                 version = json.loads(body)["ApiVersion"]
-            except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            except (
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                KeyError,
+                TypeError,
+            ) as exc:
                 raise ContainerLogsUnavailable(
                     "Container logs are unavailable because the Hub cannot reach the Docker engine."
                 ) from exc
-            if not isinstance(version, str) or not version.replace(".", "", 1).isdigit():
+            if (
+                not isinstance(version, str)
+                or not version.replace(".", "", 1).isdigit()
+            ):
                 raise ContainerLogsUnavailable(
                     "Container logs are unavailable because the Hub cannot reach the Docker engine."
                 )
@@ -90,7 +104,9 @@ def _project_name() -> str:
     configured = settings.compose_project.strip()
     if configured:
         return configured
-    status, body = _request("GET", f"{_api_prefix()}/containers/{quote(socket.gethostname(), safe='')}/json")
+    status, body = _request(
+        "GET", f"{_api_prefix()}/containers/{quote(socket.gethostname(), safe='')}/json"
+    )
     if status == 200:
         try:
             info = json.loads(body)
@@ -145,29 +161,53 @@ def read_tail(component: str) -> dict:
         ),
         safe="",
     )
-    status, body = _request("GET", f"{_api_prefix()}/containers/json?all=1&filters={filters}")
+    status, body = _request(
+        "GET", f"{_api_prefix()}/containers/json?all=1&filters={filters}"
+    )
     if status != 200:
         log.warning("docker container list failed status=%s", status)
-        raise ContainerLogsUnavailable("Container logs are unavailable because the Hub cannot reach the Docker engine.")
+        raise ContainerLogsUnavailable(
+            "Container logs are unavailable because the Hub cannot reach the Docker engine."
+        )
     try:
         containers = json.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ContainerLogsUnavailable("Container logs are unavailable because the Hub cannot reach the Docker engine.") from exc
+        raise ContainerLogsUnavailable(
+            "Container logs are unavailable because the Hub cannot reach the Docker engine."
+        ) from exc
     if not isinstance(containers, list) or not containers:
-        raise ContainerNotFound(f"No {compose_service} container was found for this Compose project.")
-    containers.sort(key=lambda item: item.get("Created", 0) if isinstance(item, dict) else 0, reverse=True)
-    running = [item for item in containers if isinstance(item, dict) and item.get("State") == "running"]
+        raise ContainerNotFound(
+            f"No {compose_service} container was found for this Compose project."
+        )
+    containers.sort(
+        key=lambda item: item.get("Created", 0) if isinstance(item, dict) else 0,
+        reverse=True,
+    )
+    running = [
+        item
+        for item in containers
+        if isinstance(item, dict) and item.get("State") == "running"
+    ]
     chosen = (running or containers)[0]
     container_id = chosen.get("Id") if isinstance(chosen, dict) else None
-    if not isinstance(container_id, str) or re.fullmatch(r"[0-9a-f]{12,64}", container_id) is None:
-        raise ContainerLogsUnavailable("Container logs are unavailable because the Hub cannot reach the Docker engine.")
+    if (
+        not isinstance(container_id, str)
+        or re.fullmatch(r"[0-9a-f]{12,64}", container_id) is None
+    ):
+        raise ContainerLogsUnavailable(
+            "Container logs are unavailable because the Hub cannot reach the Docker engine."
+        )
     log_status, log_body = _request(
         "GET",
         f"{_api_prefix()}/containers/{container_id}/logs?stdout=1&stderr=1&tail={LOG_TAIL_LINES}",
     )
     if log_status != 200:
-        log.warning("docker logs failed status=%s service=%s", log_status, compose_service)
-        raise ContainerLogsUnavailable("Container logs are unavailable because the Hub cannot reach the Docker engine.")
+        log.warning(
+            "docker logs failed status=%s service=%s", log_status, compose_service
+        )
+        raise ContainerLogsUnavailable(
+            "Container logs are unavailable because the Hub cannot reach the Docker engine."
+        )
     return {
         "service": service_name,
         "compose_service": compose_service,

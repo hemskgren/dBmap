@@ -28,34 +28,60 @@ def init_db() -> None:
                     "VARCHAR(16) NOT NULL DEFAULT 'active'"
                 )
             )
-    columns = {column["name"] for column in inspect(engine).get_columns("node_credentials")}
+    columns = {
+        column["name"] for column in inspect(engine).get_columns("node_credentials")
+    }
     if "mqtt_password_plain_once" in columns:
         with engine.begin() as connection:
-            connection.execute(text("ALTER TABLE node_credentials DROP COLUMN mqtt_password_plain_once"))
+            connection.execute(
+                text(
+                    "ALTER TABLE node_credentials DROP COLUMN mqtt_password_plain_once"
+                )
+            )
     _migrate_device_https_credentials()
 
 
 def _migrate_desired_state_firmware_id() -> None:
-    columns = {column["name"] for column in inspect(engine).get_columns("desired_state")}
+    columns = {
+        column["name"] for column in inspect(engine).get_columns("desired_state")
+    }
     if "firmware_id" not in columns:
         with engine.begin() as connection:
             connection.execute(
-                text("ALTER TABLE desired_state ADD COLUMN firmware_id VARCHAR(64) NOT NULL DEFAULT ''")
+                text(
+                    "ALTER TABLE desired_state ADD COLUMN firmware_id VARCHAR(64) NOT NULL DEFAULT ''"
+                )
             )
 
 
 def _migrate_device_https_credentials() -> None:
     node_columns = {column["name"] for column in inspect(engine).get_columns("nodes")}
-    credential_columns = {column["name"] for column in inspect(engine).get_columns("node_credentials")}
+    credential_columns = {
+        column["name"] for column in inspect(engine).get_columns("node_credentials")
+    }
     with engine.begin() as connection:
         if "recovery_opened_at" not in node_columns:
-            connection.execute(text("ALTER TABLE nodes ADD COLUMN recovery_opened_at DATETIME"))
+            connection.execute(
+                text("ALTER TABLE nodes ADD COLUMN recovery_opened_at DATETIME")
+            )
         if "device_api_token_hash" not in credential_columns:
-            connection.execute(text("ALTER TABLE node_credentials ADD COLUMN device_api_token_hash VARCHAR(64)"))
+            connection.execute(
+                text(
+                    "ALTER TABLE node_credentials ADD COLUMN device_api_token_hash VARCHAR(64)"
+                )
+            )
         if "device_api_issued_at" not in credential_columns:
-            connection.execute(text("ALTER TABLE node_credentials ADD COLUMN device_api_issued_at DATETIME"))
+            connection.execute(
+                text(
+                    "ALTER TABLE node_credentials ADD COLUMN device_api_issued_at DATETIME"
+                )
+            )
         if "device_api_revoked_at" not in credential_columns:
-            connection.execute(text("ALTER TABLE node_credentials ADD COLUMN device_api_revoked_at DATETIME"))
+            connection.execute(
+                text(
+                    "ALTER TABLE node_credentials ADD COLUMN device_api_revoked_at DATETIME"
+                )
+            )
         connection.exec_driver_sql(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_node_credentials_device_api_token_hash "
             "ON node_credentials (device_api_token_hash) WHERE device_api_token_hash IS NOT NULL"
@@ -71,7 +97,9 @@ def _migrate_bootstrap_token_active_index() -> None:
 
 
 def _migrate_device_ownership_to_user_or_group() -> None:
-    columns = {column["name"] for column in inspect(engine).get_columns("device_ownership")}
+    columns = {
+        column["name"] for column in inspect(engine).get_columns("device_ownership")
+    }
     if "owner_type" in columns:
         return
     with engine.begin() as connection:

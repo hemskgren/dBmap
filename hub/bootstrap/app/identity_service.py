@@ -15,7 +15,9 @@ class IdentityConflict(Exception):
 
 
 def _user_view(user: User) -> UserView:
-    identities = sorted(user.external_identities, key=lambda item: (item.provider, item.identity_id))
+    identities = sorted(
+        user.external_identities, key=lambda item: (item.provider, item.identity_id)
+    )
     return UserView(
         user_id=user.user_id,
         display_name=user.display_name,
@@ -95,7 +97,9 @@ def link_github_identity(db: Session, user_id: str, provider_subject: str) -> Us
     return _user_view(user)
 
 
-def set_identity_status(db: Session, user_id: str, identity_id: str, status: str) -> UserView:
+def set_identity_status(
+    db: Session, user_id: str, identity_id: str, status: str
+) -> UserView:
     user = db.get(User, user_id)
     if user is None:
         raise UserNotFound

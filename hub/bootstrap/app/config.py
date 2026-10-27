@@ -52,8 +52,15 @@ class Settings(BaseSettings):
     def validate_public_hub_url(cls, value: str) -> str:
         value = value.strip().rstrip("/")
         parsed = urlsplit(value)
-        if value and (parsed.scheme != "https" or not parsed.hostname or parsed.query or parsed.fragment):
-            raise ValueError("public_hub_url must be an HTTPS base URL without query or fragment")
+        if value and (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "public_hub_url must be an HTTPS base URL without query or fragment"
+            )
         return value
 
     hub_id: str = Field(

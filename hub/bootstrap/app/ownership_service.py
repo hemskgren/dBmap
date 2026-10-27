@@ -27,7 +27,10 @@ def get_ownership(db: Session, node_id: str) -> DeviceOwnershipView:
     ).all()
     assignments = []
     for row in rows:
-        owner = db.get(User if row.owner_type == "user" else Group, row.owner_user_id or row.owner_group_id)
+        owner = db.get(
+            User if row.owner_type == "user" else Group,
+            row.owner_user_id or row.owner_group_id,
+        )
         if owner is None:
             # The FK should prevent this; fail closed if a legacy database is inconsistent.
             raise OwnershipTargetNotFound
@@ -36,12 +39,16 @@ def get_ownership(db: Session, node_id: str) -> DeviceOwnershipView:
                 assignment_id=row.assignment_id,
                 owner_type=row.owner_type,
                 owner_id=owner.user_id if row.owner_type == "user" else owner.group_id,
-                owner_display_name=owner.display_name if row.owner_type == "user" else owner.name,
+                owner_display_name=owner.display_name
+                if row.owner_type == "user"
+                else owner.name,
                 valid_from=_utc(row.valid_from),
                 valid_to=_utc(row.valid_to) if row.valid_to else None,
             )
         )
-    current = next((item for item in reversed(assignments) if item.valid_to is None), None)
+    current = next(
+        (item for item in reversed(assignments) if item.valid_to is None), None
+    )
     return DeviceOwnershipView(
         node_id=normalized_id,
         current_owner_type=current.owner_type if current else None,
@@ -61,7 +68,9 @@ def get_owner_context(db: Session, node_id: str) -> dict | None:
     if assignment is None:
         return None
     owner_type = assignment.owner_type
-    owner_id = assignment.owner_user_id if owner_type == "user" else assignment.owner_group_id
+    owner_id = (
+        assignment.owner_user_id if owner_type == "user" else assignment.owner_group_id
+    )
     owner = db.get(User if owner_type == "user" else Group, owner_id)
     if owner is None:
         return None
@@ -69,7 +78,9 @@ def get_owner_context(db: Session, node_id: str) -> dict | None:
         "owner_type": owner_type,
         "owner_id": owner_id,
         "owner_status": owner.status,
-        "owner_display_name": owner.display_name if owner_type == "user" else owner.name,
+        "owner_display_name": owner.display_name
+        if owner_type == "user"
+        else owner.name,
     }
 
 
@@ -101,10 +112,16 @@ def set_owner(
         owner = db.get(User if owner_type == "user" else Group, owner_id)
         if owner is None:
             raise OwnershipTargetNotFound
-        current_owner_id = current.owner_user_id if current and current.owner_type == "user" else (
-            current.owner_group_id if current else None
+        current_owner_id = (
+            current.owner_user_id
+            if current and current.owner_type == "user"
+            else (current.owner_group_id if current else None)
         )
-        if current is not None and current.owner_type == owner_type and current_owner_id == owner_id:
+        if (
+            current is not None
+            and current.owner_type == owner_type
+            and current_owner_id == owner_id
+        ):
             return get_ownership(db, normalized_id)
         if owner.status != "active":
             raise InactiveOwner

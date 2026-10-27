@@ -1615,7 +1615,7 @@
           commandPanel.append(el('h3', 'Output commands'));
           commandPanel.append(el(
             'p',
-            'GPIO16 drives the relay. GPIO2 blinks the onboard LED. Output test runs a 5-second pulse with double-blink pattern. Dispatch acknowledgement confirms delivery to the broker, not physical contact closure.',
+            'GPIO16 drives the relay. GPIO2 blinks the onboard LED. Output test runs a 5-second pulse with double-blink pattern. Audio commands stream an HTTPS MP3 or play a file from the device /media LittleFS partition. Dispatch acknowledgement confirms delivery to the broker, not physical contact closure or finished playback.',
             'notice',
           ));
           if (currentRole === 'admin') {
@@ -1623,9 +1623,23 @@
             const testButton = el('button', 'Test Output');
             testButton.type = 'button';
             testButton.id = 'btn-output-test';
+            const stopAudioButton = el('button', 'Stop Audio', 'secondary');
+            stopAudioButton.type = 'button';
+            stopAudioButton.id = 'btn-audio-stop';
             const commandStatus = el('span', '', 'notice');
             commandStatus.id = 'output-command-status';
             commandStatus.setAttribute('role', 'status');
+
+            const audioRow = el('div', undefined, 'actions');
+            const audioUrl = el('input');
+            audioUrl.type = 'url';
+            audioUrl.id = 'output-audio-https-url';
+            audioUrl.placeholder = 'https://…/alert.mp3';
+            audioUrl.setAttribute('aria-label', 'HTTPS MP3 URL');
+            audioUrl.style.minWidth = '18rem';
+            const playHttpsButton = el('button', 'Play HTTPS MP3');
+            playHttpsButton.type = 'button';
+            playHttpsButton.id = 'btn-audio-play-https';
 
             function openCommandPreview(title, body) {
               const dialog = el('dialog', undefined, 'command-dialog');
@@ -1635,7 +1649,7 @@
               const codeBlock = el('code', JSON.stringify(body, null, 2));
               codePre.append(codeBlock);
               dialog.append(codePre);
-              dialog.append(el('p', `Expires at: ${formatSeen(body.expires_at_utc)} (30s validity window).`, 'notice'));
+              dialog.append(el('p', `Expires at: ${formatSeen(body.expires_at_utc)}.`, 'notice'));
 
               const dialogActions = el('div', undefined, 'actions');
               const cancelBtn = el('button', 'Cancel', 'secondary');
@@ -1692,8 +1706,34 @@
               });
             });
 
-            actions.append(testButton, commandStatus);
-            commandPanel.append(actions);
+            playHttpsButton.addEventListener('click', () => {
+              const url = audioUrl.value.trim();
+              if (!url.startsWith('https://')) {
+                commandStatus.textContent = 'Enter an https:// MP3 URL first.';
+                commandStatus.className = 'notice error';
+                return;
+              }
+              const expiresAt = new Date(Date.now() + 120 * 1000).toISOString();
+              openCommandPreview('Confirm HTTPS Audio Play', {
+                protocol_version: 1,
+                action: 'AUDIO_PLAY_HTTPS',
+                url,
+                expires_at_utc: expiresAt,
+              });
+            });
+
+            stopAudioButton.addEventListener('click', () => {
+              const expiresAt = new Date(Date.now() + 60 * 1000).toISOString();
+              openCommandPreview('Confirm Stop Audio', {
+                protocol_version: 1,
+                action: 'AUDIO_STOP',
+                expires_at_utc: expiresAt,
+              });
+            });
+
+            actions.append(testButton, stopAudioButton, commandStatus);
+            audioRow.append(audioUrl, playHttpsButton);
+            commandPanel.append(actions, audioRow);
           } else {
             commandPanel.append(el('p', 'Administrative role required to dispatch output commands.', 'notice'));
           }

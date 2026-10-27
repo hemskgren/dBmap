@@ -14,6 +14,8 @@ from app.models import DeploymentAttempt, FirmwareCatalogEntry, utcnow
 
 MAX_BUNDLE_BYTES = 128 * 1024 * 1024
 MAX_METADATA_BYTES = 64 * 1024
+# ESP-Output dual-slot app partition size (ota_0 / ota_1 in firmware/esp-output/partitions.csv).
+ESP_OUTPUT_OTA_SLOT_BYTES = 0x1C0000
 FIRMWARE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 TARGET_FLASH_LAYOUTS = {
     "output-esp32": {
@@ -69,6 +71,10 @@ class FirmwareNotFound(Exception):
     pass
 
 
+class FirmwareNotRegistered(FirmwareNotFound):
+    """Catalog entry exists as a candidate but the caller did not allow candidates."""
+
+
 class FirmwareNotCompatible(Exception):
     pass
 
@@ -95,7 +101,9 @@ def validate_upload(
     metadata_bytes: bytes,
 ) -> tuple[dict, str]:
     if not FIRMWARE_ID_PATTERN.fullmatch(firmware_id):
-        raise InvalidFirmwareBundle("firmware_id must be 1-64 safe filename characters.")
+        raise InvalidFirmwareBundle(
+            "firmware_id must be 1-64 safe filename characters."
+        )
     if not bundle or len(bundle) > MAX_BUNDLE_BYTES:
         raise InvalidFirmwareBundle("Firmware ZIP must be between 1 byte and 128 MiB.")
     if not metadata_bytes or len(metadata_bytes) > MAX_METADATA_BYTES:
@@ -103,7 +111,9 @@ def validate_upload(
     try:
         metadata = json.loads(metadata_bytes)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise InvalidFirmwareBundle("Metadata sidecar must contain valid UTF-8 JSON.") from exc
+        raise InvalidFirmwareBundle(
+            "Metadata sidecar must contain valid UTF-8 JSON."
+        ) from exc
     if not isinstance(metadata, dict) or set(metadata) != METADATA_FIELDS:
         raise InvalidFirmwareBundle(
             "Metadata must contain exactly firmware_id, build_date_utc, target, platform, "
@@ -120,51 +130,88 @@ def validate_upload(
         "firmware_version",
         "esp_idf_version",
     ):
-        if not isinstance(metadata[field], str) or not metadata[field].strip() or len(metadata[field]) > 128:
-            raise InvalidFirmwareBundle(f"Metadata field {field} must be a non-empty string of at most 128 characters.")
+        if (
+            not isinstance(metadata[field], str)
+            or not metadata[field].strip()
+            or len(metadata[field]) > 128
+        ):
+            raise InvalidFirmwareBundle(
+                f"Metadata field {field} must be a non-empty string of at most 128 characters."
+            )
     if (
         not isinstance(metadata["configuration_version"], int)
         or isinstance(metadata["configuration_version"], bool)
         or metadata["configuration_version"] < 0
     ):
-        raise InvalidFirmwareBundle("configuration_version must be a non-negative integer.")
+        raise InvalidFirmwareBundle(
+            "configuration_version must be a non-negative integer."
+        )
     try:
-        build_date = datetime.fromisoformat(metadata["build_date_utc"].replace("Z", "+00:00"))
+        build_date = datetime.fromisoformat(
+            metadata["build_date_utc"].replace("Z", "+00:00")
+        )
     except (AttributeError, TypeError, ValueError) as exc:
-        raise InvalidFirmwareBundle("build_date_utc must be an ISO-8601 timestamp with a timezone.") from exc
+        raise InvalidFirmwareBundle(
+            "build_date_utc must be an ISO-8601 timestamp with a timezone."
+        ) from exc
     if build_date.tzinfo is None:
         raise InvalidFirmwareBundle("build_date_utc must include a timezone.")
     actual_digest = hashlib.sha256(bundle).hexdigest()
     if metadata["artifact_sha256"] != actual_digest:
-        raise InvalidFirmwareBundle("artifact_sha256 does not match the uploaded firmware ZIP.")
+        raise InvalidFirmwareBundle(
+            "artifact_sha256 does not match the uploaded firmware ZIP."
+        )
     try:
         with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
             names = archive.namelist()
             if "manifest.json" not in names or len(names) != len(set(names)):
-                raise InvalidFirmwareBundle("Firmware ZIP must contain one manifest and unique component files.")
+                raise InvalidFirmwareBundle(
+                    "Firmware ZIP must contain one manifest and unique component files."
+                )
             if archive.getinfo("manifest.json").file_size > MAX_METADATA_BYTES:
-                raise InvalidFirmwareBundle("Firmware manifest exceeds the 64 KiB limit.")
+                raise InvalidFirmwareBundle(
+                    "Firmware manifest exceeds the 64 KiB limit."
+                )
             if archive.testzip() is not None:
-                raise InvalidFirmwareBundle("Firmware ZIP failed its CRC integrity check.")
+                raise InvalidFirmwareBundle(
+                    "Firmware ZIP failed its CRC integrity check."
+                )
             manifest = json.loads(archive.read("manifest.json"))
             if not isinstance(manifest, dict):
-                raise InvalidFirmwareBundle("Firmware ZIP manifest must be a JSON object.")
+                raise InvalidFirmwareBundle(
+                    "Firmware ZIP manifest must be a JSON object."
+                )
             target_components = TARGET_FLASH_LAYOUTS.get(manifest.get("target"))
             if target_components is None:
-                raise InvalidFirmwareBundle("Firmware target is not supported by the Hub catalog.")
+                raise InvalidFirmwareBundle(
+                    "Firmware target is not supported by the Hub catalog."
+                )
             expected_names = set(target_components) | {"manifest.json"}
             if len(names) != len(expected_names) or set(names) != expected_names:
-                raise InvalidFirmwareBundle("Firmware ZIP has files that do not match its supported target.")
-            if any(archive.getinfo(name).file_size > MAX_COMPONENT_BYTES for name in target_components):
-                raise InvalidFirmwareBundle("Firmware component exceeds the 32 MiB limit.")
+                raise InvalidFirmwareBundle(
+                    "Firmware ZIP has files that do not match its supported target."
+                )
+            if any(
+                archive.getinfo(name).file_size > MAX_COMPONENT_BYTES
+                for name in target_components
+            ):
+                raise InvalidFirmwareBundle(
+                    "Firmware component exceeds the 32 MiB limit."
+                )
             _validate_manifest(metadata, manifest, archive)
     except (OSError, zipfile.BadZipFile, KeyError, json.JSONDecodeError) as exc:
-        raise InvalidFirmwareBundle("Firmware upload is not a valid firmware ZIP bundle.") from exc
-    metadata["build_date_utc"] = build_date.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        raise InvalidFirmwareBundle(
+            "Firmware upload is not a valid firmware ZIP bundle."
+        ) from exc
+    metadata["build_date_utc"] = (
+        build_date.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    )
     return metadata, actual_digest
 
 
-def _validate_manifest(metadata: dict, manifest: dict, archive: zipfile.ZipFile) -> None:
+def _validate_manifest(
+    metadata: dict, manifest: dict, archive: zipfile.ZipFile
+) -> None:
     manifest_fields = {
         "target": "target",
         "node_type": "node_type",
@@ -180,33 +227,49 @@ def _validate_manifest(metadata: dict, manifest: dict, archive: zipfile.ZipFile)
                 f"Metadata field {metadata_field} does not match firmware manifest."
             )
     if manifest.get("nvs_preserved") is not True:
-        raise InvalidFirmwareBundle("Firmware manifest must confirm that NVS is preserved.")
+        raise InvalidFirmwareBundle(
+            "Firmware manifest must confirm that NVS is preserved."
+        )
     components = manifest.get("flash_components")
     target_components = TARGET_FLASH_LAYOUTS.get(metadata["target"])
     if target_components is None:
-        raise InvalidFirmwareBundle("Firmware target is not supported by the Hub catalog.")
+        raise InvalidFirmwareBundle(
+            "Firmware target is not supported by the Hub catalog."
+        )
     if not isinstance(components, list) or len(components) != len(target_components):
-        raise InvalidFirmwareBundle("Firmware manifest has an invalid flash component list.")
+        raise InvalidFirmwareBundle(
+            "Firmware manifest has an invalid flash component list."
+        )
     observed = set()
     for component in components:
         if not isinstance(component, dict):
-            raise InvalidFirmwareBundle("Firmware manifest contains an invalid flash component.")
+            raise InvalidFirmwareBundle(
+                "Firmware manifest contains an invalid flash component."
+            )
         name = component.get("name")
         if name not in target_components or name in observed:
-            raise InvalidFirmwareBundle("Firmware manifest contains an unsupported or duplicate component.")
+            raise InvalidFirmwareBundle(
+                "Firmware manifest contains an unsupported or duplicate component."
+            )
         observed.add(name)
         if component.get("offset") != target_components[name]:
             raise InvalidFirmwareBundle(f"Unexpected flash offset for {name}.")
         if archive.getinfo(name).file_size > MAX_COMPONENT_BYTES:
-            raise InvalidFirmwareBundle(f"Firmware component {name} exceeds the 32 MiB limit.")
+            raise InvalidFirmwareBundle(
+                f"Firmware component {name} exceeds the 32 MiB limit."
+            )
         content = archive.read(name)
         if (
             component.get("size_bytes") != len(content)
             or component.get("sha256") != hashlib.sha256(content).hexdigest()
         ):
-            raise InvalidFirmwareBundle(f"Firmware component integrity check failed for {name}.")
+            raise InvalidFirmwareBundle(
+                f"Firmware component integrity check failed for {name}."
+            )
     if observed != set(target_components):
-        raise InvalidFirmwareBundle("Firmware manifest is missing a supported target component.")
+        raise InvalidFirmwareBundle(
+            "Firmware manifest is missing a supported target component."
+        )
 
 
 def create_candidate(
@@ -218,14 +281,18 @@ def create_candidate(
 ) -> FirmwareCatalogEntry:
     metadata, digest = validate_upload(firmware_id, bundle, metadata_bytes)
     if db.get(FirmwareCatalogEntry, firmware_id) is not None:
-        raise FirmwareAlreadyExists(f"Firmware ID {firmware_id} already exists in the catalog.")
+        raise FirmwareAlreadyExists(
+            f"Firmware ID {firmware_id} already exists in the catalog."
+        )
     catalog_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     destination = catalog_dir / f"{firmware_id}.zip"
     temporary = catalog_dir / f".{firmware_id}.{uuid.uuid4().hex}.upload"
     artifact_linked = False
     try:
         if destination.exists():
-            raise FirmwareAlreadyExists(f"Firmware ID {firmware_id} already has a stored artifact.")
+            raise FirmwareAlreadyExists(
+                f"Firmware ID {firmware_id} already has a stored artifact."
+            )
         descriptor = temporary.open("xb")
         with descriptor:
             descriptor.write(bundle)
@@ -257,7 +324,9 @@ def create_candidate(
         raise
 
 
-def list_entries(db: Session, catalog_dir: Path, include_candidates: bool) -> list[dict]:
+def list_entries(
+    db: Session, catalog_dir: Path, include_candidates: bool
+) -> list[dict]:
     query = db.query(FirmwareCatalogEntry)
     if not include_candidates:
         query = query.filter(FirmwareCatalogEntry.status == "registered")
@@ -322,9 +391,13 @@ def validate_selection(
     entry = get_entry(db, catalog_dir, firmware_id, include_candidate=allow_candidate)
     metadata = json.loads(entry.metadata_json)
     if not node_type or node_type == "unknown":
-        raise FirmwareNotCompatible("The registered device is missing a known node type.")
+        raise FirmwareNotCompatible(
+            "The registered device is missing a known node type."
+        )
     if metadata["node_type"] != node_type:
-        raise FirmwareNotCompatible("Firmware node_type does not match the registered device.")
+        raise FirmwareNotCompatible(
+            "Firmware node_type does not match the registered device."
+        )
     if metadata["hardware_revision"] != "generic" and (
         not hardware_revision
         or hardware_revision == "unknown"
@@ -368,8 +441,10 @@ def get_entry(
     if not FIRMWARE_ID_PATTERN.fullmatch(firmware_id):
         raise FirmwareNotFound
     entry = db.get(FirmwareCatalogEntry, firmware_id)
-    if entry is None or (entry.status != "registered" and not include_candidate):
+    if entry is None:
         raise FirmwareNotFound
+    if entry.status != "registered" and not include_candidate:
+        raise FirmwareNotRegistered
     artifact = catalog_dir / f"{firmware_id}.zip"
     if not artifact.is_file():
         raise FirmwareNotFound
@@ -422,8 +497,15 @@ def get_flash_image(
         raise FirmwareNotFound
     _, manifest, images = _read_validated_bundle(entry, catalog_dir)
     component = next(
-        item for item in manifest["flash_components"] if item["name"] == component_name
+        (
+            item
+            for item in manifest["flash_components"]
+            if item["name"] == component_name
+        ),
+        None,
     )
+    if component is None or component_name not in images:
+        raise FirmwareNotFound
     return images[component_name], component["sha256"]
 
 
@@ -506,11 +588,15 @@ def public_entry(entry: FirmwareCatalogEntry, catalog_dir: Path) -> dict:
     try:
         metadata = json.loads(entry.metadata_json)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Stored metadata for firmware {entry.firmware_id} is invalid.") from exc
+        raise RuntimeError(
+            f"Stored metadata for firmware {entry.firmware_id} is invalid."
+        ) from exc
     return {
         **metadata,
         "status": entry.status,
         "uploaded_at": entry.created_at.isoformat(),
-        "registered_at": entry.registered_at.isoformat() if entry.registered_at else None,
+        "registered_at": entry.registered_at.isoformat()
+        if entry.registered_at
+        else None,
         "artifact_size_bytes": artifact.stat().st_size if artifact.is_file() else None,
     }

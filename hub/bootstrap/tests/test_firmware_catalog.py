@@ -52,7 +52,9 @@ def make_firmware_pair(platform: str = "esp32") -> tuple[str, bytes, bytes]:
         "flash_components": component_manifest,
     }
     bundle_buffer = io.BytesIO()
-    with zipfile.ZipFile(bundle_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(
+        bundle_buffer, "w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
         for name, (_, content) in components.items():
             archive.writestr(name, content)
         archive.writestr("manifest.json", json.dumps(manifest))
@@ -72,7 +74,9 @@ def make_firmware_pair(platform: str = "esp32") -> tuple[str, bytes, bytes]:
     return firmware_id, bundle, json.dumps(metadata).encode()
 
 
-def upload_pair(client, firmware_id: str, bundle: bytes, metadata: bytes, token: str = "test-admin"):
+def upload_pair(
+    client, firmware_id: str, bundle: bytes, metadata: bytes, token: str = "test-admin"
+):
     return client.post(
         "/api/v1/firmware/catalog",
         headers={"Authorization": f"Bearer {token}"},
@@ -104,7 +108,9 @@ def test_catalog_candidate_promote_viewer_access_and_delete(catalog_client):
         for item in viewer_entries.json()
     )
     assert (
-        client.get(f"/api/v1/firmware/catalog/{firmware_id}", headers=viewer).json()["status"]
+        client.get(f"/api/v1/firmware/catalog/{firmware_id}", headers=viewer).json()[
+            "status"
+        ]
         == "candidate"
     )
     candidate_download = client.get(
@@ -113,12 +119,23 @@ def test_catalog_candidate_promote_viewer_access_and_delete(catalog_client):
     )
     assert candidate_download.status_code == 200
     assert candidate_download.content == bundle
-    assert client.get("/api/v1/firmware/catalog", headers=admin).json()[0]["status"] == "candidate"
-    assert upload_pair(client, f"blocked-{uuid4().hex}", bundle, metadata, token="test-viewer").status_code == 403
-    assert client.post(
-        f"/api/v1/firmware/catalog/{firmware_id}/promote",
-        headers=viewer,
-    ).status_code == 403
+    assert (
+        client.get("/api/v1/firmware/catalog", headers=admin).json()[0]["status"]
+        == "candidate"
+    )
+    assert (
+        upload_pair(
+            client, f"blocked-{uuid4().hex}", bundle, metadata, token="test-viewer"
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            f"/api/v1/firmware/catalog/{firmware_id}/promote",
+            headers=viewer,
+        ).status_code
+        == 403
+    )
 
     promoted = client.post(
         f"/api/v1/firmware/catalog/{firmware_id}/promote",
@@ -139,14 +156,20 @@ def test_catalog_candidate_promote_viewer_access_and_delete(catalog_client):
     assert download.status_code == 200
     assert download.content == bundle
 
-    assert client.delete(
-        f"/api/v1/firmware/catalog/{firmware_id}",
-        headers=viewer,
-    ).status_code == 403
-    assert client.delete(
-        f"/api/v1/firmware/catalog/{firmware_id}",
-        headers=admin,
-    ).status_code == 204
+    assert (
+        client.delete(
+            f"/api/v1/firmware/catalog/{firmware_id}",
+            headers=viewer,
+        ).status_code
+        == 403
+    )
+    assert (
+        client.delete(
+            f"/api/v1/firmware/catalog/{firmware_id}",
+            headers=admin,
+        ).status_code
+        == 204
+    )
     assert not (catalog_dir / f"{firmware_id}.zip").exists()
     assert all(
         item["firmware_id"] != firmware_id
@@ -154,7 +177,9 @@ def test_catalog_candidate_promote_viewer_access_and_delete(catalog_client):
     )
 
 
-def test_flash_manifest_and_images_require_registered_firmware_and_admin(catalog_client):
+def test_flash_manifest_and_images_require_registered_firmware_and_admin(
+    catalog_client,
+):
     client, catalog_dir = catalog_client
     firmware_id, bundle, metadata = make_firmware_pair()
     admin = {"Authorization": "Bearer test-admin"}
@@ -200,16 +225,31 @@ def test_flash_manifest_and_images_require_registered_firmware_and_admin(catalog
         assert response.status_code == 200, response.text
         assert response.content == expected_content
         assert response.headers["cache-control"] == "no-store"
-        assert response.headers["x-content-sha256"] == hashlib.sha256(expected_content).hexdigest()
         assert (
-            client.get(f"{base_path}/flash-images/{component_name}", headers=viewer).status_code
+            response.headers["x-content-sha256"]
+            == hashlib.sha256(expected_content).hexdigest()
+        )
+        assert (
+            client.get(
+                f"{base_path}/flash-images/{component_name}", headers=viewer
+            ).status_code
             == 403
         )
-    assert client.get(f"{base_path}/flash-images/not-a-component.bin", headers=admin).status_code == 404
+    assert (
+        client.get(
+            f"{base_path}/flash-images/not-a-component.bin", headers=admin
+        ).status_code
+        == 404
+    )
 
     (catalog_dir / f"{firmware_id}.zip").write_bytes(b"tampered artifact")
     assert client.get(f"{base_path}/flash-manifest", headers=admin).status_code == 409
-    assert client.get(f"{base_path}/flash-images/bootloader.bin", headers=admin).status_code == 409
+    assert (
+        client.get(
+            f"{base_path}/flash-images/bootloader.bin", headers=admin
+        ).status_code
+        == 409
+    )
 
 
 def test_flash_manifest_rejects_unsupported_platform(catalog_client):
@@ -232,10 +272,13 @@ def test_admin_can_record_verified_hardware_revision_for_compatibility(catalog_c
     admin = {"Authorization": "Bearer test-admin"}
     viewer = {"Authorization": "Bearer test-viewer"}
     assert upload_pair(client, firmware_id, bundle, metadata).status_code == 201
-    assert client.post(
-        f"/api/v1/firmware/catalog/{firmware_id}/promote",
-        headers=admin,
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/api/v1/firmware/catalog/{firmware_id}/promote",
+            headers=admin,
+        ).status_code
+        == 200
+    )
     created = client.post(
         "/api/v1/nodes",
         headers=admin,
@@ -247,16 +290,22 @@ def test_admin_can_record_verified_hardware_revision_for_compatibility(catalog_c
     update_path = f"/api/v1/nodes/{node_id}/hardware-revision"
 
     assert client.get(compatible_path, headers=admin).json() == []
-    assert client.put(
-        update_path,
-        headers=viewer,
-        json={"hardware_revision": "OUTPUT-DEV-V1"},
-    ).status_code == 403
-    assert client.put(
-        update_path,
-        headers=admin,
-        json={"hardware_revision": "   "},
-    ).status_code == 422
+    assert (
+        client.put(
+            update_path,
+            headers=viewer,
+            json={"hardware_revision": "OUTPUT-DEV-V1"},
+        ).status_code
+        == 403
+    )
+    assert (
+        client.put(
+            update_path,
+            headers=admin,
+            json={"hardware_revision": "   "},
+        ).status_code
+        == 422
+    )
 
     updated = client.put(
         update_path,
@@ -268,11 +317,14 @@ def test_admin_can_record_verified_hardware_revision_for_compatibility(catalog_c
     compatible = client.get(compatible_path, headers=admin)
     assert compatible.status_code == 200
     assert firmware_id in {entry["firmware_id"] for entry in compatible.json()}
-    assert client.put(
-        "/api/v1/nodes/OUT-NOT-REGISTERED/hardware-revision",
-        headers=admin,
-        json={"hardware_revision": "OUTPUT-DEV-V1"},
-    ).status_code == 404
+    assert (
+        client.put(
+            "/api/v1/nodes/OUT-NOT-REGISTERED/hardware-revision",
+            headers=admin,
+            json={"hardware_revision": "OUTPUT-DEV-V1"},
+        ).status_code
+        == 404
+    )
 
 
 def test_firmware_compatibility_is_server_checked_and_admin_only(catalog_client):
@@ -294,7 +346,10 @@ def test_firmware_compatibility_is_server_checked_and_admin_only(catalog_client)
         headers={"Authorization": f"Bearer {settings.admin_token}"},
     )
     assert compatible_before_promotion.status_code == 200
-    assert all(item["firmware_id"] != firmware_id for item in compatible_before_promotion.json())
+    assert all(
+        item["firmware_id"] != firmware_id
+        for item in compatible_before_promotion.json()
+    )
     candidate_selection = client.post(
         f"/api/v1/nodes/{node_id}/firmware-selection",
         headers={"Authorization": f"Bearer {settings.admin_token}"},
@@ -304,6 +359,19 @@ def test_firmware_compatibility_is_server_checked_and_admin_only(catalog_client)
         },
     )
     assert candidate_selection.status_code == 404
+    assert "still a candidate" in candidate_selection.json()["detail"]
+
+    candidate_allowed = client.post(
+        f"/api/v1/nodes/{node_id}/firmware-selection",
+        headers={"Authorization": f"Bearer {settings.admin_token}"},
+        json={
+            "firmware_id": firmware_id,
+            "acknowledge_unverified_platform": True,
+            "allow_candidate": True,
+        },
+    )
+    assert candidate_allowed.status_code == 200, candidate_allowed.text
+    assert candidate_allowed.json()["device_id"] == node_id
 
     promoted = client.post(
         f"/api/v1/firmware/catalog/{firmware_id}/promote",
@@ -316,7 +384,9 @@ def test_firmware_compatibility_is_server_checked_and_admin_only(catalog_client)
         headers={"Authorization": f"Bearer {settings.admin_token}"},
     )
     assert compatible.status_code == 200
-    match = next(item for item in compatible.json() if item["firmware_id"] == firmware_id)
+    match = next(
+        item for item in compatible.json() if item["firmware_id"] == firmware_id
+    )
     assert match["compatibility"] == {
         "node_type": "matched",
         "hardware_revision": "matched",
@@ -412,7 +482,9 @@ def test_deployment_attempt_history_retry_and_admin_access(catalog_client):
         "flasher_version": "web-serial-test",
     }
 
-    assert client.post(attempts_path, headers=viewer, json=request_body).status_code == 403
+    assert (
+        client.post(attempts_path, headers=viewer, json=request_body).status_code == 403
+    )
     unacknowledged = client.post(
         attempts_path,
         headers=admin,
@@ -435,7 +507,9 @@ def test_deployment_attempt_history_retry_and_admin_access(catalog_client):
     assert detail.status_code == 200
     assert detail.json()["desired"]["firmware_id"] == firmware_id
     assert detail.json()["desired"]["firmware_version"] == "1.2.3"
-    assert client.post(attempts_path, headers=admin, json=request_body).status_code == 409
+    assert (
+        client.post(attempts_path, headers=admin, json=request_body).status_code == 409
+    )
 
     attempt_path = f"{attempts_path}/{first_attempt_id}"
     progress = client.patch(
@@ -457,7 +531,11 @@ def test_deployment_attempt_history_retry_and_admin_access(catalog_client):
         client.patch(
             attempt_path,
             headers=viewer,
-            json={"status": "in_progress", "stage": "verifying", "progress_percent": 80},
+            json={
+                "status": "in_progress",
+                "stage": "verifying",
+                "progress_percent": 80,
+            },
         ).status_code
         == 403
     )
@@ -553,7 +631,9 @@ def test_deployment_attempt_rejects_modified_artifact(catalog_client):
     assert node_response.status_code == 200
     artifact = catalog_dir / f"{firmware_id}.zip"
     artifact.write_bytes(b"modified after catalog registration")
-    attempts_path = f"/api/v1/nodes/{node_response.json()['node_id']}/deployment-attempts"
+    attempts_path = (
+        f"/api/v1/nodes/{node_response.json()['node_id']}/deployment-attempts"
+    )
     body = {"firmware_id": firmware_id, "acknowledge_unverified_platform": True}
 
     attempt_response = client.post(attempts_path, headers=admin, json=body)
@@ -572,7 +652,10 @@ def test_deployment_attempt_rejects_modified_artifact(catalog_client):
     [
         (lambda metadata: metadata.update(artifact_sha256="0" * 64), "artifact_sha256"),
         (lambda metadata: metadata.update(platform="esp32s3"), "platform"),
-        (lambda metadata: metadata.update(build_date_utc="not-a-date"), "build_date_utc"),
+        (
+            lambda metadata: metadata.update(build_date_utc="not-a-date"),
+            "build_date_utc",
+        ),
         (lambda metadata: metadata.update(node_type="ear"), "node_type"),
     ],
 )

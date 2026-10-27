@@ -54,7 +54,9 @@ class BootstrapTokenResponse(BaseModel):
 
 
 class FirmwareSelectionBody(BaseModel):
-    firmware_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    firmware_id: str = Field(
+        min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    )
     acknowledge_unverified_platform: bool = False
     allow_candidate: bool = False
 
@@ -62,7 +64,9 @@ class FirmwareSelectionBody(BaseModel):
 class DeploymentAttemptCreateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    firmware_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    firmware_id: str = Field(
+        min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    )
     acknowledge_unverified_platform: bool = False
     allow_candidate: bool = False
     flasher_version: str | None = Field(default=None, min_length=1, max_length=64)
@@ -82,37 +86,60 @@ class DeploymentAttemptUpdateBody(BaseModel):
         "unknown",
     ]
     progress_percent: int | None = Field(default=None, ge=0, le=100)
-    failure_code: Literal[
-        "device_not_connected",
-        "serial_connection_lost",
-        "flash_failed",
-        "cancelled",
-        "browser_interrupted",
-        "integrity_failed",
-        "other",
-    ] | None = None
+    failure_code: (
+        Literal[
+            "device_not_connected",
+            "serial_connection_lost",
+            "flash_failed",
+            "cancelled",
+            "browser_interrupted",
+            "integrity_failed",
+            "other",
+        ]
+        | None
+    ) = None
 
     @model_validator(mode="after")
     def validate_attempt_state(self) -> "DeploymentAttemptUpdateBody":
         terminal_stages = {"completed", "failed", "unknown"}
         if self.status == "in_progress":
-            if self.stage in terminal_stages or self.progress_percent is None or self.failure_code:
-                raise ValueError("in-progress updates require a non-terminal stage and progress percentage")
+            if (
+                self.stage in terminal_stages
+                or self.progress_percent is None
+                or self.failure_code
+            ):
+                raise ValueError(
+                    "in-progress updates require a non-terminal stage and progress percentage"
+                )
             if self.progress_percent >= 100:
-                raise ValueError("in-progress deployment attempts cannot be 100 percent complete")
+                raise ValueError(
+                    "in-progress deployment attempts cannot be 100 percent complete"
+                )
         elif self.status == "succeeded":
-            if self.stage != "completed" or self.progress_percent != 100 or self.failure_code:
-                raise ValueError("successful attempts require completed stage and 100 percent progress")
+            if (
+                self.stage != "completed"
+                or self.progress_percent != 100
+                or self.failure_code
+            ):
+                raise ValueError(
+                    "successful attempts require completed stage and 100 percent progress"
+                )
         elif self.status == "failed":
             if self.stage != "failed" or self.failure_code is None:
-                raise ValueError("failed attempts require failed stage and a failure code")
+                raise ValueError(
+                    "failed attempts require failed stage and a failure code"
+                )
             if self.progress_percent == 100:
                 raise ValueError("failed attempts cannot report 100 percent completion")
         elif self.status == "unknown":
             if self.stage != "unknown" or self.failure_code is None:
-                raise ValueError("unknown attempts require unknown stage and a failure code")
+                raise ValueError(
+                    "unknown attempts require unknown stage and a failure code"
+                )
             if self.progress_percent == 100:
-                raise ValueError("unknown attempts cannot report 100 percent completion")
+                raise ValueError(
+                    "unknown attempts cannot report 100 percent completion"
+                )
         return self
 
 
@@ -159,6 +186,8 @@ class DeviceDesiredFirmware(BaseModel):
     node_id: str
     firmware_id: str
     firmware_version: str
+    app_sha256: str = ""
+    app_size_bytes: int = 0
 
 
 class DeviceApiTokenResponse(BaseModel):
@@ -185,8 +214,16 @@ class OutputCommandBody(BaseModel):
 
     protocol_version: Literal[1] = 1
     message_type: Literal["output-test"] | None = None
-    action: Literal["RELAY_1_ON", "RELAY_1_OFF"]
+    action: Literal[
+        "RELAY_1_ON",
+        "RELAY_1_OFF",
+        "AUDIO_PLAY_HTTPS",
+        "AUDIO_PLAY_FILE",
+        "AUDIO_STOP",
+    ]
     duration_s: int | None = Field(default=None, ge=1, le=3600)
+    url: str | None = Field(default=None, min_length=12, max_length=384)
+    path: str | None = Field(default=None, min_length=1, max_length=192)
     action_type: Literal["output-test"] | None = None
     expires_at_utc: datetime | None = None
 
@@ -199,13 +236,57 @@ class OutputCommandBody(BaseModel):
             raise ValueError("expires_at_utc must include a timezone")
         return value.astimezone(timezone.utc)
 
+    @field_validator("url")
+    @classmethod
+    def require_https_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized.startswith("https://"):
+            raise ValueError("url must be an https:// URL")
+        return normalized
+
+    @field_validator("path")
+    @classmethod
+    def normalize_audio_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized or ".." in normalized or "\x00" in normalized:
+            raise ValueError(
+                "path must be a relative media filename or /media/... path"
+            )
+        return normalized
+
     @model_validator(mode="after")
     def validate_command_fields(self) -> "OutputCommandBody":
         if self.action == "RELAY_1_ON":
             if self.duration_s is None:
                 raise ValueError("RELAY_1_ON requires duration_s")
-        elif self.duration_s is not None:
-            raise ValueError("RELAY_1_OFF does not take duration_s")
+            if self.url is not None or self.path is not None:
+                raise ValueError("RELAY_1_ON does not take url or path")
+        elif self.action == "RELAY_1_OFF":
+            if self.duration_s is not None:
+                raise ValueError("RELAY_1_OFF does not take duration_s")
+            if self.url is not None or self.path is not None:
+                raise ValueError("RELAY_1_OFF does not take url or path")
+        elif self.action == "AUDIO_PLAY_HTTPS":
+            if self.url is None:
+                raise ValueError("AUDIO_PLAY_HTTPS requires url")
+            if self.duration_s is not None or self.path is not None:
+                raise ValueError("AUDIO_PLAY_HTTPS does not take duration_s or path")
+        elif self.action == "AUDIO_PLAY_FILE":
+            if self.path is None:
+                raise ValueError("AUDIO_PLAY_FILE requires path")
+            if self.duration_s is not None or self.url is not None:
+                raise ValueError("AUDIO_PLAY_FILE does not take duration_s or url")
+        elif self.action == "AUDIO_STOP":
+            if (
+                self.duration_s is not None
+                or self.url is not None
+                or self.path is not None
+            ):
+                raise ValueError("AUDIO_STOP does not take duration_s, url, or path")
         if (
             self.action_type is not None
             and self.message_type is not None
@@ -225,6 +306,8 @@ class OutputCommandView(BaseModel):
     topic: str
     action: str
     duration_s: int | None = None
+    url: str | None = None
+    path: str | None = None
     protocol_version: Literal[1] = 1
     message_type: str | None = None
     action_type: str | None = None
@@ -233,8 +316,12 @@ class OutputCommandView(BaseModel):
 
 
 class InstallationMetadataBody(BaseModel):
-    latitude: float = Field(ge=-90, le=90, description="WGS84 latitude in decimal degrees")
-    longitude: float = Field(ge=-180, le=180, description="WGS84 longitude in decimal degrees")
+    latitude: float = Field(
+        ge=-90, le=90, description="WGS84 latitude in decimal degrees"
+    )
+    longitude: float = Field(
+        ge=-180, le=180, description="WGS84 longitude in decimal degrees"
+    )
     floor: int | None = None
     height_m: float | None = Field(default=None, ge=0)
     height_accuracy_m: float | None = Field(default=None, ge=0)

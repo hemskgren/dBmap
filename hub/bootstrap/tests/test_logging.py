@@ -61,7 +61,9 @@ def test_configure_logging_stamps_uvicorn_access(capsys) -> None:
     access.addHandler(logging.StreamHandler(sys.stdout))
     try:
         configure_logging()
-        access.info('%s - "%s %s HTTP/%s" %d', "203.0.113.9:54432", "GET", "/health", "1.1", 200)
+        access.info(
+            '%s - "%s %s HTTP/%s" %d', "203.0.113.9:54432", "GET", "/health", "1.1", 200
+        )
         captured = capsys.readouterr()
         assert captured.out == ""
         assert captured.err.startswith("203.0.113.9 - - [")

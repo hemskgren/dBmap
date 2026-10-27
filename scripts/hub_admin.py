@@ -70,6 +70,48 @@ def get_node(
     return result
 
 
+def _format_location(installation: object) -> str:
+    if not isinstance(installation, dict):
+        return "Not set"
+    latitude = installation.get("latitude")
+    longitude = installation.get("longitude")
+    if latitude is None or longitude is None:
+        return "Not set"
+    return f"{latitude}, {longitude}"
+
+
+def format_device_list(devices: list[dict[str, Any]]) -> str:
+    """Format device summaries like the web Devices table."""
+    headers = (
+        "Device",
+        "Type",
+        "Status",
+        "Provisioning",
+        "Lifecycle",
+        "Assigned owner",
+        "Location",
+    )
+    rows: list[tuple[str, ...]] = [headers]
+    for device in sorted(devices, key=lambda item: str(item.get("node_id", ""))):
+        rows.append(
+            (
+                str(device.get("node_id", "")),
+                str(device.get("node_type", "")).upper(),
+                str(device.get("status", "offline")),
+                str(device.get("provisioning_state", "")),
+                str(device.get("lifecycle_state", "active")),
+                str(device.get("owner_display_name") or "Unassigned"),
+                _format_location(device.get("installation")),
+            )
+        )
+    widths = [max(len(row[index]) for row in rows) for index in range(len(headers))]
+    lines = [
+        "  ".join(cell.ljust(widths[index]) for index, cell in enumerate(row))
+        for row in rows
+    ]
+    return "\n".join(lines)
+
+
 def set_desired(args: argparse.Namespace, base_url: str, admin_token: str) -> Any:
     current = get_node(base_url, args.ca, admin_token, args.node_id)
     desired = current.get("desired")
@@ -203,17 +245,12 @@ def main() -> int:
     base_url, admin_token = validate_hub_connection(args, parser)
     try:
         if args.command == "list":
-            nodes = request_json(base_url, args.ca, admin_token, "GET", "/api/v1/nodes")
-            if not isinstance(nodes, list) or not all(
-                isinstance(node, dict) and "node_id" in node for node in nodes
+            devices = request_json(base_url, args.ca, admin_token, "GET", "/api/v1/devices")
+            if not isinstance(devices, list) or not all(
+                isinstance(device, dict) and "node_id" in device for device in devices
             ):
-                raise HubAdminError("hub returned an invalid node list")
-            for node in nodes:
-                print(
-                    f"{node['node_id']}\t{node['node_type']}\t"
-                    f"{node.get('lifecycle_state', 'active')}\t"
-                    f"{node.get('availability', 'unknown')}"
-                )
+                raise HubAdminError("hub returned an invalid device list")
+            print(format_device_list(devices))
             return 0
         if args.command == "show":
             result = get_node(base_url, args.ca, admin_token, args.node_id)

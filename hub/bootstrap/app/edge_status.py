@@ -60,7 +60,9 @@ def https_status(host: str, port: int, path: str, server_hostname: str) -> int |
     try:
         context = ssl.create_default_context(cafile=settings.opa_ca_file)
         with (
-            socket.create_connection((host, port), timeout=settings.edge_probe_timeout_s) as raw,
+            socket.create_connection(
+                (host, port), timeout=settings.edge_probe_timeout_s
+            ) as raw,
             context.wrap_socket(raw, server_hostname=server_hostname) as tls,
         ):
             tls.settimeout(settings.edge_probe_timeout_s)
@@ -91,7 +93,12 @@ def _nginx_status() -> int | None:
 
 
 def _web_status() -> str:
-    code = https_status(settings.web_probe_host, settings.web_probe_port, "/health", settings.web_probe_host)
+    code = https_status(
+        settings.web_probe_host,
+        settings.web_probe_port,
+        "/health",
+        settings.web_probe_host,
+    )
     return "online" if code == 200 else "offline"
 
 
@@ -137,7 +144,12 @@ def detail(component: str) -> dict | None:
             "http_status": code,
         }
     if component == "web":
-        code = https_status(settings.web_probe_host, settings.web_probe_port, "/health", settings.web_probe_host)
+        code = https_status(
+            settings.web_probe_host,
+            settings.web_probe_port,
+            "/health",
+            settings.web_probe_host,
+        )
         return {
             "service": "Web",
             "status": "online" if code == 200 else "offline",

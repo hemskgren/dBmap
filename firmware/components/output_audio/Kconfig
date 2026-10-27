@@ -1,0 +1,23 @@
+menu "dBmap Output audio (MAX98357 + MP3)"
+
+config DBMAP_AUDIO_I2S_BCLK_GPIO
+    int "MAX98357 BCLK GPIO"
+    range 0 39
+    default 26
+
+config DBMAP_AUDIO_I2S_WS_GPIO
+    int "MAX98357 LRC / WS GPIO"
+    range 0 39
+    default 25
+
+config DBMAP_AUDIO_I2S_DOUT_GPIO
+    int "MAX98357 DIN GPIO (I2S DOUT)"
+    range 0 39
+    default 22
+
+config DBMAP_AUDIO_SD_MODE_GPIO
+    int "MAX98357 SD_MODE GPIO (-1 = leave floating / always on)"
+    range -1 39
+    default -1
+
+endmenu

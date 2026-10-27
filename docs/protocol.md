@@ -165,16 +165,19 @@ the device does not report that flag. These messages are not wrapped in the
 version-1 observation envelope.
 
 The Output command contract is not yet implemented as a stable, versioned
-schema. The current firmware supports a pilot relay subset. Commands carry
+schema. The current firmware supports a pilot relay and audio subset. Commands carry
 `protocol_version: 1`. A command that omits `protocol_version`, or includes
-any other value, is logged and ignored: the firmware does not drive GPIO and
+any other value, is logged and ignored: the firmware does not drive GPIO/audio and
 does not publish an acknowledgement.
 `RELAY_1_ON` needs an integer `duration_s` from 1
 through 3600, drives GPIO16 high for that many seconds, and blinks the onboard
 GPIO2 LED during the interval. `RELAY_1_OFF` switches both outputs off
-immediately. The firmware logs the received JSON and publishes the action
+immediately. `AUDIO_PLAY_HTTPS` needs an `https://` `url` and starts Helix MP3
+streaming to the MAX98357. `AUDIO_PLAY_FILE` needs a `path` under the LittleFS
+`/media` mount (relative name or `/media/...`). `AUDIO_STOP` stops playback.
+The firmware logs the received JSON and publishes the action
 result to the acknowledgement and status topics. Commands without a supported
-action or valid duration are rejected. GPIO16 is assumed active-high; verify
+action or valid fields are rejected. GPIO16 is assumed active-high; verify
 the relay module's electrical polarity before connecting it. The optional
 `message_type: "output-test"` field selects a short double-pulse GPIO2 pattern
 for testing. A missing field or any other value uses the standard alert blink
@@ -271,14 +274,16 @@ The hub stores desired state and reported state separately.
 | `classifier_version` | Desired or reported classifier revision. |
 | `payload` | Extension object for desired or reported data. |
 
-An administrator updates desired state with
-`PUT /api/v1/nodes/{node_id}/desired`; node APIs return both `desired` and
-`reported` state and calculate `pending_configuration_change` by comparing
-the version fields. Nodes currently report versions in their periodic
-messages. Desired configuration is stored by the hub but is not yet delivered
-over MQTT, and firmware does not yet apply or acknowledge configuration
-revisions. That synchronization behavior must be defined before configuration
-delivery is treated as operational.
+An administrator updates desired configuration/version fields with
+`PUT /api/v1/nodes/{node_id}/desired` (not `firmware_id`). Changing Desired
+firmware for OTA uses `POST /api/v1/nodes/{node_id}/firmware-selection`, which
+sets both `firmware_id` and `firmware_version` from a catalog entry. Node APIs
+return both `desired` and `reported` state and calculate
+`pending_configuration_change` by comparing the version fields. Nodes currently
+report versions in their periodic messages. Desired configuration is stored by
+the hub but is not yet delivered over MQTT, and firmware does not yet apply or
+acknowledge configuration revisions. That synchronization behavior must be
+defined before configuration delivery is treated as operational.
 
 ## Hub API surface
 
@@ -290,10 +295,11 @@ The current relevant HTTPS API endpoints are:
 | `GET /api/v1/devices` | Read basic device status and installation summaries. | Admin or viewer access token |
 | `POST /api/v1/nodes` | Create a node and issue its one-time bootstrap token. | Admin bearer token |
 | `POST /api/v1/provision` | Consume the bootstrap token and issue per-node MQTT credentials, topics, and a one-time device API token. Ordinary calls require `provisioning_state=pending`. | One-time bootstrap token |
-| `GET /api/v1/device/desired-firmware` | Read the authenticated device's Desired firmware id and version. ESP-Output calls this at boot and every 10 minutes and logs a match or a mismatch. It does not download firmware. | Device API token. Not OPA. |
+| `GET /api/v1/device/desired-firmware` | Read the authenticated device's Desired firmware id, version, and `esp-output.bin` SHA-256/size when the Desired catalog entry exists and its metadata version matches Desired `firmware_version` (candidates allowed when they are the Desired id). If id and version disagree, id/version are still returned but SHA/size are empty so the device will not OTA. ESP-Output calls this at boot and every 60 minutes. On version mismatch with a non-empty id, SHA, and size it starts one OTA attempt and aborts without switching slots if the downloaded app descriptor version differs from Desired. | Device API token. Not OPA. |
+| `GET /api/v1/device/ota-image` | Download `esp-output.bin` for the authenticated node's current Desired firmware only. No firmware id in the path or query. Rejects when Desired `firmware_version` does not match the catalog entry for `firmware_id`, and rejects images larger than the Output OTA slot (`0x1C0000`). Response includes `X-Content-SHA256`. | Device API token. Not OPA. |
 | `GET /api/v1/nodes` | List nodes with full identity and desired/reported state. | Admin bearer token |
 | `GET /api/v1/nodes/{node_id}` | Read one node's identity and desired/reported state. | Admin or viewer bearer token |
-| `PUT /api/v1/nodes/{node_id}/desired` | Replace desired configuration/version fields. | Admin bearer token |
+| `PUT /api/v1/nodes/{node_id}/desired` | Replace desired configuration/version fields. Does not change `firmware_id`. When `firmware_id` is set, rejects a `firmware_version` that does not match that catalog entry. Use `POST /api/v1/nodes/{node_id}/firmware-selection` to change Desired firmware for OTA. | Admin bearer token |
 | `PUT /api/v1/nodes/{node_id}/installation` | Store mandatory WGS84 latitude/longitude and optional placement metadata. | Admin bearer token |
 | `GET /api/v1/observations` | Read persisted observations, optionally filtered by `node_id`. | Admin or viewer bearer token |
 
