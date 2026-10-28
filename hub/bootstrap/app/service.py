@@ -57,6 +57,12 @@ class DuplicateRegistration(Exception):
         self.node_id = node_id
 
 
+class DuplicateChipMac(Exception):
+    def __init__(self, node_id: str, chip_mac: str) -> None:
+        self.node_id = node_id
+        self.chip_mac = chip_mac
+
+
 class OutputCommandUnavailable(ValueError):
     """Raised when an Output command cannot be accepted or published."""
 
@@ -108,6 +114,18 @@ def create_node(
         if previous is not None:
             raise DuplicateRegistration(previous.node_id)
 
+    if body.chip_mac is not None:
+        existing_mac = db.scalars(
+            select(Node).where(Node.chip_mac == body.chip_mac)
+        ).first()
+        if existing_mac is not None:
+            if not body.replace_existing_chip_mac:
+                raise DuplicateChipMac(existing_mac.node_id, body.chip_mac)
+            existing_mac.chip_mac = None
+            if body.chip_variant:
+                # Keep historical variant text on the prior node; new node gets the current reading.
+                pass
+
     seq = _next_sequence(db, body.node_type, body.simulated)
     node_id = allocate_node_id(body.node_type, seq, body.simulated)
     while db.get(Node, node_id) is not None:
@@ -118,6 +136,8 @@ def create_node(
         node_id=node_id,
         node_type=body.node_type,
         hardware_revision=body.hardware_revision,
+        chip_mac=body.chip_mac,
+        chip_variant=body.chip_variant,
         provisioning_state="pending",
         availability="SERVICE",
     )
@@ -145,6 +165,12 @@ def create_node(
             previous = db.get(RegistrationRequest, idempotency_key)
             if previous is not None:
                 raise DuplicateRegistration(previous.node_id) from exc
+        if body.chip_mac is not None:
+            conflict = db.scalars(
+                select(Node).where(Node.chip_mac == body.chip_mac)
+            ).first()
+            if conflict is not None:
+                raise DuplicateChipMac(conflict.node_id, body.chip_mac) from exc
         raise
     return CreateNodeResponse(
         node_id=node_id, bootstrap_token=token, provisioning_state="pending"
@@ -409,6 +435,18 @@ def get_node(db: Session, node_id: str) -> NodeView:
     node = db.get(Node, node_id.upper())
     if node is None:
         raise KeyError(node_id)
+    return node_view(db, node, include_monitoring=True)
+
+
+def get_node_by_chip_mac(db: Session, chip_mac: str) -> NodeView:
+    from app.schemas import normalize_chip_mac
+
+    normalized = normalize_chip_mac(chip_mac)
+    if normalized is None:
+        raise KeyError(chip_mac)
+    node = db.scalars(select(Node).where(Node.chip_mac == normalized)).first()
+    if node is None:
+        raise KeyError(chip_mac)
     return node_view(db, node, include_monitoring=True)
 
 
@@ -709,6 +747,8 @@ def node_view(
         node_id=node.node_id,
         node_type=node.node_type,
         hardware_revision=node.hardware_revision,
+        chip_mac=node.chip_mac,
+        chip_variant=node.chip_variant,
         provisioning_state=node.provisioning_state,
         lifecycle_state=node.lifecycle_state,
         availability=node.availability,

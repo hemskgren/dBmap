@@ -10,6 +10,7 @@
 #include "esp_timer.h"
 #include "dbmap_nvs.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -190,6 +191,12 @@ esp_err_t dbmap_serial_config_wait(dbmap_effective_t *cfg, int timeout_seconds)
         }
         *cfg = candidate;
         result(request_id, "accepted", "");
+        /* Let the accepted result flush over USB, then reboot so Wi-Fi / Hub
+         * call-home always starts from the new NVS configuration. */
+        ESP_LOGI(TAG, "USB configuration accepted; restarting");
+        fflush(stdout);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_restart();
         return ESP_OK;
     }
     return ESP_FAIL;

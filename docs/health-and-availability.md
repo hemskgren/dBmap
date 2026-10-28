@@ -30,7 +30,7 @@ Every `DBMAP_HUB_MONITOR_INTERVAL_S` seconds (default **60**), a background thre
 3. Stores one compact Hub sample in SQLite.
 4. Records events only on state transitions, monitoring gaps, and detected restarts.
 5. Samples **device** connectivity from `last_seen` (transition-sparse).
-6. Periodically deletes monitor rows older than retention (default **90** days, configurable **30–90**).
+6. Periodically deletes monitor rows older than retention (default **30** days for Hub samples, configurable **30–90**).
 
 The monitor runs inside the existing `hub-bootstrap` container. It does not add containers, databases, or external services.
 
@@ -178,7 +178,7 @@ The Hub tab and `scripts/hub_summary.py` both use those shared calculations. The
 | --- | --- | --- |
 | `DBMAP_HUB_MONITOR_ENABLED` | `true` | Set `false` to disable the background thread |
 | `DBMAP_HUB_MONITOR_INTERVAL_S` | `60` | Sample interval in seconds |
-| `DBMAP_HUB_MONITOR_RETENTION_DAYS` | `90` | Clamped to 30–90 |
+| `DBMAP_HUB_MONITOR_RETENTION_DAYS` | `30` | Clamped to 30–90; raise via env if longer Hub sample history is needed |
 
 ## Limitations (Hub)
 
