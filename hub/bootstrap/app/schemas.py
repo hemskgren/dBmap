@@ -397,6 +397,7 @@ class NodeView(BaseModel):
     owner_type: Literal["user", "group"] | None = None
     owner_id: str | None = None
     owner_display_name: str | None = None
+    monitoring: dict[str, Any] | None = None
 
 
 class DeviceSummaryView(BaseModel):

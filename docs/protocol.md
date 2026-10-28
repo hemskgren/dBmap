@@ -10,11 +10,12 @@ The current observation message protocol is version 1. The fields
 `protocol_version` and `message_type` are required on observations. The hub
 rejects unsupported versions and message types.
 
-Output `hello`, command, and acknowledgement messages carry
-`protocol_version: 1`. Hello uses that field alone. Health and keepalive
-keep the unversioned state payload. These messages are separate from the
-observation envelope. The hub accepts hello, health, and keepalive with or
-without `protocol_version` and stores the reported state either way.
+Output `hello`, `health`, `keepalive`, command, and acknowledgement messages
+carry `protocol_version: 1`. Health and keepalive may also include an optional
+`diag` object (D1). These messages are separate from the observation envelope.
+The hub accepts hello, health, and keepalive with or without `protocol_version`
+and stores the reported state either way. Unknown optional fields (including
+`diag`) are preserved in reported payload JSON and ignored by older Hub logic.
 
 Incompatible changes require a new protocol version. Receivers must reject
 unknown versions rather than silently interpreting them as version 1.
@@ -155,14 +156,47 @@ remain unimplemented.
 ### Existing Output and state messages
 
 The current ESP-Output sends JSON state on `hello`, `health`, and
-`keepalive`, including `node_id`, `firmware_version`, `hardware_revision`,
-`config_version`, `calibration_version`, `classifier_version`, `uptime_s`,
-and the optional `wifi_rssi_dbm` signal level. Hello also includes
-`protocol_version: 1`. Health and keepalive use the same state fields
-without that version field. The Hub derives
-`pending_configuration_change` by comparing reported state with desired state;
-the device does not report that flag. These messages are not wrapped in the
-version-1 observation envelope.
+`keepalive`, including `protocol_version: 1`, `node_id`, `firmware_version`,
+`hardware_revision`, `config_version`, `calibration_version`,
+`classifier_version`, `uptime_s`, and the optional `wifi_rssi_dbm` signal
+level. Health and keepalive may also include an optional compact `diag`
+object when RAM diagnostics have something to report (for example
+`wifi_disconnects`, `mqtt_disconnects`, `mqtt_reconnects`,
+`mqtt_connect_attempts`, `mqtt_connect_failures`, `desired_failures`,
+and a one-shot `last_reset_reason` after boot). Hello stays lean and omits
+`diag`. Counters are RAM-only and clear on reboot; they are not written to
+NVS. The Hub derives counter deltas from the last retained diag snapshot so
+a hello that omits `diag` does not re-count cumulative totals. The Hub
+derives `pending_configuration_change` by comparing reported state with
+desired state; the device does not report that flag. These messages are not
+wrapped in the version-1 observation envelope.
+
+MQTT and Wi-Fi reconnect use independent exponential backoff in
+`node_common` (`dbmap_backoff`); see [Health and availability](./health-and-availability.md).
+
+Diagnostic defaults (enable flag, RSSI degraded threshold, counter saturate)
+ship as firmware/Kconfig defaults. A future Desired configuration sync can
+override them via `payload.diag` while bumping `config_version` (the revision
+counter). Example Desired body:
+
+```json
+{
+  "firmware_version": "0.1.20",
+  "config_version": 3,
+  "calibration_version": 0,
+  "classifier_version": "",
+  "payload": {
+    "diag": {
+      "enabled": true,
+      "rssi_degraded_dbm": -80,
+      "counter_saturate": 999
+    }
+  }
+}
+```
+
+Until configuration sync is implemented on-device, only Kconfig defaults apply.
+`dbmap_diag_apply_desired_payload()` is the merge hook for that future path.
 
 The Output command contract is not yet implemented as a stable, versioned
 schema. The current firmware supports a pilot relay and audio subset. Commands carry
@@ -214,6 +248,59 @@ expired commands. The pilot acknowledgement and status payload looks like:
 Command, acknowledgement, and status payloads do not yet have a stable,
 versioned schema. An acknowledgement reports that the firmware issued GPIO
 operations; it does not independently confirm the relay's physical state.
+
+### OTA update status (Output)
+
+After a successful OTA image install (boot slot switched, before reboot), the
+device publishes a QoS 1 `status` message and waits up to 5 seconds for MQTT
+PUBACK. Missing MQTT or PUBACK timeout must not block the reboot. A minimal
+pending record (previous version, target version, firmware id) is written once
+to NVS so the outcome can be reported after boot if the pre-reboot publish was
+lost. After the install report, firmware enters **OTA reboot pending**: Wi-Fi/MQTT
+reconnects are frozen, expected teardown is not counted as a connectivity
+incident, optional quick MQTT disconnect runs for at most 500 ms, then reboot.
+
+```json
+{
+  "protocol_version": 1,
+  "message_type": "ota_update",
+  "event": "install_succeeded",
+  "ota_phase": "installed_pending_reboot",
+  "reboot_reason": "ota",
+  "node_id": "OUT-011",
+  "firmware_version": "0.1.4",
+  "previous_firmware_version": "0.1.4",
+  "target_firmware_version": "0.1.5",
+  "firmware_id": "…"
+}
+```
+
+`firmware_version` here is still the **running** (old) image. `reboot_reason`
+is `ota` and is distinct from diag `last_reset_reason` (for example `SW` after
+`esp_restart`). A software reset alone does not prove the reboot was OTA.
+
+After reboot, once MQTT is up and a pending-verify image is marked valid, the
+device publishes:
+
+```json
+{
+  "protocol_version": 1,
+  "message_type": "ota_update",
+  "event": "boot_confirmed",
+  "ota_phase": "boot_confirmed",
+  "reboot_reason": "ota",
+  "firmware_version": "0.1.5",
+  "previous_firmware_version": "0.1.4",
+  "target_firmware_version": "0.1.5"
+}
+```
+
+Normal `hello` / `health` / `keepalive` continue to report the actual running
+`firmware_version`. The Hub records `ota_install_reported` when the pre-reboot
+status arrives, keeps a pending transition, and confirms with
+`ota_boot_confirmed` when either the boot status or a later hello/health shows
+the target version. Installed-pending-reboot is not the same as a confirmed
+boot into the new image.
 
 ## Delivery and timing
 
@@ -306,7 +393,7 @@ The current relevant HTTPS API endpoints are:
 The local web UI accepts an admin or viewer bearer token. Viewer access is
 limited to session, Hub status, device summaries, device details, and
 observations; it does not include node list or write actions. Device status
-is derived from the most recent Hub keepalive: online within 90 seconds,
+is derived from the most recent Hub keepalive: online within `DBMAP_DEVICE_ONLINE_WINDOW_S` (default 90 seconds),
 otherwise offline. See the [local deployment guide](./local-deployment.md)
 for configuring the two local tokens.
 

@@ -21,9 +21,11 @@ from sqlalchemy.orm import Session
 from app import (
     container_logs,
     deployment_service,
+    device_monitor,
     edge_status,
     firmware_catalog,
     group_service,
+    hub_monitor,
     identity_service,
     ownership_service,
     policy,
@@ -852,7 +854,20 @@ def get_hub_status(db: Session = Depends(get_db)) -> dict:
                 default=None,
             ),
         },
+        "monitoring": hub_monitor.monitoring_status(db),
     }
+
+
+@router.get(
+    "/api/v1/hub/monitoring/events",
+    dependencies=[Depends(require_policy("hub.status.read", "hub"))],
+)
+def get_hub_monitoring_events(
+    limit: int = Query(default=15, ge=1, le=50),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Newest Hub monitoring events; fetched on demand from the Hub tab."""
+    return hub_monitor.list_recent_events(db, limit=limit)
 
 
 @router.get(
@@ -1030,6 +1045,22 @@ def get_node(node_id: str, db: Session = Depends(get_db)) -> NodeView:
         return service.get_node(db, node_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown node") from None
+
+
+@router.get(
+    "/api/v1/nodes/{node_id}/monitoring/events",
+    dependencies=[Depends(require_policy("nodes.read_detail", "nodes"))],
+)
+def get_node_monitoring_events(
+    node_id: str,
+    limit: int = Query(default=15, ge=1, le=50),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Newest Hub-observed device monitoring events for one node."""
+    node = db.get(Node, node_id.upper())
+    if node is None:
+        raise HTTPException(status_code=404, detail="unknown node")
+    return device_monitor.list_recent_events(db, node.node_id, limit=limit)
 
 
 @router.post(

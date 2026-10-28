@@ -99,7 +99,7 @@ def _on_connect(
     client.subscribe("esp-output/local/+/hello", qos=1)
     client.subscribe("esp-output/local/+/keepalive", qos=0)
     client.subscribe("esp-output/local/+/health", qos=0)
-    client.subscribe("esp-output/local/+/status", qos=0)
+    client.subscribe("esp-output/local/+/status", qos=1)
     client.subscribe("esp-ear/local/+/hello", qos=1)
     client.subscribe("esp-ear/local/+/keepalive", qos=0)
     client.subscribe("esp-ear/local/+/health", qos=0)

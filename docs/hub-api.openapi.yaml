@@ -1520,7 +1520,7 @@ paths:
         - bearerAuth: []
   /api/v1/hub/status:
     get:
-      summary: "Hub mode, addresses, and summary"
+      summary: "Hub mode, addresses, summary, and monitoring"
       operationId: getHubStatus
       responses:
         "200":
@@ -1529,6 +1529,51 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HubStatus"
+        "401":
+          description: Missing or invalid local bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "403":
+          description: "Authenticated, but OPA denied the action."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "503":
+          description: "OPA, MQTT, or the Docker engine is unavailable."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+      tags:
+        - Hub
+      description: "Includes current Hub health, historical availability windows, last state change, and observation gaps. Recent monitoring events are loaded separately from GET /api/v1/hub/monitoring/events. See docs/health-and-availability.md."
+      security:
+        - bearerAuth: []
+  /api/v1/hub/monitoring/events:
+    get:
+      summary: Recent Hub monitoring events
+      description: Newest Hub health and availability events. Intended for on-demand UI expansion; default limit is 15.
+      operationId: getHubMonitoringEvents
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            maximum: 50
+            minimum: 1
+            default: 15
+            title: Limit
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubMonitoringEvents"
         "401":
           description: Missing or invalid local bearer token.
           content:
@@ -1641,7 +1686,7 @@ paths:
                 $ref: "#/components/schemas/ErrorMessage"
       tags:
         - Hub
-      description: Returns the last 10 lines for an allowlisted Compose service. Admin only.
+      description: Returns the last 10 lines for an allowlisted Compose service. Available to local admin and viewer tokens.
       security:
         - bearerAuth: []
   /api/v1/nodes:
@@ -1784,6 +1829,57 @@ paths:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
           description: "OPA, MQTT, or the Docker engine is unavailable."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+      tags:
+        - Nodes
+      security:
+        - bearerAuth: []
+  "/api/v1/nodes/{node_id}/monitoring/events":
+    get:
+      summary: List recent device monitoring events
+      description: Hub-observed connectivity events for one node. See docs/health-and-availability.md.
+      operationId: getNodeMonitoringEvents
+      parameters:
+        - name: node_id
+          in: path
+          required: true
+          schema:
+            type: string
+            title: Node Id
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 15
+            title: Limit
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          description: Missing or invalid local bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "403":
+          description: "Authenticated, but OPA denied the action."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "404":
+          description: The requested resource was not found.
           content:
             application/json:
               schema:
@@ -3234,6 +3330,12 @@ components:
           title: Owner Display Name
           type: string
           nullable: true
+        monitoring:
+          title: Monitoring
+          description: Hub-observed device availability (D0). Present on detail reads only.
+          additionalProperties: true
+          type: object
+          nullable: true
       type: object
       required:
         - node_id
@@ -4013,6 +4115,190 @@ components:
           type: string
           format: date-time
           nullable: true
+    HubMonitoringComponent:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        state:
+          type: string
+        last_success_at:
+          type: string
+          format: date-time
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+        docker:
+          type: object
+          additionalProperties: true
+          nullable: true
+    HubAvailabilityWindow:
+      type: object
+      properties:
+        percent:
+          type: number
+          nullable: true
+        state_summary:
+          type: string
+        eligible_seconds:
+          type: integer
+        available_seconds:
+          type: integer
+        unavailable_seconds:
+          type: integer
+        unobserved_seconds:
+          type: integer
+        sample_count:
+          type: integer
+        insufficient_data:
+          type: boolean
+        low_coverage:
+          type: boolean
+        score_ready:
+          type: boolean
+          description: False for multi-day windows until at least half the window has been observed. UIs should not show a bare window percentage until ready.
+        reason:
+          type: string
+          nullable: true
+        basis:
+          type: string
+    HubMonitorEvent:
+      type: object
+      properties:
+        event_id:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        observed_at:
+          type: string
+          format: date-time
+        component:
+          type: string
+        event_type:
+          type: string
+        previous_state:
+          type: string
+          nullable: true
+        new_state:
+          type: string
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+        source:
+          type: string
+        certainty:
+          type: string
+          enum:
+            - confirmed
+            - inferred
+    HubMonitoringEvents:
+      type: object
+      required:
+        - events
+        - limit
+        - count
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/HubMonitorEvent"
+        limit:
+          type: integer
+          example: 15
+        count:
+          type: integer
+    HubMonitoring:
+      type: object
+      description: Local Hub health and availability. See docs/health-and-availability.md.
+      properties:
+        health:
+          type: object
+          properties:
+            state:
+              type: string
+            score:
+              type: integer
+              nullable: true
+            score_definition:
+              type: object
+              additionalProperties: true
+            reason:
+              type: string
+              nullable: true
+              description: Plain-language cause when health is not healthy.
+            components:
+              type: array
+              items:
+                $ref: "#/components/schemas/HubMonitoringComponent"
+            calculated_at:
+              type: string
+              format: date-time
+            notes:
+              type: string
+        availability:
+          type: object
+          description: >
+            Core Hub availability plus independent MQTT/API/Web windows.
+            Firmware Builder is excluded. See docs/health-and-availability.md.
+          properties:
+            current_state:
+              type: string
+            label:
+              type: string
+              example: Core Hub availability
+            definition:
+              type: string
+            windows:
+              type: object
+              additionalProperties:
+                $ref: "#/components/schemas/HubAvailabilityWindow"
+            components:
+              type: object
+              description: Independent MQTT, API, and Web availability windows.
+              additionalProperties:
+                type: object
+                properties:
+                  label:
+                    type: string
+                  windows:
+                    type: object
+                    additionalProperties:
+                      $ref: "#/components/schemas/HubAvailabilityWindow"
+            insufficient_data:
+              type: boolean
+            gaps:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            retention_days:
+              type: integer
+            interval_seconds:
+              type: number
+            notes:
+              type: string
+        last_checks:
+          type: object
+          additionalProperties: true
+        last_state_change:
+          type: object
+          additionalProperties: true
+          nullable: true
+        recent_events:
+          type: array
+          items:
+            $ref: "#/components/schemas/HubMonitorEvent"
+          description: Empty on status responses; use GET /api/v1/hub/monitoring/events.
+        events_endpoint:
+          type: string
+          example: /api/v1/hub/monitoring/events
+        sample_count:
+          type: integer
     HubStatus:
       type: object
       required:
@@ -4021,6 +4307,7 @@ components:
         - addresses
         - components
         - summary
+        - monitoring
       properties:
         mode:
           type: string
@@ -4035,6 +4322,8 @@ components:
             $ref: "#/components/schemas/HubComponent"
         summary:
           $ref: "#/components/schemas/HubSummary"
+        monitoring:
+          $ref: "#/components/schemas/HubMonitoring"
     HubComponentDetails:
       type: object
       additionalProperties: true

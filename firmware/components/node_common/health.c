@@ -3,14 +3,16 @@
 #include <stdlib.h>
 
 #include "cJSON.h"
+#include "dbmap_diag.h"
 #include "dbmap_mqtt.h"
 #include "dbmap_wifi.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
 
-static cJSON *build_state(const dbmap_effective_t *cfg)
+static cJSON *build_state(const dbmap_effective_t *cfg, bool include_diag)
 {
     cJSON *o = cJSON_CreateObject();
+    cJSON_AddNumberToObject(o, "protocol_version", 1);
     cJSON_AddStringToObject(o, "node_id", cfg->identity.node_id[0] ? cfg->identity.node_id : "UNPROVISIONED");
     cJSON_AddStringToObject(o, "firmware_version", CONFIG_DBMAP_FIRMWARE_VERSION);
     cJSON_AddStringToObject(o, "hardware_revision", cfg->identity.hardware_revision);
@@ -22,21 +24,16 @@ static cJSON *build_state(const dbmap_effective_t *cfg)
     if (dbmap_wifi_get_rssi(&rssi_dbm) == ESP_OK) {
         cJSON_AddNumberToObject(o, "wifi_rssi_dbm", rssi_dbm);
     }
+    if (include_diag) {
+        dbmap_diag_attach_json(o);
+    }
     return o;
-}
-
-static char *build_keepalive(const dbmap_effective_t *cfg)
-{
-    cJSON *o = build_state(cfg);
-    char *s = cJSON_PrintUnformatted(o);
-    cJSON_Delete(o);
-    return s;
 }
 
 esp_err_t dbmap_publish_hello(const dbmap_effective_t *cfg)
 {
-    cJSON *o = build_state(cfg);
-    cJSON_AddNumberToObject(o, "protocol_version", 1);
+    /* Hello stays lean: identity/state only (no rolling diag counters). */
+    cJSON *o = build_state(cfg, false);
     char *json = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     esp_err_t err = dbmap_mqtt_publish_json(cfg->topics.hello, json, 1);
@@ -46,9 +43,18 @@ esp_err_t dbmap_publish_hello(const dbmap_effective_t *cfg)
 
 esp_err_t dbmap_publish_health(const dbmap_effective_t *cfg)
 {
-    char *json = build_keepalive(cfg);
+    cJSON *o = build_state(cfg, true);
+    char *json = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
     esp_err_t err = dbmap_mqtt_publish_json(cfg->topics.health, json, 0);
-    dbmap_mqtt_publish_json(cfg->topics.keepalive, json, 0);
+    if (err == ESP_OK) {
+        /* Same payload on keepalive; clear oneshots only after a successful publish. */
+        (void)dbmap_mqtt_publish_json(cfg->topics.keepalive, json, 0);
+        dbmap_diag_clear_oneshots();
+    } else {
+        /* Keep counters/oneshots if MQTT is down; send on the next successful publish. */
+        (void)dbmap_mqtt_publish_json(cfg->topics.keepalive, json, 0);
+    }
     free(json);
     return err;
 }

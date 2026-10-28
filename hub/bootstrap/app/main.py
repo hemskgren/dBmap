@@ -1,8 +1,11 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from app.api import router
 from app.config import settings
 from app.db import init_db
+from app.hub_monitor import start_monitor_thread
 from app.logging_config import configure_logging
 from app.mqtt_listener import start_mqtt_thread
 from app.mqtt_security import ensure_broker_security
@@ -26,13 +29,23 @@ def _validate_security_settings() -> None:
         raise RuntimeError("device MQTT connections must use TLS")
 
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Start after import/create_app so unit tests can disable the monitor first.
+    # MQTT may already be running; the monitor tolerates MQTT being down.
+    start_monitor_thread()
+    yield
+
+
 def create_app() -> FastAPI:
     init_db()
     if settings.mqtt_enabled:
         _validate_security_settings()
         ensure_broker_security()
         start_mqtt_thread()
-    app = FastAPI(title="dBmap hub-bootstrap", version="0.1.0")
+    app = FastAPI(
+        title="dBmap hub-bootstrap", version="0.1.0", lifespan=_lifespan
+    )
     app.include_router(router)
     return app
 

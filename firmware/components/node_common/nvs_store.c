@@ -114,3 +114,69 @@ esp_err_t dbmap_nvs_save_bootstrap_token(const char *token)
     nvs_close(h);
     return err;
 }
+
+esp_err_t dbmap_nvs_ota_pending_save(const dbmap_ota_pending_t *pending)
+{
+    if (pending == NULL || !pending->pending) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    nvs_handle_t h;
+    esp_err_t err = nvs_open("ota", NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_str(h, "prev", pending->previous_version);
+    if (err == ESP_OK) {
+        err = nvs_set_str(h, "tgt", pending->target_version);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_str(h, "fid", pending->firmware_id);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u8(h, "pend", 1);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err;
+}
+
+esp_err_t dbmap_nvs_ota_pending_load(dbmap_ota_pending_t *out)
+{
+    if (out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(out, 0, sizeof(*out));
+    nvs_handle_t h;
+    if (nvs_open("ota", NVS_READONLY, &h) != ESP_OK) {
+        return ESP_OK;
+    }
+    uint8_t pend = 0;
+    if (nvs_get_u8(h, "pend", &pend) != ESP_OK || pend == 0) {
+        nvs_close(h);
+        return ESP_OK;
+    }
+    get_str(h, "prev", out->previous_version, sizeof(out->previous_version));
+    get_str(h, "tgt", out->target_version, sizeof(out->target_version));
+    get_str(h, "fid", out->firmware_id, sizeof(out->firmware_id));
+    nvs_close(h);
+    out->pending = out->previous_version[0] != '\0' && out->target_version[0] != '\0';
+    return ESP_OK;
+}
+
+esp_err_t dbmap_nvs_ota_pending_clear(void)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open("ota", NVS_READWRITE, &h);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        return ESP_OK;
+    }
+    if (err != ESP_OK) {
+        return err;
+    }
+    nvs_erase_all(h);
+    err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}

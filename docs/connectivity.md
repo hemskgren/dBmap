@@ -53,7 +53,7 @@ flowchart LR
 | 4 | `nginx` | `hub-bootstrap:8443` | The same API request. |
 | 5 | `hub-bootstrap` | local token check | Compares the bearer token with the admin or viewer secret. This step does not call OPA. |
 | 6 | `hub-bootstrap` | `opa:8181` | `POST /v1/data/dbmap/authz/allow`. Missing or non-boolean decisions fail the request with HTTP 503. |
-| 7 | `hub-bootstrap` | SQLite file | Reads the node, reported state, installation, and ownership. Online means a keepalive arrived within the last 90 seconds. |
+| 7 | `hub-bootstrap` | SQLite file | Reads the node, reported state, installation, and ownership. Online means a keepalive arrived within `DBMAP_DEVICE_ONLINE_WINDOW_S` (default 90 seconds). |
 
 Hub overview **Details** uses the same browser → Nginx → `hub-bootstrap` → OPA → SQLite path, because `GET /api/v1/hub/components/{component}/details` is a protected API call. The extra hop depends on the component:
 
@@ -65,9 +65,9 @@ Hub overview **Details** uses the same browser → Nginx → `hub-bootstrap` →
 | MQTT broker | Returns `$SYS` metrics already collected on the Hub's existing MQTT session. No new connection. |
 | Nginx | `GET /health` through the Compose name `nginx`, with TLS server name `hub.local`. |
 | Web | `GET https://dbmap-web/health`, a short response. The probe reads that response to completion. |
-| Firmware builder | `GET https://firmware-builder:8443/health`. No answer means the optional profile is not running. |
+| Firmware builder | `GET https://firmware-builder:8443/health`. No answer means the optional profile is not running. Admin Components/details only — excluded from Health and Availability scoring. |
 
-An administrator can also open **Logs** on a container component. `hub-bootstrap` reads the latest 10 lines from the local Docker engine for that Compose service. The database is not a container, so it has no log button. Viewer tokens can read component status and details, and cannot read container logs.
+Administrators and viewers can also open **Logs** on a container component. `hub-bootstrap` reads the latest 10 lines from the local Docker engine for that Compose service. The database is not a container, so it has no log button. Viewer tokens can read component status, details, and logs.
 
 CLI tools on the laptop (`curl`, `scripts/hub_summary.py`, `scripts/hub_admin.py`, `scripts/hub_event_track.py`) are the same HTTPS client as the browser: they call Nginx and stop there. They do not open MQTT.
 

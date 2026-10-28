@@ -147,7 +147,7 @@ def test_hub_status_lists_web_nginx_and_firmware_builder(monkeypatch) -> None:
     assert components["MQTT broker"]["id"] == "mosquitto"
 
 
-def test_admin_can_read_component_logs_and_viewer_cannot(monkeypatch) -> None:
+def test_admin_and_viewer_can_read_component_logs(monkeypatch) -> None:
     def fake_tail(component: str) -> dict:
         if component != "web":
             raise container_logs.UnknownComponent(component)
@@ -175,5 +175,6 @@ def test_admin_can_read_component_logs_and_viewer_cannot(monkeypatch) -> None:
 
     assert admin.status_code == 200, admin.text
     assert admin.json()["lines"] == ["GET /"]
-    assert viewer.status_code == 403
+    assert viewer.status_code == 200, viewer.text
+    assert viewer.json()["lines"] == ["GET /"]
     assert missing.status_code == 404

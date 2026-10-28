@@ -19,6 +19,7 @@ allow if {
 		"devices.list_summary",
 		"nodes.read_detail",
 		"hub.status.read",
+		"hub.logs.read",
 		"observations.read",
 		"users.read",
 		"groups.read",

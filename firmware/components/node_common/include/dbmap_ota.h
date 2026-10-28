@@ -15,5 +15,14 @@ esp_err_t dbmap_ota_apply(
     uint32_t app_size_bytes
 );
 
-/* After Wi-Fi + MQTT are up, confirm a pending-verify image so bootloader rollback is cancelled. */
-void dbmap_ota_mark_valid_after_mqtt(void);
+/**
+ * After Wi-Fi + MQTT are up, confirm a pending-verify image so bootloader
+ * rollback is cancelled, then report any pending OTA boot confirmation.
+ */
+void dbmap_ota_mark_valid_after_mqtt(const dbmap_effective_t *cfg);
+
+/**
+ * If NVS has a pending OTA record and MQTT is up, publish boot_confirmed /
+ * boot_mismatch and clear the record. Safe to call repeatedly.
+ */
+void dbmap_ota_report_pending_boot(const dbmap_effective_t *cfg);

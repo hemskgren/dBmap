@@ -1,5 +1,6 @@
 import pytest
 from app import policy
+from app.config import settings
 
 
 def _test_policy(input_data: dict) -> bool:
@@ -15,6 +16,8 @@ def _test_policy(input_data: dict) -> bool:
         "users.read",
         "groups.read",
         "firmware.catalog.read",
+        "hub.status.read",
+        "hub.logs.read",
     }
 
 
@@ -22,3 +25,9 @@ def _test_policy(input_data: dict) -> bool:
 def use_test_policy(monkeypatch: pytest.MonkeyPatch) -> None:
     # API unit tests exercise request enforcement; Rego behavior has its own OPA tests.
     monkeypatch.setattr(policy, "evaluate", _test_policy)
+
+
+@pytest.fixture(autouse=True)
+def disable_hub_monitor_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Keep unit tests deterministic; monitor cycles are exercised explicitly.
+    monkeypatch.setattr(settings, "hub_monitor_enabled", False)
