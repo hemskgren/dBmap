@@ -3656,6 +3656,10 @@ components:
         node_type:
           type: string
           title: Node Type
+        hub_id:
+          type: string
+          title: Hub Id
+          description: Stable Local Hub ID (`DBMAP_HUB_ID`) that issued this provision response. Stored in device NVS for inspect/logs and later multi-Hub association.
         mqtt:
           $ref: "#/components/schemas/MqttEndpoint"
         topics:
@@ -3666,6 +3670,7 @@ components:
       required:
         - node_id
         - node_type
+        - hub_id
         - mqtt
         - topics
         - device_api

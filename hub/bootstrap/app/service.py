@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,7 @@ from app.ids import (
 from app.models import (
     BootstrapToken,
     DesiredState,
+    DeviceOwnership,
     InstallationMetadata,
     Node,
     NodeCredential,
@@ -91,17 +92,55 @@ class DeviceForbidden(Exception):
     pass
 
 
-def _next_sequence(db: Session, node_type: str, simulated: bool = False) -> int:
-    prefix = (
-        "SIM-EAR-%" if simulated else ("OUT-%" if node_type == "output" else "EAR-%")
-    )
-    count = (
+def _node_id_is_taken(db: Session, node_id: str) -> bool:
+    """True when a node id is already used by a node or leftover related rows."""
+    if db.get(Node, node_id) is not None:
+        return True
+    if (
         db.scalar(
-            select(func.count()).select_from(Node).where(Node.node_id.like(prefix))
+            select(RegistrationRequest.node_id).where(
+                RegistrationRequest.node_id == node_id
+            )
         )
-        or 0
-    )
-    return int(count) + 1
+        is not None
+    ):
+        return True
+    if (
+        db.scalar(
+            select(DeviceOwnership.assignment_id)
+            .where(DeviceOwnership.node_id == node_id)
+            .limit(1)
+        )
+        is not None
+    ):
+        return True
+    if (
+        db.scalar(
+            select(BootstrapToken.node_id)
+            .where(BootstrapToken.node_id == node_id)
+            .limit(1)
+        )
+        is not None
+    ):
+        return True
+    if db.get(DesiredState, node_id) is not None:
+        return True
+    if db.get(ReportedState, node_id) is not None:
+        return True
+    return False
+
+
+def _allocate_available_node_id(
+    db: Session, node_type: str, simulated: bool = False
+) -> str:
+    """Pick the next free OUT-/EAR- id, skipping gaps and orphan related rows."""
+    seq = 1
+    while seq < 10000:
+        node_id = allocate_node_id(node_type, seq, simulated)
+        if not _node_id_is_taken(db, node_id):
+            return node_id
+        seq += 1
+    raise RuntimeError("could not allocate a free node id")
 
 
 def create_node(
@@ -126,11 +165,7 @@ def create_node(
                 # Keep historical variant text on the prior node; new node gets the current reading.
                 pass
 
-    seq = _next_sequence(db, body.node_type, body.simulated)
-    node_id = allocate_node_id(body.node_type, seq, body.simulated)
-    while db.get(Node, node_id) is not None:
-        seq += 1
-        node_id = allocate_node_id(body.node_type, seq, body.simulated)
+    node_id = _allocate_available_node_id(db, body.node_type, body.simulated)
 
     node = Node(
         node_id=node_id,
@@ -262,6 +297,7 @@ def provision(db: Session, body: ProvisionRequest) -> ProvisionResponse:
     return ProvisionResponse(
         node_id=node.node_id,
         node_type=node.node_type,
+        hub_id=settings.hub_id,
         mqtt=MqttEndpoint(
             host=(
                 settings.local_mqtt_host

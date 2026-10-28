@@ -169,17 +169,17 @@ Browser registration is USB-first: inspect the chip, configure and flash, then c
 
 The local admin opens **Devices → Device registration** and follows this order:
 
-1. **Inspect USB chip** — Web Serial selects the port; vendored esptool-js syncs the ROM bootloader (same class of protocol ESPConnect uses) and reads Chip Variant plus MAC. A short follow-up listen looks for `DBMAP_DEVICE_ID` from running dBmap firmware when present. Adapter VID/PID is diagnostic only.
+1. **Inspect USB chip** — Web Serial selects the port; vendored esptool-js syncs the ROM bootloader (same class of protocol ESPConnect uses) and reads Chip Variant plus MAC. A short follow-up listen looks for `DBMAP_DEVICE_ID` and `DBMAP_HUB_ID` from running dBmap firmware when present. If the device ID is absent from this Hub, the UI shows this Hub's `hub_id` and any hub ID stored on the device. Adapter VID/PID is diagnostic only.
 2. **Configure** — choose device type, owner, Wi-Fi, call-home route, and an approved firmware release filtered to the detected chip family. If only one generic-compatible release exists, it is selected automatically.
 3. **Flash** — ESP Web Tools installs the catalog image on the inspected port **before** any Hub node is created. Leave **Erase device** unchecked unless you intend to wipe NVS. Retry flash without creating a node.
 4. **Register** — after flash succeeds, create the Hub node with Chip Variant, MAC, owner, and Desired firmware. The one-time bootstrap token is shown once and appears on device details afterward for Chip Variant/MAC.
-5. **Provision** — send Wi-Fi and bootstrap settings over USB. After NVS accepts the write, the firmware reboots (the browser also pulses reset). Hub connectivity stays pending until the device calls home.
+5. **Provision** — send Wi-Fi, this Hub's `hub_id`, and bootstrap settings over USB into NVS. After NVS accepts the write, the firmware reboots. HTTPS call-home then returns `hub_id` again with `node_id` and credentials so NVS stays aligned with the issuing Hub. Hub online verification stays pending until the device calls home.
 
 Existing Chip MAC or `DBMAP_DEVICE_ID` matches reuse the existing device lifecycle instead of creating a duplicate; intentional replacement requires the confirmation checkbox. **USB Logs & Console** remains available; the UI closes it when inspection, flashing, or provisioning needs the port.
 
 **Pending configuration change** is computed by the Hub by comparing Desired vs Reported `firmware_version`, `config_version`, `calibration_version`, and `classifier_version`. Current firmware resolves `*.local` Hub hostnames over mDNS after Wi-Fi is up, so Local Hub call-home can use `https://hub.local:…` when the host publishes that name (see `scripts/publish-hub-mdns.sh`).
 
-In **Firmware → Configure device over USB**, an administrator can update Wi-Fi and the Local/External call-home route. The bootstrap token field is optional; omitting it keeps the token already stored in NVS. The panel shows an NVS write preview (secrets masked) before anything is sent. Provisioned firmware still only opens a short USB configuration window after reset.
+In **Firmware → Configure device over USB**, an administrator can update Wi-Fi and the Local/External call-home route. The write also stores the current Hub `hub_id` when the UI knows it. The bootstrap token field is optional; omitting it keeps the token already stored in NVS. The panel shows an NVS write preview (secrets masked) before anything is sent. Provisioned firmware still only opens a short USB configuration window after reset.
 
 Alternatively, load `.env` and create an Output node using the API:
 

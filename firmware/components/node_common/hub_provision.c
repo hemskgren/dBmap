@@ -100,6 +100,7 @@ esp_err_t dbmap_hub_provision(dbmap_effective_t *cfg)
         return ESP_FAIL;
     }
     const cJSON *node_id = cJSON_GetObjectItem(json, "node_id");
+    const cJSON *hub_id = cJSON_GetObjectItem(json, "hub_id");
     const cJSON *mqtt = cJSON_GetObjectItem(json, "mqtt");
     const cJSON *topics = cJSON_GetObjectItem(json, "topics");
     if (!cJSON_IsString(node_id) || !cJSON_IsObject(mqtt)) {
@@ -113,6 +114,10 @@ esp_err_t dbmap_hub_provision(dbmap_effective_t *cfg)
         return ESP_ERR_INVALID_STATE;
     }
     strncpy(cfg->identity.node_id, node_id->valuestring, sizeof(cfg->identity.node_id) - 1);
+    if (cJSON_IsString(hub_id) && hub_id->valuestring != NULL && hub_id->valuestring[0] != '\0') {
+        strncpy(cfg->identity.hub_id, hub_id->valuestring, sizeof(cfg->identity.hub_id) - 1);
+        cfg->identity.hub_id[sizeof(cfg->identity.hub_id) - 1] = '\0';
+    }
     strncpy(cfg->identity.provisioning_state, "provisioned", sizeof(cfg->identity.provisioning_state) - 1);
 
     const cJSON *host = cJSON_GetObjectItem(mqtt, "host");

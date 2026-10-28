@@ -369,9 +369,9 @@ Documentation that no longer matches the repo is a platform bug: it sends you do
 
 #### P-18 — `hub_id` column on nodes
 
-**Status:** Hub identity is configured `DBMAP_HUB_ID` / status API `hub_id` (default `local-01`). There is still no per-node `hub_id` column; this single Local Hub remains the association boundary.  
+**Status:** Hub identity is configured `DBMAP_HUB_ID` / status API `hub_id` (default `local-01`). Devices now persist that value in NVS and receive it in the provision response; inspect shows device vs this Hub. There is still no per-node `hub_id` column in the Hub DB, and observations do not yet include `hub_id` for local→regional forwarding.  
 **Sources:** S3 §6; `docs/identity-and-operating-modes.md`  
-**This branch:** **later** for a per-node column / multi-Hub association (config + status `hub_id` already in use)  
+**This branch:** **partial** (device NVS + provision/`DBMAP_HUB_ID` boot line); **later** for Hub DB column, observation envelope, multi-Hub association  
 **Reply:** `P-18`
 
 ---

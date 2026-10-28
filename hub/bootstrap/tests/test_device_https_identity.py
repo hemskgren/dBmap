@@ -48,6 +48,7 @@ def _provision(
     assert provisioned.status_code == 200, provisioned.text
     body = provisioned.json()
     assert body["device_api"]["token"]
+    assert body["hub_id"]
     assert provisioned.headers["cache-control"] == "no-store"
     with SessionLocal() as db:
         cred = db.get(NodeCredential, node_id)

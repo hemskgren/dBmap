@@ -648,6 +648,7 @@
       let activeTabName = 'hub';
       let openComponentPanel = '';
       let hubAddresses = null;
+      let currentHubId = '';
       const publicBasePath = document.querySelector('meta[name="dbmap-base-path"]')?.content || '';
       const espconnectLink = document.getElementById('espconnect-link');
       espconnectLink.href = `${publicBasePath}/espconnect/`.replace(/\/{2,}/g, '/');
@@ -1102,6 +1103,7 @@
       function renderHubStatus(status) {
         const summary = status.summary;
         hubAddresses = status.addresses || {};
+        currentHubId = status.hub_id || '';
         document.getElementById('hub-mode').textContent = status.mode || 'Unknown';
         document.getElementById('hub-id').textContent = status.hub_id || 'Not set';
         const addressList = document.getElementById('hub-addresses');
@@ -2294,6 +2296,7 @@
       let inspectedUsbMetadata = null;
       let inspectedChipInfo = null;
       let detectedNodeId = '';
+      let detectedHubId = '';
       let existingRegisteredNode = null;
       let pendingRegistrationKey = sessionStorage.getItem('dbmap-pending-registration-key') || '';
       let registrationFlashInProgress = false;
@@ -2485,6 +2488,7 @@
         confirmNewDeviceLabel.hidden = true;
         if (nodeId) {
           detectedNodeId = nodeId;
+          detectedHubId = currentHubId || detectedHubId;
           const known = allDevices.find((device) => device.node_id === nodeId);
           existingRegisteredNode = known || {
             node_id: nodeId,
@@ -2567,6 +2571,7 @@
         inspectedUsbMetadata = null;
         inspectedChipInfo = null;
         detectedNodeId = '';
+        detectedHubId = '';
         existingRegisteredNode = null;
         registrationFlashSucceeded = false;
         confirmNewDevice.checked = false;
@@ -2605,6 +2610,8 @@
         const reader = port.readable.getReader();
         const decoder = new TextDecoder();
         let output = '';
+        let deviceId = '';
+        let hubId = '';
         const deadline = Date.now() + timeoutMs;
         try {
           while (Date.now() < deadline) {
@@ -2625,8 +2632,21 @@
                 'The board stayed in download/bootloader mode instead of running firmware. Press the physical Reset button and inspect again.',
               );
             }
-            const match = output.match(/DBMAP_DEVICE_ID=([A-Z0-9][A-Z0-9_-]{0,63})(?:\r?\n|$)/);
-            if (match) return match[1];
+            if (!deviceId) {
+              const match = output.match(/DBMAP_DEVICE_ID=([A-Z0-9][A-Z0-9_-]{0,63})(?:\r?\n|$)/);
+              if (match) deviceId = match[1];
+            }
+            if (!hubId) {
+              const hubMatch = output.match(/DBMAP_HUB_ID=([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?:\r?\n|$)/);
+              if (hubMatch) hubId = hubMatch[1];
+            }
+            // DEVICE_ID and HUB_ID are consecutive boot lines; once both are seen, stop.
+            if (deviceId && hubId) {
+              return {
+                deviceId,
+                hubId: hubId === 'UNSET' ? '' : hubId,
+              };
+            }
             output = output.slice(-4096);
           }
         } finally {
@@ -2636,6 +2656,12 @@
             await port.setSignals({ dataTerminalReady: false, requestToSend: false }).catch(() => {});
           }
           await port.close().catch(() => {});
+        }
+        if (deviceId) {
+          return {
+            deviceId,
+            hubId: hubId && hubId !== 'UNSET' ? hubId : '',
+          };
         }
         throw new Error(
           `No dBmap identity was received within ${Math.round(timeoutMs / 1000)} seconds. If the board just left the bootloader, press Reset once and try Inspect again.`,
@@ -2703,14 +2729,22 @@
           addDetailField(usbInspectionDetails, 'MAC address', inspectedChipInfo.macAddress);
           usbInspectionStatus.textContent = 'Chip identified. Booting application firmware to read DBMAP_DEVICE_ID…';
           detectedNodeId = '';
+          detectedHubId = '';
           try {
-            detectedNodeId = await readDeviceIdentity(port, () => {
+            const identity = await readDeviceIdentity(port, () => {
               usbInspectionStatus.textContent = 'Listening for DBMAP_DEVICE_ID from running firmware…';
             }, 20000);
+            detectedNodeId = identity.deviceId;
+            detectedHubId = identity.hubId || '';
             addDetailField(
               usbInspectionDetails,
               'dBmap device identity',
               detectedNodeId === 'UNPROVISIONED' ? 'No dBmap node ID stored (UNPROVISIONED)' : detectedNodeId,
+            );
+            addDetailField(
+              usbInspectionDetails,
+              'Device hub_id',
+              detectedHubId || 'Not stored (older firmware or never provisioned to a Hub)',
             );
           } catch (identityError) {
             addDetailField(
@@ -2741,7 +2775,15 @@
             usbInspectionStatus.className = 'notice';
           } else if (detectedNodeId && detectedNodeId !== 'UNPROVISIONED') {
             confirmReplacementLabel.hidden = false;
-            addDetailField(usbInspectionDetails, 'Hub registration', 'This identity is not registered on this Hub.');
+            const thisHub = currentHubId || 'this Hub';
+            const deviceHubNote = detectedHubId
+              ? ` Device reports hub_id=${detectedHubId}.`
+              : ' Device does not report a hub_id (older firmware or unset NVS).';
+            addDetailField(
+              usbInspectionDetails,
+              'Hub registration',
+              `This identity is not registered on this Hub (${thisHub}).${deviceHubNote}`,
+            );
             usbInspectionStatus.textContent = 'The device reports a dBmap identity not found on this Hub. Creating a new registration requires explicit replacement confirmation.';
           } else {
             usbInspectionStatus.textContent = 'Chip inspection succeeded. Configure owner, Wi-Fi, and firmware, then flash before the Hub creates the device record.';
@@ -2757,6 +2799,7 @@
             usbInspectionStatus.className = 'notice';
           } else {
             detectedNodeId = '';
+            detectedHubId = '';
             confirmNewDeviceLabel.hidden = false;
             const code = error instanceof Error && 'code' in error ? error.code : '';
             usbInspectionStatus.textContent = code
@@ -3492,6 +3535,7 @@
           hub_url: route.hubUrl || '',
           mqtt_profile: route.profile,
         };
+        if (currentHubId) configuration.hub_id = currentHubId;
         if (token) configuration.bootstrap_token = token;
         if (route.mqtt?.host) {
           configuration.mqtt_host = route.mqtt.host;
@@ -3526,6 +3570,7 @@
           ['Wi-Fi SSID', cfg.ssid || '(required)'],
           ['Wi-Fi password', maskSecret(cfg.wifi_password)],
           ['Call-home profile', cfg.mqtt_profile || '(required)'],
+          ['Hub ID', cfg.hub_id || '(omitted; keep existing NVS value)'],
           ['Hub HTTPS URL', cfg.hub_url || '(required)'],
           ['MQTT host', cfg.mqtt_host || '(not set)'],
           ['MQTT port', cfg.mqtt_port != null ? String(cfg.mqtt_port) : '(not set)'],
@@ -3821,11 +3866,11 @@
           } else {
             setBrowserFlashStatus('Select the board’s USB serial port. Once it opens, press reset only if needed to read its dBmap device ID.');
             const port = await navigator.serial.requestPort();
-            const observedDeviceId = await readDeviceIdentity(port, () => {
+            const identity = await readDeviceIdentity(port, () => {
               setBrowserFlashStatus('Serial port open at 115200 baud. Waiting up to 30 seconds for the device’s dBmap ID; press reset if required.');
             });
-            if (observedDeviceId !== deviceId) {
-              throw new Error(`Connected device reports ${observedDeviceId}; selected device is ${deviceId}. No install attempt was created.`);
+            if (identity.deviceId !== deviceId) {
+              throw new Error(`Connected device reports ${identity.deviceId}; selected device is ${deviceId}. No install attempt was created.`);
             }
           }
           await api(`/api/v1/nodes/${encodeURIComponent(deviceId)}/firmware-selection`, {

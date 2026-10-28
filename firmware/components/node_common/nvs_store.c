@@ -30,6 +30,7 @@ esp_err_t dbmap_nvs_load(dbmap_effective_t *cfg)
     nvs_handle_t h;
     if (nvs_open("identity", NVS_READONLY, &h) == ESP_OK) {
         get_str(h, "node_id", cfg->identity.node_id, sizeof(cfg->identity.node_id));
+        get_str(h, "hub_id", cfg->identity.hub_id, sizeof(cfg->identity.hub_id));
         get_str(h, "hw_rev", cfg->identity.hardware_revision, sizeof(cfg->identity.hardware_revision));
         get_str(h, "prov_state", cfg->identity.provisioning_state, sizeof(cfg->identity.provisioning_state));
         nvs_close(h);
@@ -75,6 +76,7 @@ esp_err_t dbmap_nvs_save_identity_network(const dbmap_effective_t *cfg)
     esp_err_t err = nvs_open("identity", NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
     err = nvs_set_str(h, "node_id", cfg->identity.node_id);
+    if (err == ESP_OK) err = nvs_set_str(h, "hub_id", cfg->identity.hub_id);
     if (err == ESP_OK) err = nvs_set_str(h, "hw_rev", cfg->identity.hardware_revision);
     if (err == ESP_OK) err = nvs_set_str(h, "prov_state", cfg->identity.provisioning_state);
     if (err == ESP_OK) err = nvs_set_str(h, "boot_tok", cfg->bootstrap_token);

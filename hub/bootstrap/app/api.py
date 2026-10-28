@@ -16,6 +16,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import (
@@ -1034,6 +1035,16 @@ def create_node(
                 "use that device or confirm an intentional replacement"
             ),
         ) from None
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Could not create the device because related Hub records still "
+                "reference that identity. Retry registration or clear leftover "
+                "ownership/registration rows for deleted nodes."
+            ),
+        ) from exc
 
 
 @router.get(
