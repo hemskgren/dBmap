@@ -15,6 +15,142 @@ hub_summary = module_from_spec(spec)
 spec.loader.exec_module(hub_summary)
 
 
+def test_print_monitoring_includes_windows_and_events(capsys) -> None:
+    hub_summary.print_monitoring(
+        {
+            "health": {
+                "state": "degraded",
+                "score": 70,
+                "calculated_at": "2026-10-27T12:00:00+00:00",
+                "components": [
+                    {
+                        "id": "api",
+                        "name": "Hub API",
+                        "state": "ok",
+                        "last_success_at": "2026-10-27T12:00:00+00:00",
+                    },
+                    {
+                        "id": "mqtt",
+                        "name": "MQTT broker",
+                        "state": "offline",
+                        "last_success_at": None,
+                    }
+                ],
+            },
+            "availability": {
+                "current_state": "unavailable",
+                "label": "Core Hub availability",
+                "definition": (
+                    "Whether core Hub functions for device communication were "
+                    "confirmed available."
+                ),
+                "insufficient_data": False,
+                "windows": {
+                    "24h": {
+                        "percent": 99.1,
+                        "eligible_seconds": 86400,
+                        "unavailable_seconds": 120,
+                        "insufficient_data": False,
+                        "low_coverage": False,
+                        "score_ready": True,
+                    },
+                    "7d": {
+                        "percent": 100.0,
+                        "eligible_seconds": 10800,
+                        "insufficient_data": False,
+                        "low_coverage": True,
+                        "score_ready": False,
+                    },
+                    "30d": {"percent": None, "insufficient_data": True, "reason": "insufficient_observation"},
+                },
+                "components": {
+                    "mqtt": {
+                        "label": "MQTT availability",
+                        "windows": {
+                            "24h": {
+                                "percent": 99.1,
+                                "eligible_seconds": 86400,
+                                "unavailable_seconds": 120,
+                                "insufficient_data": False,
+                                "low_coverage": False,
+                                "score_ready": True,
+                            }
+                        },
+                    },
+                    "api": {
+                        "label": "API availability",
+                        "windows": {
+                            "24h": {
+                                "percent": 100.0,
+                                "eligible_seconds": 86400,
+                                "unavailable_seconds": 0,
+                                "insufficient_data": False,
+                                "low_coverage": False,
+                                "score_ready": True,
+                            }
+                        },
+                    },
+                    "web": {
+                        "label": "Web availability",
+                        "windows": {
+                            "24h": {
+                                "percent": 100.0,
+                                "eligible_seconds": 86400,
+                                "unavailable_seconds": 0,
+                                "insufficient_data": False,
+                                "low_coverage": False,
+                                "score_ready": True,
+                            }
+                        },
+                    },
+                },
+                "gaps": [
+                    {
+                        "start": "2026-10-27T10:00:00+00:00",
+                        "end": "2026-10-27T11:00:00+00:00",
+                        "certainty": "inferred",
+                    }
+                ],
+            },
+            "last_state_change": {
+                "occurred_at": "2026-10-27T12:00:00+00:00",
+                "component": "mqtt",
+                "event_type": "state_changed",
+                "previous_state": "ok",
+                "new_state": "offline",
+            },
+            "recent_events": [
+                {
+                    "occurred_at": "2026-10-27T12:00:00+00:00",
+                    "component": "mqtt",
+                    "event_type": "state_changed",
+                    "previous_state": "ok",
+                    "new_state": "offline",
+                    "certainty": "confirmed",
+                }
+            ],
+        }
+    )
+    output = capsys.readouterr().out
+    assert "Health (current)" in output
+    assert "degraded" in output
+    assert "Last check:" in output
+    assert "2026-10-27" in output
+    assert "• Hub API: ok" in output
+    assert "• MQTT broker: offline (last success: never)" in output
+    assert "Core Hub availability (historical)" in output
+    assert "Current state: unavailable" in output
+    assert "99.1%" in output
+    assert "unavailable 2m" in output
+    assert "Component availability (24h)" in output
+    assert "MQTT availability:" in output
+    assert "API availability:" in output
+    assert "Incomplete (3h observed)" in output
+    assert "Insufficient data" in output
+    assert "Observation gaps reported: 1" in output
+    assert "mqtt state_changed" in output
+
+
 def test_summary_counts_nodes_and_simulated_vehicle_observations() -> None:
     result = hub_summary.summarize(
         {

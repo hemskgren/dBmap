@@ -216,7 +216,9 @@ def test_device_summary_status_uses_recent_keepalive() -> None:
     try:
         reported = db.get(ReportedState, node_id)
         assert reported is not None
-        reported.last_seen_at = datetime.now(timezone.utc) - timedelta(seconds=91)
+        reported.last_seen_at = datetime.now(timezone.utc) - timedelta(
+            seconds=settings.device_online_window_s + 1
+        )
         db.commit()
     finally:
         db.close()

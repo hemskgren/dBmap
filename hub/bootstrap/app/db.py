@@ -39,6 +39,24 @@ def init_db() -> None:
                 )
             )
     _migrate_device_https_credentials()
+    _migrate_device_diag_pending_ota()
+
+
+def _migrate_device_diag_pending_ota() -> None:
+    tables = set(inspect(engine).get_table_names())
+    if "device_diag_state" not in tables:
+        return
+    columns = {
+        column["name"] for column in inspect(engine).get_columns("device_diag_state")
+    }
+    if "pending_ota_json" not in columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE device_diag_state ADD COLUMN pending_ota_json "
+                    "TEXT NOT NULL DEFAULT '{}'"
+                )
+            )
 
 
 def _migrate_desired_state_firmware_id() -> None:

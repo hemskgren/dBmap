@@ -144,7 +144,8 @@ def _demux(payload: bytes) -> bytes | None:
     return b"".join(chunks)
 
 
-def read_tail(component: str) -> dict:
+def _resolve_container(component: str) -> tuple[str, str, str]:
+    """Return (service_name, compose_service, container_id) for an allowlisted component."""
     target = _TARGETS.get(component)
     if target is None:
         raise UnknownComponent(component)
@@ -197,6 +198,11 @@ def read_tail(component: str) -> dict:
         raise ContainerLogsUnavailable(
             "Container logs are unavailable because the Hub cannot reach the Docker engine."
         )
+    return service_name, compose_service, container_id
+
+
+def read_tail(component: str) -> dict:
+    service_name, compose_service, container_id = _resolve_container(component)
     log_status, log_body = _request(
         "GET",
         f"{_api_prefix()}/containers/{container_id}/logs?stdout=1&stderr=1&tail={LOG_TAIL_LINES}",
@@ -214,3 +220,62 @@ def read_tail(component: str) -> dict:
         "lines": decode_docker_logs(log_body),
         "line_limit": LOG_TAIL_LINES,
     }
+
+
+def inspect_runtime(component: str) -> dict:
+    """Return Docker runtime diagnostics for an allowlisted Compose service.
+
+    Uses StartedAt and RestartCount as diagnostics only. Creation time is never
+    treated as uptime. Health status reflects the container healthcheck, not
+    external reachability.
+    """
+    service_name, compose_service, container_id = _resolve_container(component)
+    status, body = _request("GET", f"{_api_prefix()}/containers/{container_id}/json")
+    if status != 200:
+        raise ContainerLogsUnavailable(
+            "Container inspection is unavailable because the Hub cannot reach the Docker engine."
+        )
+    try:
+        info = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ContainerLogsUnavailable(
+            "Container inspection is unavailable because the Hub cannot reach the Docker engine."
+        ) from exc
+    state = info.get("State") if isinstance(info, dict) else None
+    if not isinstance(state, dict):
+        state = {}
+    health = state.get("Health")
+    health_status = None
+    if isinstance(health, dict) and isinstance(health.get("Status"), str):
+        health_status = health["Status"]
+    restart_count = state.get("RestartCount")
+    if not isinstance(restart_count, int):
+        restart_count = info.get("RestartCount") if isinstance(info, dict) else None
+    if not isinstance(restart_count, int):
+        restart_count = None
+    started_at = state.get("StartedAt") if isinstance(state.get("StartedAt"), str) else None
+    return {
+        "service": service_name,
+        "compose_service": compose_service,
+        "container_id": container_id[:12],
+        "running": state.get("Status") == "running",
+        "docker_state": state.get("Status"),
+        "health_status": health_status,
+        "started_at": started_at,
+        "restart_count": restart_count,
+    }
+
+
+def inspect_monitored_runtimes() -> dict[str, dict]:
+    """Inspect core Hub containers; failures become per-component diagnostics."""
+    results: dict[str, dict] = {}
+    for component in ("nginx", "web", "hub-api", "opa", "mosquitto"):
+        try:
+            results[component] = inspect_runtime(component)
+        except (UnknownComponent, ContainerNotFound, ContainerLogsUnavailable) as exc:
+            results[component] = {
+                "service": _TARGETS.get(component, (component, component))[0],
+                "compose_service": _TARGETS.get(component, (component, component))[1],
+                "error": str(exc),
+            }
+    return results

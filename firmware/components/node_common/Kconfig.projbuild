@@ -32,4 +32,73 @@ menu "dBmap node"
         bool "This firmware is ESP-Output"
         default y
 
+    menu "Diagnostics (D1, RAM-only)"
+
+        config DBMAP_DIAG_ENABLED
+            bool "Include optional diag object on health/keepalive"
+            default y
+            help
+                When enabled, health/keepalive may include a compact diag object.
+                Defaults can later be overridden by Desired payload.diag when
+                configuration sync bumps config_version. Counters stay in RAM only.
+
+        config DBMAP_DIAG_RSSI_DEGRADED_DBM
+            int "RSSI degraded threshold (dBm), for future health rules"
+            range -100 -30
+            default -80
+            depends on DBMAP_DIAG_ENABLED
+            help
+                Local default only until Hub Desired payload.diag can override it.
+                Not published on the wire in D1.
+
+        config DBMAP_DIAG_COUNTER_SATURATE
+            int "Maximum value for RAM diag counters"
+            range 1 65535
+            default 999
+            depends on DBMAP_DIAG_ENABLED
+
+    endmenu
+
+    menu "Network retry backoff"
+
+        config DBMAP_BACKOFF_MQTT_INITIAL_MS
+            int "MQTT initial reconnect delay (ms)"
+            range 200 10000
+            default 1000
+
+        config DBMAP_BACKOFF_MQTT_MAX_MS
+            int "MQTT maximum reconnect delay (ms)"
+            range 1000 300000
+            default 60000
+
+        config DBMAP_BACKOFF_MQTT_STABLE_MS
+            int "MQTT stable time before backoff reset (ms)"
+            range 0 300000
+            default 30000
+            help
+                0 resets backoff immediately on CONNECT. Non-zero waits for the
+                connection to remain up this long before clearing the progression.
+
+        config DBMAP_BACKOFF_WIFI_INITIAL_MS
+            int "Wi-Fi initial reconnect delay (ms)"
+            range 200 10000
+            default 1000
+
+        config DBMAP_BACKOFF_WIFI_MAX_MS
+            int "Wi-Fi maximum reconnect delay (ms)"
+            range 1000 300000
+            default 30000
+
+        config DBMAP_BACKOFF_HTTPS_INITIAL_MS
+            int "HTTPS Desired initial retry delay (ms)"
+            range 200 10000
+            default 1000
+
+        config DBMAP_BACKOFF_HTTPS_MAX_MS
+            int "HTTPS Desired maximum retry delay (ms)"
+            range 1000 300000
+            default 60000
+
+    endmenu
+
 endmenu

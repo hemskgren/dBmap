@@ -2,6 +2,7 @@
 
 #include "dbmap_audio.h"
 #include "dbmap_desired.h"
+#include "dbmap_diag.h"
 #include "dbmap_health.h"
 #include "dbmap_mqtt.h"
 #include "dbmap_nvs.h"
@@ -23,6 +24,7 @@ static dbmap_effective_t s_cfg;
 void app_main(void)
 {
     ESP_ERROR_CHECK(dbmap_nvs_init());
+    dbmap_diag_init();
     dbmap_effective_defaults(&s_cfg);
     ESP_ERROR_CHECK(dbmap_nvs_load(&s_cfg));
 
@@ -80,11 +82,12 @@ void app_main(void)
         ESP_LOGW(TAG, "audio init failed (%s); continuing without playback", esp_err_to_name(audio_err));
     }
     ESP_ERROR_CHECK(dbmap_mqtt_start(&s_cfg, output_handle_command, &s_cfg));
-    dbmap_ota_mark_valid_after_mqtt();
+    dbmap_ota_mark_valid_after_mqtt(&s_cfg);
     dbmap_desired_poll_start(&s_cfg);
 
     int backoff_ms = 1000;
     while (1) {
+        dbmap_ota_report_pending_boot(&s_cfg);
         if (dbmap_publish_hello(&s_cfg) == ESP_OK) {
             backoff_ms = 1000;
         }

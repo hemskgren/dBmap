@@ -9,7 +9,7 @@ The Hub API authenticates the current local admin/viewer bearer tokens, then ask
 | `session.read` | `session` | Allow | Allow |
 | `devices.list_summary` | `device_summaries` | Allow | Allow |
 | `hub.status.read` | `hub` | Allow | Allow |
-| `hub.logs.read` | `hub` | Allow | Deny |
+| `hub.logs.read` | `hub` | Allow | Allow |
 | `observations.read` | `observations` | Allow | Allow |
 | `nodes.create` | `nodes` | Allow | Deny |
 | `nodes.list` | `nodes` | Allow | Deny |
@@ -42,7 +42,7 @@ The Hub API authenticates the current local admin/viewer bearer tokens, then ask
 | `firmware.deploy.attempt.update` | `nodes/{node_id}` | Allow | Deny |
 | `firmware.deploy.flash.read` | `firmware_catalog` | Allow | Deny |
 
-The admin rule grants every action to an authenticated admin. A viewer can read the session, Hub status, device summaries, device details, observations, internal user directory, group directory, and all firmware catalog entries, including unregistered candidates, but cannot read container logs or change Hub state, user records, groups, or firmware catalog records. Firmware uploads, promotion, deletion, and device-specific firmware selection are admin-only. Authentication still happens in the API; OPA never receives the bearer token.
+The admin rule grants every action to an authenticated admin. A viewer can read the session, Hub status, Hub component logs, device summaries, device details (including Desired and Reported state), observations, internal user directory, group directory, and all firmware catalog entries, including unregistered candidates, but cannot change Hub state, user records, groups, or firmware catalog records. Firmware uploads, promotion, deletion, and device-specific firmware selection are admin-only. Authentication still happens in the API; OPA never receives the bearer token.
 
 Admin and viewer calls use OPA because those tokens are roles: the same credential can be allowed or denied per action, and the API fails closed if OPA is down. `GET /api/v1/device/desired-firmware` and `GET /api/v1/device/ota-image` do not. The device presents its own API token. The Hub hashes it, finds exactly one `node_credentials` row, and scopes the response to that node's Desired firmware only (id/version/app digest for Desired; `esp-output.bin` for OTA). There is no role to decide and no path firmware id to trust. Keeping this check in the Hub also means a device can read Desired and pull its OTA image while OPA is restarting. Human catalog and Desired-edit permissions stay on the admin routes.
 

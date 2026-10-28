@@ -9,7 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from _hub_cli import (
@@ -242,6 +242,149 @@ def component_states(status: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _format_local_timestamp(value: Any) -> str:
+    if not isinstance(value, str) or not value:
+        return "Not reported"
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone().strftime("%d/%m/%Y %H:%M:%S %Z")
+
+
+def _format_duration_seconds(seconds: Any) -> str:
+    try:
+        total = max(0, int(seconds))
+    except (TypeError, ValueError):
+        return "unknown"
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{round(total / 60)}m"
+    if total < 86400:
+        hours = total / 3600
+        return f"{round(hours) if hours >= 10 else f'{hours:.1f}'.rstrip('0').rstrip('.')}h"
+    days = total / 86400
+    return f"{round(days) if days >= 10 else f'{days:.1f}'.rstrip('0').rstrip('.')}d"
+
+
+def _format_availability_window(window: Any) -> str:
+    if not isinstance(window, dict):
+        return "Not reported"
+    if window.get("insufficient_data") or window.get("percent") is None:
+        reason = window.get("reason") or "insufficient observation"
+        return f"Insufficient data ({reason})"
+    observed = _format_duration_seconds(window.get("eligible_seconds"))
+    unavailable = window.get("unavailable_seconds") or 0
+    try:
+        unavailable_s = float(unavailable)
+    except (TypeError, ValueError):
+        unavailable_s = 0.0
+    unavailable_note = (
+        f"; unavailable {_format_duration_seconds(unavailable_s)}"
+        if unavailable_s > 0
+        else ""
+    )
+    if window.get("score_ready") is False:
+        return f"Incomplete ({observed} observed{unavailable_note})"
+    if window.get("low_coverage"):
+        return f"{window['percent']}% of {observed} observed{unavailable_note}"
+    return f"{window['percent']}% (eligible {observed}{unavailable_note})"
+
+
+def print_monitoring(monitoring: dict[str, Any]) -> None:
+    health = monitoring.get("health") if isinstance(monitoring.get("health"), dict) else {}
+    availability = (
+        monitoring.get("availability")
+        if isinstance(monitoring.get("availability"), dict)
+        else {}
+    )
+    windows = (
+        availability.get("windows") if isinstance(availability.get("windows"), dict) else {}
+    )
+    component_availability = (
+        availability.get("components")
+        if isinstance(availability.get("components"), dict)
+        else {}
+    )
+    print("\nHealth (current)")
+    print(f"  State: {health.get('state', 'unknown')}")
+    score = health.get("score")
+    print(f"  Score: {score if score is not None else 'n/a'}")
+    if health.get("reason"):
+        print(f"  Reason: {health.get('reason')}")
+    checked_at = health.get("calculated_at")
+    if checked_at:
+        print(f"  Last check: {_format_local_timestamp(checked_at)}")
+    components = health.get("components")
+    if isinstance(components, list) and components:
+        for component in components:
+            if not isinstance(component, dict):
+                continue
+            if component.get("id") == "firmware-builder":
+                continue
+            name = component.get("name") or component.get("id") or "component"
+            state = str(component.get("state") or "unknown")
+            # Only call out last success when the component is not currently ok.
+            if state in {"ok", "online", "healthy", "disabled"}:
+                print(f"  • {name}: {state}")
+            else:
+                last = component.get("last_success_at") or "never"
+                print(f"  • {name}: {state} (last success: {last})")
+    print("\nCore Hub availability (historical)")
+    print(f"  Current state: {availability.get('current_state', 'unknown')}")
+    if availability.get("definition"):
+        print(f"  Meaning: {availability.get('definition')}")
+    for label in ("24h", "7d", "30d"):
+        print(f"  {label}: {_format_availability_window(windows.get(label))}")
+    if component_availability:
+        print("\nComponent availability (24h)")
+        for key in ("mqtt", "api", "web"):
+            entry = component_availability.get(key)
+            if not isinstance(entry, dict):
+                continue
+            label = entry.get("label") or f"{key} availability"
+            windows_for = (
+                entry.get("windows") if isinstance(entry.get("windows"), dict) else {}
+            )
+            print(f"  {label}: {_format_availability_window(windows_for.get('24h'))}")
+    if availability.get("insufficient_data"):
+        print("  Warning: insufficient confirmed observation time for one or more windows.")
+    gaps = availability.get("gaps")
+    if isinstance(gaps, list) and gaps:
+        print(f"  Observation gaps reported: {len(gaps)}")
+        for gap in gaps[:5]:
+            if isinstance(gap, dict):
+                print(
+                    f"    • {gap.get('start', '?')} → {gap.get('end', '?')} "
+                    f"({gap.get('certainty', 'inferred')})"
+                )
+    last_change = monitoring.get("last_state_change")
+    if isinstance(last_change, dict):
+        print("\nLast state change")
+        print(
+            f"  {last_change.get('occurred_at', '?')}: "
+            f"{last_change.get('component', 'hub')} "
+            f"{last_change.get('event_type', 'event')} "
+            f"{last_change.get('previous_state', 'n/a')} → "
+            f"{last_change.get('new_state', 'n/a')}"
+        )
+    events = monitoring.get("recent_events")
+    if isinstance(events, list) and events:
+        print("\nRecent monitoring events")
+        for event in events[:15]:
+            if not isinstance(event, dict):
+                continue
+            print(
+                f"  • {event.get('occurred_at', '?')}: "
+                f"{event.get('component', '?')} {event.get('event_type', '?')} "
+                f"({event.get('previous_state', 'n/a')} → {event.get('new_state', 'n/a')}, "
+                f"{event.get('certainty', 'confirmed')})"
+            )
+
+
 def print_human_status(status: dict[str, Any]) -> None:
     print("Hub status")
     print(f"  Mode:   {status.get('mode') or 'Unknown'}")
@@ -249,6 +392,10 @@ def print_human_status(status: dict[str, Any]) -> None:
     print("\nServices")
     for name, state in component_states(status).items():
         print(f"  • {name}: {state.replace('_', ' ').capitalize()}")
+
+    monitoring = status.get("monitoring")
+    if isinstance(monitoring, dict):
+        print_monitoring(monitoring)
 
     summary = status.get("summary")
     if not isinstance(summary, dict):
@@ -328,6 +475,20 @@ def main() -> int:
             parser.error(str(exc))
     try:
         previous = fetch_status(base_url, args.ca, admin_token)
+        if args.output == "text":
+            # Status omits the event list; fetch it on demand like the Hub tab expand.
+            try:
+                events = api_get(
+                    base_url,
+                    args.ca,
+                    admin_token,
+                    "/api/v1/hub/monitoring/events?" + urllib.parse.urlencode({"limit": 15}),
+                )
+                monitoring = previous.get("monitoring")
+                if isinstance(monitoring, dict) and isinstance(events, dict):
+                    monitoring["recent_events"] = events.get("events") or []
+            except HubApiError:
+                pass
         if args.output == "json":
             print(
                 json.dumps(previous, indent=None if watching else 2, sort_keys=True),

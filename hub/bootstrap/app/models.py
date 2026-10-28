@@ -402,3 +402,167 @@ class Observation(Base):
         DateTime(timezone=True), default=utcnow
     )
     payload_json: Mapped[str] = mapped_column(Text)
+
+
+class HubMonitorSample(Base):
+    __tablename__ = "hub_monitor_samples"
+    __table_args__ = (
+        Index("ix_hub_monitor_samples_hub_observed", "hub_id", "observed_at"),
+        CheckConstraint(
+            "overall_availability IN "
+            "('available', 'degraded', 'unavailable', 'unobserved')"
+        ),
+        CheckConstraint(
+            "overall_health IN ('healthy', 'degraded', 'unhealthy', 'unknown')"
+        ),
+    )
+
+    sample_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    hub_id: Mapped[str] = mapped_column(String(64), index=True)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    overall_availability: Mapped[str] = mapped_column(String(16))
+    overall_health: Mapped[str] = mapped_column(String(16))
+    components_json: Mapped[str] = mapped_column(Text, default="{}")
+    source: Mapped[str] = mapped_column(String(32), default="local_monitor")
+
+
+class HubMonitorEvent(Base):
+    __tablename__ = "hub_monitor_events"
+    __table_args__ = (
+        Index("ix_hub_monitor_events_hub_occurred", "hub_id", "occurred_at"),
+        CheckConstraint("certainty IN ('confirmed', 'inferred')"),
+    )
+
+    event_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    hub_id: Mapped[str] = mapped_column(String(64), index=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    component: Mapped[str] = mapped_column(String(32))
+    event_type: Mapped[str] = mapped_column(String(64))
+    previous_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    new_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    source: Mapped[str] = mapped_column(String(32), default="local_monitor")
+    certainty: Mapped[str] = mapped_column(String(16), default="confirmed")
+
+
+class DeviceMonitorSample(Base):
+    """Sparse Hub-observed connectivity samples (transition + gap markers)."""
+
+    __tablename__ = "device_monitor_samples"
+    __table_args__ = (
+        Index("ix_device_monitor_samples_node_observed", "node_id", "observed_at"),
+        CheckConstraint(
+            "overall_availability IN "
+            "('available', 'degraded', 'unavailable', 'unobserved')"
+        ),
+        CheckConstraint(
+            "overall_health IN ('healthy', 'degraded', 'unhealthy', 'unknown')"
+        ),
+    )
+
+    sample_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    hub_id: Mapped[str] = mapped_column(String(64), index=True)
+    node_id: Mapped[str] = mapped_column(String(64), index=True)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    overall_availability: Mapped[str] = mapped_column(String(16))
+    overall_health: Mapped[str] = mapped_column(String(16), default="unknown")
+    source: Mapped[str] = mapped_column(String(32), default="hub_observed")
+
+
+class DeviceMonitorEvent(Base):
+    __tablename__ = "device_monitor_events"
+    __table_args__ = (
+        Index("ix_device_monitor_events_node_occurred", "node_id", "occurred_at"),
+        CheckConstraint("certainty IN ('confirmed', 'inferred')"),
+    )
+
+    event_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    hub_id: Mapped[str] = mapped_column(String(64), index=True)
+    node_id: Mapped[str] = mapped_column(String(64), index=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    event_type: Mapped[str] = mapped_column(String(64))
+    previous_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    new_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    source: Mapped[str] = mapped_column(String(32), default="hub_observed")
+    certainty: Mapped[str] = mapped_column(String(16), default="confirmed")
+
+
+class DeviceDiagEvent(Base):
+    """Retained device-reported diagnostic events. Hard cap of 30 rows per node."""
+
+    __tablename__ = "device_diag_events"
+    __table_args__ = (
+        Index("ix_device_diag_events_node_occurred", "node_id", "occurred_at"),
+        CheckConstraint("certainty IN ('confirmed', 'inferred')"),
+        CheckConstraint("event_count >= 1"),
+    )
+
+    event_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    hub_id: Mapped[str] = mapped_column(String(64), index=True)
+    node_id: Mapped[str] = mapped_column(String(64), index=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    first_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    last_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    event_type: Mapped[str] = mapped_column(String(64))
+    event_count: Mapped[int] = mapped_column(Integer, default=1)
+    reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    detail_json: Mapped[str] = mapped_column(Text, default="{}")
+    source: Mapped[str] = mapped_column(String(32), default="device_reported")
+    certainty: Mapped[str] = mapped_column(String(16), default="confirmed")
+
+
+class DeviceDiagState(Base):
+    """Latest diag snapshot and Hub-assessed health per device."""
+
+    __tablename__ = "device_diag_state"
+    __table_args__ = (
+        CheckConstraint(
+            "last_health IN ('healthy', 'degraded', 'unhealthy', 'unknown')"
+        ),
+    )
+
+    node_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    hub_id: Mapped[str] = mapped_column(String(64), index=True)
+    last_diag_json: Mapped[str] = mapped_column(Text, default="{}")
+    has_diag_evidence: Mapped[int] = mapped_column(Integer, default=0)
+    last_health: Mapped[str] = mapped_column(String(16), default="unknown")
+    last_health_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Pending OTA transition awaiting post-reboot hello/boot_confirmed.
+    pending_ota_json: Mapped[str] = mapped_column(Text, default="{}")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )

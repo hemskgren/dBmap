@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -6,8 +7,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import firmware_catalog
+from app import device_diag, device_monitor, firmware_catalog
 from app.config import settings
+
+log = logging.getLogger("hub-bootstrap.service")
 from app.ids import (
     allocate_node_id,
     isoformat,
@@ -47,8 +50,6 @@ from app.schemas import (
     Topics,
 )
 from app.topics import topics_for
-
-DEVICE_ONLINE_WINDOW = timedelta(seconds=90)
 
 
 class DuplicateRegistration(Exception):
@@ -408,7 +409,7 @@ def get_node(db: Session, node_id: str) -> NodeView:
     node = db.get(Node, node_id.upper())
     if node is None:
         raise KeyError(node_id)
-    return node_view(db, node)
+    return node_view(db, node, include_monitoring=True)
 
 
 def set_desired(db: Session, node_id: str, body: DesiredStateBody) -> NodeView:
@@ -598,6 +599,8 @@ def apply_reported(db: Session, node_id: str, payload: dict) -> None:
     }
     pending = pending_configuration_change(merged, desired_dict)
 
+    previous_payload_json = reported.payload_json
+    previous_firmware_version = reported.firmware_version
     reported.firmware_version = str(merged["firmware_version"])
     reported.hardware_revision = str(
         payload.get("hardware_revision", reported.hardware_revision)
@@ -614,10 +617,33 @@ def apply_reported(db: Session, node_id: str, payload: dict) -> None:
         node.availability = "OPERATIONAL"
         node.provisioning_state = "active"
 
+    try:
+        device_diag.ingest_ota_report(
+            db,
+            node_id=node_id,
+            payload=payload,
+            previous_firmware_version=previous_firmware_version,
+        )
+    except Exception:
+        log.exception("device OTA report ingest failed for %s", node_id)
+
+    try:
+        device_diag.ingest_reported_diag(
+            db,
+            node_id=node_id,
+            previous_payload_json=previous_payload_json,
+            new_payload=payload,
+            online=True,
+        )
+    except Exception:
+        log.exception("device diag ingest failed for %s", node_id)
+
     db.commit()
 
 
-def node_view(db: Session, node: Node) -> NodeView:
+def node_view(
+    db: Session, node: Node, *, include_monitoring: bool = False
+) -> NodeView:
     desired = db.get(DesiredState, node.node_id)
     reported = db.get(ReportedState, node.node_id)
     installation = db.get(InstallationMetadata, node.node_id)
@@ -668,10 +694,17 @@ def node_view(db: Session, node: Node) -> NodeView:
     last_seen_at = reported.last_seen_at if reported else None
     if last_seen_at is not None and last_seen_at.tzinfo is None:
         last_seen_at = last_seen_at.replace(tzinfo=timezone.utc)
-    is_online = (
-        last_seen_at is not None
-        and datetime.now(timezone.utc) - last_seen_at <= DEVICE_ONLINE_WINDOW
-    )
+    online = device_monitor.is_online(last_seen_at)
+    monitoring = None
+    if include_monitoring:
+        try:
+            monitoring = device_monitor.build_monitoring_summary(db, node.node_id)
+        except Exception:  # noqa: BLE001 - detail must still return without monitoring
+            monitoring = {
+                "enabled": settings.device_monitor_enabled,
+                "phase": "D0",
+                "error": "monitoring summary unavailable",
+            }
     return NodeView(
         node_id=node.node_id,
         node_type=node.node_type,
@@ -679,7 +712,7 @@ def node_view(db: Session, node: Node) -> NodeView:
         provisioning_state=node.provisioning_state,
         lifecycle_state=node.lifecycle_state,
         availability=node.availability,
-        status="online" if is_online else "offline",
+        status="online" if online else "offline",
         pending_configuration_change=pending,
         desired=desired_dict,
         reported=reported_dict,
@@ -688,6 +721,7 @@ def node_view(db: Session, node: Node) -> NodeView:
         owner_type=owner[0] if owner else None,
         owner_id=owner[1] if owner else None,
         owner_display_name=owner[2] if owner else None,
+        monitoring=monitoring,
     )
 
 

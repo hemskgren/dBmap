@@ -93,9 +93,15 @@
       .component-actions button { padding: 0.35rem 0.55rem; font-size: 0.85rem; }
       .component-log { max-height: 16rem; overflow: auto; margin: 0; padding: 0.75rem; border-radius: 8px; background: #f4f6f8; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.82rem; }
       .component-status { font-weight: 700; text-transform: capitalize; }
-      .component-status.online { color: #157347; }
-      .component-status.offline, .component-status.error { color: #a83232; }
-      .component-status.unknown, .component-status.disabled, .component-status.unavailable { color: #526078; }
+      .component-status.online, .component-status.ok, .component-status.healthy, .component-status.available { color: #157347; }
+      .component-status.offline, .component-status.error, .component-status.unhealthy, .component-status.unavailable { color: #a83232; }
+      .component-status.degraded { color: #9a6700; }
+      .component-status.unknown, .component-status.disabled, .component-status.unobserved { color: #526078; }
+      .monitoring-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .monitoring-events { margin: 0.5rem 0 0; padding-left: 1.15rem; }
+      .monitoring-events li { margin: 0.25rem 0; }
+      #hub-monitor-events-panel { margin-top: 0.35rem; }
+      #hub-monitor-events-panel > summary { cursor: pointer; font-weight: 650; }
       .espconnect-callout { max-width: 780px; }
       .espconnect-callout .actions { flex-wrap: wrap; }
       .distance-list { display: grid; gap: 0.35rem; padding-left: 1.25rem; }
@@ -270,9 +276,29 @@
             </div>
           </section>
           <section>
-            <h3>Components</h3>
+            <h3>Health, availability and Logs</h3>
+            <p class="notice">Health is the current probe result. Core Hub availability is historical confirmed device-communication uptime (MQTT or reachability failure counts as unavailable). MQTT, API, and Web availability are shown separately. A working web session does not prove MQTT is up. Firmware Builder is excluded from this monitoring. Multi-day scores stay incomplete until enough of that window has been observed.</p>
+            <div class="overview-grid monitoring-grid" aria-live="polite">
+              <article class="overview-card"><span>Current health</span><strong id="hub-health-state">—</strong></article>
+              <article class="overview-card"><span>Health score</span><strong id="hub-health-score">—</strong></article>
+              <article class="overview-card"><span>Core Hub availability state</span><strong id="hub-availability-state">—</strong></article>
+              <article class="overview-card"><span>Core Hub availability 24h</span><strong id="hub-availability-24h">—</strong></article>
+              <article class="overview-card"><span>Core Hub availability 7d</span><strong id="hub-availability-7d">—</strong></article>
+              <article class="overview-card"><span>Core Hub availability 30d</span><strong id="hub-availability-30d">—</strong></article>
+              <article class="overview-card"><span>MQTT availability 24h</span><strong id="hub-mqtt-availability-24h">—</strong></article>
+              <article class="overview-card"><span>API availability 24h</span><strong id="hub-api-availability-24h">—</strong></article>
+              <article class="overview-card"><span>Web availability 24h</span><strong id="hub-web-availability-24h">—</strong></article>
+            </div>
+            <p id="hub-monitoring-warning" class="notice" hidden></p>
+            <dl id="hub-monitor-meta" class="meta"></dl>
+            <h4>Monitored components</h4>
             <div id="component-list" class="component-list" aria-live="polite"><p class="notice">Checking Hub components…</p></div>
             <div id="component-details" hidden></div>
+            <details id="hub-monitor-events-panel">
+              <summary>Recent monitoring events</summary>
+              <p class="notice">Expand to load the latest events. Hub status refresh does not fetch this list.</p>
+              <ul id="hub-monitor-events" class="monitoring-events" aria-live="polite"><li class="notice">Expand to load events.</li></ul>
+            </details>
           </section>
         </section>
         <section id="tab-devices" role="tabpanel" aria-labelledby="tab-button-devices" hidden>
@@ -778,6 +804,272 @@
         return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
       }
 
+      function formatDurationSeconds(seconds) {
+        const total = Math.max(0, Number(seconds) || 0);
+        if (total < 60) return `${Math.round(total)}s`;
+        if (total < 3600) return `${Math.round(total / 60)}m`;
+        if (total < 86400) {
+          const hours = total / 3600;
+          return `${hours >= 10 ? Math.round(hours) : hours.toFixed(1).replace(/\.0$/, '')}h`;
+        }
+        const days = total / 86400;
+        return `${days >= 10 ? Math.round(days) : days.toFixed(1).replace(/\.0$/, '')}d`;
+      }
+
+      function formatAvailabilityWindow(window) {
+        if (!window) return 'Not reported';
+        if (window.insufficient_data || window.percent === null || window.percent === undefined) {
+          return 'Insufficient data';
+        }
+        const observed = formatDurationSeconds(window.eligible_seconds);
+        const unavailable = Number(window.unavailable_seconds) || 0;
+        const unavailableLabel = unavailable > 0
+          ? `; unavailable ${formatDurationSeconds(unavailable)}`
+          : '';
+        if (window.score_ready === false) {
+          return `Incomplete (${observed} observed${unavailableLabel})`;
+        }
+        if (window.low_coverage) {
+          return `${window.percent}% of ${observed} observed${unavailableLabel}`;
+        }
+        return `${window.percent}% (eligible ${observed}${unavailableLabel})`;
+      }
+
+      function monitoringSourceLabel(source) {
+        if (source === 'device_reported') return 'device';
+        if (source === 'hub_assessed') return 'hub';
+        if (source === 'hub_observed') return 'hub';
+        return source || 'hub';
+      }
+
+      function formatMonitoringEvent(event) {
+        const when = formatSeen(event.occurred_at);
+        const source = monitoringSourceLabel(event.source);
+        const transition = [event.previous_state, event.new_state].filter(Boolean).join(' → ');
+        const count = event.count && event.count > 1 ? ` ×${event.count}` : '';
+        const detail = transition
+          ? ` (${transition})`
+          : count;
+        return `[${source}] ${when}: ${event.event_type}${detail}${event.reason ? ` — ${event.reason}` : ''}`;
+      }
+
+      function renderDeviceMonitoring(container, device) {
+        const monitoring = device.monitoring;
+        if (!monitoring || monitoring.error) {
+          container.append(el('p', monitoring?.error || 'Monitoring summary unavailable.', 'notice'));
+          return;
+        }
+        const availability = monitoring.availability || {};
+        const windows = availability.windows || {};
+        const health = monitoring.health || {};
+        const meta = el('dl', undefined, 'meta');
+        const healthLabel = health.score === null || health.score === undefined
+          ? (health.state || 'unknown')
+          : `${health.state || 'unknown'} (${health.score})`;
+        for (const [label, value] of [
+          ['Health', healthLabel],
+          ['Health reason', health.reason || '—'],
+          ['Observed connectivity', availability.current_state || 'unknown'],
+          ['Availability 24h', formatAvailabilityWindow(windows['24h'])],
+          ['Availability 7d', formatAvailabilityWindow(windows['7d'])],
+          ['Availability 30d', formatAvailabilityWindow(windows['30d'])],
+          ['Online window', `${availability.online_window_seconds || '—'}s`],
+          ['Diag events retained', `${health.diag_event_count ?? 0} / ${health.diag_event_cap ?? 30}`],
+        ]) addDetailField(meta, label, value);
+        container.append(meta);
+        const lastDiag = health.last_diag;
+        if (lastDiag && typeof lastDiag === 'object') {
+          const diagMeta = el('dl', undefined, 'meta');
+          const diagSection = el('section');
+          diagSection.append(el('h4', 'Last device diag'));
+          for (const [key, value] of Object.entries(lastDiag)) {
+            addDetailField(diagMeta, key, value);
+          }
+          diagSection.append(diagMeta);
+          container.append(diagSection);
+        }
+        const incomplete = Object.values(windows).some((window) => window && window.score_ready === false);
+        const parts = [];
+        if (monitoring.eligibility === 'excluded') {
+          parts.push('This device is deactivated and excluded from further availability sampling.');
+        }
+        if (availability.insufficient_data || incomplete) {
+          parts.push('Some availability windows lack enough confirmed observation time.');
+        }
+        if (health.state === 'unknown' && health.reason) parts.push(health.reason);
+        if (parts.length) {
+          container.append(el('p', parts.join(' '), 'notice'));
+        }
+        const eventsDetails = document.createElement('details');
+        eventsDetails.append(el('summary', 'Recent monitoring events'));
+        const eventsList = el('ul', undefined, 'monitoring-events');
+        eventsList.append(el('li', 'Expand to load Hub-observed and device-reported events.', 'notice'));
+        eventsDetails.append(eventsList);
+        eventsDetails.addEventListener('toggle', async () => {
+          if (!eventsDetails.open || eventsDetails.dataset.loaded === '1') return;
+          eventsList.replaceChildren(el('li', 'Loading…', 'notice'));
+          try {
+            const payload = await api(
+              `/api/v1/nodes/${encodeURIComponent(device.node_id)}/monitoring/events?limit=15`,
+            );
+            eventsList.replaceChildren();
+            const events = payload.events || [];
+            if (!events.length) {
+              eventsList.append(el('li', 'No monitoring events yet.', 'notice'));
+            } else {
+              for (const event of events) {
+                eventsList.append(el('li', formatMonitoringEvent(event)));
+              }
+            }
+            eventsDetails.dataset.loaded = '1';
+          } catch (error) {
+            eventsList.replaceChildren(el('li', error.message, 'notice error'));
+          }
+        });
+        container.append(eventsDetails);
+      }
+
+      function monitoringStateByComponent(monitoring) {
+        const mapped = {
+          api: 'hub-api',
+          database: 'database',
+          nginx: 'nginx',
+          web: 'web',
+          mqtt: 'mosquitto',
+          opa: 'opa',
+        };
+        const states = {};
+        for (const component of monitoring?.health?.components || []) {
+          const statusId = mapped[component.id];
+          if (!statusId) continue;
+          const raw = component.state || 'unknown';
+          states[statusId] = raw === 'ok' ? 'online' : raw;
+        }
+        return states;
+      }
+
+      function renderHubMonitoring(monitoring) {
+        const health = monitoring?.health || {};
+        const availability = monitoring?.availability || {};
+        const windows = availability.windows || {};
+        const componentAvailability = availability.components || {};
+        document.getElementById('hub-health-state').textContent = health.state || 'unknown';
+        document.getElementById('hub-health-score').textContent =
+          health.score === null || health.score === undefined ? '—' : String(health.score);
+        document.getElementById('hub-availability-state').textContent = availability.current_state || 'unknown';
+        document.getElementById('hub-availability-24h').textContent = formatAvailabilityWindow(windows['24h']);
+        document.getElementById('hub-availability-7d').textContent = formatAvailabilityWindow(windows['7d']);
+        document.getElementById('hub-availability-30d').textContent = formatAvailabilityWindow(windows['30d']);
+        document.getElementById('hub-mqtt-availability-24h').textContent = formatAvailabilityWindow(
+          componentAvailability.mqtt?.windows?.['24h'],
+        );
+        document.getElementById('hub-api-availability-24h').textContent = formatAvailabilityWindow(
+          componentAvailability.api?.windows?.['24h'],
+        );
+        document.getElementById('hub-web-availability-24h').textContent = formatAvailabilityWindow(
+          componentAvailability.web?.windows?.['24h'],
+        );
+        const warning = document.getElementById('hub-monitoring-warning');
+        const gapCount = Array.isArray(availability.gaps) ? availability.gaps.length : 0;
+        const incomplete = Object.values(windows).some((window) => window && window.score_ready === false);
+        const mqttDown = (Array.isArray(health.components) ? health.components : [])
+          .some((component) => component && component.id === 'mqtt' && !['ok', 'online', 'healthy', 'disabled'].includes(component.state));
+        if (availability.insufficient_data || incomplete || gapCount > 0 || monitoring?.error || health.reason || mqttDown) {
+          warning.hidden = false;
+          const parts = [];
+          if (monitoring?.error) parts.push(monitoring.error);
+          if (health.reason) parts.push(health.reason);
+          else if (mqttDown) {
+            parts.push('MQTT broker is unavailable; devices cannot communicate with the Hub even if this web session still works.');
+          }
+          if (availability.insufficient_data) {
+            parts.push('Some availability windows lack enough confirmed observation time.');
+          }
+          if (incomplete) {
+            parts.push('7d/30d scores stay incomplete until at least half that window has been observed.');
+          }
+          if (gapCount > 0) {
+            parts.push(`${gapCount} observation gap(s) recorded; unobserved time is excluded from availability.`);
+          }
+          warning.textContent = parts.join(' ');
+        } else {
+          warning.hidden = true;
+          warning.textContent = '';
+        }
+        const meta = document.getElementById('hub-monitor-meta');
+        meta.replaceChildren();
+        const lastChange = monitoring?.last_state_change;
+        addDetailField(meta, 'Last monitor check', health.calculated_at ? formatSeen(health.calculated_at) : null);
+        addDetailField(meta, 'Health reason', health.reason || 'All monitored components ok');
+        addDetailField(
+          meta,
+          'Last state change',
+          lastChange
+            ? `${lastChange.component || 'hub'}: ${lastChange.previous_state || 'n/a'} → ${lastChange.new_state || 'n/a'} (${formatSeen(lastChange.occurred_at)})`
+            : 'None yet',
+        );
+        const failedChecks = (Array.isArray(health.components) ? health.components : [])
+          .filter((component) => component && !['ok', 'online', 'healthy', 'disabled'].includes(component.state))
+          .map((component) => `${component.id || component.name}: last success ${component.last_success_at ? formatSeen(component.last_success_at) : 'never'}`);
+        addDetailField(
+          meta,
+          'Failed component last success',
+          failedChecks.length ? failedChecks.join(' · ') : 'All monitored components ok on last check',
+        );
+        const core24 = windows['24h'] || {};
+        if (core24.unavailable_seconds > 0) {
+          addDetailField(
+            meta,
+            'Core Hub unavailable (24h)',
+            formatDurationSeconds(core24.unavailable_seconds),
+          );
+        }
+        const mqtt24 = componentAvailability.mqtt?.windows?.['24h'] || {};
+        if (mqtt24.unavailable_seconds > 0) {
+          addDetailField(
+            meta,
+            'MQTT unavailable (24h)',
+            formatDurationSeconds(mqtt24.unavailable_seconds),
+          );
+        }
+        const eventsPanel = document.getElementById('hub-monitor-events-panel');
+        if (eventsPanel && !eventsPanel.open) {
+          document.getElementById('hub-monitor-events').replaceChildren(
+            el('li', 'Expand to load events.', 'notice'),
+          );
+        }
+        return monitoringStateByComponent(monitoring);
+      }
+
+      function renderMonitoringEvents(payload) {
+        const events = document.getElementById('hub-monitor-events');
+        events.replaceChildren();
+        const recent = Array.isArray(payload?.events) ? payload.events : [];
+        if (!recent.length) {
+          events.append(el('li', 'No events yet.', 'notice'));
+          return;
+        }
+        for (const event of recent) {
+          const when = formatSeen(event.occurred_at);
+          const transition = `${event.previous_state || 'n/a'} → ${event.new_state || 'n/a'}`;
+          const reason = event.reason ? ` — ${event.reason}` : '';
+          events.append(el(
+            'li',
+            `${when}: ${event.component} ${event.event_type} (${transition}, ${event.certainty || 'confirmed'})${reason}`,
+          ));
+        }
+      }
+
+      async function loadMonitoringEvents() {
+        const events = document.getElementById('hub-monitor-events');
+        events.replaceChildren(el('li', 'Loading events…', 'notice'));
+        try {
+          renderMonitoringEvents(await api('/api/v1/hub/monitoring/events?limit=15'));
+        } catch (error) {
+          events.replaceChildren(el('li', error.message, 'notice error'));
+        }
+      }
+
       function renderHubStatus(status) {
         const summary = status.summary;
         hubAddresses = status.addresses || {};
@@ -816,12 +1108,18 @@
           el('dt', 'Missing, incomplete, or invalid installations'),
           el('dd', String(summary.installation_incomplete_count)),
         );
+        const monitorStates = renderHubMonitoring(status.monitoring);
         const components = document.getElementById('component-list');
         components.replaceChildren();
-        for (const component of status.components) {
+        // Firmware Builder is excluded from Health and Availability monitoring.
+        const monitoredComponents = (status.components || []).filter(
+          (component) => component && component.id !== 'firmware-builder',
+        );
+        for (const component of monitoredComponents) {
           const row = el('div', undefined, 'component');
           row.append(el('span', component.name));
-          const state = el('span', component.status, `component-status ${component.status}`);
+          const stateValue = monitorStates[component.id] || component.status || 'unknown';
+          const state = el('span', stateValue.replaceAll('_', ' '), `component-status ${stateValue}`);
           row.append(state);
           const componentId = component.id;
           if (componentId) {
@@ -831,7 +1129,7 @@
             detailsButton.dataset.detailComponent = componentId;
             detailsButton.addEventListener('click', () => toggleComponentPanel(componentId, 'details'));
             actions.append(detailsButton);
-            if (component.logs && currentRole === 'admin') {
+            if (component.logs) {
               const logsButton = el('button', openComponentPanel === `${componentId}:logs` ? 'Hide logs' : 'Logs', 'secondary');
               logsButton.type = 'button';
               logsButton.dataset.logComponent = componentId;
@@ -970,6 +1268,19 @@
           document.getElementById('hub-id').textContent = '—';
           document.getElementById('hub-device-count').textContent = '—';
           document.getElementById('hub-online-count').textContent = '—';
+          document.getElementById('hub-health-state').textContent = '—';
+          document.getElementById('hub-health-score').textContent = '—';
+          document.getElementById('hub-availability-state').textContent = '—';
+          document.getElementById('hub-availability-24h').textContent = '—';
+          document.getElementById('hub-availability-7d').textContent = '—';
+          document.getElementById('hub-availability-30d').textContent = '—';
+          document.getElementById('hub-mqtt-availability-24h').textContent = '—';
+          document.getElementById('hub-api-availability-24h').textContent = '—';
+          document.getElementById('hub-web-availability-24h').textContent = '—';
+          document.getElementById('hub-monitoring-warning').hidden = true;
+          document.getElementById('hub-monitor-meta').replaceChildren();
+          document.getElementById('hub-monitor-events-panel').open = false;
+          document.getElementById('hub-monitor-events').replaceChildren();
           document.getElementById('hub-device-state').replaceChildren();
           document.getElementById('hub-installation-summary').replaceChildren();
           document.getElementById('component-list').replaceChildren(el('p', error.message, 'notice error'));
@@ -1401,9 +1712,8 @@
         detail.hidden = false;
         detail.replaceChildren(el('p', 'Loading device…', 'notice'));
         try {
-          const device = currentRole === 'admin'
-            ? await api(`/api/v1/nodes/${encodeURIComponent(nodeId)}`)
-            : await api('/api/v1/devices').then((devices) => devices.find((item) => item.node_id === nodeId));
+          // Viewers have nodes.read_detail; use the node detail payload so Desired/Reported are included.
+          const device = await api(`/api/v1/nodes/${encodeURIComponent(nodeId)}`);
           if (!device) throw new Error('Device is no longer registered.');
           renderDeviceDetail(device);
         } catch (error) {
@@ -1433,11 +1743,16 @@
         for (const [label, value] of [
           ['Type', device.node_type], ['Hardware revision', device.hardware_revision],
           ['Provisioning', device.provisioning_state], ['Lifecycle', device.lifecycle_state],
-          ['Availability', device.availability || 'Unknown'], ['Status', device.status],
+          ['Operational mode', device.availability || 'Unknown'], ['Status', device.status],
           ['Last seen', formatSeen(device.last_seen_at)],
         ]) addDetailField(metadata, label, value);
         summary.append(metadata);
         grid.append(summary);
+
+        const monitoringSection = el('section');
+        monitoringSection.append(el('h3', 'Health and availability'));
+        renderDeviceMonitoring(monitoringSection, device);
+        grid.append(monitoringSection);
 
         const ownership = el('section');
         ownership.append(el('h3', 'Ownership'));
@@ -1529,75 +1844,73 @@
         }
         grid.append(ownership);
 
-        if (currentRole === 'admin') {
-          const stateFields = {
-            desired: [
-              ['Firmware ID', 'firmware_id'],
-              ['Firmware version', 'firmware_version'],
-              ['Configuration version', 'config_version'],
-              ['Calibration version', 'calibration_version'],
-              ['Classifier version', 'classifier_version'],
-            ],
-            reported: [
-              ['Firmware version', 'firmware_version'],
-              ['Hardware revision', 'hardware_revision'],
-              ['Configuration version', 'config_version'],
-              ['Calibration version', 'calibration_version'],
-              ['Classifier version', 'classifier_version'],
-              ['Protocol version', 'protocol_version'],
-              ['Uptime (s)', 'uptime_s'],
-              ['Wi-Fi RSSI (dBm)', 'wifi_rssi_dbm'],
-            ],
-          };
-          const payloadOnlyFields = new Set(['wifi_rssi_dbm', 'protocol_version']);
-          const knownPayloadKeys = new Set([
-            'node_id', 'firmware_id', 'firmware_version', 'hardware_revision',
-            'config_version', 'calibration_version', 'classifier_version',
-            'protocol_version', 'uptime_s', 'wifi_rssi_dbm',
-            'pending_configuration_change',
-          ]);
-          function formatDetailValue(value) {
-            if (value === null || value === undefined || value === '') return 'Not set';
-            if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-            return String(value);
+        const stateFields = {
+          desired: [
+            ['Firmware ID', 'firmware_id'],
+            ['Firmware version', 'firmware_version'],
+            ['Configuration version', 'config_version'],
+            ['Calibration version', 'calibration_version'],
+            ['Classifier version', 'classifier_version'],
+          ],
+          reported: [
+            ['Firmware version', 'firmware_version'],
+            ['Hardware revision', 'hardware_revision'],
+            ['Configuration version', 'config_version'],
+            ['Calibration version', 'calibration_version'],
+            ['Classifier version', 'classifier_version'],
+            ['Protocol version', 'protocol_version'],
+            ['Uptime (s)', 'uptime_s'],
+            ['Wi-Fi RSSI (dBm)', 'wifi_rssi_dbm'],
+          ],
+        };
+        const payloadOnlyFields = new Set(['wifi_rssi_dbm', 'protocol_version']);
+        const knownPayloadKeys = new Set([
+          'node_id', 'firmware_id', 'firmware_version', 'hardware_revision',
+          'config_version', 'calibration_version', 'classifier_version',
+          'protocol_version', 'uptime_s', 'wifi_rssi_dbm',
+          'pending_configuration_change',
+        ]);
+        function formatDetailValue(value) {
+          if (value === null || value === undefined || value === '') return 'Not set';
+          if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+          return String(value);
+        }
+        function stateFieldValue(state, field) {
+          if (payloadOnlyFields.has(field)) {
+            const fromPayload = state.payload?.[field];
+            return fromPayload === undefined ? state[field] : fromPayload;
           }
-          function stateFieldValue(state, field) {
-            if (payloadOnlyFields.has(field)) {
-              const fromPayload = state.payload?.[field];
-              return fromPayload === undefined ? state[field] : fromPayload;
-            }
-            return state[field];
+          return state[field];
+        }
+        for (const [title, key] of [['Desired state', 'desired'], ['Reported state', 'reported']]) {
+          const panel = el('section');
+          panel.append(el('h3', title));
+          const state = device[key] || {};
+          const metadata = el('dl', undefined, 'meta');
+          for (const [label, field] of stateFields[key]) {
+            metadata.append(el('dt', label), el('dd', formatDetailValue(stateFieldValue(state, field))));
           }
-          for (const [title, key] of [['Desired state', 'desired'], ['Reported state', 'reported']]) {
-            const panel = el('section');
-            panel.append(el('h3', title));
-            const state = device[key] || {};
-            const metadata = el('dl', undefined, 'meta');
-            for (const [label, field] of stateFields[key]) {
-              metadata.append(el('dt', label), el('dd', formatDetailValue(stateFieldValue(state, field))));
-            }
-            if (key === 'desired') {
-              metadata.append(
-                el('dt', 'Pending configuration change'),
-                el('dd', formatDetailValue(device.pending_configuration_change)),
-              );
-            }
-            panel.append(metadata);
+          if (key === 'desired') {
+            metadata.append(
+              el('dt', 'Pending configuration change'),
+              el('dd', formatDetailValue(device.pending_configuration_change)),
+            );
+          }
+          panel.append(metadata);
 
-            if (key === 'reported') {
-              const payload = state.payload && typeof state.payload === 'object' ? state.payload : {};
-              const additional = Object.fromEntries(
-                Object.entries(payload).filter(([field]) => !knownPayloadKeys.has(field)),
-              );
-              if (Object.keys(additional).length > 0) {
-                const payloadDetails = document.createElement('details');
-                payloadDetails.append(el('summary', 'Additional reported values'));
-                payloadDetails.append(el('pre', JSON.stringify(additional, null, 2)));
-                panel.append(payloadDetails);
-              }
+          if (key === 'reported') {
+            const payload = state.payload && typeof state.payload === 'object' ? state.payload : {};
+            const additional = Object.fromEntries(
+              Object.entries(payload).filter(([field]) => !knownPayloadKeys.has(field)),
+            );
+            if (Object.keys(additional).length > 0) {
+              const payloadDetails = document.createElement('details');
+              payloadDetails.append(el('summary', 'Additional reported values'));
+              payloadDetails.append(el('pre', JSON.stringify(additional, null, 2)));
+              panel.append(payloadDetails);
             }
-            grid.append(panel);
           }
+          grid.append(panel);
         }
         const installation = el('section');
         installation.append(el('h3', 'Installation'));
@@ -3700,6 +4013,10 @@
         select.addEventListener('change', () => renderDevices(allDevices));
       });
       document.getElementById('refresh-hub').addEventListener('click', refreshHubStatus);
+      document.getElementById('hub-monitor-events-panel').addEventListener('toggle', () => {
+        const panel = document.getElementById('hub-monitor-events-panel');
+        if (panel.open) loadMonitoringEvents();
+      });
       document.getElementById('registration-route').addEventListener('change', updateProvisionHubUrl);
       document.getElementById('refresh-observations').addEventListener('click', refreshObservations);
       document.getElementById('refresh-users').addEventListener('click', refreshUsers);

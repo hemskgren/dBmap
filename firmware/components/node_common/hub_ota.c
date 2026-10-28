@@ -1,10 +1,15 @@
 #include "dbmap_ota.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "cJSON.h"
 #include "dbmap_hub_http.h"
+#include "dbmap_lifecycle.h"
 #include "dbmap_mqtt.h"
+#include "dbmap_nvs.h"
+#include "dbmap_wifi.h"
 #include "esp_app_format.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -17,7 +22,113 @@
 #include "sdkconfig.h"
 
 static const char *TAG = "dbmap_ota";
+static const uint32_t kOtaStatusAckTimeoutMs = 5000;
+static const uint32_t kOtaRebootCleanupMs = 500;
 static volatile bool s_in_flight;
+
+static esp_err_t publish_ota_status(
+    const dbmap_effective_t *cfg,
+    const char *event,
+    const char *ota_phase,
+    const char *previous_version,
+    const char *target_version,
+    const char *firmware_id,
+    const char *running_version,
+    bool wait_ack
+)
+{
+    if (cfg == NULL || cfg->topics.status[0] == '\0') {
+        return ESP_ERR_INVALID_STATE;
+    }
+    cJSON *o = cJSON_CreateObject();
+    if (o == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    cJSON_AddNumberToObject(o, "protocol_version", 1);
+    cJSON_AddStringToObject(o, "message_type", "ota_update");
+    cJSON_AddStringToObject(o, "event", event);
+    cJSON_AddStringToObject(o, "ota_phase", ota_phase);
+    cJSON_AddStringToObject(o, "reboot_reason", "ota");
+    cJSON_AddStringToObject(o, "node_id", cfg->identity.node_id);
+    cJSON_AddStringToObject(o, "firmware_version", running_version);
+    cJSON_AddStringToObject(o, "previous_firmware_version", previous_version);
+    cJSON_AddStringToObject(o, "target_firmware_version", target_version);
+    if (firmware_id != NULL && firmware_id[0] != '\0') {
+        cJSON_AddStringToObject(o, "firmware_id", firmware_id);
+    }
+    char *json = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    if (json == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t err;
+    if (wait_ack) {
+        err = dbmap_mqtt_publish_json_wait(cfg->topics.status, json, 1, kOtaStatusAckTimeoutMs);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "OTA status published with MQTT PUBACK (%s)", event);
+        } else if (err == ESP_ERR_TIMEOUT) {
+            ESP_LOGW(TAG, "OTA status PUBACK timeout; continuing (%s)", event);
+        } else {
+            ESP_LOGW(TAG, "OTA status publish failed (%s); continuing (%s)", esp_err_to_name(err), event);
+        }
+    } else {
+        err = dbmap_mqtt_publish_json(cfg->topics.status, json, 1);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "OTA status publish failed (%s); continuing (%s)", esp_err_to_name(err), event);
+        }
+    }
+    free(json);
+    return err;
+}
+
+static void persist_pending_and_reboot(
+    const dbmap_effective_t *cfg,
+    const char *firmware_id,
+    const char *previous_version,
+    const char *target_version
+)
+{
+    dbmap_ota_pending_t pending = {0};
+    pending.pending = true;
+    strncpy(pending.previous_version, previous_version, sizeof(pending.previous_version) - 1);
+    strncpy(pending.target_version, target_version, sizeof(pending.target_version) - 1);
+    if (firmware_id != NULL) {
+        strncpy(pending.firmware_id, firmware_id, sizeof(pending.firmware_id) - 1);
+    }
+
+    /* Persist first so a missed pre-reboot publish can still be reported after boot. */
+    esp_err_t nvs_err = dbmap_nvs_ota_pending_save(&pending);
+    if (nvs_err != ESP_OK) {
+        ESP_LOGW(TAG, "could not persist pending OTA record (%s); rebooting anyway", esp_err_to_name(nvs_err));
+    }
+
+    if (dbmap_mqtt_is_connected()) {
+        (void)publish_ota_status(
+            cfg,
+            "install_succeeded",
+            "installed_pending_reboot",
+            previous_version,
+            target_version,
+            firmware_id,
+            previous_version,
+            true
+        );
+    } else {
+        ESP_LOGW(TAG, "MQTT unavailable before OTA reboot; pending record retained for post-boot report");
+    }
+
+    /* After the install report (and bounded PUBACK), freeze reconnects and
+     * treat teardown as expected. Cleanup is strictly time-bounded. */
+    dbmap_lifecycle_enter_ota_reboot_pending();
+    dbmap_mqtt_prepare_ota_reboot();
+    dbmap_wifi_prepare_ota_reboot();
+    vTaskDelay(pdMS_TO_TICKS(kOtaRebootCleanupMs));
+
+    ESP_LOGI(TAG, "OTA success; restarting into %s (was %s)", target_version, previous_version);
+    s_in_flight = false;
+    esp_restart();
+}
 
 static int hex_nibble(char c)
 {
@@ -275,38 +386,100 @@ esp_err_t dbmap_ota_apply(
         return err;
     }
 
-    ESP_LOGI(TAG, "OTA success; restarting into %s (%s)", new_app.version, update->label);
-    s_in_flight = false;
-    esp_restart();
+    persist_pending_and_reboot(cfg, firmware_id, CONFIG_DBMAP_FIRMWARE_VERSION, new_app.version);
     return ESP_OK;
 }
 
-void dbmap_ota_mark_valid_after_mqtt(void)
+void dbmap_ota_report_pending_boot(const dbmap_effective_t *cfg)
+{
+    dbmap_ota_pending_t pending = {0};
+    if (dbmap_nvs_ota_pending_load(&pending) != ESP_OK || !pending.pending) {
+        return;
+    }
+    if (!dbmap_mqtt_is_connected()) {
+        return;
+    }
+
+    const char *running = CONFIG_DBMAP_FIRMWARE_VERSION;
+    if (strcmp(running, pending.target_version) == 0) {
+        ESP_LOGI(
+            TAG,
+            "OTA boot confirmed: %s -> %s",
+            pending.previous_version,
+            running
+        );
+        (void)publish_ota_status(
+            cfg,
+            "boot_confirmed",
+            "boot_confirmed",
+            pending.previous_version,
+            pending.target_version,
+            pending.firmware_id,
+            running,
+            true
+        );
+        (void)dbmap_nvs_ota_pending_clear();
+        return;
+    }
+
+    ESP_LOGW(
+        TAG,
+        "OTA pending target %s but running %s (previous %s); clearing pending record",
+        pending.target_version,
+        running,
+        pending.previous_version
+    );
+    (void)publish_ota_status(
+        cfg,
+        "boot_mismatch",
+        "boot_mismatch",
+        pending.previous_version,
+        pending.target_version,
+        pending.firmware_id,
+        running,
+        false
+    );
+    (void)dbmap_nvs_ota_pending_clear();
+}
+
+void dbmap_ota_mark_valid_after_mqtt(const dbmap_effective_t *cfg)
 {
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (running == NULL) {
         return;
     }
     esp_ota_img_states_t state;
-    if (esp_ota_get_state_partition(running, &state) != ESP_OK) {
-        return;
-    }
-    if (state != ESP_OTA_IMG_PENDING_VERIFY) {
-        return;
+    bool pending_verify = false;
+    if (esp_ota_get_state_partition(running, &state) == ESP_OK) {
+        pending_verify = state == ESP_OTA_IMG_PENDING_VERIFY;
     }
 
-    ESP_LOGI(TAG, "pending OTA verify; waiting for MQTT before marking app valid");
+    if (pending_verify) {
+        ESP_LOGI(TAG, "pending OTA verify; waiting for MQTT before marking app valid");
+    }
+
     for (int i = 0; i < 60; i++) {
         if (dbmap_mqtt_is_connected()) {
-            esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
-            if (err == ESP_OK) {
-                ESP_LOGI(TAG, "OTA image marked valid; rollback cancelled");
-            } else {
-                ESP_LOGW(TAG, "could not mark OTA image valid (%s); leaving rollback to bootloader", esp_err_to_name(err));
+            if (pending_verify) {
+                esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+                if (err == ESP_OK) {
+                    ESP_LOGI(TAG, "OTA image marked valid; rollback cancelled");
+                } else {
+                    ESP_LOGW(
+                        TAG,
+                        "could not mark OTA image valid (%s); leaving rollback to bootloader",
+                        esp_err_to_name(err)
+                    );
+                }
             }
+            /* Installed != booted: confirm running version against NVS pending record. */
+            dbmap_ota_report_pending_boot(cfg);
             return;
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
-    ESP_LOGW(TAG, "MQTT not up within 60s after OTA boot; leaving rollback to bootloader");
+    if (pending_verify) {
+        ESP_LOGW(TAG, "MQTT not up within 60s after OTA boot; leaving rollback to bootloader");
+    }
+    /* Keep NVS pending so a later successful MQTT session can still report. */
 }

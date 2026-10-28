@@ -1,19 +1,25 @@
 #include "dbmap_desired.h"
 
+#include "dbmap_diag.h"
+
 #include <stdio.h>
 #include <string.h>
 
 #include "cJSON.h"
+#include "dbmap_backoff.h"
 #include "dbmap_hub_http.h"
 #include "dbmap_ota.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_random.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "dbmap_desired";
 static const int kPollMs = 60 * 60 * 1000;
+static const int kMaxTransientRetries = 3;
 
 enum {
     kLogNone = 0,
@@ -28,6 +34,17 @@ enum {
 static int s_logged = kLogNone;
 static char s_logged_id[64];
 static char s_logged_version[32];
+static dbmap_backoff_t s_https_backoff;
+
+static int64_t now_ms(void)
+{
+    return esp_timer_get_time() / 1000;
+}
+
+static uint32_t https_rand32(void)
+{
+    return esp_random();
+}
 
 static esp_err_t collect_body(esp_http_client_handle_t client, char *buf, int buf_len)
 {
@@ -64,14 +81,32 @@ static void log_once(int kind, const char *firmware_id, const char *firmware_ver
     }
 }
 
-static void check_desired(dbmap_effective_t *cfg)
+static bool http_status_retryable(int status)
+{
+    return status == 408 || status == 425 || status == 429 || status >= 500;
+}
+
+static bool http_status_permanent(int status)
+{
+    return status == 400 || status == 401 || status == 403 || status == 404 || status == 405 ||
+           status == 410 || status == 422;
+}
+
+typedef enum {
+    kDesiredOk = 0,
+    kDesiredTransient,
+    kDesiredPermanent,
+    kDesiredSkip,
+} desired_result_t;
+
+static desired_result_t check_desired_once(dbmap_effective_t *cfg)
 {
     if (cfg->device_api_token[0] == '\0') {
         if (s_logged != kLogAbsent) {
             ESP_LOGW(TAG, "device API credential absent; desired check skipped");
             log_once(kLogAbsent, NULL, NULL);
         }
-        return;
+        return kDesiredSkip;
     }
 
     char url[192];
@@ -81,7 +116,7 @@ static void check_desired(dbmap_effective_t *cfg)
             ESP_LOGW(TAG, "desired check skipped; keeping running firmware %s", CONFIG_DBMAP_FIRMWARE_VERSION);
             log_once(kLogDown, NULL, NULL);
         }
-        return;
+        return kDesiredTransient;
     }
 
     esp_http_client_config_t http_cfg = {
@@ -92,11 +127,12 @@ static void check_desired(dbmap_effective_t *cfg)
     };
     esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
     if (client == NULL) {
+        dbmap_diag_note_desired_failure();
         if (s_logged != kLogDown) {
             ESP_LOGW(TAG, "desired check failed; keeping running firmware %s", CONFIG_DBMAP_FIRMWARE_VERSION);
             log_once(kLogDown, NULL, NULL);
         }
-        return;
+        return kDesiredTransient;
     }
 
     char authorization[DBMAP_TOKEN_MAX + 8];
@@ -105,37 +141,47 @@ static void check_desired(dbmap_effective_t *cfg)
     err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
         esp_http_client_cleanup(client);
+        dbmap_diag_note_desired_failure();
         if (s_logged != kLogDown) {
             ESP_LOGW(TAG, "desired check unreachable (%s); keeping running firmware %s", esp_err_to_name(err), CONFIG_DBMAP_FIRMWARE_VERSION);
             log_once(kLogDown, NULL, NULL);
         }
-        return;
+        return kDesiredTransient;
     }
     (void)esp_http_client_fetch_headers(client);
     char body[768];
     if (collect_body(client, body, sizeof(body)) != ESP_OK) {
         esp_http_client_cleanup(client);
+        dbmap_diag_note_desired_failure();
         if (s_logged != kLogDown) {
             ESP_LOGW(TAG, "desired check response failed; keeping running firmware %s", CONFIG_DBMAP_FIRMWARE_VERSION);
             log_once(kLogDown, NULL, NULL);
         }
-        return;
+        return kDesiredTransient;
     }
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
-    if (status == 401 || status == 403) {
-        if (s_logged != kLogRejected) {
-            ESP_LOGW(TAG, "desired check rejected (HTTP %d); keeping running firmware %s", status, CONFIG_DBMAP_FIRMWARE_VERSION);
-            log_once(kLogRejected, NULL, NULL);
+
+    if (http_status_permanent(status)) {
+        dbmap_diag_note_desired_failure();
+        if (status == 401 || status == 403) {
+            if (s_logged != kLogRejected) {
+                ESP_LOGW(TAG, "desired check rejected (HTTP %d); keeping running firmware %s", status, CONFIG_DBMAP_FIRMWARE_VERSION);
+                log_once(kLogRejected, NULL, NULL);
+            }
+        } else if (s_logged != kLogDown) {
+            ESP_LOGW(TAG, "desired check failed (HTTP %d); keeping running firmware %s", status, CONFIG_DBMAP_FIRMWARE_VERSION);
+            log_once(kLogDown, NULL, NULL);
         }
-        return;
+        return kDesiredPermanent;
     }
     if (status != 200) {
+        dbmap_diag_note_desired_failure();
         if (s_logged != kLogDown) {
             ESP_LOGW(TAG, "desired check failed (HTTP %d); keeping running firmware %s", status, CONFIG_DBMAP_FIRMWARE_VERSION);
             log_once(kLogDown, NULL, NULL);
         }
-        return;
+        return http_status_retryable(status) ? kDesiredTransient : kDesiredPermanent;
     }
 
     cJSON *json = cJSON_Parse(body);
@@ -144,7 +190,7 @@ static void check_desired(dbmap_effective_t *cfg)
             ESP_LOGW(TAG, "desired check returned invalid JSON; keeping running firmware %s", CONFIG_DBMAP_FIRMWARE_VERSION);
             log_once(kLogDown, NULL, NULL);
         }
-        return;
+        return kDesiredTransient;
     }
     const cJSON *firmware_id = cJSON_GetObjectItem(json, "firmware_id");
     const cJSON *firmware_version = cJSON_GetObjectItem(json, "firmware_version");
@@ -163,7 +209,7 @@ static void check_desired(dbmap_effective_t *cfg)
             log_once(kLogEmpty, NULL, NULL);
         }
         cJSON_Delete(json);
-        return;
+        return kDesiredOk;
     }
     if (strcmp(desired_version, CONFIG_DBMAP_FIRMWARE_VERSION) == 0) {
         if (s_logged != kLogMatch || strcmp(s_logged_version, desired_version) != 0) {
@@ -171,7 +217,7 @@ static void check_desired(dbmap_effective_t *cfg)
             log_once(kLogMatch, desired_id, desired_version);
         }
         cJSON_Delete(json);
-        return;
+        return kDesiredOk;
     }
 
     if (s_logged != kLogMismatch || strcmp(s_logged_id, desired_id) != 0 || strcmp(s_logged_version, desired_version) != 0) {
@@ -195,6 +241,9 @@ static void check_desired(dbmap_effective_t *cfg)
                 esp_err_to_name(ota_err),
                 CONFIG_DBMAP_FIRMWARE_VERSION
             );
+            cJSON_Delete(json);
+            /* Do not auto-retry OTA in a tight loop; wait for the next poll. */
+            return kDesiredPermanent;
         }
     } else {
         ESP_LOGW(
@@ -205,11 +254,38 @@ static void check_desired(dbmap_effective_t *cfg)
         );
     }
     cJSON_Delete(json);
+    return kDesiredOk;
+}
+
+static void check_desired(dbmap_effective_t *cfg)
+{
+    for (int attempt = 0; attempt <= kMaxTransientRetries; ++attempt) {
+        desired_result_t result = check_desired_once(cfg);
+        if (result == kDesiredOk || result == kDesiredSkip) {
+            dbmap_backoff_reset(&s_https_backoff);
+            return;
+        }
+        if (result == kDesiredPermanent) {
+            dbmap_backoff_note_failure(&s_https_backoff, now_ms());
+            return;
+        }
+        dbmap_backoff_note_failure(&s_https_backoff, now_ms());
+        if (attempt == kMaxTransientRetries) {
+            return;
+        }
+        uint32_t delay = dbmap_backoff_delay_ms(&s_https_backoff, https_rand32);
+        ESP_LOGI(TAG, "desired transient failure; retry in %lu ms", (unsigned long)delay);
+        /* Dedicated Desired task only — does not block audio / MQTT callbacks. */
+        vTaskDelay(pdMS_TO_TICKS(delay));
+    }
 }
 
 static void poll_task(void *arg)
 {
     dbmap_effective_t *cfg = arg;
+    dbmap_backoff_config_t bo_cfg;
+    dbmap_backoff_config_https(&bo_cfg);
+    dbmap_backoff_init(&s_https_backoff, &bo_cfg);
     while (1) {
         check_desired(cfg);
         vTaskDelay(pdMS_TO_TICKS(kPollMs));
