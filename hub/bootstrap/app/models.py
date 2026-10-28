@@ -132,6 +132,9 @@ class Node(Base):
     node_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     node_type: Mapped[str] = mapped_column(String(16))  # ear | output
     hardware_revision: Mapped[str] = mapped_column(String(64), default="unknown")
+    # Unique when set (partial index created in db._migrate_node_chip_identity).
+    chip_mac: Mapped[str | None] = mapped_column(String(17), nullable=True, index=True)
+    chip_variant: Mapped[str | None] = mapped_column(String(128), nullable=True)
     provisioning_state: Mapped[str] = mapped_column(String(32), default="pending")
     lifecycle_state: Mapped[str] = mapped_column(String(16), default="active")
     recovery_opened_at: Mapped[datetime | None] = mapped_column(

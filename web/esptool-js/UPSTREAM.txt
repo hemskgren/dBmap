@@ -1,0 +1,9 @@
+esptool-js browser assets for USB chip/MAC inspection
+
+Package: esptool-js 0.7.0
+Source: https://github.com/espressif/esptool-js/releases/tag/v0.7.0
+Download: https://github.com/espressif/esptool-js/releases/download/v0.7.0/esptool-js-0.7.0.tgz
+License: Apache-2.0 (see LICENSE)
+
+Vendored files: bundle.js (ES module build from the release tarball).
+Used only for Device Registration chip identification; flashing remains ESP Web Tools.

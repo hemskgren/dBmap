@@ -332,6 +332,8 @@ def list_devices(db: Session = Depends(get_db)) -> list[DeviceSummaryView]:
             node_id=node.node_id,
             node_type=node.node_type,
             hardware_revision=node.hardware_revision,
+            chip_mac=node.chip_mac,
+            chip_variant=node.chip_variant,
             provisioning_state=node.provisioning_state,
             lifecycle_state=node.lifecycle_state,
             status=node.status,
@@ -1024,6 +1026,14 @@ def create_node(
             status_code=409,
             detail=f"registration already completed for this attempt as {exc.node_id}; bootstrap token cannot be recovered",
         ) from None
+    except service.DuplicateChipMac as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"chip MAC {exc.chip_mac} is already registered as {exc.node_id}; "
+                "use that device or confirm an intentional replacement"
+            ),
+        ) from None
 
 
 @router.get(
@@ -1033,6 +1043,20 @@ def create_node(
 )
 def list_nodes(db: Session = Depends(get_db)) -> list[NodeView]:
     return service.list_nodes(db)
+
+
+@router.get(
+    "/api/v1/nodes/by-chip-mac/{chip_mac}",
+    response_model=NodeView,
+    dependencies=[Depends(require_policy("nodes.read_detail", "nodes"))],
+)
+def get_node_by_chip_mac(chip_mac: str, db: Session = Depends(get_db)) -> NodeView:
+    try:
+        return service.get_node_by_chip_mac(db, chip_mac)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except KeyError:
+        raise HTTPException(status_code=404, detail="unknown chip MAC") from None
 
 
 @router.get(

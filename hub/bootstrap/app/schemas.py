@@ -5,9 +5,23 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+def normalize_chip_mac(value: str | None) -> str | None:
+    if value is None:
+        return None
+    hex_digits = "".join(character for character in value if character.isalnum())
+    if len(hex_digits) != 12 or any(
+        character not in "0123456789abcdefABCDEF" for character in hex_digits
+    ):
+        raise ValueError("chip_mac must be a 12-digit hexadecimal MAC address")
+    pairs = [hex_digits[index : index + 2].upper() for index in range(0, 12, 2)]
+    return ":".join(pairs)
+
+
 class CreateNodeRequest(BaseModel):
     node_type: Literal["ear", "output"] = "output"
     hardware_revision: str = "unknown"
+    chip_mac: str | None = Field(default=None, max_length=32)
+    chip_variant: str | None = Field(default=None, max_length=128)
     firmware_id: str | None = Field(
         default=None,
         min_length=1,
@@ -19,6 +33,24 @@ class CreateNodeRequest(BaseModel):
     simulated: bool = False
     owner_type: Literal["user", "group"] | None = None
     owner_id: str | None = None
+    replace_existing_chip_mac: bool = False
+
+    @field_validator("chip_mac")
+    @classmethod
+    def validate_chip_mac(cls, value: str | None) -> str | None:
+        return normalize_chip_mac(value)
+
+    @field_validator("chip_variant")
+    @classmethod
+    def normalize_chip_variant(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if len(normalized) > 128:
+            raise ValueError("chip_variant must be at most 128 characters")
+        return normalized
 
     @model_validator(mode="after")
     def validate_creation_options(self) -> "CreateNodeRequest":
@@ -385,6 +417,8 @@ class NodeView(BaseModel):
     node_id: str
     node_type: str
     hardware_revision: str
+    chip_mac: str | None = None
+    chip_variant: str | None = None
     provisioning_state: str
     lifecycle_state: Literal["active", "deactivated"]
     availability: str
@@ -404,6 +438,8 @@ class DeviceSummaryView(BaseModel):
     node_id: str
     node_type: str
     hardware_revision: str
+    chip_mac: str | None = None
+    chip_variant: str | None = None
     provisioning_state: str
     lifecycle_state: Literal["active", "deactivated"]
     status: Literal["online", "offline"]

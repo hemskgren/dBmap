@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     compose_project: str = ""
     hub_monitor_enabled: bool = True
     hub_monitor_interval_s: float = Field(default=60.0, ge=5.0, le=3600.0)
-    hub_monitor_retention_days: int = Field(default=90, ge=30, le=90)
+    hub_monitor_retention_days: int = Field(default=30, ge=30, le=90)
 
     # Device connectivity / Hub-observed availability (D0). Tunable via .env.
     device_online_window_s: float = Field(default=90.0, ge=30.0, le=600.0)

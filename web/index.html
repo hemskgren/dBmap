@@ -116,6 +116,14 @@
       #tab-devices th, #tab-devices td { padding: 0.45rem 0.55rem; }
       #admin-panel { max-width: 960px; padding: 0.75rem; }
       #admin-panel input[type="checkbox"] { width: auto; margin-right: 0.35rem; }
+      #device-registration-panel > summary {
+        cursor: pointer;
+        font-size: 1.15rem;
+        font-weight: 700;
+        list-style-position: outside;
+      }
+      #device-registration-panel[open] { padding-bottom: 0.25rem; }
+      #device-registration-panel > .registration-body { margin-top: 0.65rem; }
       #firmware-upload-form { display: flex; flex-wrap: wrap; align-items: end; gap: 0.5rem; }
       #firmware-upload-form label { flex: 1 1 16rem; margin: 0; }
       #tab-firmware input:not([type="checkbox"]) { padding: 0.45rem 0.58rem; font-size: 0.94rem; }
@@ -317,10 +325,12 @@
             <dl id="hub-installation-summary" class="meta"><dt>Completed</dt><dd>Loading…</dd><dt>Missing, incomplete, or invalid installations</dt><dd>Loading…</dd></dl>
           </section>
           <section id="admin-panel" hidden>
-            <h2>Device registration</h2>
-            <p>Step 1: select a USB serial port, read its dBmap identity, assign its owner, and enter its Wi-Fi details. USB IDs identify only the serial adapter; browser-based firmware building and flashing are not part of this step.</p>
+            <details id="device-registration-panel">
+              <summary>Device registration</summary>
+              <div class="registration-body">
+            <p>USB-first deployment: inspect the ESP chip and MAC, configure owner and firmware, flash, then create the Hub record and provision NVS. Adapter VID/PID is diagnostic only; chip identity comes from the bootloader.</p>
             <div class="actions">
-              <button id="inspect-device" class="secondary" type="button">Read USB device identity</button>
+              <button id="inspect-device" class="secondary" type="button">Inspect USB chip</button>
               <button id="usb-console-launch" class="secondary" type="button">Logs &amp; Console</button>
               <span id="usb-inspection-status" class="notice" role="status">USB inspection has not been started.</span>
             </div>
@@ -341,12 +351,19 @@
             <dl id="usb-inspection-details" class="meta" hidden></dl>
             <label id="confirm-new-device-label" hidden>
               <input id="confirm-new-device" type="checkbox">
-              The device identity could not be read; I have verified this is a new supported device and want to register it.
+              Chip or dBmap identity could not be fully read; I have verified this is a new supported device and want to continue.
             </label>
             <label id="confirm-replacement-label" hidden>
               <input id="confirm-replacement" type="checkbox">
               I intentionally want a replacement dBmap registration. I will deactivate the existing Hub node first if it may still be operating.
             </label>
+            <section id="existing-device-deploy" hidden>
+              <h3>Existing device</h3>
+              <p id="existing-device-deploy-status" class="notice" role="status">This USB identity is already registered.</p>
+              <div class="actions">
+                <button id="existing-device-open" class="secondary" type="button">Open device details</button>
+              </div>
+            </section>
             <form id="create-panel">
               <label for="node-type">Register device
                 <select id="node-type">
@@ -381,29 +398,41 @@
                   <option value="local">Local Hub</option>
                 </select>
               </label>
-              <button type="submit" disabled>Create device</button>
+              <button type="submit" disabled>Flash firmware (then register)</button>
             </form>
             <p id="registration-firmware-status" class="notice" aria-live="polite">Checking for registered firmware compatible with the selected device type…</p>
-            <p id="create-status" class="notice" aria-live="polite">The Wi-Fi password is collected for this step only; it is not sent to or stored by the Hub.</p>
-            <div id="created-token" hidden role="status"></div>
+            <p id="create-status" class="notice" aria-live="polite">The Wi-Fi password is collected for this step only; it is not sent to or stored by the Hub. The Hub device record is created after a successful flash.</p>
             <section id="registration-flash-step" hidden aria-labelledby="registration-flash-title">
               <h3 id="registration-flash-title">Flash firmware</h3>
-              <p>Connect the registered device over USB and install its selected firmware with ESP Web Tools. Leave “Erase device” unchecked to preserve device data.</p>
+              <p>Install the selected firmware with ESP Web Tools before the Hub creates the device record. Leave “Erase device” unchecked unless you intend to wipe NVS.</p>
               <div id="registration-flash-launch"></div>
               <p id="registration-flash-status" class="notice" role="status" aria-live="polite">Ready to flash.</p>
-            </section>
-            <section id="registration-provision-step" hidden aria-labelledby="registration-provision-title">
-              <h3 id="registration-provision-title">Provision configuration</h3>
-              <p>Close the ESP Web Tools dialog, then send the selected Wi-Fi and Hub settings to this same device over USB. Press Reset after the port opens if the device prompt does not appear. This confirms the NVS write; Hub connection verification is skipped.</p>
-              <div class="actions">
-                <button id="registration-provision-button" type="button" disabled>Send configuration over USB</button>
-                <span id="registration-provision-status" class="notice" role="status" aria-live="polite">Flash the firmware first.</span>
+              <div class="actions" id="registration-finalize-actions" hidden>
+                <button id="registration-finalize-button" type="button">Register device and continue</button>
               </div>
             </section>
+            <div id="created-token" hidden role="status"></div>
+            <section id="registration-provision-step" hidden aria-labelledby="registration-provision-title">
+              <h3 id="registration-provision-title">Provision configuration</h3>
+              <p>Close the ESP Web Tools dialog, then send Wi-Fi and Hub settings over USB. After NVS accepts the configuration the firmware restarts itself (no browser reset pulse). Hub online verification stays pending until the board calls home.</p>
+              <div class="actions">
+                <button id="registration-provision-button" type="button" disabled>Send configuration over USB</button>
+                <span id="registration-provision-status" class="notice" role="status" aria-live="polite">Flash and register the device first.</span>
+              </div>
+            </section>
+            <dialog id="registration-complete-dialog" class="usb-console-dialog" aria-labelledby="registration-complete-title">
+              <h3 id="registration-complete-title">Registration complete</h3>
+              <p id="registration-complete-message" class="notice success" role="status"></p>
+              <div class="actions">
+                <button id="registration-complete-dismiss" type="button">OK</button>
+              </div>
+            </dialog>
             <details id="build-handoff" hidden>
               <summary>Handoff preview</summary>
               <p class="notice">This allowlisted preview excludes Wi-Fi credentials, the bootstrap token, the Hub access token, and the device API token. The device API token is issued once at HTTPS provisioning and stored only in device NVS.</p>
               <pre id="build-handoff-json"></pre>
+            </details>
+              </div>
             </details>
           </section>
           <section>
@@ -1742,6 +1771,8 @@
         const metadata = el('dl', undefined, 'meta');
         for (const [label, value] of [
           ['Type', device.node_type], ['Hardware revision', device.hardware_revision],
+          ['Chip variant', device.chip_variant || 'Not recorded'],
+          ['Chip MAC', device.chip_mac || 'Not recorded'],
           ['Provisioning', device.provisioning_state], ['Lifecycle', device.lifecycle_state],
           ['Operational mode', device.availability || 'Unknown'], ['Status', device.status],
           ['Last seen', formatSeen(device.last_seen_at)],
@@ -2238,6 +2269,19 @@
       const wifiSsidInput = document.getElementById('wifi-ssid');
       const wifiPasswordInput = document.getElementById('wifi-password');
       const createSubmitButton = document.querySelector('#create-panel button[type="submit"]');
+      try {
+        const cachedSsid = localStorage.getItem('dbmap-wifi-ssid');
+        if (cachedSsid && !wifiSsidInput.value) wifiSsidInput.value = cachedSsid;
+      } catch {
+        /* ignore */
+      }
+      wifiSsidInput.addEventListener('change', () => {
+        try {
+          if (wifiSsidInput.value) localStorage.setItem('dbmap-wifi-ssid', wifiSsidInput.value);
+        } catch {
+          /* ignore */
+        }
+      });
       const registrationFirmwareSelect = document.getElementById('registration-firmware');
       const registrationFirmwareStatus = document.getElementById('registration-firmware-status');
       const confirmNewDevice = document.getElementById('confirm-new-device');
@@ -2248,11 +2292,21 @@
       const usbInspectionDetails = document.getElementById('usb-inspection-details');
       let inspectedSerialPort = null;
       let inspectedUsbMetadata = null;
+      let inspectedChipInfo = null;
       let detectedNodeId = '';
+      let existingRegisteredNode = null;
       let pendingRegistrationKey = sessionStorage.getItem('dbmap-pending-registration-key') || '';
       let registrationFlashInProgress = false;
       let registrationFlashBlobUrls = [];
       let pendingRegistrationProvisioning = null;
+      let registrationFlashSucceeded = false;
+      let deploymentSession = (() => {
+        try {
+          return JSON.parse(sessionStorage.getItem('dbmap-deployment-session') || 'null');
+        } catch {
+          return null;
+        }
+      })();
       let usbConsolePort = null;
       let usbConsoleReader = null;
       let usbConsoleKeepReading = false;
@@ -2405,22 +2459,91 @@
       }
       syncUsbConsoleControls(false);
 
+      function saveDeploymentSession(patch) {
+        deploymentSession = { ...(deploymentSession || {}), ...patch, updated_at: new Date().toISOString() };
+        const safe = { ...deploymentSession };
+        delete safe.wifi_password;
+        delete safe.bootstrap_token;
+        sessionStorage.setItem('dbmap-deployment-session', JSON.stringify(safe));
+      }
+
+      function clearDeploymentSession() {
+        deploymentSession = null;
+        sessionStorage.removeItem('dbmap-deployment-session');
+      }
+
+      function completeRegistrationWorkflow(nodeId) {
+        // End the deploy cycle so "Flash firmware (then register)" cannot
+        // immediately create another Hub node from the same completed flash.
+        registrationFlashSucceeded = false;
+        pendingRegistrationProvisioning = null;
+        pendingRegistrationKey = '';
+        sessionStorage.removeItem('dbmap-pending-registration-key');
+        clearDeploymentSession();
+        confirmReplacement.checked = false;
+        confirmNewDevice.checked = false;
+        confirmNewDeviceLabel.hidden = true;
+        if (nodeId) {
+          detectedNodeId = nodeId;
+          const known = allDevices.find((device) => device.node_id === nodeId);
+          existingRegisteredNode = known || {
+            node_id: nodeId,
+            node_type: document.getElementById('node-type').value,
+            lifecycle_state: 'active',
+            status: 'offline',
+            owner_display_name: document.getElementById('create-owner-id').selectedOptions[0]?.dataset.ownerName || null,
+          };
+          confirmReplacementLabel.hidden = false;
+          const existingPanel = document.getElementById('existing-device-deploy');
+          if (existingPanel) {
+            existingPanel.hidden = false;
+            document.getElementById('existing-device-deploy-status').textContent =
+              `${nodeId} registration finished. Open device details, or inspect again for another board. Replacement stays available only if you explicitly confirm it.`;
+          }
+        }
+        document.getElementById('registration-finalize-actions').hidden = true;
+        document.getElementById('create-status').textContent = nodeId
+          ? `${nodeId} is complete. Start a new USB inspection before registering another device.`
+          : 'Registration is complete. Start a new USB inspection before registering another device.';
+        document.getElementById('create-status').className = 'notice';
+        syncCreateButton();
+      }
+
+      function identityAllowsNewRegistration() {
+        if (existingRegisteredNode && !confirmReplacement.checked) return false;
+        if (inspectedChipInfo?.macAddress) {
+          if (detectedNodeId === 'UNPROVISIONED' || detectedNodeId === '') return true;
+          return confirmReplacement.checked;
+        }
+        if (detectedNodeId === 'UNPROVISIONED') return true;
+        if (detectedNodeId && confirmReplacement.checked) return true;
+        if (!detectedNodeId && confirmNewDevice.checked) return true;
+        return false;
+      }
+
       function syncCreateButton() {
         validateWifiSsid();
-        const identityAllowsCreate = detectedNodeId === 'UNPROVISIONED'
-          || (detectedNodeId && confirmReplacement.checked)
-          || (!detectedNodeId && confirmNewDevice.checked);
+        const existingPanel = document.getElementById('existing-device-deploy');
+        if (existingPanel) {
+          existingPanel.hidden = !(existingRegisteredNode && !confirmReplacement.checked);
+        }
         createSubmitButton.disabled = !(
           createOwnersReady
           && registrationFirmwareReady
           && registrationFirmwareId
           && inspectedSerialPort
-          && identityAllowsCreate
+          && inspectedChipInfo
+          && identityAllowsNewRegistration()
           && document.getElementById('create-owner-id').value
           && wifiSsidInput.value
           && wifiPasswordInput.value
           && !wifiSsidInput.validity.customError
         );
+        if (registrationFlashSucceeded && !pendingRegistrationProvisioning) {
+          createSubmitButton.textContent = 'Register device (flash already done)';
+        } else {
+          createSubmitButton.textContent = 'Flash firmware (then register)';
+        }
       }
 
       function validateWifiSsid() {
@@ -2442,16 +2565,99 @@
       function clearUsbInspection(message) {
         inspectedSerialPort = null;
         inspectedUsbMetadata = null;
+        inspectedChipInfo = null;
         detectedNodeId = '';
+        existingRegisteredNode = null;
+        registrationFlashSucceeded = false;
         confirmNewDevice.checked = false;
         confirmReplacement.checked = false;
         confirmNewDeviceLabel.hidden = true;
         confirmReplacementLabel.hidden = true;
+        const existingPanel = document.getElementById('existing-device-deploy');
+        if (existingPanel) existingPanel.hidden = true;
+        const finalizeActions = document.getElementById('registration-finalize-actions');
+        if (finalizeActions) finalizeActions.hidden = true;
         usbInspectionDetails.hidden = true;
         usbInspectionDetails.replaceChildren();
         usbInspectionStatus.textContent = message;
         usbInspectionStatus.className = 'notice';
         syncCreateButton();
+      }
+
+      async function pulseSerialReset(port) {
+        // Console "Reset" keeps the historical download-friendly pulse for
+        // manual recovery; identity reads use resetEspIntoApp instead.
+        if (!port?.setSignals) return;
+        await port.setSignals({ dataTerminalReady: false, requestToSend: true });
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+        await port.setSignals({ dataTerminalReady: true, requestToSend: false });
+      }
+
+      async function readDeviceIdentity(port, onPortOpen = () => {}, timeoutMs = 15000) {
+        const { resetEspIntoApp } = await import(`${publicBasePath}/usb-chip-inspect.js`);
+        await port.open({ baudRate: 115200 });
+        onPortOpen();
+        try {
+          await resetEspIntoApp(port);
+        } catch {
+          /* some adapters reject setSignals; user can still press Reset */
+        }
+        const reader = port.readable.getReader();
+        const decoder = new TextDecoder();
+        let output = '';
+        const deadline = Date.now() + timeoutMs;
+        try {
+          while (Date.now() < deadline) {
+            let timeoutId;
+            const result = await Promise.race([
+              reader.read(),
+              new Promise((_, reject) => {
+                timeoutId = window.setTimeout(
+                  () => reject(new Error('Timed out waiting for device identity.')),
+                  Math.max(1, deadline - Date.now()),
+                );
+              }),
+            ]).finally(() => window.clearTimeout(timeoutId));
+            if (result.done) break;
+            output += decoder.decode(result.value, { stream: true });
+            if (/waiting for download|DOWNLOAD_BOOT/i.test(output)) {
+              throw new Error(
+                'The board stayed in download/bootloader mode instead of running firmware. Press the physical Reset button and inspect again.',
+              );
+            }
+            const match = output.match(/DBMAP_DEVICE_ID=([A-Z0-9][A-Z0-9_-]{0,63})(?:\r?\n|$)/);
+            if (match) return match[1];
+            output = output.slice(-4096);
+          }
+        } finally {
+          await reader.cancel().catch(() => {});
+          reader.releaseLock();
+          if (port?.setSignals) {
+            await port.setSignals({ dataTerminalReady: false, requestToSend: false }).catch(() => {});
+          }
+          await port.close().catch(() => {});
+        }
+        throw new Error(
+          `No dBmap identity was received within ${Math.round(timeoutMs / 1000)} seconds. If the board just left the bootloader, press Reset once and try Inspect again.`,
+        );
+      }
+
+      async function resolveExistingRegistration({ nodeId, chipMac }) {
+        if (nodeId && nodeId !== 'UNPROVISIONED') {
+          try {
+            return await api(`/api/v1/nodes/${encodeURIComponent(nodeId)}`);
+          } catch (error) {
+            if (!error.message.includes('unknown node')) throw error;
+          }
+        }
+        if (chipMac) {
+          try {
+            return await api(`/api/v1/nodes/by-chip-mac/${encodeURIComponent(chipMac)}`);
+          } catch (error) {
+            if (!/unknown chip MAC|404/i.test(error.message)) throw error;
+          }
+        }
+        return null;
       }
 
       if (!navigator.serial) {
@@ -2466,44 +2672,20 @@
         });
       }
 
-      async function readDeviceIdentity(port, onPortOpen = () => {}) {
-        await port.open({ baudRate: 115200 });
-        onPortOpen();
-        const reader = port.readable.getReader();
-        const decoder = new TextDecoder();
-        let output = '';
-        const deadline = Date.now() + 30000;
-        try {
-          while (Date.now() < deadline) {
-            let timeoutId;
-            const result = await Promise.race([
-              reader.read(),
-              new Promise((_, reject) => {
-                timeoutId = window.setTimeout(() => reject(new Error('Timed out waiting for device identity.')), deadline - Date.now());
-              }),
-            ]).finally(() => window.clearTimeout(timeoutId));
-            if (result.done) break;
-            output += decoder.decode(result.value, { stream: true });
-            const match = output.match(/DBMAP_DEVICE_ID=([A-Z0-9][A-Z0-9_-]{0,63})\r?\n/);
-            if (match) return match[1];
-            output = output.slice(-4096);
-          }
-        } finally {
-          await reader.cancel().catch(() => {});
-          reader.releaseLock();
-          await port.close().catch(() => {});
-        }
-        throw new Error(
-          'No dBmap identity was received within 30 seconds. Press the board reset button after the serial port opens and try again. If it still times out, confirm the board is running dBmap firmware that reports DBMAP_DEVICE_ID at 115200 baud.',
-        );
-      }
+      document.getElementById('existing-device-open')?.addEventListener('click', () => {
+        if (!existingRegisteredNode) return;
+        showDevice(existingRegisteredNode);
+      });
 
       document.getElementById('inspect-device').addEventListener('click', async (event) => {
         const button = event.currentTarget;
         button.disabled = true;
-        await stopUsbConsole('USB console closed for identity inspection. Open Logs & Console afterward to watch logs.');
+        const registrationPanel = document.getElementById('device-registration-panel');
+        if (registrationPanel) registrationPanel.open = true;
+        await stopUsbConsole('USB console closed for chip inspection. Open Logs & Console afterward to watch logs.');
         clearUsbInspection('Waiting for USB serial device selection…');
         try {
+          const { inspectEspChip } = await import(`${publicBasePath}/usb-chip-inspect.js`);
           const port = await navigator.serial.requestPort();
           const info = port.getInfo();
           inspectedSerialPort = port;
@@ -2514,35 +2696,72 @@
           addDetailField(usbInspectionDetails, 'USB serial adapter vendor ID', inspectedUsbMetadata.vendor_id);
           addDetailField(usbInspectionDetails, 'USB serial adapter product ID', inspectedUsbMetadata.product_id);
           usbInspectionDetails.hidden = false;
-          usbInspectionStatus.textContent = 'Reading dBmap identity from firmware NVS. Press the board reset button now.';
-          detectedNodeId = await readDeviceIdentity(port, () => {
-            usbInspectionStatus.textContent = 'Serial port open at 115200 baud. Press the board reset button now to report its dBmap identity.';
-          });
-          addDetailField(usbInspectionDetails, 'dBmap device identity', detectedNodeId === 'UNPROVISIONED' ? 'No dBmap node ID stored' : detectedNodeId);
-          if (detectedNodeId === 'UNPROVISIONED') {
-            usbInspectionStatus.textContent = 'Compatible firmware reports no stored dBmap identity. You can register this device as new.';
-          } else {
-            confirmReplacementLabel.hidden = false;
-            try {
-              const node = await api(`/api/v1/nodes/${encodeURIComponent(detectedNodeId)}`);
-              addDetailField(usbInspectionDetails, 'Hub registration', `Already registered (${node.node_type}, ${node.lifecycle_state}; owner: ${node.owner_display_name || 'unassigned'}).`);
-              usbInspectionStatus.textContent = 'This device is already registered on this Hub. Duplicate registration is blocked unless you explicitly request a replacement.';
-            } catch (error) {
-              if (!error.message.includes('unknown node')) throw error;
-              addDetailField(usbInspectionDetails, 'Hub registration', 'This identity is not registered on this Hub.');
-              usbInspectionStatus.textContent = 'The device reports an existing dBmap identity not found on this Hub. Creating a new registration requires explicit replacement confirmation.';
-            }
+          usbInspectionStatus.textContent = 'Syncing with the ESP bootloader to read chip variant and MAC…';
+          inspectedChipInfo = await inspectEspChip(port, { timeoutMs: 15000 });
+          addDetailField(usbInspectionDetails, 'Chip variant', inspectedChipInfo.chipVariant);
+          addDetailField(usbInspectionDetails, 'Chip family', inspectedChipInfo.chipFamily);
+          addDetailField(usbInspectionDetails, 'MAC address', inspectedChipInfo.macAddress);
+          usbInspectionStatus.textContent = 'Chip identified. Booting application firmware to read DBMAP_DEVICE_ID…';
+          detectedNodeId = '';
+          try {
+            detectedNodeId = await readDeviceIdentity(port, () => {
+              usbInspectionStatus.textContent = 'Listening for DBMAP_DEVICE_ID from running firmware…';
+            }, 20000);
+            addDetailField(
+              usbInspectionDetails,
+              'dBmap device identity',
+              detectedNodeId === 'UNPROVISIONED' ? 'No dBmap node ID stored (UNPROVISIONED)' : detectedNodeId,
+            );
+          } catch (identityError) {
+            addDetailField(
+              usbInspectionDetails,
+              'dBmap device identity',
+              identityError.message.includes('download')
+                ? 'Not reported (board stayed in bootloader)'
+                : 'Not reported yet (press Reset if firmware is installed, or board is blank)',
+            );
+            usbInspectionStatus.textContent = `${identityError.message} Chip MAC/variant remain valid; Hub lookup still uses the MAC when identity is missing.`;
           }
-          confirmNewDeviceLabel.hidden = detectedNodeId !== '';
+          existingRegisteredNode = await resolveExistingRegistration({
+            nodeId: detectedNodeId,
+            chipMac: inspectedChipInfo.macAddress,
+          });
+          if (existingRegisteredNode) {
+            confirmReplacementLabel.hidden = false;
+            addDetailField(
+              usbInspectionDetails,
+              'Hub registration',
+              `Already registered as ${existingRegisteredNode.node_id} (${existingRegisteredNode.node_type}, ${existingRegisteredNode.lifecycle_state}; owner: ${existingRegisteredNode.owner_display_name || 'unassigned'}).`,
+            );
+            document.getElementById('existing-device-deploy-status').textContent =
+              existingRegisteredNode.status === 'online'
+                ? `${existingRegisteredNode.node_id} is online. Prefer OTA when available; use Firmware tab USB flash for recovery without creating a new identity.`
+                : `${existingRegisteredNode.node_id} is already registered. Open device details or the Firmware tab to update it without creating a duplicate.`;
+            usbInspectionStatus.textContent = 'This physical device is already registered. Duplicate registration is blocked unless you explicitly request a replacement.';
+            usbInspectionStatus.className = 'notice';
+          } else if (detectedNodeId && detectedNodeId !== 'UNPROVISIONED') {
+            confirmReplacementLabel.hidden = false;
+            addDetailField(usbInspectionDetails, 'Hub registration', 'This identity is not registered on this Hub.');
+            usbInspectionStatus.textContent = 'The device reports a dBmap identity not found on this Hub. Creating a new registration requires explicit replacement confirmation.';
+          } else {
+            usbInspectionStatus.textContent = 'Chip inspection succeeded. Configure owner, Wi-Fi, and firmware, then flash before the Hub creates the device record.';
+            usbInspectionStatus.className = 'notice';
+          }
+          confirmNewDeviceLabel.hidden = Boolean(inspectedChipInfo);
+          updateRegistrationFirmwareChoice();
           syncCreateButton();
         } catch (error) {
+          inspectedChipInfo = null;
           if (error.name === 'NotFoundError') {
             usbInspectionStatus.textContent = 'No USB serial port was selected.';
             usbInspectionStatus.className = 'notice';
           } else {
             detectedNodeId = '';
             confirmNewDeviceLabel.hidden = false;
-            usbInspectionStatus.textContent = error.message;
+            const code = error instanceof Error && 'code' in error ? error.code : '';
+            usbInspectionStatus.textContent = code
+              ? `${error.message} (${code})`
+              : error.message;
             usbInspectionStatus.className = 'notice error';
           }
           syncCreateButton();
@@ -2589,7 +2808,7 @@
             syncCreateButton();
           };
           createOwnersReady = true;
-          status.textContent = 'Read the device identity, choose an owner, and enter the Wi-Fi details. Existing identities are blocked from duplicate registration unless replacement is intentional.';
+          status.textContent = 'Inspect the USB chip, choose an owner and firmware, then flash before the Hub creates the device record. Existing Chip MAC or dBmap identities are blocked from duplicate registration unless replacement is intentional.';
           status.className = 'notice';
           syncCreateButton();
         } catch (error) {
@@ -2601,10 +2820,12 @@
 
       function updateRegistrationFirmwareChoice() {
         const nodeType = document.getElementById('node-type').value;
+        const chipFamily = inspectedChipInfo?.chipFamily || '';
         const matches = registrationFirmwareEntries.filter((entry) => (
           entry.status === 'registered'
           && entry.node_type === nodeType
           && entry.hardware_revision === 'generic'
+          && (!chipFamily || String(entry.platform || '').toLowerCase() === chipFamily)
         ));
         const choice = document.getElementById('registration-firmware-choice');
         registrationFirmwareReady = true;
@@ -3080,17 +3301,32 @@
         const result = event.detail;
         if (result?.state === 'finished') {
           registrationFlashInProgress = false;
+          registrationFlashSucceeded = true;
           const status = document.getElementById('registration-flash-status');
-          status.textContent = 'Firmware flash succeeded. Use Logs & Console for live serial output, then send configuration over USB.';
-          status.className = 'notice';
           const button = document.querySelector('#registration-flash-launch [slot="activate"]');
           if (button) button.textContent = 'Flash again (same device)';
+          saveDeploymentSession({
+            phase: 'flash_succeeded',
+            firmware_id: registrationFirmwareId,
+            chip_mac: inspectedChipInfo?.macAddress || null,
+            chip_variant: inspectedChipInfo?.chipVariant || null,
+            node_type: document.getElementById('node-type').value,
+          });
           const provisionStep = document.getElementById('registration-provision-step');
+          const finalizeActions = document.getElementById('registration-finalize-actions');
           if (pendingRegistrationProvisioning) {
+            if (finalizeActions) finalizeActions.hidden = true;
+            status.textContent = 'Firmware flash succeeded. Send configuration over USB next; the device will reboot after NVS accepts it.';
+            status.className = 'notice';
             provisionStep.hidden = false;
             document.getElementById('registration-provision-button').disabled = false;
-            document.getElementById('registration-provision-status').textContent = 'Ready to send configuration to the inspected USB device. Open Logs & Console afterward to watch Hub call-home.';
+            document.getElementById('registration-provision-status').textContent = 'Ready to send configuration to the inspected USB device.';
             document.getElementById('registration-provision-status').className = 'notice';
+          } else {
+            status.textContent = 'Firmware flash succeeded. Register the device on the Hub next, then provision Wi-Fi over USB. Reflashing is not required.';
+            status.className = 'notice';
+            if (finalizeActions) finalizeActions.hidden = false;
+            syncCreateButton();
           }
         } else if (result?.state === 'error') {
           registrationFlashInProgress = false;
@@ -3112,22 +3348,27 @@
         if (button) button.textContent = 'Retry USB flash';
       });
 
-      async function prepareRegistrationFlash(deviceId, firmwareId, serialPort) {
+      async function prepareRegistrationFlash(firmwareId, serialPort, options = {}) {
         const status = document.getElementById('registration-flash-status');
         const launchContainer = document.getElementById('registration-flash-launch');
+        const finalizeActions = document.getElementById('registration-finalize-actions');
         for (const url of registrationFlashBlobUrls) URL.revokeObjectURL(url);
         registrationFlashBlobUrls = [];
+        registrationFlashSucceeded = false;
+        if (finalizeActions) finalizeActions.hidden = true;
         status.textContent = 'Checking firmware and preparing the browser flasher…';
         status.className = 'notice';
         try {
-          await api(`/api/v1/nodes/${encodeURIComponent(deviceId)}/firmware-selection`, {
-            method: 'POST',
-            body: JSON.stringify({
-              firmware_id: firmwareId,
-              acknowledge_unverified_platform: true,
-              allow_candidate: false,
-            }),
-          });
+          if (options.deviceId) {
+            await api(`/api/v1/nodes/${encodeURIComponent(options.deviceId)}/firmware-selection`, {
+              method: 'POST',
+              body: JSON.stringify({
+                firmware_id: firmwareId,
+                acknowledge_unverified_platform: true,
+                allow_candidate: false,
+              }),
+            });
+          }
           const manifest = await api(`/api/v1/firmware/catalog/${encodeURIComponent(firmwareId)}/flash-manifest`);
           for (const part of manifest.builds[0].parts) {
             const response = await fetch(
@@ -3163,16 +3404,19 @@
             registrationFlashInProgress = true;
             document.getElementById('registration-provision-step').hidden = true;
             document.getElementById('registration-provision-button').disabled = true;
+            if (finalizeActions) finalizeActions.hidden = true;
             status.textContent = 'ESP Web Tools is connecting to the device and installing firmware…';
             status.className = 'notice';
           });
           installer.append(launch);
           launchContainer.replaceChildren(installer);
-          status.textContent = `Ready to flash ${firmwareId} to ${deviceId}. You can retry here if the flash fails.`;
+          status.textContent = options.deviceId
+            ? `Ready to flash ${firmwareId} to ${options.deviceId}. You can retry here if the flash fails.`
+            : `Ready to flash ${firmwareId}. The Hub device record is created only after this flash succeeds.`;
         } catch (error) {
           for (const url of registrationFlashBlobUrls) URL.revokeObjectURL(url);
           registrationFlashBlobUrls = [];
-          status.textContent = `Could not prepare firmware flash: ${error.message} Retry when ready; this device remains selected.`;
+          status.textContent = `Could not prepare firmware flash: ${error.message} Retry when ready; this USB inspection remains selected.`;
           status.className = 'notice error';
         }
       }
@@ -3407,17 +3651,31 @@
             throw new Error(result.error || 'The device did not accept this configuration.');
           }
           configurationAccepted = true;
-          status.textContent = payload.configuration.bootstrap_token
-            ? 'Configuration saved to device NVS. Hub connection verification is skipped; check the device connection separately.'
-            : 'Wi-Fi and call-home settings saved to device NVS. The board should restart; confirm connectivity in the Devices tab.';
+          // Do not pulse DTR/RTS here: that can leave the chip in
+          // DOWNLOAD_BOOT / "waiting for download". Firmware restarts itself
+          // after printing DBMAP_PROVISION_RESULT accepted.
+          const successText = payload.configuration.bootstrap_token
+            ? 'Success. NVS configuration accepted. The device is restarting on its own; Hub connectivity is pending until it calls home.'
+            : 'Success. Wi-Fi and call-home settings saved to NVS. The device is restarting on its own; confirm connectivity in the Devices tab when it returns.';
+          status.textContent = successText;
           status.className = 'notice success';
           if (payload.configuration.bootstrap_token) pendingBootstrapTokens.delete(nodeId);
-          pendingRegistrationProvisioning = null;
           document.getElementById('provision-bootstrap-token').value = '';
           document.getElementById('provision-wifi-password').value = '';
-          document.getElementById('registration-provision-status').textContent = status.textContent;
-          document.getElementById('registration-provision-status').className = status.className;
+          const provisionStatus = document.getElementById('registration-provision-status');
+          provisionStatus.textContent = successText;
+          provisionStatus.className = 'notice success';
+          document.getElementById('registration-provision-step').hidden = false;
+          document.getElementById('registration-provision-button').disabled = true;
+          const createdToken = document.getElementById('created-token');
+          createdToken.hidden = true;
+          createdToken.replaceChildren();
+          document.getElementById('build-handoff').hidden = true;
+          document.getElementById('build-handoff-json').textContent = '';
+          completeRegistrationWorkflow(nodeId);
+          showRegistrationCompleteDialog(nodeId);
           updateProvisionHubUrl();
+          refreshDevices().catch(() => {});
         } catch (error) {
           status.textContent = error.message.includes('waiting for the device provisioning prompt')
             ? 'The device did not advertise the dBmap USB provisioning prompt. The installed image likely predates this protocol; a new generic firmware release with USB provisioning support is required. No configuration was sent.'
@@ -3426,6 +3684,11 @@
         } finally {
           if (writer) { writer.releaseLock(); }
           if (reader) { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+          // Release auto-reset lines before close so the adapter does not hold
+          // the chip in download mode after the firmware's own restart.
+          if (port?.setSignals) {
+            await port.setSignals({ dataTerminalReady: false, requestToSend: false }).catch(() => {});
+          }
           if (port?.readable || port?.writable) await port.close().catch(() => {});
           button.disabled = Boolean(options.buttonElement && configurationAccepted);
         }
@@ -3750,6 +4013,23 @@
           statusElement: document.getElementById('registration-provision-status'),
         });
       });
+
+      function showRegistrationCompleteDialog(nodeId) {
+        const dialog = document.getElementById('registration-complete-dialog');
+        const message = document.getElementById('registration-complete-message');
+        message.textContent = nodeId
+          ? `${nodeId} completed successfully. Configuration was saved to NVS and the device is restarting. Hub connectivity remains pending until it calls home.`
+          : 'Device configuration completed successfully. Configuration was saved to NVS and the device is restarting.';
+        message.className = 'notice success';
+        if (typeof dialog.showModal === 'function') dialog.showModal();
+        else dialog.setAttribute('open', '');
+      }
+
+      document.getElementById('registration-complete-dismiss').addEventListener('click', () => {
+        const dialog = document.getElementById('registration-complete-dialog');
+        if (typeof dialog.close === 'function') dialog.close();
+        else dialog.removeAttribute('open');
+      });
       document.getElementById('flash-firmware').addEventListener('change', syncBrowserFlashControls);
       document.getElementById('prepare-browser-flash').addEventListener('click', prepareBrowserFlash);
       document.getElementById('prepare-browser-flash-override').addEventListener('click', () => {
@@ -3841,9 +4121,7 @@
         }
       });
 
-      document.getElementById('create-panel').addEventListener('submit', async (event) => {
-        event.preventDefault();
-        const form = event.currentTarget;
+      async function finalizeRegistrationAfterFlash() {
         const tokenBox = document.getElementById('created-token');
         const status = document.getElementById('create-status');
         const ownerTypeSelect = document.getElementById('create-owner-type');
@@ -3852,112 +4130,168 @@
         const ownerType = ownerTypeSelect.value;
         const ownerId = ownerSelect.value;
         const wifiSsid = wifiSsidInput.value;
-        tokenBox.hidden = true;
-        tokenBox.replaceChildren();
-        syncCreateButton();
-        if (createSubmitButton.disabled) {
-          status.textContent = 'Read the device identity, select an approved compatible firmware release, choose an active owner, confirm a new or intentional replacement registration, and enter valid Wi-Fi details.';
-          status.className = 'notice error';
-          return;
+        const wifiPassword = wifiPasswordInput.value;
+        if (!registrationFlashSucceeded) {
+          throw new Error('Flash the selected firmware successfully before registering the Hub device record.');
         }
-        createSubmitButton.disabled = true;
-        status.textContent = 'Creating device with its owner assignment…';
+        if (!inspectedChipInfo?.macAddress) {
+          throw new Error('USB chip inspection is required before registration.');
+        }
+        if (!pendingRegistrationKey) {
+          pendingRegistrationKey = crypto.randomUUID();
+          sessionStorage.setItem('dbmap-pending-registration-key', pendingRegistrationKey);
+        }
+        status.textContent = 'Creating the Hub device record after successful flash…';
         status.className = 'notice';
-        try {
-          if (!pendingRegistrationKey) {
-            pendingRegistrationKey = crypto.randomUUID();
-            sessionStorage.setItem('dbmap-pending-registration-key', pendingRegistrationKey);
-          }
-          const created = await api('/api/v1/nodes', {
-            method: 'POST',
-            headers: { 'Idempotency-Key': pendingRegistrationKey },
-            body: JSON.stringify({
-              node_type: document.getElementById('node-type').value,
-              hardware_revision: 'unknown',
-              firmware_id: registrationFirmwareId,
-              owner_type: ownerType,
-              owner_id: ownerId,
-            }),
-          });
-          const selectedFirmware = registrationFirmwareEntries.find((entry) => entry.firmware_id === registrationFirmwareId);
-          const registrationSerialPort = inspectedSerialPort;
-          const registrationCallHome = selectedCallHomeRoute();
-          pendingRegistrationProvisioning = {
-            nodeId: created.node_id,
-            serialPort: registrationSerialPort,
-            ssid: wifiSsid,
-            wifiPassword: wifiPasswordInput.value,
-            token: created.bootstrap_token,
-            route: registrationCallHome,
-          };
-          const registrationFlashStep = document.getElementById('registration-flash-step');
-          registrationFlashStep.hidden = true;
-          document.getElementById('registration-flash-launch').replaceChildren();
-          document.getElementById('registration-provision-step').hidden = true;
-          document.getElementById('registration-provision-button').disabled = true;
-          document.getElementById('registration-provision-status').textContent = 'Flash firmware first.';
-          tokenBox.replaceChildren(
-            el('strong', `Created ${created.node_id}.`),
-            el('p', `Assigned owner: ${owner.dataset.ownerName} (${ownerType}).`),
-            ...(selectedFirmware ? [el('p', `Selected firmware: ${selectedFirmware.firmware_id} · version ${selectedFirmware.firmware_version}.`)] : []),
-            el('p', `Wi-Fi SSID: ${wifiSsid}`),
-            ...(detectedNodeId ? [el('p', `Device previously reported: ${detectedNodeId}.`)] : []),
-            el('p', 'The Wi-Fi password was collected but is not sent to the Hub or saved. It is cleared from the form after successful registration.'),
-          );
-          tokenBox.append(
-            el('strong', 'Save this one-time bootstrap token now: '),
-            el('code', created.bootstrap_token),
-          );
-          tokenBox.hidden = false;
-          const handoff = {
-            node_id: created.node_id,
+        const created = await api('/api/v1/nodes', {
+          method: 'POST',
+          headers: { 'Idempotency-Key': pendingRegistrationKey },
+          body: JSON.stringify({
             node_type: document.getElementById('node-type').value,
             hardware_revision: 'unknown',
-            firmware: selectedFirmware ? {
-              firmware_id: selectedFirmware.firmware_id,
-              firmware_version: selectedFirmware.firmware_version,
-            } : null,
-            owner: { type: ownerType, id: ownerId, display_name: owner.dataset.ownerName },
-            hub_id: document.getElementById('hub-id').textContent,
-            call_home: { profile: registrationCallHome.profile, https_url: registrationCallHome.hubUrl, mqtt: registrationCallHome.mqtt },
-            wifi: { ssid: wifiSsid, password_supplied: Boolean(wifiPasswordInput.value) },
-            device_api: { token_issued_at_provision: true },
-            previous_device_identity: detectedNodeId || null,
-            usb_metadata: inspectedUsbMetadata,
-          };
-          document.getElementById('build-handoff-json').textContent = JSON.stringify(handoff, null, 2);
-          document.getElementById('build-handoff').hidden = false;
-          if (selectedFirmware) {
-            registrationFlashStep.hidden = false;
-            document.getElementById('registration-flash-status').textContent = 'Preparing the selected firmware for this registered device…';
-            prepareRegistrationFlash(created.node_id, selectedFirmware.firmware_id, registrationSerialPort);
-          }
-          pendingBootstrapTokens.set(created.node_id, created.bootstrap_token);
-          document.getElementById('flash-device').value = created.node_id;
-          document.getElementById('provision-bootstrap-token').value = created.bootstrap_token;
-          document.getElementById('provision-ssid').value = wifiSsid;
-          document.getElementById('provision-wifi-password').value = wifiPasswordInput.value;
-          status.textContent = 'Device registered with its selected firmware version. Its one-time token is ready in the USB provisioning panel; flash the selected compatible release without erasing NVS, then send configuration over USB.';
-          status.className = 'notice';
-          pendingRegistrationKey = '';
-          sessionStorage.removeItem('dbmap-pending-registration-key');
-          clearUsbInspection('Device registered. Select a USB serial port again to begin another registration.');
-          form.reset();
-          wifiPasswordInput.value = '';
-          wifiSsidInput.setCustomValidity('');
-          ownerTypeSelect.value = 'user';
-          ownerTypeSelect.dispatchEvent(new Event('change'));
-          syncCreateButton();
-          await Promise.all([refreshDevices(), refreshHubStatus(), refreshBrowserFlashDevices()]);
-          document.getElementById('flash-device').value = created.node_id;
-          refreshCompatibleFirmware(selectedFirmware?.firmware_id || '');
-          refreshDeploymentAttempts();
+            chip_mac: inspectedChipInfo.macAddress,
+            chip_variant: inspectedChipInfo.chipVariant,
+            firmware_id: registrationFirmwareId,
+            owner_type: ownerType,
+            owner_id: ownerId,
+            replace_existing_chip_mac: confirmReplacement.checked,
+          }),
+        });
+        const selectedFirmware = registrationFirmwareEntries.find((entry) => entry.firmware_id === registrationFirmwareId);
+        const registrationCallHome = selectedCallHomeRoute();
+        pendingRegistrationProvisioning = {
+          nodeId: created.node_id,
+          serialPort: inspectedSerialPort,
+          ssid: wifiSsid,
+          wifiPassword,
+          token: created.bootstrap_token,
+          route: registrationCallHome,
+        };
+        pendingBootstrapTokens.set(created.node_id, created.bootstrap_token);
+        try {
+          localStorage.setItem('dbmap-wifi-ssid', wifiSsid);
+        } catch {
+          /* ignore quota / private mode */
+        }
+        tokenBox.replaceChildren(
+          el('strong', `Created ${created.node_id}.`),
+          el('p', `Assigned owner: ${owner?.dataset.ownerName || ownerId} (${ownerType}).`),
+          ...(inspectedChipInfo.chipVariant ? [el('p', `Chip variant: ${inspectedChipInfo.chipVariant}`)] : []),
+          ...(inspectedChipInfo.macAddress ? [el('p', `Chip MAC: ${inspectedChipInfo.macAddress}`)] : []),
+          ...(selectedFirmware ? [el('p', `Selected firmware: ${selectedFirmware.firmware_id} · version ${selectedFirmware.firmware_version}.`)] : []),
+          el('p', `Wi-Fi SSID: ${wifiSsid}`),
+          el('p', 'Bootstrap credentials stay in page memory for USB provisioning only and are not shown here.'),
+        );
+        tokenBox.hidden = false;
+        const handoff = {
+          node_id: created.node_id,
+          node_type: document.getElementById('node-type').value,
+          hardware_revision: 'unknown',
+          chip_variant: inspectedChipInfo.chipVariant,
+          chip_mac: inspectedChipInfo.macAddress,
+          firmware: selectedFirmware ? {
+            firmware_id: selectedFirmware.firmware_id,
+            firmware_version: selectedFirmware.firmware_version,
+          } : null,
+          owner: { type: ownerType, id: ownerId, display_name: owner?.dataset.ownerName },
+          hub_id: document.getElementById('hub-id').textContent,
+          call_home: { profile: registrationCallHome.profile, https_url: registrationCallHome.hubUrl, mqtt: registrationCallHome.mqtt },
+          wifi: { ssid: wifiSsid, password_supplied: Boolean(wifiPassword) },
+          device_api: { token_issued_at_provision: true },
+          previous_device_identity: detectedNodeId || null,
+        };
+        document.getElementById('build-handoff-json').textContent = JSON.stringify(handoff, null, 2);
+        document.getElementById('build-handoff').hidden = false;
+        document.getElementById('registration-finalize-actions').hidden = true;
+        document.getElementById('registration-provision-step').hidden = false;
+        document.getElementById('registration-provision-button').disabled = false;
+        document.getElementById('registration-provision-status').textContent = 'Ready to send configuration over USB. The device reboots after NVS accepts the write.';
+        document.getElementById('provision-bootstrap-token').value = created.bootstrap_token;
+        document.getElementById('provision-ssid').value = wifiSsid;
+        document.getElementById('provision-wifi-password').value = wifiPassword;
+        document.getElementById('flash-device').value = created.node_id;
+        pendingRegistrationKey = '';
+        sessionStorage.removeItem('dbmap-pending-registration-key');
+        saveDeploymentSession({
+          phase: 'registered',
+          node_id: created.node_id,
+          firmware_id: registrationFirmwareId,
+          chip_mac: inspectedChipInfo.macAddress,
+          chip_variant: inspectedChipInfo.chipVariant,
+        });
+        status.textContent = `Registered ${created.node_id}. Send configuration over USB next. Hub connectivity remains pending until the device calls home.`;
+        status.className = 'notice';
+        await Promise.all([refreshDevices(), refreshHubStatus(), refreshBrowserFlashDevices()]);
+        document.getElementById('flash-device').value = created.node_id;
+        refreshCompatibleFirmware(selectedFirmware?.firmware_id || '');
+        refreshDeploymentAttempts();
+        return created;
+      }
+
+      document.getElementById('registration-finalize-button').addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          await finalizeRegistrationAfterFlash();
         } catch (error) {
           if (error.message.includes('registration already completed')) {
             pendingRegistrationKey = '';
             sessionStorage.removeItem('dbmap-pending-registration-key');
-            clearUsbInspection('This registration attempt already created a node. The token is not returned again; open that device in the list to issue a replacement while it is still pending.');
           }
+          document.getElementById('create-status').textContent = error.message;
+          document.getElementById('create-status').className = 'notice error';
+        } finally {
+          button.disabled = false;
+          syncCreateButton();
+        }
+      });
+
+      document.getElementById('create-panel').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const status = document.getElementById('create-status');
+        syncCreateButton();
+        if (createSubmitButton.disabled) {
+          status.textContent = 'Inspect the USB chip, select approved firmware, choose an owner, and enter valid Wi-Fi details before flashing.';
+          status.className = 'notice error';
+          return;
+        }
+        createSubmitButton.disabled = true;
+        try {
+          if (registrationFlashSucceeded && !pendingRegistrationProvisioning) {
+            if (existingRegisteredNode && !confirmReplacement.checked) {
+              throw new Error(
+                `${existingRegisteredNode.node_id} is already registered from this USB session. Inspect again for a new board, or explicitly confirm replacement.`,
+              );
+            }
+            await finalizeRegistrationAfterFlash();
+            return;
+          }
+          if (existingRegisteredNode && !confirmReplacement.checked) {
+            throw new Error(
+              `${existingRegisteredNode.node_id} is already registered. Inspect again for a new board, or explicitly confirm replacement before flashing.`,
+            );
+          }
+          const selectedFirmware = registrationFirmwareEntries.find((entry) => entry.firmware_id === registrationFirmwareId);
+          if (!selectedFirmware) throw new Error('Select an approved compatible firmware release.');
+          saveDeploymentSession({
+            phase: 'ready_to_flash',
+            firmware_id: registrationFirmwareId,
+            chip_mac: inspectedChipInfo?.macAddress || null,
+            chip_variant: inspectedChipInfo?.chipVariant || null,
+            node_type: document.getElementById('node-type').value,
+            owner_type: document.getElementById('create-owner-type').value,
+            owner_id: document.getElementById('create-owner-id').value,
+            wifi_ssid: wifiSsidInput.value,
+          });
+          const registrationFlashStep = document.getElementById('registration-flash-step');
+          registrationFlashStep.hidden = false;
+          document.getElementById('registration-provision-step').hidden = true;
+          document.getElementById('registration-provision-button').disabled = true;
+          document.getElementById('registration-finalize-actions').hidden = true;
+          status.textContent = 'Preparing USB flash. The Hub device record is created only after flash succeeds.';
+          status.className = 'notice';
+          await prepareRegistrationFlash(selectedFirmware.firmware_id, inspectedSerialPort);
+        } catch (error) {
           status.textContent = error.message;
           status.className = 'notice error';
         } finally {

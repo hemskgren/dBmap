@@ -40,6 +40,7 @@ def init_db() -> None:
             )
     _migrate_device_https_credentials()
     _migrate_device_diag_pending_ota()
+    _migrate_node_chip_identity()
 
 
 def _migrate_device_diag_pending_ota() -> None:
@@ -57,6 +58,24 @@ def _migrate_device_diag_pending_ota() -> None:
                     "TEXT NOT NULL DEFAULT '{}'"
                 )
             )
+
+
+def _migrate_node_chip_identity() -> None:
+    tables = set(inspect(engine).get_table_names())
+    if "nodes" not in tables:
+        return
+    columns = {column["name"] for column in inspect(engine).get_columns("nodes")}
+    with engine.begin() as connection:
+        if "chip_mac" not in columns:
+            connection.execute(text("ALTER TABLE nodes ADD COLUMN chip_mac VARCHAR(17)"))
+        if "chip_variant" not in columns:
+            connection.execute(
+                text("ALTER TABLE nodes ADD COLUMN chip_variant VARCHAR(128)")
+            )
+        connection.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_nodes_chip_mac "
+            "ON nodes (chip_mac) WHERE chip_mac IS NOT NULL"
+        )
 
 
 def _migrate_desired_state_firmware_id() -> None:
