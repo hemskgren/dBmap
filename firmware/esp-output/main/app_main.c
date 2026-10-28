@@ -33,6 +33,11 @@ void app_main(void)
         "DBMAP_DEVICE_ID=%s",
         s_cfg.identity.node_id[0] != '\0' ? s_cfg.identity.node_id : "UNPROVISIONED"
     );
+    ESP_LOGI(
+        TAG,
+        "DBMAP_HUB_ID=%s",
+        s_cfg.identity.hub_id[0] != '\0' ? s_cfg.identity.hub_id : "UNSET"
+    );
     ESP_LOGI(TAG, "boot hardware=%s provisioned=%d", s_cfg.identity.hardware_revision, (int)s_cfg.provisioned);
     ESP_LOGI(TAG, "device API credential %s", s_cfg.device_api_token[0] != '\0' ? "present" : "absent");
 

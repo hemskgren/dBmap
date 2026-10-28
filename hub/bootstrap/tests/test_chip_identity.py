@@ -102,6 +102,56 @@ def test_create_node_stores_chip_variant_and_rejects_duplicate_mac() -> None:
     assert new.json()["chip_variant"] == "ESP32-D0WD-V3 (revision 3)"
 
 
+def test_create_node_skips_orphan_ownership_ids_after_nodes_wiped() -> None:
+    _reset_db()
+    client = TestClient(create_app())
+    admin_headers = {"Authorization": f"Bearer {settings.admin_token}"}
+    group = client.post(
+        "/api/v1/groups",
+        json={
+            "name": "Orphan owners",
+            "owner_user_id": client.post(
+                "/api/v1/users",
+                json={"display_name": "Group owner"},
+                headers=admin_headers,
+            ).json()["user_id"],
+        },
+        headers=admin_headers,
+    ).json()
+    first = client.post(
+        "/api/v1/nodes",
+        json={
+            "node_type": "output",
+            "owner_type": "group",
+            "owner_id": group["group_id"],
+        },
+        headers={**admin_headers, "Idempotency-Key": str(uuid4())},
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["node_id"] == "OUT-001"
+
+    from app.db import SessionLocal
+    from app.models import Node
+    from sqlalchemy import delete
+
+    with SessionLocal() as db:
+        db.execute(delete(Node).where(Node.node_id == "OUT-001"))
+        db.commit()
+
+    created = client.post(
+        "/api/v1/nodes",
+        json={
+            "node_type": "output",
+            "owner_type": "group",
+            "owner_id": group["group_id"],
+            "chip_mac": "AA:BB:CC:DD:EE:01",
+        },
+        headers={**admin_headers, "Idempotency-Key": str(uuid4())},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["node_id"] == "OUT-002"
+
+
 def test_devices_summary_includes_chip_fields() -> None:
     _reset_db()
     client = TestClient(create_app())

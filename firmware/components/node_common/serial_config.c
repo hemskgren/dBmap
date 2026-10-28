@@ -62,6 +62,25 @@ static bool valid_request_id(const char *request_id)
     return true;
 }
 
+static bool valid_hub_id(const char *hub_id)
+{
+    size_t len = strlen(hub_id);
+    if (len == 0 || len >= DBMAP_HUB_ID_MAX) return false;
+    char first = hub_id[0];
+    if (!((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') ||
+          (first >= '0' && first <= '9'))) {
+        return false;
+    }
+    for (size_t i = 1; i < len; ++i) {
+        char ch = hub_id[i];
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+              (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-')) {
+            return false;
+        }
+    }
+    return true;
+}
+
 esp_err_t dbmap_serial_config_wait(dbmap_effective_t *cfg, int timeout_seconds)
 {
     esp_err_t uart_err = uart_driver_install(UART_NUM_0, SERIAL_RX_BUFFER_SIZE, 0, 0, NULL, 0);
@@ -151,6 +170,19 @@ esp_err_t dbmap_serial_config_wait(dbmap_effective_t *cfg, int timeout_seconds)
                      candidate.network.hub_http_url[8] != '\0';
         valid = valid && (strcmp(candidate.network.mqtt_profile, "local") == 0 ||
                           strcmp(candidate.network.mqtt_profile, "external") == 0);
+
+        /* Hub ID is optional for older browsers. When present, persist the Local Hub that
+         * issued this USB configuration so inspect/logs can show association before HTTPS
+         * provision completes. When omitted, keep any existing NVS value. */
+        const cJSON *hub_id_item = cJSON_GetObjectItemCaseSensitive(configuration, "hub_id");
+        if (cJSON_IsString(hub_id_item) && hub_id_item->valuestring != NULL &&
+            hub_id_item->valuestring[0] != '\0') {
+            if (!valid_hub_id(hub_id_item->valuestring) ||
+                !copy_json_string(configuration, "hub_id", candidate.identity.hub_id,
+                                  sizeof(candidate.identity.hub_id), false)) {
+                valid = false;
+            }
+        }
 
         /* Bootstrap token is optional. When omitted or empty, keep the existing NVS value. */
         const cJSON *token_item = cJSON_GetObjectItemCaseSensitive(configuration, "bootstrap_token");

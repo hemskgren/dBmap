@@ -209,6 +209,7 @@ class DeviceApiCredential(BaseModel):
 class ProvisionResponse(BaseModel):
     node_id: str
     node_type: str
+    hub_id: str
     mqtt: MqttEndpoint
     topics: Topics
     device_api: DeviceApiCredential

@@ -5,12 +5,14 @@
 #include <stdint.h>
 
 #define DBMAP_NODE_ID_MAX 32
+#define DBMAP_HUB_ID_MAX 64
 #define DBMAP_HOST_MAX 128
 #define DBMAP_TOPIC_MAX 160
 #define DBMAP_TOKEN_MAX 128
 
 typedef struct {
     char node_id[DBMAP_NODE_ID_MAX];
+    char hub_id[DBMAP_HUB_ID_MAX];
     char hardware_revision[64];
     char provisioning_state[32];
 } dbmap_identity_t;
