@@ -711,3 +711,69 @@ def test_upload_requires_filenames_to_match_metadata_id(catalog_client):
     assert response.status_code == 422
     assert "filenames must match" in response.json()["detail"]
     assert not (catalog_dir / f"{firmware_id}.zip").exists()
+
+
+def make_ear_firmware_pair() -> tuple[str, bytes, bytes]:
+    firmware_id = f"esp-ear-{uuid4().hex[:12]}"
+    components = {
+        "bootloader.bin": ("0x0", b"bootloader"),
+        "partition-table.bin": ("0x8000", b"partition-table"),
+        "ota_data_initial.bin": ("0x10000", b"otadata"),
+        "esp-ear.bin": ("0x20000", b"ear-application"),
+    }
+    component_manifest = [
+        {
+            "name": name,
+            "offset": offset,
+            "size_bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+        for name, (offset, content) in components.items()
+    ]
+    manifest = {
+        "target": "ear-esp32-s3",
+        "node_type": "ear",
+        "chip": "esp32s3",
+        "hardware_revision": "esp32-s3-n16r8",
+        "firmware_version": "0.5.0",
+        "esp_idf_version": "v5.4.4",
+        "configuration_version": 0,
+        "nvs_preserved": True,
+        "flash_components": component_manifest,
+    }
+    bundle_buffer = io.BytesIO()
+    with zipfile.ZipFile(
+        bundle_buffer, "w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
+        for name, (_, content) in components.items():
+            archive.writestr(name, content)
+        archive.writestr("manifest.json", json.dumps(manifest))
+    bundle = bundle_buffer.getvalue()
+    metadata = {
+        "firmware_id": firmware_id,
+        "build_date_utc": "2026-10-29T08:00:00Z",
+        "target": "ear-esp32-s3",
+        "node_type": "ear",
+        "platform": "esp32s3",
+        "hardware_revision": "esp32-s3-n16r8",
+        "firmware_version": "0.5.0",
+        "esp_idf_version": "v5.4.4",
+        "configuration_version": 0,
+        "artifact_sha256": hashlib.sha256(bundle).hexdigest(),
+    }
+    return firmware_id, bundle, json.dumps(metadata).encode()
+
+
+def test_ear_catalog_upload_and_app_bin_helper(catalog_client):
+    from app import firmware_catalog
+
+    assert firmware_catalog.app_bin_name_for_node_type("ear") == "esp-ear.bin"
+    assert firmware_catalog.app_bin_name_for_node_type("output") == "esp-output.bin"
+
+    client, catalog_dir = catalog_client
+    firmware_id, bundle, metadata = make_ear_firmware_pair()
+    uploaded = upload_pair(client, firmware_id, bundle, metadata)
+    assert uploaded.status_code == 201, uploaded.text
+    assert uploaded.json()["node_type"] == "ear"
+    assert uploaded.json()["hardware_revision"] == "esp32-s3-n16r8"
+    assert (catalog_dir / f"{firmware_id}.zip").is_file()

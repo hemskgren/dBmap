@@ -346,7 +346,7 @@ def test_device_ota_image_is_desired_scoped_with_sha_and_size_guard(
     assert rotated.status_code == 200, rotated.text
     fresh_token = rotated.json()["device_api_token"]
 
-    monkeypatch.setattr(firmware_catalog, "ESP_OUTPUT_OTA_SLOT_BYTES", 4)
+    monkeypatch.setattr(firmware_catalog, "ESP_APP_OTA_SLOT_BYTES", 4)
     oversized = client.get(
         "/api/v1/device/ota-image", headers={"Authorization": f"Bearer {fresh_token}"}
     )

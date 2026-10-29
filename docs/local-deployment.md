@@ -14,7 +14,7 @@ The architecture document still says “Pi first” and “V0-A single Ear”. H
 
 `hub-bootstrap` owns node identity, one-time bootstrap tokens, desired/reported state, and initial MQTT telemetry ingestion.
 
-ESP-Output firmware supports NVS identity/configuration, Wi-Fi STA, HTTPS provisioning, MQTT hello/health/command/ack, and relay (GPIO16) / audio stubs (no pin map yet).
+ESP-Output firmware supports NVS identity/configuration, Wi-Fi STA, HTTPS provisioning, MQTT hello/health/command/ack, relay (GPIO16), and MAX98357 playback (BCLK 26 / WS 25 / DIN 22). See [device wiring and pinout](device-wiring-and-pinout.md).
 
 The broker is TLS-only on port `8883`; the web UI and API are served through Nginx over HTTPS on port `8443` by default. Hop-by-hop clients, protocols, and ports are drawn in [Connectivity](./connectivity.md). Import the Hub routes from [hub-api.openapi.yaml](./hub-api.openapi.yaml). `DBMAP_HTTPS_PORT` can change that listener and host port together. Hub bootstrap, web, and OPA listeners are internal to Compose. Each provisioned node gets a unique MQTT login and topic-scoped permissions. Hub services use a separate broker identity. The local CA is trusted by firmware and clients; keep its private key and `.env` secrets private.
 
@@ -308,6 +308,16 @@ uv run python scripts/hub_admin.py deactivate OUT-009
 uv run python scripts/hub_admin.py reactivate OUT-009
 ```
 
+After sign-in, **Map** in the header opens a same-origin popup with Leaflet + OpenStreetMap pins for active devices that have installation latitude/longitude. The popup reuses the Hub login via `window.opener` and `GET /api/v1/devices` (no separate map API). Keep the Hub window open. Basemap tiles need browser internet; Leaflet assets are served from `/map/`.
+
+To compare Ear status and latest mic levels (dBFS from reported hello/health; type EAR only):
+
+```bash
+uv run python scripts/ear_audio_compare.py list
+uv run python scripts/ear_audio_compare.py watch
+uv run python scripts/ear_audio_compare.py watch --interval-seconds 5
+```
+
 Installation updates preserve fields not supplied on the command line; latitude and longitude must already exist or be supplied together. Desired-state updates likewise preserve fields that are not explicitly changed. Both commands validate the resulting complete object through the Hub API. Keep `.env` and the local CA private.
 
 `PUT /api/v1/nodes/{node_id}/desired` replaces the Desired version fields (`firmware_version`, `config_version`, `calibration_version`, `classifier_version`, `payload`). It does **not** change `firmware_id`. When a `firmware_id` is already set, the Hub rejects a `firmware_version` that does not match that catalog entry (HTTP 422)—bumping only the version string would otherwise OTA-loop the same image. Send the complete object (omit only `payload` if empty). The CLI merges for you; with `curl`, GET the node first and reuse unchanged fields:
@@ -349,11 +359,13 @@ To send an Output command, use either the Hub API or the authenticated TLS broke
 
 | Action | Required fields | Notes |
 | --- | --- | --- |
-| `RELAY_1_ON` | `duration_s` (1–3600) | Pulses GPIO2 for the interval |
+| `RELAY_1_ON` | `duration_s` (1–3600) | Drives relay GPIO16 high for the interval (GPIO2 LED blinks as a bench cue) |
 | `RELAY_1_OFF` | — | Clears the relay immediately |
-| `AUDIO_PLAY_HTTPS` | `url` (`https://…`) | Streams MP3 over HTTPS to the MAX98357 |
+| `AUDIO_PLAY_HTTPS` | `url` (`https://…`) | Streams MP3 over HTTPS to the MAX98357 (BCLK 26 / WS 25 / DIN 22) |
 | `AUDIO_PLAY_FILE` | `path` | Plays a file under the LittleFS `/media` mount |
 | `AUDIO_STOP` | — | Stops playback |
+
+Pin maps for Output and Ear (including reserved Ear mics 0–3) are in [device wiring and pinout](device-wiring-and-pinout.md).
 
 Prefer the Hub API: it authenticates with the admin token, validates the body, and publishes on the broker for you. Replace `<node-id>` with the Output node ID (for example `OUT-009`):
 

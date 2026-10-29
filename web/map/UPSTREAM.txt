@@ -1,0 +1,8 @@
+Leaflet map library (vendored for the Hub map window)
+
+Package: Leaflet 1.9.4
+Source: https://github.com/Leaflet/Leaflet/releases/download/v1.9.4/leaflet.zip
+License: BSD-2-Clause (see LICENSE)
+
+Basemap tiles are loaded at runtime from OpenStreetMap (https://tile.openstreetmap.org).
+The browser needs internet for those tiles; the Leaflet JS/CSS assets are local.

@@ -14,8 +14,9 @@ from app.models import DeploymentAttempt, FirmwareCatalogEntry, utcnow
 
 MAX_BUNDLE_BYTES = 128 * 1024 * 1024
 MAX_METADATA_BYTES = 64 * 1024
-# ESP-Output dual-slot app partition size (ota_0 / ota_1 in firmware/esp-output/partitions.csv).
-ESP_OUTPUT_OTA_SLOT_BYTES = 0x1C0000
+# Dual-slot app partition size (ota_0 / ota_1) shared by Output and Ear partition tables.
+ESP_APP_OTA_SLOT_BYTES = 0x1C0000
+ESP_OUTPUT_OTA_SLOT_BYTES = ESP_APP_OTA_SLOT_BYTES  # backward-compatible alias
 FIRMWARE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 TARGET_FLASH_LAYOUTS = {
     "output-esp32": {
@@ -31,7 +32,19 @@ TARGET_FLASH_LAYOUTS = {
         "ota_data_initial.bin": "0x10000",
         "esp-output.bin": "0x20000",
     },
+    "ear-esp32-s3": {
+        "bootloader.bin": "0x0",
+        "partition-table.bin": "0x8000",
+        "ota_data_initial.bin": "0x10000",
+        "esp-ear.bin": "0x20000",
+    },
 }
+
+
+def app_bin_name_for_node_type(node_type: str) -> str:
+    if node_type == "ear":
+        return "esp-ear.bin"
+    return "esp-output.bin"
 ESP_WEB_TOOLS_CHIP_FAMILIES = {
     "esp32": "ESP32",
     "esp32c2": "ESP32-C2",

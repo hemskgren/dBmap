@@ -36,6 +36,8 @@ TARGETS = {
     "output-esp32": {
         "project": FIRMWARE_SOURCE,
         "components": FIRMWARE_ROOT / "components",
+        # Output-only tree (Helix/LittleFS). Not copied for Ear builds.
+        "extra_component_trees": [FIRMWARE_ROOT / "output_components"],
         "chip": "esp32",
         "node_type": "output",
         "hardware_revision": "generic",
@@ -45,6 +47,23 @@ TARGETS = {
             "0x8000": "partition-table.bin",
             "0x10000": "ota_data_initial.bin",
             "0x20000": "esp-output.bin",
+        },
+    },
+    "ear-esp32-s3": {
+        "project": FIRMWARE_ROOT / "esp-ear",
+        "components": FIRMWARE_ROOT / "components",
+        # Ear-only tree. Keeps Output registry deps (Helix) out of Ear solves.
+        "extra_component_trees": [FIRMWARE_ROOT / "ear_components"],
+        "chip": "esp32s3",
+        "node_type": "ear",
+        "hardware_revision": "esp32-s3-n16r8",
+        "idf_version": "v5.4.4",
+        "flash_components": {
+            # ESP32-S3 bootloader offset is 0x0 (ESP32 classic uses 0x1000).
+            "0x0": "bootloader.bin",
+            "0x8000": "partition-table.bin",
+            "0x10000": "ota_data_initial.bin",
+            "0x20000": "esp-ear.bin",
         },
     },
 }
@@ -322,6 +341,10 @@ def _build(job_id: str, target: str) -> None:
             ignore=shutil.ignore_patterns("build", "sdkconfig", "sdkconfig.old"),
         )
         shutil.copytree(target_config["components"], work_root / "components")
+        for tree in target_config.get("extra_component_trees", []):
+            if not tree.is_dir():
+                raise RuntimeError(f"Missing component tree for this target: {tree.name}")
+            shutil.copytree(tree, work_root / tree.name)
         _install_hub_ca(work_dir)
         for defaults in work_dir.glob("sdkconfig.defaults*"):
             _clear_device_secrets(defaults)
@@ -485,6 +508,7 @@ class Handler(BaseHTTPRequestHandler):
                     {
                         "id": target_id,
                         "chip": target["chip"],
+                        "node_type": target["node_type"],
                         "hardware_revision": target["hardware_revision"],
                         "esp_idf_version": target["idf_version"],
                     }

@@ -44,6 +44,8 @@ typedef struct {
     char command[DBMAP_TOPIC_MAX];
     char ack[DBMAP_TOPIC_MAX];
     char config[DBMAP_TOPIC_MAX];
+    char observation[DBMAP_TOPIC_MAX]; /* Ear detections; unused by Output */
+    char audio[DBMAP_TOPIC_MAX];       /* Ear audio telemetry; unused by Output */
 } dbmap_topics_t;
 
 typedef struct {
@@ -58,3 +60,6 @@ typedef struct {
 
 void dbmap_effective_defaults(dbmap_effective_t *out);
 void dbmap_rebuild_topics(dbmap_effective_t *cfg);
+
+/** MQTT topic root kind: "esp-output" or "esp-ear" from Kconfig node kind. */
+const char *dbmap_mqtt_topic_kind(void);

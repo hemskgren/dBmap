@@ -102,6 +102,22 @@
       .monitoring-events li { margin: 0.25rem 0; }
       #hub-monitor-events-panel { margin-top: 0.35rem; }
       #hub-monitor-events-panel > summary { cursor: pointer; font-weight: 650; }
+      .device-admin-panel {
+        margin-top: 0.75rem;
+        padding: 0.75rem 1rem;
+        border: 1px solid #d8e0eb;
+        border-radius: 12px;
+        background: #fff;
+        box-shadow: 0 4px 16px rgb(15 23 42 / 5%);
+      }
+      .device-admin-panel > summary {
+        cursor: pointer;
+        font-size: 1.05rem;
+        font-weight: 700;
+        list-style-position: outside;
+      }
+      .device-admin-panel[open] { padding-bottom: 0.85rem; }
+      .device-admin-panel > .device-admin-body { margin-top: 0.65rem; }
       .espconnect-callout { max-width: 780px; }
       .espconnect-callout .actions { flex-wrap: wrap; }
       .distance-list { display: grid; gap: 0.35rem; padding-left: 1.25rem; }
@@ -178,9 +194,10 @@
       #create-panel { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; gap: 0.5rem; margin: 0.7rem 0; }
       #create-panel label { min-width: 0; margin: 0; }
       #create-panel input, #create-panel select { padding: 0.45rem 0.55rem; }
-      #device-filters { display: flex; flex-wrap: wrap; gap: 0.45rem 0.6rem; margin: 0.5rem 0; }
+      #device-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 0.45rem 0.6rem; margin: 0.5rem 0; }
       #device-filters label { flex: 0 0 auto; margin: 0; }
       #device-filters select { width: auto; padding: 0.35rem 1.6rem 0.35rem 0.5rem; font-size: 0.88rem; }
+      #device-filters #usb-console-launch { align-self: end; margin-bottom: 0.05rem; }
       #device-filter-type { min-width: 6.5rem; max-width: 8rem; }
       #device-filter-status { min-width: 7rem; max-width: 9rem; }
       #device-filter-lifecycle { min-width: 8.5rem; max-width: 10rem; }
@@ -234,6 +251,7 @@
       </div>
       <div id="user-controls" hidden>
         <span id="role-label"></span>
+        <button id="open-map" class="secondary" type="button">Map</button>
         <button id="logout" class="secondary" type="button">Sign out</button>
       </div>
     </header>
@@ -331,23 +349,8 @@
             <p>USB-first deployment: inspect the ESP chip and MAC, configure owner and firmware, flash, then create the Hub record and provision NVS. Adapter VID/PID is diagnostic only; chip identity comes from the bootloader.</p>
             <div class="actions">
               <button id="inspect-device" class="secondary" type="button">Inspect USB chip</button>
-              <button id="usb-console-launch" class="secondary" type="button">Logs &amp; Console</button>
               <span id="usb-inspection-status" class="notice" role="status">USB inspection has not been started.</span>
             </div>
-            <dialog id="usb-console-dialog" class="usb-console-dialog" aria-labelledby="usb-console-title">
-              <h3 id="usb-console-title">Logs &amp; Console</h3>
-              <p class="notice">Live serial at 115200 baud. Close this before ESP Web Tools or USB provisioning needs the port; reopen afterward to watch Wi-Fi, mDNS, and Hub call-home.</p>
-              <div class="actions">
-                <button id="usb-console-open" class="secondary" type="button">Open USB console</button>
-                <button id="usb-console-reset" class="secondary" type="button" disabled>Reset device</button>
-                <button id="usb-console-clear" class="secondary" type="button" disabled>Clear</button>
-                <button id="usb-console-download" class="secondary" type="button" disabled>Download logs</button>
-                <button id="usb-console-close" class="secondary" type="button" disabled>Close console</button>
-                <button id="usb-console-dismiss" class="secondary" type="button">Close</button>
-                <span id="usb-console-status" class="notice" role="status">Console is closed.</span>
-              </div>
-              <pre id="usb-console-output" aria-live="polite"></pre>
-            </dialog>
             <dl id="usb-inspection-details" class="meta" hidden></dl>
             <label id="confirm-new-device-label" hidden>
               <input id="confirm-new-device" type="checkbox">
@@ -450,7 +453,23 @@
               <label for="device-filter-owner">Assigned owner
                 <select id="device-filter-owner"><option value="">All owners</option></select>
               </label>
+              <button id="usb-console-launch" class="secondary" type="button">USB: Console &amp; Logs</button>
             </div>
+            <!-- Keep outside collapsed registration <details>; a modal dialog there freezes the page behind an invisible backdrop. -->
+            <dialog id="usb-console-dialog" class="usb-console-dialog" aria-labelledby="usb-console-title">
+              <h3 id="usb-console-title">USB: Console &amp; Logs</h3>
+              <p class="notice">Live serial at 115200 baud. Close this before ESP Web Tools or USB provisioning needs the port; reopen afterward to watch Wi-Fi, mDNS, and Hub call-home.</p>
+              <div class="actions">
+                <button id="usb-console-open" class="secondary" type="button">Open USB console</button>
+                <button id="usb-console-reset" class="secondary" type="button" disabled>Reset device</button>
+                <button id="usb-console-clear" class="secondary" type="button" disabled>Clear</button>
+                <button id="usb-console-download" class="secondary" type="button" disabled>Download logs</button>
+                <button id="usb-console-close" class="secondary" type="button" disabled>Close console</button>
+                <button id="usb-console-dismiss" class="secondary" type="button">Close</button>
+                <span id="usb-console-status" class="notice" role="status">Console is closed.</span>
+              </div>
+              <pre id="usb-console-output" aria-live="polite"></pre>
+            </dialog>
             <div class="table-wrap">
               <table>
                 <thead><tr><th>Device</th><th>Type</th><th>Status</th><th>Provisioning</th><th>Lifecycle</th><th>Assigned owner</th><th>Location</th><th></th></tr></thead>
@@ -650,6 +669,10 @@
       let hubAddresses = null;
       let currentHubId = '';
       const publicBasePath = document.querySelector('meta[name="dbmap-base-path"]')?.content || '';
+      window.dbmapGetMapSession = () => ({
+        token: authToken.value,
+        basePath: publicBasePath,
+      });
       const espconnectLink = document.getElementById('espconnect-link');
       espconnectLink.href = `${publicBasePath}/espconnect/`.replace(/\/{2,}/g, '/');
       espconnectLink.addEventListener('click', (event) => {
@@ -663,6 +686,16 @@
           windowRef.opener = null;
           windowRef.focus();
         }
+      });
+      document.getElementById('open-map').addEventListener('click', () => {
+        const mapHref = `${publicBasePath}/map/`.replace(/\/{2,}/g, '/');
+        // Keep opener so /map/ can reuse the Hub bearer token (unlike ESPConnect).
+        const mapWindow = window.open(
+          mapHref,
+          'dbmap-map',
+          'popup,width=1100,height=820,resizable=yes,scrollbars=yes',
+        );
+        if (mapWindow) mapWindow.focus();
       });
 
       function formatApiDetail(detail) {
@@ -1787,6 +1820,75 @@
         renderDeviceMonitoring(monitoringSection, device);
         grid.append(monitoringSection);
 
+        const stateFields = {
+          desired: [
+            ['Firmware ID', 'firmware_id'],
+            ['Firmware version', 'firmware_version'],
+            ['Configuration version', 'config_version'],
+            ['Calibration version', 'calibration_version'],
+            ['Classifier version', 'classifier_version'],
+          ],
+          reported: [
+            ['Firmware version', 'firmware_version'],
+            ['Hardware revision', 'hardware_revision'],
+            ['Configuration version', 'config_version'],
+            ['Calibration version', 'calibration_version'],
+            ['Classifier version', 'classifier_version'],
+            ['Protocol version', 'protocol_version'],
+            ['Uptime (s)', 'uptime_s'],
+            ['Wi-Fi RSSI (dBm)', 'wifi_rssi_dbm'],
+          ],
+        };
+        const payloadOnlyFields = new Set(['wifi_rssi_dbm', 'protocol_version']);
+        const knownPayloadKeys = new Set([
+          'node_id', 'firmware_id', 'firmware_version', 'hardware_revision',
+          'config_version', 'calibration_version', 'classifier_version',
+          'protocol_version', 'uptime_s', 'wifi_rssi_dbm',
+          'pending_configuration_change',
+        ]);
+        function formatDetailValue(value) {
+          if (value === null || value === undefined || value === '') return 'Not set';
+          if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+          return String(value);
+        }
+        function stateFieldValue(state, field) {
+          if (payloadOnlyFields.has(field)) {
+            const fromPayload = state.payload?.[field];
+            return fromPayload === undefined ? state[field] : fromPayload;
+          }
+          return state[field];
+        }
+        for (const [title, key] of [['Desired state', 'desired'], ['Reported state', 'reported']]) {
+          const panel = el('section');
+          panel.append(el('h3', title));
+          const state = device[key] || {};
+          const metadata = el('dl', undefined, 'meta');
+          for (const [label, field] of stateFields[key]) {
+            metadata.append(el('dt', label), el('dd', formatDetailValue(stateFieldValue(state, field))));
+          }
+          if (key === 'desired') {
+            metadata.append(
+              el('dt', 'Pending configuration change'),
+              el('dd', formatDetailValue(device.pending_configuration_change)),
+            );
+          }
+          panel.append(metadata);
+
+          if (key === 'reported') {
+            const payload = state.payload && typeof state.payload === 'object' ? state.payload : {};
+            const additional = Object.fromEntries(
+              Object.entries(payload).filter(([field]) => !knownPayloadKeys.has(field)),
+            );
+            if (Object.keys(additional).length > 0) {
+              const payloadDetails = document.createElement('details');
+              payloadDetails.append(el('summary', 'Additional reported values'));
+              payloadDetails.append(el('pre', JSON.stringify(additional, null, 2)));
+              panel.append(payloadDetails);
+            }
+          }
+          grid.append(panel);
+        }
+
         const ownership = el('section');
         ownership.append(el('h3', 'Ownership'));
         const ownershipMeta = el('dl', undefined, 'meta');
@@ -1876,75 +1978,6 @@
           });
         }
         grid.append(ownership);
-
-        const stateFields = {
-          desired: [
-            ['Firmware ID', 'firmware_id'],
-            ['Firmware version', 'firmware_version'],
-            ['Configuration version', 'config_version'],
-            ['Calibration version', 'calibration_version'],
-            ['Classifier version', 'classifier_version'],
-          ],
-          reported: [
-            ['Firmware version', 'firmware_version'],
-            ['Hardware revision', 'hardware_revision'],
-            ['Configuration version', 'config_version'],
-            ['Calibration version', 'calibration_version'],
-            ['Classifier version', 'classifier_version'],
-            ['Protocol version', 'protocol_version'],
-            ['Uptime (s)', 'uptime_s'],
-            ['Wi-Fi RSSI (dBm)', 'wifi_rssi_dbm'],
-          ],
-        };
-        const payloadOnlyFields = new Set(['wifi_rssi_dbm', 'protocol_version']);
-        const knownPayloadKeys = new Set([
-          'node_id', 'firmware_id', 'firmware_version', 'hardware_revision',
-          'config_version', 'calibration_version', 'classifier_version',
-          'protocol_version', 'uptime_s', 'wifi_rssi_dbm',
-          'pending_configuration_change',
-        ]);
-        function formatDetailValue(value) {
-          if (value === null || value === undefined || value === '') return 'Not set';
-          if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-          return String(value);
-        }
-        function stateFieldValue(state, field) {
-          if (payloadOnlyFields.has(field)) {
-            const fromPayload = state.payload?.[field];
-            return fromPayload === undefined ? state[field] : fromPayload;
-          }
-          return state[field];
-        }
-        for (const [title, key] of [['Desired state', 'desired'], ['Reported state', 'reported']]) {
-          const panel = el('section');
-          panel.append(el('h3', title));
-          const state = device[key] || {};
-          const metadata = el('dl', undefined, 'meta');
-          for (const [label, field] of stateFields[key]) {
-            metadata.append(el('dt', label), el('dd', formatDetailValue(stateFieldValue(state, field))));
-          }
-          if (key === 'desired') {
-            metadata.append(
-              el('dt', 'Pending configuration change'),
-              el('dd', formatDetailValue(device.pending_configuration_change)),
-            );
-          }
-          panel.append(metadata);
-
-          if (key === 'reported') {
-            const payload = state.payload && typeof state.payload === 'object' ? state.payload : {};
-            const additional = Object.fromEntries(
-              Object.entries(payload).filter(([field]) => !knownPayloadKeys.has(field)),
-            );
-            if (Object.keys(additional).length > 0) {
-              const payloadDetails = document.createElement('details');
-              payloadDetails.append(el('summary', 'Additional reported values'));
-              payloadDetails.append(el('pre', JSON.stringify(additional, null, 2)));
-              panel.append(payloadDetails);
-            }
-          }
-          grid.append(panel);
-        }
         const installation = el('section');
         installation.append(el('h3', 'Installation'));
         const installationMeta = el('dl', undefined, 'meta');
@@ -1961,7 +1994,7 @@
           commandPanel.append(el('h3', 'Output commands'));
           commandPanel.append(el(
             'p',
-            'GPIO16 drives the relay. GPIO2 blinks the onboard LED. Output test runs a 5-second pulse with double-blink pattern. Audio commands stream an HTTPS MP3 or play a file from the device /media LittleFS partition. Dispatch acknowledgement confirms delivery to the broker, not physical contact closure or finished playback.',
+            'Relay: GPIO16 (active-high). Play/audio (MAX98357): BCLK=GPIO26, LRC/WS=GPIO25, DIN=GPIO22. Output test pulses the relay for 5 seconds; the onboard LED on GPIO2 only blinks as a bench cue. Audio commands stream an HTTPS MP3 or play a file from /media. Dispatch acknowledgement confirms broker delivery, not contact closure or finished playback.',
             'notice',
           ));
           if (currentRole === 'admin') {
@@ -2087,103 +2120,10 @@
         }
 
         if (currentRole === 'admin') {
-          const tokenPanel = el('section');
-          tokenPanel.append(el('h3', 'Recover bootstrap token'));
-          if (device.provisioning_state === 'pending') {
-            tokenPanel.append(
-              el('p', 'This device is still pending, so its unused bootstrap token can be replaced. Issuing a replacement immediately invalidates any earlier unused token. The new token is shown once in this page and is not saved by the browser.'),
-            );
-            const tokenStatus = el('span', '', 'notice');
-            tokenStatus.setAttribute('role', 'status');
-            const tokenValue = el('code', '');
-            tokenValue.className = 'bootstrap-token-value';
-            tokenValue.hidden = true;
-            const issueToken = el('button', 'Issue replacement token');
-            issueToken.type = 'button';
-            issueToken.addEventListener('click', async () => {
-              if (!window.confirm(`Replace the unused bootstrap token for ${device.node_id}? Any previous unused token will stop working.`)) return;
-              issueToken.disabled = true;
-              tokenStatus.textContent = 'Issuing replacement token…';
-              tokenStatus.className = 'notice';
-              tokenValue.hidden = true;
-              tokenValue.textContent = '';
-              try {
-                const result = await api(`/api/v1/nodes/${encodeURIComponent(device.node_id)}/bootstrap-token`, { method: 'POST' });
-                pendingBootstrapTokens.set(device.node_id, result.bootstrap_token);
-                document.getElementById('provision-bootstrap-token').value = result.bootstrap_token;
-                document.getElementById('flash-device').value = device.node_id;
-                tokenValue.textContent = result.bootstrap_token;
-                tokenValue.hidden = false;
-                tokenStatus.textContent = `Replacement token for ${result.node_id}. Copy it now:`;
-              } catch (error) {
-                tokenStatus.textContent = error.message;
-                tokenStatus.className = 'notice error';
-              } finally {
-                issueToken.disabled = false;
-              }
-            });
-            tokenPanel.append(issueToken, tokenStatus, tokenValue);
-          } else {
-            tokenPanel.append(el(
-              'p',
-              `Not available for ${device.node_id}. This device already completed Hub provisioning (${device.provisioning_state}), so its one-time bootstrap token was consumed and cannot be recovered. A replacement can only be issued while a device is still pending.`,
-              'notice',
-            ));
-          }
-          detail.append(tokenPanel);
-          const hardwareEditor = el('section');
-          hardwareEditor.append(el('h3', 'Set verified hardware revision'));
-          hardwareEditor.append(el(
-            'p',
-            'Use the revision printed on the board or confirmed by its hardware documentation. This value controls firmware compatibility; do not copy a firmware revision unless it is verified for this physical device.',
-            'notice',
-          ));
-          const hardwareForm = el('form');
-          const revisionLabel = el('label', 'Hardware revision');
-          const revisionInput = document.createElement('input');
-          revisionInput.name = 'hardware_revision';
-          revisionInput.required = true;
-          revisionInput.maxLength = 128;
-          revisionInput.value = device.hardware_revision;
-          revisionLabel.append(revisionInput);
-          const hardwareSave = el('button', 'Save verified revision');
-          hardwareSave.type = 'submit';
-          const hardwareStatus = el('span', '', 'notice');
-          hardwareStatus.setAttribute('role', 'status');
-          const hardwareActions = el('div', undefined, 'actions');
-          hardwareActions.append(hardwareSave, hardwareStatus);
-          hardwareForm.append(revisionLabel, hardwareActions);
-          hardwareForm.addEventListener('submit', async (event) => {
-            event.preventDefault();
-            hardwareSave.disabled = true;
-            hardwareStatus.textContent = 'Saving…';
-            hardwareStatus.className = 'notice';
-            try {
-              const updated = await api(
-                `/api/v1/nodes/${encodeURIComponent(device.node_id)}/hardware-revision`,
-                {
-                  method: 'PUT',
-                  body: JSON.stringify({ hardware_revision: revisionInput.value }),
-                },
-              );
-              renderDeviceDetail(updated);
-              await refreshDevices();
-              if (document.getElementById('flash-device').value === device.node_id) {
-                await refreshCompatibleFirmware();
-              }
-              showStatus(`Verified hardware revision updated for ${device.node_id}.`);
-            } catch (error) {
-              hardwareStatus.textContent = error.message;
-              hardwareStatus.className = 'notice error';
-            } finally {
-              hardwareSave.disabled = false;
-            }
-          });
-          hardwareEditor.append(hardwareForm);
-          detail.append(hardwareEditor);
-
-          const editor = el('section');
-          editor.append(el('h3', 'Edit installation'));
+          const editor = el('details');
+          editor.className = 'device-admin-panel';
+          editor.append(el('summary', 'Edit installation'));
+          const editorBody = el('div', undefined, 'device-admin-body');
           const form = el('form');
           form.id = 'installation-form';
           for (const [field, label, type, step] of installationFields) {
@@ -2237,8 +2177,111 @@
               save.disabled = false;
             }
           });
-          editor.append(form);
+          editorBody.append(form);
+          editor.append(editorBody);
           detail.append(editor);
+
+          const tokenPanel = el('details');
+          tokenPanel.className = 'device-admin-panel';
+          tokenPanel.append(el('summary', 'Recover bootstrap token'));
+          const tokenBody = el('div', undefined, 'device-admin-body');
+          if (device.provisioning_state === 'pending') {
+            tokenBody.append(
+              el('p', 'This device is still pending, so its unused bootstrap token can be replaced. Issuing a replacement immediately invalidates any earlier unused token. The new token is shown once in this page and is not saved by the browser.'),
+            );
+            const tokenStatus = el('span', '', 'notice');
+            tokenStatus.setAttribute('role', 'status');
+            const tokenValue = el('code', '');
+            tokenValue.className = 'bootstrap-token-value';
+            tokenValue.hidden = true;
+            const issueToken = el('button', 'Issue replacement token');
+            issueToken.type = 'button';
+            issueToken.addEventListener('click', async () => {
+              if (!window.confirm(`Replace the unused bootstrap token for ${device.node_id}? Any previous unused token will stop working.`)) return;
+              issueToken.disabled = true;
+              tokenStatus.textContent = 'Issuing replacement token…';
+              tokenStatus.className = 'notice';
+              tokenValue.hidden = true;
+              tokenValue.textContent = '';
+              try {
+                const result = await api(`/api/v1/nodes/${encodeURIComponent(device.node_id)}/bootstrap-token`, { method: 'POST' });
+                pendingBootstrapTokens.set(device.node_id, result.bootstrap_token);
+                document.getElementById('provision-bootstrap-token').value = result.bootstrap_token;
+                document.getElementById('flash-device').value = device.node_id;
+                tokenValue.textContent = result.bootstrap_token;
+                tokenValue.hidden = false;
+                tokenStatus.textContent = `Replacement token for ${result.node_id}. Copy it now:`;
+              } catch (error) {
+                tokenStatus.textContent = error.message;
+                tokenStatus.className = 'notice error';
+              } finally {
+                issueToken.disabled = false;
+              }
+            });
+            tokenBody.append(issueToken, tokenStatus, tokenValue);
+          } else {
+            tokenBody.append(el(
+              'p',
+              `Not available for ${device.node_id}. This device already completed Hub provisioning (${device.provisioning_state}), so its one-time bootstrap token was consumed and cannot be recovered. A replacement can only be issued while a device is still pending.`,
+              'notice',
+            ));
+          }
+          tokenPanel.append(tokenBody);
+          detail.append(tokenPanel);
+
+          const hardwareEditor = el('details');
+          hardwareEditor.className = 'device-admin-panel';
+          hardwareEditor.append(el('summary', 'Set verified hardware revision'));
+          const hardwareBody = el('div', undefined, 'device-admin-body');
+          hardwareBody.append(el(
+            'p',
+            'Use the revision printed on the board or confirmed by its hardware documentation. This value controls firmware compatibility; do not copy a firmware revision unless it is verified for this physical device.',
+            'notice',
+          ));
+          const hardwareForm = el('form');
+          const revisionLabel = el('label', 'Hardware revision');
+          const revisionInput = document.createElement('input');
+          revisionInput.name = 'hardware_revision';
+          revisionInput.required = true;
+          revisionInput.maxLength = 128;
+          revisionInput.value = device.hardware_revision;
+          revisionLabel.append(revisionInput);
+          const hardwareSave = el('button', 'Save verified revision');
+          hardwareSave.type = 'submit';
+          const hardwareStatus = el('span', '', 'notice');
+          hardwareStatus.setAttribute('role', 'status');
+          const hardwareActions = el('div', undefined, 'actions');
+          hardwareActions.append(hardwareSave, hardwareStatus);
+          hardwareForm.append(revisionLabel, hardwareActions);
+          hardwareForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            hardwareSave.disabled = true;
+            hardwareStatus.textContent = 'Saving…';
+            hardwareStatus.className = 'notice';
+            try {
+              const updated = await api(
+                `/api/v1/nodes/${encodeURIComponent(device.node_id)}/hardware-revision`,
+                {
+                  method: 'PUT',
+                  body: JSON.stringify({ hardware_revision: revisionInput.value }),
+                },
+              );
+              renderDeviceDetail(updated);
+              await refreshDevices();
+              if (document.getElementById('flash-device').value === device.node_id) {
+                await refreshCompatibleFirmware();
+              }
+              showStatus(`Verified hardware revision updated for ${device.node_id}.`);
+            } catch (error) {
+              hardwareStatus.textContent = error.message;
+              hardwareStatus.className = 'notice error';
+            } finally {
+              hardwareSave.disabled = false;
+            }
+          });
+          hardwareBody.append(hardwareForm);
+          hardwareEditor.append(hardwareBody);
+          detail.append(hardwareEditor);
         }
       }
 
@@ -2708,7 +2751,7 @@
         button.disabled = true;
         const registrationPanel = document.getElementById('device-registration-panel');
         if (registrationPanel) registrationPanel.open = true;
-        await stopUsbConsole('USB console closed for chip inspection. Open Logs & Console afterward to watch logs.');
+        await stopUsbConsole('USB console closed for chip inspection. Open USB: Console & Logs afterward to watch logs.');
         clearUsbInspection('Waiting for USB serial device selection…');
         try {
           const { inspectEspChip } = await import(`${publicBasePath}/usb-chip-inspect.js`);
@@ -2861,14 +2904,31 @@
         }
       }
 
+      function normalizeChipPlatform(value) {
+        return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      }
+
+      function registrationHardwareRevisionForFirmware(entry) {
+        if (!entry) {
+          return 'unknown';
+        }
+        const revision = String(entry.hardware_revision || '').trim();
+        if (!revision || revision === 'generic') {
+          return 'unknown';
+        }
+        return revision;
+      }
+
       function updateRegistrationFirmwareChoice() {
         const nodeType = document.getElementById('node-type').value;
         const chipFamily = inspectedChipInfo?.chipFamily || '';
+        const inspectedPlatform = normalizeChipPlatform(chipFamily);
+        // Accept generic releases and board-specific ones (e.g. esp32-s3-n16r8).
+        // New nodes inherit a board-specific revision from the selected firmware.
         const matches = registrationFirmwareEntries.filter((entry) => (
           entry.status === 'registered'
           && entry.node_type === nodeType
-          && entry.hardware_revision === 'generic'
-          && (!chipFamily || String(entry.platform || '').toLowerCase() === chipFamily)
+          && (!inspectedPlatform || normalizeChipPlatform(entry.platform) === inspectedPlatform)
         ));
         const choice = document.getElementById('registration-firmware-choice');
         registrationFirmwareReady = true;
@@ -2883,14 +2943,17 @@
         } else if (matches.length === 1) {
           registrationFirmwareId = matches[0].firmware_id;
           choice.hidden = true;
-          registrationFirmwareStatus.textContent = `Firmware selected: ${matches[0].firmware_id} · version ${matches[0].firmware_version}.`;
+          const revisionNote = matches[0].hardware_revision === 'generic'
+            ? 'generic hardware profile'
+            : `hardware profile ${matches[0].hardware_revision}`;
+          registrationFirmwareStatus.textContent = `Firmware selected: ${matches[0].firmware_id} · version ${matches[0].firmware_version} · ${revisionNote}.`;
           registrationFirmwareStatus.className = 'notice';
         } else {
           choice.hidden = false;
           registrationFirmwareSelect.append(new Option('Select a firmware version', '', true, true));
           for (const entry of matches) {
             registrationFirmwareSelect.append(new Option(
-              `${entry.firmware_id} · version ${entry.firmware_version}`,
+              `${entry.firmware_id} · version ${entry.firmware_version} · ${entry.hardware_revision}`,
               entry.firmware_id,
             ));
           }
@@ -3022,7 +3085,7 @@
           targetSelect.replaceChildren(new Option('Select a build target', ''));
           for (const target of targets) {
             targetSelect.append(new Option(
-              `${target.id} · ${target.chip} · ${target.hardware_revision} · ESP-IDF ${target.esp_idf_version}`,
+              `${target.id} · ${target.node_type || 'device'} · ${target.chip} · ${target.hardware_revision} · ESP-IDF ${target.esp_idf_version}`,
               target.id,
             ));
           }
@@ -3443,7 +3506,7 @@
           launch.setAttribute('slot', 'activate');
           launch.type = 'button';
           launch.addEventListener('click', () => {
-            stopUsbConsole('USB console closed so ESP Web Tools can use the serial port. Open Logs & Console after flashing.');
+            stopUsbConsole('USB console closed so ESP Web Tools can use the serial port. Open USB: Console & Logs after flashing.');
             registrationFlashInProgress = true;
             document.getElementById('registration-provision-step').hidden = true;
             document.getElementById('registration-provision-button').disabled = true;
@@ -3665,7 +3728,7 @@
         let writer;
         let configurationAccepted = false;
         try {
-          await stopUsbConsole('USB console closed for provisioning. Open Logs & Console afterward to watch Hub call-home.');
+          await stopUsbConsole('USB console closed for provisioning. Open USB: Console & Logs afterward to watch Hub call-home.');
           status.textContent = options.serialPort
             ? 'Opening the inspected USB port. Press Reset if the board is not waiting for configuration.'
             : 'Select the device USB serial port. Press reset if the board is not waiting for configuration.';
@@ -3928,7 +3991,7 @@
           launch.setAttribute('slot', 'activate');
           launch.type = 'button';
           launch.addEventListener('click', () => {
-            stopUsbConsole('USB console closed so ESP Web Tools can use the serial port. Open Logs & Console after flashing.');
+            stopUsbConsole('USB console closed so ESP Web Tools can use the serial port. Open USB: Console & Logs after flashing.');
             document.getElementById('deployment-outcome-panel').hidden = false;
             setBrowserFlashStatus('ESP Web Tools is handling serial flashing and progress. Record an outcome only after its dialog reports the result.');
           }, { once: true });
@@ -4188,12 +4251,14 @@
         }
         status.textContent = 'Creating the Hub device record after successful flash…';
         status.className = 'notice';
+        const selectedFirmware = registrationFirmwareEntries.find((entry) => entry.firmware_id === registrationFirmwareId);
+        const registrationHardwareRevision = registrationHardwareRevisionForFirmware(selectedFirmware);
         const created = await api('/api/v1/nodes', {
           method: 'POST',
           headers: { 'Idempotency-Key': pendingRegistrationKey },
           body: JSON.stringify({
             node_type: document.getElementById('node-type').value,
-            hardware_revision: 'unknown',
+            hardware_revision: registrationHardwareRevision,
             chip_mac: inspectedChipInfo.macAddress,
             chip_variant: inspectedChipInfo.chipVariant,
             firmware_id: registrationFirmwareId,
@@ -4202,7 +4267,6 @@
             replace_existing_chip_mac: confirmReplacement.checked,
           }),
         });
-        const selectedFirmware = registrationFirmwareEntries.find((entry) => entry.firmware_id === registrationFirmwareId);
         const registrationCallHome = selectedCallHomeRoute();
         pendingRegistrationProvisioning = {
           nodeId: created.node_id,
@@ -4231,7 +4295,7 @@
         const handoff = {
           node_id: created.node_id,
           node_type: document.getElementById('node-type').value,
-          hardware_revision: 'unknown',
+          hardware_revision: registrationHardwareRevision,
           chip_variant: inspectedChipInfo.chipVariant,
           chip_mac: inspectedChipInfo.macAddress,
           firmware: selectedFirmware ? {
