@@ -2,12 +2,18 @@
 
 #include <stdlib.h>
 
-#include "cJSON.h"
 #include "dbmap_diag.h"
 #include "dbmap_mqtt.h"
 #include "dbmap_wifi.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
+
+static dbmap_health_enrich_fn s_enrich;
+
+void dbmap_health_set_enricher(dbmap_health_enrich_fn fn)
+{
+    s_enrich = fn;
+}
 
 static cJSON *build_state(const dbmap_effective_t *cfg, bool include_diag)
 {
@@ -26,6 +32,9 @@ static cJSON *build_state(const dbmap_effective_t *cfg, bool include_diag)
     }
     if (include_diag) {
         dbmap_diag_attach_json(o);
+    }
+    if (s_enrich != NULL) {
+        s_enrich(o, cfg, include_diag);
     }
     return o;
 }

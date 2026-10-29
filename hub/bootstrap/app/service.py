@@ -125,9 +125,7 @@ def _node_id_is_taken(db: Session, node_id: str) -> bool:
         return True
     if db.get(DesiredState, node_id) is not None:
         return True
-    if db.get(ReportedState, node_id) is not None:
-        return True
-    return False
+    return db.get(ReportedState, node_id) is not None
 
 
 def _allocate_available_node_id(
@@ -444,7 +442,7 @@ def device_desired_firmware(db: Session, node: Node) -> DeviceDesiredFirmware:
                 image, digest = firmware_catalog.get_flash_image(
                     entry,
                     catalog_dir,
-                    "esp-output.bin",
+                    firmware_catalog.app_bin_name_for_node_type(node.node_type),
                 )
                 app_sha256 = digest
                 app_size_bytes = len(image)

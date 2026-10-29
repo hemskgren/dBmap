@@ -22,15 +22,25 @@ menu "dBmap node"
 
     config DBMAP_FIRMWARE_VERSION
         string "Firmware version"
-        default "0.1.4"
+        default "0.5.0"
 
     config DBMAP_NTP_SERVER
         string "Network time server"
         default "se.pool.ntp.org"
 
-    config DBMAP_NODE_TYPE_OUTPUT
-        bool "This firmware is ESP-Output"
-        default y
+    choice DBMAP_NODE_KIND
+        prompt "dBmap node kind"
+        default DBMAP_NODE_TYPE_OUTPUT
+        help
+            Selects the MQTT topic root (esp-output vs esp-ear) used before the
+            Hub returns provisioned topics. Must match the Hub registration.
+
+        config DBMAP_NODE_TYPE_OUTPUT
+            bool "ESP-Output"
+
+        config DBMAP_NODE_TYPE_EAR
+            bool "ESP-Ear"
+    endchoice
 
     menu "Diagnostics (D1, RAM-only)"
 

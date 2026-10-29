@@ -1293,7 +1293,7 @@ def get_device_ota_image(
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> Response:
-    """Serve esp-output.bin for the authenticated node's Desired firmware only."""
+    """Serve the Desired app binary (esp-output.bin or esp-ear.bin) for this node only."""
     token = _device_api_token(authorization)
     try:
         node = service.node_for_device_api_token(db, token)
@@ -1306,6 +1306,7 @@ def get_device_ota_image(
     if desired is None or not desired.firmware_id:
         raise HTTPException(status_code=404, detail="desired firmware not set")
 
+    app_bin = firmware_catalog.app_bin_name_for_node_type(node.node_type)
     try:
         entry = firmware_catalog.get_entry(
             db,
@@ -1329,7 +1330,7 @@ def get_device_ota_image(
         image, digest = firmware_catalog.get_flash_image(
             entry,
             FIRMWARE_CATALOG_DIR,
-            "esp-output.bin",
+            app_bin,
         )
     except firmware_catalog.FirmwareNotFound:
         raise HTTPException(
@@ -1338,10 +1339,10 @@ def get_device_ota_image(
     except firmware_catalog.FirmwareArtifactIntegrityError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
 
-    if len(image) > firmware_catalog.ESP_OUTPUT_OTA_SLOT_BYTES:
+    if len(image) > firmware_catalog.ESP_APP_OTA_SLOT_BYTES:
         raise HTTPException(
             status_code=409,
-            detail="desired firmware image exceeds the Output OTA slot",
+            detail=f"desired firmware image exceeds the {node.node_type} OTA slot",
         )
 
     return Response(

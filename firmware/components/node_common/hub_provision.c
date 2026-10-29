@@ -146,20 +146,38 @@ esp_err_t dbmap_hub_provision(dbmap_effective_t *cfg)
     }
     strncpy(cfg->device_api_token, api_token->valuestring, sizeof(cfg->device_api_token) - 1);
     cfg->device_api_token[sizeof(cfg->device_api_token) - 1] = '\0';
+    /* Rebuild first so newer slots (observation/audio) exist even on older Hubs. */
+    dbmap_rebuild_topics(cfg);
     if (cJSON_IsObject(topics)) {
-        const char *names[] = {"hello", "keepalive", "health", "status", "command", "ack", "config"};
-        char *slots[] = {
-            cfg->topics.hello, cfg->topics.keepalive, cfg->topics.health, cfg->topics.status,
-            cfg->topics.command, cfg->topics.ack, cfg->topics.config,
+        const char *names[] = {
+            "hello",
+            "keepalive",
+            "health",
+            "status",
+            "command",
+            "ack",
+            "config",
+            "observation",
+            "audio",
         };
-        for (int i = 0; i < 7; ++i) {
+        char *slots[] = {
+            cfg->topics.hello,
+            cfg->topics.keepalive,
+            cfg->topics.health,
+            cfg->topics.status,
+            cfg->topics.command,
+            cfg->topics.ack,
+            cfg->topics.config,
+            cfg->topics.observation,
+            cfg->topics.audio,
+        };
+        for (int i = 0; i < 9; ++i) {
             const cJSON *t = cJSON_GetObjectItem(topics, names[i]);
-            if (cJSON_IsString(t)) {
+            if (cJSON_IsString(t) && t->valuestring != NULL && t->valuestring[0] != '\0') {
                 strncpy(slots[i], t->valuestring, DBMAP_TOPIC_MAX - 1);
+                slots[i][DBMAP_TOPIC_MAX - 1] = '\0';
             }
         }
-    } else {
-        dbmap_rebuild_topics(cfg);
     }
     cJSON_Delete(json);
     cfg->provisioned = true;

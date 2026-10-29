@@ -5,6 +5,15 @@
 
 #include "sdkconfig.h"
 
+const char *dbmap_mqtt_topic_kind(void)
+{
+#if CONFIG_DBMAP_NODE_TYPE_EAR
+    return "esp-ear";
+#else
+    return "esp-output";
+#endif
+}
+
 void dbmap_effective_defaults(dbmap_effective_t *out)
 {
     memset(out, 0, sizeof(*out));
@@ -22,12 +31,13 @@ void dbmap_effective_defaults(dbmap_effective_t *out)
 
 void dbmap_rebuild_topics(dbmap_effective_t *cfg)
 {
-    const char *kind = "esp-output";
+    const char *kind = dbmap_mqtt_topic_kind();
     char slug[DBMAP_NODE_ID_MAX];
     if (cfg->identity.node_id[0] == '\0') {
         snprintf(slug, sizeof(slug), "unprovisioned");
     } else {
         strncpy(slug, cfg->identity.node_id, sizeof(slug) - 1);
+        slug[sizeof(slug) - 1] = '\0';
         for (char *p = slug; *p; ++p) {
             if (*p >= 'A' && *p <= 'Z') {
                 *p = (char)(*p - 'A' + 'a');
@@ -41,4 +51,6 @@ void dbmap_rebuild_topics(dbmap_effective_t *cfg)
     snprintf(cfg->topics.command, sizeof(cfg->topics.command), "%s/local/%s/command", kind, slug);
     snprintf(cfg->topics.ack, sizeof(cfg->topics.ack), "%s/local/%s/ack", kind, slug);
     snprintf(cfg->topics.config, sizeof(cfg->topics.config), "%s/local/%s/config", kind, slug);
+    snprintf(cfg->topics.observation, sizeof(cfg->topics.observation), "%s/local/%s/observation", kind, slug);
+    snprintf(cfg->topics.audio, sizeof(cfg->topics.audio), "%s/local/%s/audio", kind, slug);
 }

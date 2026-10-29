@@ -82,8 +82,11 @@ def test_builder_requires_admin_token(builder):
     assert request(builder, "GET", "/api/v1/firmware/targets", token="viewer-token")[0] == 403
     status, targets = request(builder, "GET", "/api/v1/firmware/targets", token="test-admin-token")
     assert status == 200
-    assert [target["id"] for target in targets] == ["output-esp32"]
+    assert [target["id"] for target in targets] == ["output-esp32", "ear-esp32-s3"]
     assert targets[0]["hardware_revision"] == "generic"
+    assert targets[1]["chip"] == "esp32s3"
+    assert targets[1]["node_type"] == "ear"
+    assert targets[1]["hardware_revision"] == "esp32-s3-n16r8"
 
 
 @pytest.mark.parametrize("body", [None, {}, {"target": "unlisted"}, {"target": []}])
@@ -200,12 +203,13 @@ def test_short_error_keeps_job_list_to_one_line():
 
 
 def test_toolchain_check_requires_pinned_esp_idf_version(tmp_path, monkeypatch):
+    log_path = tmp_path / "toolchain.log"
     monkeypatch.setattr(server, "_run_stage", lambda command, cwd, log_path: (0, "ESP-IDF v5.4.4"))
-    server._check_toolchain("output-esp32", tmp_path)
+    server._check_toolchain("output-esp32", tmp_path, log_path)
 
     monkeypatch.setattr(server, "_run_stage", lambda command, cwd, log_path: (0, "ESP-IDF v5.3.0"))
     with pytest.raises(RuntimeError, match="pinned ESP-IDF toolchain check failed"):
-        server._check_toolchain("output-esp32", tmp_path)
+        server._check_toolchain("output-esp32", tmp_path, log_path)
 
 
 def test_build_list_keeps_older_artifacts_visible(builder):

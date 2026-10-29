@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>dBmap · Device map</title>
+    <link rel="stylesheet" href="./vendor/leaflet/leaflet.css" />
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #172033;
+        --muted: #526078;
+        --line: #d8e0eb;
+        --panel: #fff;
+        --online: #1f7a4d;
+        --offline: #8a5a12;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: grid;
+        grid-template-rows: auto 1fr;
+        font: 15px/1.45 system-ui, sans-serif;
+        color: var(--ink);
+        background: #eef2f7;
+      }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.75rem 1rem;
+        padding: 0.7rem 1rem;
+        border-bottom: 1px solid var(--line);
+        background: #14223b;
+        color: #f8fafc;
+      }
+      header h1 { margin: 0; font-size: 1.1rem; font-weight: 700; }
+      header p { margin: 0; color: #cbd5e1; font-size: 0.88rem; }
+      header .actions { margin-left: auto; display: flex; gap: 0.5rem; align-items: center; }
+      button {
+        border: 0; border-radius: 7px; padding: 0.4rem 0.7rem; cursor: pointer;
+        color: #fff; background: #2457a7; font: inherit; font-weight: 600;
+      }
+      button.secondary { color: #183153; background: #e6edf7; }
+      #status { min-width: 12rem; color: #cbd5e1; font-size: 0.88rem; }
+      #map { width: 100%; height: 100%; min-height: 320px; }
+      .notice {
+        margin: 1rem; padding: 0.85rem 1rem; border: 1px solid var(--line);
+        border-radius: 10px; background: var(--panel); color: var(--muted);
+      }
+      .notice.error { color: #8b1e2d; border-color: #f0c4cb; background: #fff5f6; }
+      .popup-title { font-weight: 700; margin: 0.15rem 0 0; }
+      .popup-meta { margin: 0; color: var(--muted); font-size: 0.9rem; }
+      .status-online { color: var(--online); font-weight: 650; }
+      .status-offline { color: var(--offline); font-weight: 650; }
+      .popup-list { margin: 0.25rem 0 0; padding-left: 1.05rem; }
+      .popup-list li { margin: 0.15rem 0; }
+      .legend {
+        position: absolute; z-index: 500; left: 0.75rem; bottom: 0.75rem;
+        padding: 0.55rem 0.7rem; border-radius: 8px; background: rgb(255 255 255 / 92%);
+        border: 1px solid var(--line); font-size: 0.85rem; box-shadow: 0 4px 12px rgb(15 23 42 / 10%);
+      }
+      .legend div { display: flex; align-items: center; gap: 0.4rem; margin: 0.15rem 0; }
+      .legend-pin {
+        width: 0.85rem; height: 1.15rem; display: inline-block; vertical-align: middle;
+      }
+      .map-pin {
+        position: relative;
+        width: 28px;
+        height: 40px;
+      }
+      .map-pin svg { display: block; width: 28px; height: 40px; filter: drop-shadow(0 1px 2px rgb(15 23 42 / 35%)); }
+      .map-pin .count {
+        position: absolute;
+        top: -0.35rem;
+        right: -0.45rem;
+        min-width: 1.15rem;
+        height: 1.15rem;
+        padding: 0 0.28rem;
+        border-radius: 999px;
+        background: #14223b;
+        color: #fff;
+        font: 700 0.72rem/1.15rem system-ui, sans-serif;
+        text-align: center;
+        border: 2px solid #fff;
+      }
+      .map-pin.is-offline svg .pin-body { opacity: 0.72; }
+      .map-pin.is-offline svg .pin-stroke { stroke: #8a5a12; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>Device map</h1>
+        <p>Active devices with installation coordinates · OpenStreetMap</p>
+      </div>
+      <div class="actions">
+        <span id="status" role="status">Waiting for Hub session…</span>
+        <button id="refresh" class="secondary" type="button" hidden>Refresh</button>
+      </div>
+    </header>
+    <div id="map-root">
+      <p id="bootstrap-message" class="notice">
+        Open this window from the signed-in Hub (Map button). It reuses your Hub login and
+        <code>GET /api/v1/devices</code>. Basemap tiles need browser internet; Leaflet assets are local.
+      </p>
+    </div>
+    <script src="./vendor/leaflet/leaflet.js"></script>
+    <script>
+      const REFRESH_MS = 15000;
+      const statusEl = document.getElementById('status');
+      const refreshBtn = document.getElementById('refresh');
+      const mapRoot = document.getElementById('map-root');
+      let map;
+      let markerLayer;
+      let refreshTimer;
+      let session = null;
+
+      function setStatus(text) {
+        statusEl.textContent = text;
+      }
+
+      function readSessionFromOpener() {
+        try {
+          if (!window.opener || window.opener.closed) return null;
+          if (typeof window.opener.dbmapGetMapSession !== 'function') return null;
+          const next = window.opener.dbmapGetMapSession();
+          if (!next || typeof next.token !== 'string' || !next.token) return null;
+          return {
+            token: next.token,
+            basePath: typeof next.basePath === 'string' ? next.basePath : '',
+          };
+        } catch (_) {
+          return null;
+        }
+      }
+
+      function ensureSession() {
+        const next = readSessionFromOpener();
+        if (next) session = next;
+        return session;
+      }
+
+      function formatSeen(value) {
+        if (!value) return 'never';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return String(value);
+        return date.toLocaleString();
+      }
+
+      const TYPE_COLORS = {
+        ear: '#2457a7',
+        output: '#b45309',
+        mixed: '#5b21b6',
+        other: '#475569',
+      };
+
+      function normalizeType(value) {
+        const type = String(value || '').toLowerCase();
+        if (type === 'ear' || type === 'output') return type;
+        return 'other';
+      }
+
+      function mappableDevices(devices) {
+        return devices.filter((device) => {
+          if (!device || typeof device !== 'object') return false;
+          if (String(device.lifecycle_state || 'active') !== 'active') return false;
+          const installation = device.installation;
+          if (!installation || typeof installation !== 'object') return false;
+          const lat = Number(installation.latitude);
+          const lon = Number(installation.longitude);
+          return Number.isFinite(lat) && Number.isFinite(lon);
+        });
+      }
+
+      function coordKey(lat, lon) {
+        return `${lat.toFixed(6)},${lon.toFixed(6)}`;
+      }
+
+      function groupDevicesByCoordinate(devices) {
+        const groups = new Map();
+        for (const device of devices) {
+          const lat = Number(device.installation.latitude);
+          const lon = Number(device.installation.longitude);
+          const key = coordKey(lat, lon);
+          let group = groups.get(key);
+          if (!group) {
+            group = { lat, lon, devices: [] };
+            groups.set(key, group);
+          }
+          group.devices.push(device);
+        }
+        for (const group of groups.values()) {
+          group.devices.sort((a, b) => String(a.node_id || '').localeCompare(String(b.node_id || '')));
+        }
+        return [...groups.values()];
+      }
+
+      function groupKind(devices) {
+        const types = new Set(devices.map((device) => normalizeType(device.node_type)));
+        if (types.size === 1) return [...types][0];
+        return 'mixed';
+      }
+
+      function groupOnline(devices) {
+        return devices.some((device) => device.status === 'online');
+      }
+
+      function pinGlyph(kind) {
+        if (kind === 'ear') {
+          return '<circle cx="14" cy="13" r="4.2" fill="#fff"/><path d="M10.2 13.2c0-2.4 1.5-4.2 3.8-4.2" fill="none" stroke="#2457a7" stroke-width="1.6" stroke-linecap="round"/>';
+        }
+        if (kind === 'output') {
+          return '<rect x="10.2" y="9.4" width="4.2" height="7.2" rx="1" fill="#fff"/><path d="M15.2 11.2l3.2-1.6v8.8l-3.2-1.6" fill="#fff"/>';
+        }
+        if (kind === 'mixed') {
+          return '<text x="14" y="16.2" text-anchor="middle" fill="#fff" font-size="11" font-weight="700" font-family="system-ui,sans-serif">+</text>';
+        }
+        return '<text x="14" y="16.2" text-anchor="middle" fill="#fff" font-size="10" font-weight="700" font-family="system-ui,sans-serif">?</text>';
+      }
+
+      function needleIcon(kind, online, count) {
+        const fill = TYPE_COLORS[kind] || TYPE_COLORS.other;
+        const offlineClass = online ? '' : ' is-offline';
+        const countHtml = count > 1 ? `<span class="count">${count}</span>` : '';
+        const html = `
+          <div class="map-pin${offlineClass}" title="">
+            <svg viewBox="0 0 28 40" aria-hidden="true">
+              <path class="pin-body" d="M14 1.8c-6.2 0-11.2 5-11.2 11.2 0 8.4 11.2 24.2 11.2 24.2S25.2 21.4 25.2 13C25.2 6.8 20.2 1.8 14 1.8z" fill="${fill}"/>
+              <path class="pin-stroke" d="M14 1.8c-6.2 0-11.2 5-11.2 11.2 0 8.4 11.2 24.2 11.2 24.2S25.2 21.4 25.2 13C25.2 6.8 20.2 1.8 14 1.8z" fill="none" stroke="#fff" stroke-width="1.6"/>
+              ${pinGlyph(kind)}
+            </svg>
+            ${countHtml}
+          </div>`;
+        return L.divIcon({
+          className: '',
+          iconSize: [28, 40],
+          iconAnchor: [14, 40],
+          popupAnchor: [0, -34],
+          html,
+        });
+      }
+
+      function legendPin(kind) {
+        const fill = TYPE_COLORS[kind] || TYPE_COLORS.other;
+        return `<svg class="legend-pin" viewBox="0 0 28 40" aria-hidden="true"><path d="M14 1.8c-6.2 0-11.2 5-11.2 11.2 0 8.4 11.2 24.2 11.2 24.2S25.2 21.4 25.2 13C25.2 6.8 20.2 1.8 14 1.8z" fill="${fill}" stroke="#fff" stroke-width="1.6"/></svg>`;
+      }
+
+      function initMap() {
+        mapRoot.replaceChildren();
+        const mapEl = document.createElement('div');
+        mapEl.id = 'map';
+        mapRoot.append(mapEl);
+        const legend = document.createElement('div');
+        legend.className = 'legend';
+        legend.innerHTML = [
+          `<div>${legendPin('ear')} Ear</div>`,
+          `<div>${legendPin('output')} Output</div>`,
+          `<div>${legendPin('mixed')} Mixed site (count badge)</div>`,
+          '<div>Dimmed pin = all offline at that point</div>',
+        ].join('');
+        mapRoot.append(legend);
+        mapRoot.style.position = 'relative';
+
+        map = L.map(mapEl, { worldCopyJump: true });
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+        }).addTo(map);
+        markerLayer = L.layerGroup().addTo(map);
+        map.setView([59.91, 10.75], 6);
+        refreshBtn.hidden = false;
+      }
+
+      function devicePopupLines(device) {
+        const status = device.status === 'online' ? 'online' : 'offline';
+        return (
+          `<p class="popup-title">${escapeHtml(device.node_id)}`
+          + ` · <span class="status-${status}">${status}</span></p>`
+          + `<p class="popup-meta">Last seen: ${escapeHtml(formatSeen(device.last_seen_at))}</p>`
+        );
+      }
+
+      function popupHtml(group) {
+        const { lat, lon, devices } = group;
+        const coords = `<p class="popup-meta">${lat.toFixed(5)}, ${lon.toFixed(5)}</p>`;
+        if (devices.length === 1) {
+          return coords + devicePopupLines(devices[0]);
+        }
+        const items = devices.map((device) => {
+          const status = device.status === 'online' ? 'online' : 'offline';
+          return (
+            `<li><strong>${escapeHtml(device.node_id)}</strong>`
+            + ` · <span class="status-${status}">${status}</span>`
+            + `<br>Last seen: ${escapeHtml(formatSeen(device.last_seen_at))}</li>`
+          );
+        }).join('');
+        return coords + `<ul class="popup-list">${items}</ul>`;
+      }
+
+      function renderMarkers(devices) {
+        const points = mappableDevices(devices);
+        const groups = groupDevicesByCoordinate(points);
+        markerLayer.clearLayers();
+        const bounds = [];
+        for (const group of groups) {
+          const kind = groupKind(group.devices);
+          const online = groupOnline(group.devices);
+          const marker = L.marker([group.lat, group.lon], {
+            icon: needleIcon(kind, online, group.devices.length),
+          });
+          marker.bindPopup(popupHtml(group));
+          marker.addTo(markerLayer);
+          bounds.push([group.lat, group.lon]);
+        }
+        if (bounds.length === 1) {
+          map.setView(bounds[0], 14);
+        } else if (bounds.length > 1) {
+          map.fitBounds(bounds, { padding: [36, 36], maxZoom: 15 });
+        }
+        const siteLabel = groups.length === 1 ? 'site' : 'sites';
+        setStatus(
+          points.length
+            ? `${points.length} device${points.length === 1 ? '' : 's'} on ${groups.length} ${siteLabel}`
+            : 'No active devices with installation coordinates',
+        );
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;');
+      }
+
+      async function fetchDevices() {
+        if (!ensureSession()) {
+          throw new Error('Hub session unavailable. Keep the Hub window open and use its Map button.');
+        }
+        const base = String(session.basePath || '').replace(/\/$/, '');
+        const response = await fetch(`${base}/api/v1/devices`, {
+          headers: { Authorization: `Bearer ${session.token}` },
+          cache: 'no-store',
+        });
+        const body = await response.json().catch(() => ([]));
+        if (!response.ok) {
+          const detail = body && typeof body === 'object' ? body.detail : '';
+          throw new Error(typeof detail === 'string' && detail ? detail : `Request failed (${response.status}).`);
+        }
+        if (!Array.isArray(body)) throw new Error('Hub returned an invalid device list.');
+        return body;
+      }
+
+      async function refresh() {
+        try {
+          if (!map) initMap();
+          const devices = await fetchDevices();
+          renderMarkers(devices);
+        } catch (error) {
+          setStatus(error.message || String(error));
+          if (!map) {
+            const message = document.getElementById('bootstrap-message');
+            if (message) {
+              message.className = 'notice error';
+              message.textContent = error.message || String(error);
+            }
+          }
+        }
+      }
+
+      function startAutoRefresh() {
+        clearInterval(refreshTimer);
+        refreshTimer = setInterval(() => {
+          refresh();
+        }, REFRESH_MS);
+      }
+
+      refreshBtn.addEventListener('click', () => {
+        refresh();
+      });
+
+      refresh().then(startAutoRefresh);
+    </script>
+  </body>
+</html>

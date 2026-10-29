@@ -14,6 +14,7 @@ Distributed acoustic sensing, built around **hub-bootstrap** and **ESP-Output**.
 ## Documentation
 
 - [Local deployment and operations](docs/local-deployment.md): mini-PC setup, certificates, ESP-IDF setup, node administration, simulators, and local workflows.
+- [Device wiring and pinout](docs/device-wiring-and-pinout.md): Output relay/amp GPIOs and Ear I2S mic map (indexes 0–3 reserved).
 - [Connectivity map](docs/connectivity.md): clients, protocols, ports, and which functions share a process.
 - [Protocol reference](docs/protocol.md): device and Hub API message formats.
 - [Hub API](docs/hub-api.openapi.yaml): OpenAPI 3.0 description of the Hub HTTPS API.
