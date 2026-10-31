@@ -240,7 +240,7 @@ Independent exponential backoff state for MQTT, Wi-Fi, and HTTPS Desired (see `d
 | Path | Initial | Max | Reset rule |
 | --- | --- | --- | --- |
 | MQTT | 1s (Kconfig) | 60s | After connection stays up for `DBMAP_BACKOFF_MQTT_STABLE_MS` (default 30s) |
-| Wi-Fi | 1s | 30s | On GOT_IP |
+| Wi-Fi | 1s | 60s | On GOT_IP; every failed join advances backoff (incl. `NO_AP_FOUND`) |
 | HTTPS Desired | 1s | 60s | On successful request; at most 3 transient retries per poll |
 
 - ~20% jitter; overflow-safe doubling; `in_flight` prevents concurrent reconnects for the same path.
@@ -277,6 +277,11 @@ an explicit **OTA reboot pending** state (`dbmap_lifecycle_enter_ota_reboot_pend
    `mqtt_connect_attempts`, `mqtt_connect_failures`, `wifi_disconnects`) do not
    increment for that expected teardown.
 4. Cleanup is capped at **500 ms**; reboot proceeds regardless.
+
+OTA status is published on each node's `…/status` topic (Output and Ear). The Hub
+MQTT listener must subscribe to both `esp-output/local/+/status` and
+`esp-ear/local/+/status`; without the Ear subscription, install/boot reports are
+dropped and only `reset_reported` (e.g. `SW` from `esp_restart`) may appear.
 
 OTA Hub events (`ota_install_reported` / `ota_boot_confirmed`) stay separate from
 those counters. An OTA update does not increment MQTT/Wi-Fi counters merely because

@@ -13,6 +13,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static int g_failures = 0;
 
@@ -89,6 +90,116 @@ static void test_inmp441_extract(void)
     /* Sign extension for negative 24-bit values. */
     uint32_t neg = 0x80000000u;
     EXPECT(dbmap_inmp441_extract_sample(neg) < 0);
+
+    /* EAR-001 rail: DMA slot 0x80000000 → extracted -2^23 (exact 24-bit FS).
+     * Peak 0 dBFS is then genuine pre-shift MSB data, not invented by >> 8. */
+    EXPECT(dbmap_inmp441_extract_sample(0x80000000u) == (int32_t)(-8388608));
+    EXPECT(dbmap_inmp441_extract_sample(0x00000000u) == 0);
+    /* Low-byte-only noise cannot become FS via >> 8. */
+    EXPECT(dbmap_inmp441_extract_sample(0x000000FFu) == 0);
+}
+
+static void test_window_status_missing_mic(void)
+{
+    EXPECT(dbmap_audio_expected_samples(16000, 1000) == 16000);
+
+    /* EAR-001/002 style: no samples. */
+    EXPECT(strcmp(dbmap_audio_window_status(0, 16000, 0, 20, 1), "error") == 0);
+    EXPECT(strcmp(dbmap_audio_window_status(0, 16000, 0, 0, 0), "error") == 0);
+
+    /* EAR-003 style: one 256-frame buffer in a 1 s window + many stalls. */
+    EXPECT(strcmp(dbmap_audio_window_status(256, 16000, 0, 100, 0), "error") == 0);
+
+    /* Partial fill with stalls → degraded. */
+    EXPECT(strcmp(dbmap_audio_window_status(9000, 16000, 0, 3, 0), "degraded") == 0);
+
+    /* Quiet but well-filled window stays transport ok (silence ≠ I2S failure). */
+    EXPECT(strcmp(dbmap_audio_window_status(16000, 16000, 0, 0, 0), "ok") == 0);
+}
+
+static void test_microphone_status_heuristic(void)
+{
+    EXPECT(strcmp(dbmap_audio_microphone_status("error", -120.0f), "unavailable") == 0);
+    EXPECT(strcmp(dbmap_audio_microphone_status(NULL, -40.0f), "unavailable") == 0);
+    EXPECT(
+        strcmp(dbmap_audio_microphone_status("ok", -120.0f), "disconnected_suspected") == 0
+    );
+    EXPECT(
+        strcmp(dbmap_audio_microphone_status("degraded", -120.0f), "disconnected_suspected")
+        == 0
+    );
+    EXPECT(strcmp(dbmap_audio_microphone_status("ok", -42.5f), "signal_present") == 0);
+}
+
+static void test_classify_ear001_floating_din(void)
+{
+    /* Captured EAR-001 window with no physical mic. */
+    char reason[48];
+    dbmap_audio_mic_class_input_t in = {
+        .transport_status = "ok",
+        .sample_count = 16384,
+        .rms_dbfs = -36.0f,
+        .peak_dbfs = 0.0f,
+        .diag = {
+            .raw_min = -8388608,
+            .raw_max = 2097151,
+            .zero_sample_count = 15468,
+            .full_scale_sample_count = 1,
+            .unique_sample_count = 38,
+            .consecutive_identical_samples = 624,
+            .unique_capped = 0,
+        },
+    };
+    EXPECT(strcmp(dbmap_audio_classify_microphone(&in, reason, sizeof(reason)), "noise_suspected") == 0);
+    EXPECT(strcmp(reason, "mostly_zero_with_rail_hits") == 0);
+}
+
+static void test_classify_digital_silence_peers(void)
+{
+    char reason[48];
+    dbmap_audio_mic_class_input_t in = {
+        .transport_status = "ok",
+        .sample_count = 16384,
+        .rms_dbfs = -120.0f,
+        .peak_dbfs = -120.0f,
+        .diag = {
+            .raw_min = 0,
+            .raw_max = 0,
+            .zero_sample_count = 16384,
+            .full_scale_sample_count = 0,
+            .unique_sample_count = 1,
+            .consecutive_identical_samples = 16384,
+            .unique_capped = 0,
+        },
+    };
+    EXPECT(
+        strcmp(dbmap_audio_classify_microphone(&in, reason, sizeof(reason)), "disconnected_suspected")
+        == 0
+    );
+    EXPECT(strcmp(reason, "digital_silence") == 0);
+}
+
+static void test_classify_ambient_like_quiet_mic(void)
+{
+    char reason[48];
+    /* Quiet room: diverse near-zero values, no rails, not exact-zero dominated. */
+    dbmap_audio_mic_class_input_t in = {
+        .transport_status = "ok",
+        .sample_count = 16000,
+        .rms_dbfs = -55.0f,
+        .peak_dbfs = -28.0f,
+        .diag = {
+            .raw_min = -50000,
+            .raw_max = 40000,
+            .zero_sample_count = 200,
+            .full_scale_sample_count = 0,
+            .unique_sample_count = 800,
+            .consecutive_identical_samples = 12,
+            .unique_capped = 0,
+        },
+    };
+    EXPECT(strcmp(dbmap_audio_classify_microphone(&in, reason, sizeof(reason)), "signal_present") == 0);
+    EXPECT(strcmp(reason, "ambient_like_energy") == 0);
 }
 
 int main(void)
@@ -98,6 +209,11 @@ int main(void)
     test_minus_six_db();
     test_clip_count();
     test_inmp441_extract();
+    test_window_status_missing_mic();
+    test_microphone_status_heuristic();
+    test_classify_ear001_floating_din();
+    test_classify_digital_silence_peers();
+    test_classify_ambient_like_quiet_mic();
     if (g_failures != 0) {
         fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;

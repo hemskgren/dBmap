@@ -77,10 +77,41 @@ def test_access_log_keeps_the_peer_when_forwarding_is_absent(capsys) -> None:
     assert "172.19.0.8 - - [" in captured.err
 
 
+def test_release_firmware_id_uses_node_type_not_target_chip_suffix():
+    digest = "d5469ae6" + ("0" * 56)
+    ear_id = server._release_firmware_id(
+        {
+            "target": "ear-esp32-s3",
+            "node_type": "ear",
+            "hardware_revision": "esp32-s3-n16r8",
+            "firmware_version": "0.5.8",
+        },
+        digest,
+    )
+    assert ear_id == "dbmap-ear-esp32-s3-n16r8-0.5.8-d5469ae6"
+    assert "esp32-s3-esp32-s3" not in ear_id
+
+    output_id = server._release_firmware_id(
+        {
+            "target": "output-esp32",
+            "node_type": "output",
+            "hardware_revision": "generic",
+            "firmware_version": "0.5.8",
+        },
+        digest,
+    )
+    assert output_id == "dbmap-output-generic-0.5.8-d5469ae6"
+
+
 def test_builder_requires_admin_token(builder):
     assert request(builder, "GET", "/api/v1/firmware/targets")[0] == 401
-    assert request(builder, "GET", "/api/v1/firmware/targets", token="viewer-token")[0] == 403
-    status, targets = request(builder, "GET", "/api/v1/firmware/targets", token="test-admin-token")
+    assert (
+        request(builder, "GET", "/api/v1/firmware/targets", token="viewer-token")[0]
+        == 403
+    )
+    status, targets = request(
+        builder, "GET", "/api/v1/firmware/targets", token="test-admin-token"
+    )
     assert status == 200
     assert [target["id"] for target in targets] == ["output-esp32", "ear-esp32-s3"]
     assert targets[0]["hardware_revision"] == "generic"
@@ -102,7 +133,9 @@ def test_builder_rejects_invalid_build_requests(builder, body):
     assert "detail" in response
 
 
-def test_build_submission_and_status_polling_preserve_queued_state(builder, monkeypatch):
+def test_build_submission_and_status_polling_preserve_queued_state(
+    builder, monkeypatch
+):
     monkeypatch.setattr(server, "_build", lambda job_id, target: None)
     status, queued = request(
         builder,
@@ -166,7 +199,9 @@ def test_install_hub_ca_fails_with_actionable_message(tmp_path, monkeypatch):
         ca_file.touch(exist_ok=True)
         monkeypatch.setattr(server, "HUB_CA_FILE", ca_file)
 
-        with pytest.raises(RuntimeError, match="mount shared/trust/ca.crt into firmware-builder"):
+        with pytest.raises(
+            RuntimeError, match="mount shared/trust/ca.crt into firmware-builder"
+        ):
             server._install_hub_ca(tmp_path / "project")
 
 
@@ -174,13 +209,15 @@ def test_sdkconfig_string_reads_firmware_version(tmp_path):
     sdkconfig = tmp_path / "sdkconfig"
     sdkconfig.write_text('CONFIG_DBMAP_FIRMWARE_VERSION="1.2.3"\n', encoding="utf-8")
 
-    assert server._sdkconfig_string(sdkconfig, "CONFIG_DBMAP_FIRMWARE_VERSION") == "1.2.3"
+    assert (
+        server._sdkconfig_string(sdkconfig, "CONFIG_DBMAP_FIRMWARE_VERSION") == "1.2.3"
+    )
 
 
 def test_sdkconfig_syncs_app_project_ver_from_defaults(tmp_path):
     sdkconfig = tmp_path / "sdkconfig"
     sdkconfig.write_text(
-        '# CONFIG_APP_PROJECT_VER_FROM_CONFIG is not set\n'
+        "# CONFIG_APP_PROJECT_VER_FROM_CONFIG is not set\n"
         'CONFIG_APP_PROJECT_VER="0.1.4"\n',
         encoding="utf-8",
     )
@@ -192,7 +229,10 @@ def test_sdkconfig_syncs_app_project_ver_from_defaults(tmp_path):
 
 
 def test_short_error_keeps_job_list_to_one_line():
-    dump = "ESP-IDF firmware build failed.\n[969/1011] Building C object esp-idf/spiffs\n" + ("x" * 400)
+    dump = (
+        "ESP-IDF firmware build failed.\n[969/1011] Building C object esp-idf/spiffs\n"
+        + ("x" * 400)
+    )
     assert server._short_error(dump) == "ESP-IDF firmware build failed."
     assert "Building C object" not in server._short_error(dump)
     long_line = "error: " + ("a" * 200)
@@ -204,10 +244,14 @@ def test_short_error_keeps_job_list_to_one_line():
 
 def test_toolchain_check_requires_pinned_esp_idf_version(tmp_path, monkeypatch):
     log_path = tmp_path / "toolchain.log"
-    monkeypatch.setattr(server, "_run_stage", lambda command, cwd, log_path: (0, "ESP-IDF v5.4.4"))
+    monkeypatch.setattr(
+        server, "_run_stage", lambda command, cwd, log_path: (0, "ESP-IDF v5.4.4")
+    )
     server._check_toolchain("output-esp32", tmp_path, log_path)
 
-    monkeypatch.setattr(server, "_run_stage", lambda command, cwd, log_path: (0, "ESP-IDF v5.3.0"))
+    monkeypatch.setattr(
+        server, "_run_stage", lambda command, cwd, log_path: (0, "ESP-IDF v5.3.0")
+    )
     with pytest.raises(RuntimeError, match="pinned ESP-IDF toolchain check failed"):
         server._check_toolchain("output-esp32", tmp_path, log_path)
 
@@ -221,7 +265,9 @@ def test_build_list_keeps_older_artifacts_visible(builder):
             encoding="utf-8",
         )
 
-    status, result = request(builder, "GET", "/api/v1/firmware/builds", token="test-admin-token")
+    status, result = request(
+        builder, "GET", "/api/v1/firmware/builds", token="test-admin-token"
+    )
 
     assert status == 200
     assert len(result) == 101

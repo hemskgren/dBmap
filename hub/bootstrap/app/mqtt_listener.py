@@ -103,6 +103,7 @@ def _on_connect(
     client.subscribe("esp-ear/local/+/hello", qos=1)
     client.subscribe("esp-ear/local/+/keepalive", qos=0)
     client.subscribe("esp-ear/local/+/health", qos=0)
+    client.subscribe("esp-ear/local/+/status", qos=1)
     client.subscribe("esp-ear/local/+/observation", qos=1)
     for topic in _broker_metric_topics:
         client.subscribe(topic, qos=0)

@@ -177,7 +177,9 @@ def test_mqtt_offline_degrades_while_api_remains_usable(monkeypatch) -> None:
         assert summary["availability"]["current_state"] == "unavailable"
         assert summary["health"]["reason"]
         assert "MQTT" in summary["health"]["reason"]
-        components = {item["id"]: item["state"] for item in summary["health"]["components"]}
+        components = {
+            item["id"]: item["state"] for item in summary["health"]["components"]
+        }
         assert components["mqtt"] == "offline"
         assert components["api"] == "ok"
         assert "firmware-builder" not in components
@@ -192,7 +194,11 @@ def test_web_failure_marks_unhealthy(monkeypatch) -> None:
     monkeypatch.setattr(
         edge_status,
         "statuses",
-        lambda: {"nginx": "online", "web": "offline", "firmware-builder": "unavailable"},
+        lambda: {
+            "nginx": "online",
+            "web": "offline",
+            "firmware-builder": "unavailable",
+        },
     )
     db = SessionLocal()
     try:
@@ -240,7 +246,11 @@ def test_recovery_emits_state_change_events(monkeypatch) -> None:
     monkeypatch.setattr(
         edge_status,
         "statuses",
-        lambda: {"nginx": "online", "web": "offline", "firmware-builder": "unavailable"},
+        lambda: {
+            "nginx": "online",
+            "web": "offline",
+            "firmware-builder": "unavailable",
+        },
     )
     db = SessionLocal()
     try:
@@ -643,8 +653,10 @@ def test_short_outage_does_not_round_to_100() -> None:
     samples: list[HubMonitorSample] = []
     for minute in range(0, 15 * 60, 5):
         observed = now - timedelta(hours=15) + timedelta(minutes=minute)
-        outage = timedelta(hours=14) <= (observed - (now - timedelta(hours=15))) < timedelta(
-            hours=14, minutes=2
+        outage = (
+            timedelta(hours=14)
+            <= (observed - (now - timedelta(hours=15)))
+            < timedelta(hours=14, minutes=2)
         )
         samples.append(
             _sample(

@@ -349,7 +349,7 @@ curl -sS --cacert shared/trust/ca.crt \
   -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
   -H "Content-Type: application/json" \
   -X POST \
-  -d '{"firmware_id":"dbmap-output-esp32-generic-0.1.17-<build>","acknowledge_unverified_platform":true}' \
+  -d '{"firmware_id":"dbmap-output-generic-0.1.17-<build>","acknowledge_unverified_platform":true}' \
   "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes/<node-id>/firmware-selection"
 ```
 

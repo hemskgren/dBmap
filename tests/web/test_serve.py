@@ -26,7 +26,10 @@ def test_access_log_uses_the_forwarded_client(capsys) -> None:
 def test_access_log_ignores_a_spoofed_forwarded_header(capsys) -> None:
     handler = serve.StaticHandler.__new__(serve.StaticHandler)
     handler.client_address = ("172.19.0.8", 45864)
-    handler.headers = {"X-Forwarded-For": "203.0.113.9\ninjected", "X-Real-IP": "not-an-ip"}
+    handler.headers = {
+        "X-Forwarded-For": "203.0.113.9\ninjected",
+        "X-Real-IP": "not-an-ip",
+    }
     handler.log_message("%s", "GET / HTTP/1.1")
 
     captured = capsys.readouterr()
@@ -40,7 +43,9 @@ def test_health_returns_a_short_body() -> None:
     thread.start()
     try:
         port = server.server_address[1]
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as response:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/health", timeout=2
+        ) as response:
             assert response.status == 200
             assert response.read() == b"ok\n"
     finally:
@@ -49,9 +54,13 @@ def test_health_returns_a_short_body() -> None:
 
 
 def test_client_disconnect_is_not_a_server_error() -> None:
-    assert serve._is_client_disconnect(ConnectionResetError(104, "Connection reset by peer"))
+    assert serve._is_client_disconnect(
+        ConnectionResetError(104, "Connection reset by peer")
+    )
     assert serve._is_client_disconnect(BrokenPipeError(32, "Broken pipe"))
-    assert serve._is_client_disconnect(ssl.SSLEOFError("EOF occurred in violation of protocol"))
+    assert serve._is_client_disconnect(
+        ssl.SSLEOFError("EOF occurred in violation of protocol")
+    )
     assert not serve._is_client_disconnect(RuntimeError("disk failed"))
     assert not serve._is_client_disconnect(None)
 

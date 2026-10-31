@@ -54,15 +54,20 @@ void app_main(void)
     }
 
     if (!s_cfg.provisioned && (s_cfg.network.ssid[0] == '\0' || s_cfg.bootstrap_token[0] == '\0')) {
-        ESP_ERROR_CHECK(dbmap_serial_config_wait(&s_cfg, 0));
+        ESP_LOGI(
+            TAG,
+            "unprovisioned (missing Wi-Fi or bootstrap token); USB config window %d s then reboot",
+            DBMAP_USB_BOOT_RECOVERY_S
+        );
+        (void)dbmap_serial_config_wait(&s_cfg, DBMAP_USB_BOOT_RECOVERY_S);
         esp_restart();
     }
 
     esp_err_t wifi_err = dbmap_wifi_start(&s_cfg.network);
     if (wifi_err != ESP_OK) {
-        ESP_LOGE(TAG, "Wi-Fi unavailable; waiting for corrected USB provisioning configuration");
-        ESP_ERROR_CHECK(dbmap_serial_config_wait(&s_cfg, 0));
-        esp_restart();
+        /* Keep retrying STA in the background; USB configure stays open.
+         * Do not reboot solely because the configured SSID is absent. */
+        (void)dbmap_boot_wait_wifi_ip_or_usb(&s_cfg, 0);
     }
 
     esp_err_t time_err = dbmap_time_sync(10000);
@@ -75,8 +80,12 @@ void app_main(void)
     if (!s_cfg.provisioned) {
         esp_err_t perr = dbmap_hub_provision(&s_cfg);
         if (perr != ESP_OK) {
-            ESP_LOGE(TAG, "secure provisioning failed; waiting for corrected USB configuration");
-            ESP_ERROR_CHECK(dbmap_serial_config_wait(&s_cfg, 0));
+            ESP_LOGE(
+                TAG,
+                "secure provisioning failed; USB config window %d s then reboot",
+                DBMAP_USB_BOOT_RECOVERY_S
+            );
+            (void)dbmap_serial_config_wait(&s_cfg, DBMAP_USB_BOOT_RECOVERY_S);
             esp_restart();
         }
     }

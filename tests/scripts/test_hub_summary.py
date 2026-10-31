@@ -34,7 +34,7 @@ def test_print_monitoring_includes_windows_and_events(capsys) -> None:
                         "name": "MQTT broker",
                         "state": "offline",
                         "last_success_at": None,
-                    }
+                    },
                 ],
             },
             "availability": {
@@ -61,7 +61,11 @@ def test_print_monitoring_includes_windows_and_events(capsys) -> None:
                         "low_coverage": True,
                         "score_ready": False,
                     },
-                    "30d": {"percent": None, "insufficient_data": True, "reason": "insufficient_observation"},
+                    "30d": {
+                        "percent": None,
+                        "insufficient_data": True,
+                        "reason": "insufficient_observation",
+                    },
                 },
                 "components": {
                     "mqtt": {
@@ -239,9 +243,7 @@ def test_snapshot_diff_reports_node_state_and_new_observations() -> None:
             {
                 "observation_id": "observation-2",
                 "node_id": "SIM-EAR-001",
-                "classification": {
-                    "hints": {"simulated_source_id": "SIM-VEHICLE-001"}
-                },
+                "classification": {"hints": {"simulated_source_id": "SIM-VEHICLE-001"}},
             },
             {
                 "observation_id": "observation-3",
@@ -256,8 +258,12 @@ def test_snapshot_diff_reports_node_state_and_new_observations() -> None:
     assert "Node state changed: SIM-EAR-001" in changes
     assert "New node: SIM-EAR-002 (ear)" in changes
     assert "New observations: 2 (SIM-EAR-001: +2)" in changes
-    assert any("observation-2" in change and "SIM-VEHICLE-001" in change for change in changes)
-    assert any("observation-3" in change and "source=" not in change for change in changes)
+    assert any(
+        "observation-2" in change and "SIM-VEHICLE-001" in change for change in changes
+    )
+    assert any(
+        "observation-3" in change and "source=" not in change for change in changes
+    )
 
 
 def test_unchanged_snapshot_has_no_diff() -> None:

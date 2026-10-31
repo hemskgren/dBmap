@@ -23,6 +23,8 @@ Initial Ear application for ESP32-S3 + one I2S MEMS microphone.
   "audio": {
     "units": "dBFS",
     "subsystem_status": "ok",
+    "audio_transport_status": "ok",
+    "microphone_status": "signal_present",
     "sample_rate_hz": 16000,
     "sample_format": "int32_from_i2s32_left_justified_24",
     "microphones": [
@@ -34,7 +36,8 @@ Initial Ear application for ESP32-S3 + one I2S MEMS microphone.
         "peak_dbfs": -28.1,
         "sample_count": 16000,
         "window_ms": 1000,
-        "status": "ok"
+        "status": "ok",
+        "microphone_status": "signal_present"
       }
     ]
   }
@@ -42,6 +45,32 @@ Initial Ear application for ESP32-S3 + one I2S MEMS microphone.
 ```
 
 Levels are digital full-scale (**dBFS**), not calibrated dB SPL.
+
+`audio_transport_status` (also mirrored as `subsystem_status` / `microphones[].status`) is **I2S fill health only**:
+
+| Transport | Meaning |
+|-----------|---------|
+| `ok` | ≥50% of expected samples, no read errors/timeouts/empties |
+| `degraded` | Partial fill and/or some stalls/read errors |
+| `error` | No samples, missing data, or &lt;10% of expected samples |
+
+`microphone_status` is **structure-based** (not a single dBFS threshold). Transport stays separate.
+
+| Mic | Meaning |
+|-----|---------|
+| `signal_present` | Ambient-like energy: enough unique values, not zero-/rail-dominated |
+| `noise_suspected` | Floating/noisy DIN (e.g. mostly zeros + rare full-scale hits) |
+| `disconnected_suspected` | Digital silence / near-all-zero window |
+| `unknown` | Transport usable but ambiguous |
+| `unavailable` | Transport unusable / no samples |
+
+Each mic also reports `classification_reason` plus diagnostics (no raw PCM): `raw_min`, `raw_max`, `zero_sample_count`, `full_scale_sample_count`, `unique_sample_count`, `unique_capped`, `consecutive_identical_samples`. See [`docs/ear-i2s-read-path-verification.md`](../../docs/ear-i2s-read-path-verification.md).
+
+INMP441 extract remains `(int32_t)slot >> 8` (24-bit left-justified assumption); do not change without datasheet + scope confirmation.
+
+`expected_sample_count` is published beside `sample_count`. Per-window read results stay **separate**: `timeout_reads`, `empty_reads`, `read_errors` (capped at 10 000 with `counters_capped`). `sample_count` counts only frames actually extracted from read buffers.
+
+I2S stall / zero-sample investigation evidence (source vs telemetry vs inference vs hardware): [`docs/ear-i2s-read-path-verification.md`](../../docs/ear-i2s-read-path-verification.md). Do not fleet-OTA until EAR-003 passes that targeted test; removing an experimental `vTaskDelay(5)` on the stall path is **not** a proven root-cause fix.
 
 ## Hardware
 

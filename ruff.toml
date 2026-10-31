@@ -1,2 +1,7 @@
+# Vendored Espressif mdns (not first-party dBmap Python).
+exclude = [
+    "firmware/esp-ear/components/mdns",
+]
+
 [lint]
 ignore = ["B008"]

@@ -97,7 +97,7 @@ menu "dBmap node"
         config DBMAP_BACKOFF_WIFI_MAX_MS
             int "Wi-Fi maximum reconnect delay (ms)"
             range 1000 300000
-            default 30000
+            default 60000
 
         config DBMAP_BACKOFF_HTTPS_INITIAL_MS
             int "HTTPS Desired initial retry delay (ms)"

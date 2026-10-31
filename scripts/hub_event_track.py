@@ -54,9 +54,7 @@ def fetch_observations(
             observations = json.load(response)
     except urllib.error.HTTPError as exc:
         detail = exc.read(1024).decode(errors="replace")
-        raise HubApiError(
-            f"hub API {path} returned HTTP {exc.code}: {detail}"
-        ) from exc
+        raise HubApiError(f"hub API {path} returned HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise HubApiError(f"could not reach the hub API: {exc.reason}") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -82,9 +80,7 @@ def fetch_nodes(
             nodes = json.load(response)
     except urllib.error.HTTPError as exc:
         detail = exc.read(1024).decode(errors="replace")
-        raise HubApiError(
-            f"hub API {path} returned HTTP {exc.code}: {detail}"
-        ) from exc
+        raise HubApiError(f"hub API {path} returned HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise HubApiError(f"could not reach the hub API: {exc.reason}") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -93,7 +89,10 @@ def fetch_nodes(
     if not isinstance(nodes, list) or not all(
         isinstance(node, dict)
         and isinstance(node.get("node_id"), str)
-        and (node.get("installation") is None or isinstance(node.get("installation"), dict))
+        and (
+            node.get("installation") is None
+            or isinstance(node.get("installation"), dict)
+        )
         for node in nodes
     ):
         raise HubApiError("hub returned an invalid node list or installation metadata")
@@ -185,7 +184,11 @@ def format_installation(node_id: str, node: dict[str, Any] | None) -> str:
     ):
         value = installation.get(key)
         if value is not None:
-            suffix = "m" if key == "height_m" else (" deg" if key == "orientation_deg" else "")
+            suffix = (
+                "m"
+                if key == "height_m"
+                else (" deg" if key == "orientation_deg" else "")
+            )
             fields.append(f"{label}={value}{suffix}")
     return f"{node_id}: " + ", ".join(fields)
 
@@ -210,7 +213,9 @@ def report_site_distances(
         second_node = nodes.get(second_id)
         first_installation = first_node.get("installation") if first_node else None
         second_installation = second_node.get("installation") if second_node else None
-        if not isinstance(first_installation, dict) or not isinstance(second_installation, dict):
+        if not isinstance(first_installation, dict) or not isinstance(
+            second_installation, dict
+        ):
             missing = [
                 node_id
                 for node_id, installation in (
@@ -226,7 +231,9 @@ def report_site_distances(
             continue
         distance = installation_distance_m(first_installation, second_installation)
         if distance is None:
-            lines.append(f"      {first_id} ↔ {second_id}: invalid installation coordinates")
+            lines.append(
+                f"      {first_id} ↔ {second_id}: invalid installation coordinates"
+            )
             continue
         lines.append(f"      {first_id} ↔ {second_id}: {distance:.0f}m")
     return lines
@@ -299,7 +306,9 @@ def format_observation(observation: dict[str, Any]) -> str:
         confidence = classification.get("confidence")
         if isinstance(source_family, str):
             classification_detail = f"classification={source_family}"
-            if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+            if isinstance(confidence, (int, float)) and not isinstance(
+                confidence, bool
+            ):
                 classification_detail += f" (confidence={confidence:g})"
             details.append(classification_detail)
 
@@ -328,8 +337,10 @@ def report(
     lines = [
         f"Observation analysis at {format_local_datetime(datetime.now().astimezone())} (local time)",
         f"Observations fetched (maximum 500): {len(observations)}",
-        ("Detection candidates: each observation stays separate. "
-        "Ground-truth simulator IDs are not used for grouping or correlation."),
+        (
+            "Detection candidates: each observation stays separate. "
+            "Ground-truth simulator IDs are not used for grouping or correlation."
+        ),
     ]
     candidates = candidate_groups(observations)
     observed_node_ids = sorted(
@@ -340,7 +351,9 @@ def report(
         }
     )
     if observed_node_ids:
-        lines.append("Node installation metadata (mount height is Ear height, not source altitude):")
+        lines.append(
+            "Node installation metadata (mount height is Ear height, not source altitude):"
+        )
         for node_id in observed_node_ids:
             lines.append(f"  {format_installation(node_id, nodes.get(node_id))}")
     if candidates:
@@ -370,17 +383,23 @@ def report(
             observations_by_ear[node_id].append(item)
     episode_number = 0
     for node_id, ear_observations in sorted(observations_by_ear.items()):
-        for episode, reason in proposed_event_groups(ear_observations, event_gap_seconds):
+        for episode, reason in proposed_event_groups(
+            ear_observations, event_gap_seconds
+        ):
             episode_number += 1
             episode_times = [observation_time(item) for item in episode]
             known_times = [item for item in episode_times if item is not None]
-            start_text = format_local_datetime(min(known_times)) if known_times else "unknown"
+            start_text = (
+                format_local_datetime(min(known_times)) if known_times else "unknown"
+            )
             end_text = "unknown"
             if known_times:
                 last_observation = max(
                     episode,
-                    key=lambda item: observation_time(item)
-                    or datetime.min.replace(tzinfo=timezone.utc),
+                    key=lambda item: (
+                        observation_time(item)
+                        or datetime.min.replace(tzinfo=timezone.utc)
+                    ),
                 )
                 last_time = observation_time(last_observation)
                 duration_ms = last_observation.get("duration_ms", 0)
@@ -449,9 +468,13 @@ def main() -> int:
     add_hub_connection_arguments(parser)
     commands = parser.add_subparsers(dest="command", required=True)
     list_command = commands.add_parser("list", help="Show the current report once")
-    watch_command = commands.add_parser("watch", help="Re-fetch and report new observations")
+    watch_command = commands.add_parser(
+        "watch", help="Re-fetch and report new observations"
+    )
     for command in (list_command, watch_command):
-        command.add_argument("--node-id", help="Optionally restrict observations to one Ear")
+        command.add_argument(
+            "--node-id", help="Optionally restrict observations to one Ear"
+        )
         command.add_argument(
             "--event-gap-seconds",
             type=float,
@@ -497,7 +520,9 @@ def main() -> int:
         if not watching:
             return 0
 
-        print(f"Watching for new observations every {args.interval_seconds:g}s; press Ctrl+C to stop.")
+        print(
+            f"Watching for new observations every {args.interval_seconds:g}s; press Ctrl+C to stop."
+        )
         while True:
             time.sleep(args.interval_seconds)
             current = fetch_observations(base_url, args.ca, admin_token, args.node_id)

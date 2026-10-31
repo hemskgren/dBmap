@@ -112,7 +112,9 @@ def summarize(snapshot: dict[str, Any]) -> dict[str, Any]:
         "installation_incomplete_count": len(nodes) - installation_completed_count,
         "observation_count": len(observations),
         "observations_by_node": dict(sorted(observations_by_node.items())),
-        "observations_by_simulated_source": dict(sorted(observations_by_source.items())),
+        "observations_by_simulated_source": dict(
+            sorted(observations_by_source.items())
+        ),
         "latest_received_time_utc": latest_received,
         "observation_limit": 500,
         "broker": broker,
@@ -182,7 +184,9 @@ def snapshot_diff(previous: dict[str, Any], current: dict[str, Any]) -> list[str
     old_nodes = {node["node_id"]: node for node in previous["nodes"]}
     new_nodes = {node["node_id"]: node for node in current["nodes"]}
     for node_id in sorted(new_nodes.keys() - old_nodes.keys()):
-        changes.append(f"New node: {node_id} ({new_nodes[node_id].get('node_type', 'unknown')})")
+        changes.append(
+            f"New node: {node_id} ({new_nodes[node_id].get('node_type', 'unknown')})"
+        )
     for node_id in sorted(old_nodes.keys() - new_nodes.keys()):
         changes.append(f"Node missing from current response: {node_id}")
     for node_id in sorted(old_nodes.keys() & new_nodes.keys()):
@@ -214,8 +218,12 @@ def snapshot_diff(previous: dict[str, Any], current: dict[str, Any]) -> list[str
         if observation.get("observation_id") not in old_observation_ids
     ]
     if new_observations:
-        by_node = Counter(observation.get("node_id", "unknown") for observation in new_observations)
-        summary = ", ".join(f"{node_id}: +{count}" for node_id, count in sorted(by_node.items()))
+        by_node = Counter(
+            observation.get("node_id", "unknown") for observation in new_observations
+        )
+        summary = ", ".join(
+            f"{node_id}: +{count}" for node_id, count in sorted(by_node.items())
+        )
         changes.append(f"New observations: {len(new_observations)} ({summary})")
         for observation in new_observations[:5]:
             source_id = _simulated_source_id(observation)
@@ -295,14 +303,18 @@ def _format_availability_window(window: Any) -> str:
 
 
 def print_monitoring(monitoring: dict[str, Any]) -> None:
-    health = monitoring.get("health") if isinstance(monitoring.get("health"), dict) else {}
+    health = (
+        monitoring.get("health") if isinstance(monitoring.get("health"), dict) else {}
+    )
     availability = (
         monitoring.get("availability")
         if isinstance(monitoring.get("availability"), dict)
         else {}
     )
     windows = (
-        availability.get("windows") if isinstance(availability.get("windows"), dict) else {}
+        availability.get("windows")
+        if isinstance(availability.get("windows"), dict)
+        else {}
     )
     component_availability = (
         availability.get("components")
@@ -351,7 +363,9 @@ def print_monitoring(monitoring: dict[str, Any]) -> None:
             )
             print(f"  {label}: {_format_availability_window(windows_for.get('24h'))}")
     if availability.get("insufficient_data"):
-        print("  Warning: insufficient confirmed observation time for one or more windows.")
+        print(
+            "  Warning: insufficient confirmed observation time for one or more windows."
+        )
     gaps = availability.get("gaps")
     if isinstance(gaps, list) and gaps:
         print(f"  Observation gaps reported: {len(gaps)}")
@@ -416,7 +430,9 @@ def print_human_status(status: dict[str, Any]) -> None:
         else:
             print("    • None")
     print("  Installation:")
-    print(f"    • Completed: {summary.get('installation_completed_count', 'Not reported')}")
+    print(
+        f"    • Completed: {summary.get('installation_completed_count', 'Not reported')}"
+    )
     print(
         "    • Missing, incomplete, or invalid: "
         f"{summary.get('installation_incomplete_count', 'Not reported')}"
@@ -482,7 +498,8 @@ def main() -> int:
                     base_url,
                     args.ca,
                     admin_token,
-                    "/api/v1/hub/monitoring/events?" + urllib.parse.urlencode({"limit": 15}),
+                    "/api/v1/hub/monitoring/events?"
+                    + urllib.parse.urlencode({"limit": 15}),
                 )
                 monitoring = previous.get("monitoring")
                 if isinstance(monitoring, dict) and isinstance(events, dict):
@@ -504,7 +521,10 @@ def main() -> int:
             time.sleep(args.interval_seconds)
             current = fetch_status(base_url, args.ca, admin_token)
             if args.output == "json":
-                print(json.dumps(current, separators=(",", ":"), sort_keys=True), flush=True)
+                print(
+                    json.dumps(current, separators=(",", ":"), sort_keys=True),
+                    flush=True,
+                )
             else:
                 changes = status_changes(previous, current)
                 timestamp = datetime.now().astimezone().strftime("%d/%m/%Y %H:%M:%S %Z")

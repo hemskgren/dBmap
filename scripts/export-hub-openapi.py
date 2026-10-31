@@ -19,7 +19,7 @@ OUTPUT = ROOT / "docs" / "hub-api.openapi.yaml"
 
 sys.path.insert(0, str(BOOTSTRAP))
 
-from app.config import settings  # noqa: E402
+from app.config import settings
 
 settings.database_url = "sqlite://"
 settings.admin_token = "test-admin"
@@ -27,7 +27,7 @@ settings.viewer_token = "test-viewer"
 settings.mqtt_enabled = False
 settings.hub_monitor_enabled = False
 
-from app.main import create_app  # noqa: E402
+from app.main import create_app
 
 PUBLIC = {("GET", "/health"), ("POST", "/api/v1/provision")}
 
@@ -405,7 +405,13 @@ EXTRA_SCHEMAS = {
     },
     "DeviceDesiredFirmware": {
         "type": "object",
-        "required": ["node_id", "firmware_id", "firmware_version", "app_sha256", "app_size_bytes"],
+        "required": [
+            "node_id",
+            "firmware_id",
+            "firmware_version",
+            "app_sha256",
+            "app_size_bytes",
+        ],
         "properties": {
             "node_id": {"type": "string"},
             "firmware_id": {"type": "string"},
@@ -464,7 +470,11 @@ EXTRA_SCHEMAS = {
             "artifact_sha256": {"type": "string"},
             "status": {"type": "string", "enum": ["candidate", "registered"]},
             "uploaded_at": {"type": "string", "format": "date-time"},
-            "registered_at": {"type": "string", "format": "date-time", "nullable": True},
+            "registered_at": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": True,
+            },
             "artifact_size_bytes": {"type": "integer", "nullable": True},
         },
     },
@@ -483,7 +493,9 @@ EXTRA_SCHEMAS = {
             {
                 "type": "object",
                 "properties": {
-                    "compatibility": {"$ref": "#/components/schemas/FirmwareCompatibility"},
+                    "compatibility": {
+                        "$ref": "#/components/schemas/FirmwareCompatibility"
+                    },
                 },
             },
         ]
@@ -512,7 +524,10 @@ EXTRA_SCHEMAS = {
         "required": ["chipFamily", "parts"],
         "properties": {
             "chipFamily": {"type": "string", "example": "ESP32"},
-            "parts": {"type": "array", "items": {"$ref": "#/components/schemas/FlashManifestPart"}},
+            "parts": {
+                "type": "array",
+                "items": {"$ref": "#/components/schemas/FlashManifestPart"},
+            },
         },
     },
     "FlashManifest": {
@@ -523,7 +538,10 @@ EXTRA_SCHEMAS = {
             "version": {"type": "string"},
             "new_install_prompt_erase": {"type": "boolean"},
             "new_install_improv_wait_time": {"type": "integer"},
-            "builds": {"type": "array", "items": {"$ref": "#/components/schemas/FlashManifestBuild"}},
+            "builds": {
+                "type": "array",
+                "items": {"$ref": "#/components/schemas/FlashManifestBuild"},
+            },
         },
     },
     "DeploymentAttemptEvent": {
@@ -538,14 +556,24 @@ EXTRA_SCHEMAS = {
     },
     "DeploymentAttempt": {
         "type": "object",
-        "required": ["attempt_id", "node_id", "firmware_id", "status", "stage", "events"],
+        "required": [
+            "attempt_id",
+            "node_id",
+            "firmware_id",
+            "status",
+            "stage",
+            "events",
+        ],
         "properties": {
             "attempt_id": {"type": "string"},
             "node_id": {"type": "string"},
             "firmware_id": {"type": "string"},
             "firmware_version": {"type": "string"},
             "artifact_sha256": {"type": "string"},
-            "status": {"type": "string", "enum": ["in_progress", "succeeded", "failed", "unknown"]},
+            "status": {
+                "type": "string",
+                "enum": ["in_progress", "succeeded", "failed", "unknown"],
+            },
             "stage": {"type": "string"},
             "progress_percent": {"type": "integer", "nullable": True},
             "failure_code": {"type": "string", "nullable": True},
@@ -553,7 +581,10 @@ EXTRA_SCHEMAS = {
             "flasher_version": {"type": "string", "nullable": True},
             "started_at": {"type": "string", "format": "date-time"},
             "completed_at": {"type": "string", "format": "date-time", "nullable": True},
-            "events": {"type": "array", "items": {"$ref": "#/components/schemas/DeploymentAttemptEvent"}},
+            "events": {
+                "type": "array",
+                "items": {"$ref": "#/components/schemas/DeploymentAttemptEvent"},
+            },
         },
     },
     "MqttAddress": {
@@ -570,7 +601,10 @@ EXTRA_SCHEMAS = {
             "local_hub_url": {"type": "string"},
             "external_hub_url": {"type": "string", "nullable": True},
             "local_mqtt": {"$ref": "#/components/schemas/MqttAddress"},
-            "external_mqtt": {"allOf": [{"$ref": "#/components/schemas/MqttAddress"}], "nullable": True},
+            "external_mqtt": {
+                "allOf": [{"$ref": "#/components/schemas/MqttAddress"}],
+                "nullable": True,
+            },
         },
     },
     "HubComponent": {
@@ -579,7 +613,15 @@ EXTRA_SCHEMAS = {
         "properties": {
             "id": {
                 "type": "string",
-                "enum": ["nginx", "web", "hub-api", "database", "opa", "mosquitto", "firmware-builder"],
+                "enum": [
+                    "nginx",
+                    "web",
+                    "hub-api",
+                    "database",
+                    "opa",
+                    "mosquitto",
+                    "firmware-builder",
+                ],
             },
             "name": {"type": "string"},
             "status": {"type": "string"},
@@ -590,15 +632,28 @@ EXTRA_SCHEMAS = {
         "type": "object",
         "properties": {
             "device_count": {"type": "integer"},
-            "devices_by_type": {"type": "object", "additionalProperties": {"type": "integer"}},
-            "devices_by_lifecycle": {"type": "object", "additionalProperties": {"type": "integer"}},
-            "devices_by_availability": {"type": "object", "additionalProperties": {"type": "integer"}},
+            "devices_by_type": {
+                "type": "object",
+                "additionalProperties": {"type": "integer"},
+            },
+            "devices_by_lifecycle": {
+                "type": "object",
+                "additionalProperties": {"type": "integer"},
+            },
+            "devices_by_availability": {
+                "type": "object",
+                "additionalProperties": {"type": "integer"},
+            },
             "online_device_count": {"type": "integer"},
             "installation_completed_count": {"type": "integer"},
             "installation_incomplete_count": {"type": "integer"},
             "observation_count": {"type": "integer"},
             "observation_limit": {"type": "integer"},
-            "latest_observation_at": {"type": "string", "format": "date-time", "nullable": True},
+            "latest_observation_at": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": True,
+            },
         },
     },
     "HubMonitoringComponent": {
@@ -607,9 +662,17 @@ EXTRA_SCHEMAS = {
             "id": {"type": "string"},
             "name": {"type": "string"},
             "state": {"type": "string"},
-            "last_success_at": {"type": "string", "format": "date-time", "nullable": True},
+            "last_success_at": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": True,
+            },
             "reason": {"type": "string", "nullable": True},
-            "docker": {"type": "object", "additionalProperties": True, "nullable": True},
+            "docker": {
+                "type": "object",
+                "additionalProperties": True,
+                "nullable": True,
+            },
         },
     },
     "HubAvailabilityWindow": {
@@ -671,7 +734,10 @@ EXTRA_SCHEMAS = {
                 "properties": {
                     "state": {"type": "string"},
                     "score": {"type": "integer", "nullable": True},
-                    "score_definition": {"type": "object", "additionalProperties": True},
+                    "score_definition": {
+                        "type": "object",
+                        "additionalProperties": True,
+                    },
                     "reason": {
                         "type": "string",
                         "nullable": True,
@@ -679,7 +745,9 @@ EXTRA_SCHEMAS = {
                     },
                     "components": {
                         "type": "array",
-                        "items": {"$ref": "#/components/schemas/HubMonitoringComponent"},
+                        "items": {
+                            "$ref": "#/components/schemas/HubMonitoringComponent"
+                        },
                     },
                     "calculated_at": {"type": "string", "format": "date-time"},
                     "notes": {"type": "string"},
@@ -721,31 +789,51 @@ EXTRA_SCHEMAS = {
                         },
                     },
                     "insufficient_data": {"type": "boolean"},
-                    "gaps": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+                    "gaps": {
+                        "type": "array",
+                        "items": {"type": "object", "additionalProperties": True},
+                    },
                     "retention_days": {"type": "integer"},
                     "interval_seconds": {"type": "number"},
                     "notes": {"type": "string"},
                 },
             },
             "last_checks": {"type": "object", "additionalProperties": True},
-            "last_state_change": {"type": "object", "additionalProperties": True, "nullable": True},
+            "last_state_change": {
+                "type": "object",
+                "additionalProperties": True,
+                "nullable": True,
+            },
             "recent_events": {
                 "type": "array",
                 "items": {"$ref": "#/components/schemas/HubMonitorEvent"},
                 "description": "Empty on status responses; use GET /api/v1/hub/monitoring/events.",
             },
-            "events_endpoint": {"type": "string", "example": "/api/v1/hub/monitoring/events"},
+            "events_endpoint": {
+                "type": "string",
+                "example": "/api/v1/hub/monitoring/events",
+            },
             "sample_count": {"type": "integer"},
         },
     },
     "HubStatus": {
         "type": "object",
-        "required": ["mode", "hub_id", "addresses", "components", "summary", "monitoring"],
+        "required": [
+            "mode",
+            "hub_id",
+            "addresses",
+            "components",
+            "summary",
+            "monitoring",
+        ],
         "properties": {
             "mode": {"type": "string", "example": "Local Hub"},
             "hub_id": {"type": "string"},
             "addresses": {"$ref": "#/components/schemas/HubAddresses"},
-            "components": {"type": "array", "items": {"$ref": "#/components/schemas/HubComponent"}},
+            "components": {
+                "type": "array",
+                "items": {"$ref": "#/components/schemas/HubComponent"},
+            },
             "summary": {"$ref": "#/components/schemas/HubSummary"},
             "monitoring": {"$ref": "#/components/schemas/HubMonitoring"},
         },
@@ -814,7 +902,7 @@ def convert(node):
 
 def tag_for(path: str) -> str:
     for prefix, tag in TAGS_BY_PREFIX:
-        if path == prefix or path.startswith(prefix + "/") or path.startswith(prefix + "{"):
+        if path == prefix or path.startswith((prefix + "/", prefix + "{")):
             return tag
     return "Hub"
 
@@ -889,7 +977,7 @@ def dump_yaml(value, indent=0) -> str:
                 lines.append(f"{prefix}{rendered_key}:")
                 lines.append(
                     dumped
-                    if dumped.startswith("  " * (indent + 1)) or dumped.startswith("- ")
+                    if dumped.startswith(("  " * (indent + 1), "- "))
                     else f"{'  ' * (indent + 1)}{dumped}"
                 )
             else:
@@ -930,13 +1018,25 @@ def build() -> dict:
     schema["tags"] = [
         {"name": "Health", "description": "Process liveness."},
         {"name": "Session", "description": "Local bearer-token role."},
-        {"name": "Users", "description": "Internal user directory and GitHub identity links."},
+        {
+            "name": "Users",
+            "description": "Internal user directory and GitHub identity links.",
+        },
         {"name": "Groups", "description": "Groups and membership."},
         {"name": "Devices", "description": "Viewer-readable device summaries."},
-        {"name": "Nodes", "description": "Registration, desired state, ownership, and commands."},
-        {"name": "Firmware", "description": "Catalog, flash artifacts, and compatibility."},
+        {
+            "name": "Nodes",
+            "description": "Registration, desired state, ownership, and commands.",
+        },
+        {
+            "name": "Firmware",
+            "description": "Catalog, flash artifacts, and compatibility.",
+        },
         {"name": "Observations", "description": "Persisted Ear observations."},
-        {"name": "Hub", "description": "Local mode, component details, and container logs."},
+        {
+            "name": "Hub",
+            "description": "Local mode, component details, and container logs.",
+        },
         {"name": "Provisioning", "description": "Device bootstrap-token exchange."},
     ]
     schema["security"] = [{"bearerAuth": []}]
@@ -971,7 +1071,10 @@ def build() -> dict:
             operation["parameters"] = [
                 parameter
                 for parameter in operation.get("parameters") or []
-                if not (parameter.get("in") == "header" and parameter.get("name", "").lower() == "authorization")
+                if not (
+                    parameter.get("in") == "header"
+                    and parameter.get("name", "").lower() == "authorization"
+                )
             ]
             if not operation["parameters"]:
                 operation.pop("parameters", None)
@@ -986,12 +1089,16 @@ def build() -> dict:
                 operation["security"] = [{"bearerAuth": []}]
 
             responses = operation.setdefault("responses", {})
-            success = "201" if "201" in responses else "204" if "204" in responses else "200"
+            success = (
+                "201" if "201" in responses else "204" if "204" in responses else "200"
+            )
             if "response" in meta and success in responses:
                 schema_ref = {"$ref": f"#/components/schemas/{meta['response']}"}
                 if meta.get("array"):
                     schema_ref = {"type": "array", "items": schema_ref}
-                responses[success]["content"] = {"application/json": {"schema": schema_ref}}
+                responses[success]["content"] = {
+                    "application/json": {"schema": schema_ref}
+                }
             if meta.get("binary") and success in responses:
                 responses[success]["content"] = {
                     meta["binary"]: {"schema": {"type": "string", "format": "binary"}}

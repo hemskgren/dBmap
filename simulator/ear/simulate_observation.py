@@ -109,7 +109,9 @@ def make_observation(
     }
 
 
-def finish_provisioning(args: argparse.Namespace, record: dict, admin_token: str) -> dict:
+def finish_provisioning(
+    args: argparse.Namespace, record: dict, admin_token: str
+) -> dict:
     require_simulator_identity(record["node_id"])
     provisioned = api_request(
         args.api_url,
@@ -126,11 +128,17 @@ def finish_provisioning(args: argparse.Namespace, record: dict, admin_token: str
     mqtt_endpoint = provisioned.get("mqtt")
     expected_topic = f"esp-ear/local/{provisioned['node_id'].lower()}/observation"
     if not isinstance(mqtt_endpoint, dict) or mqtt_endpoint.get("use_tls") is not True:
-        raise RuntimeError("hub did not provision a TLS MQTT endpoint; refusing plaintext")
+        raise RuntimeError(
+            "hub did not provision a TLS MQTT endpoint; refusing plaintext"
+        )
     if provisioned.get("topics", {}).get("observation") != expected_topic:
-        raise RuntimeError("hub returned an observation topic outside the simulated Ear's own topic")
+        raise RuntimeError(
+            "hub returned an observation topic outside the simulated Ear's own topic"
+        )
     if provisioned["node_id"] != record["node_id"]:
-        raise RuntimeError("hub changed the node ID while provisioning the simulated Ear")
+        raise RuntimeError(
+            "hub changed the node ID while provisioning the simulated Ear"
+        )
     observation = make_observation(provisioned["node_id"])
     ObservationBody.model_validate(observation)
     result = {
@@ -150,7 +158,9 @@ def load_or_provision(args: argparse.Namespace, admin_token: str) -> dict:
     credentials_path = Path(args.credentials_file)
     if args.reuse_credentials:
         if credentials_path.stat().st_mode & 0o077:
-            raise PermissionError(f"{credentials_path} must not be accessible by group or other users")
+            raise PermissionError(
+                f"{credentials_path} must not be accessible by group or other users"
+            )
         with credentials_path.open(encoding="utf-8") as stream:
             record = json.load(stream)
         if record.get("state") == "pending":
@@ -161,7 +171,9 @@ def load_or_provision(args: argparse.Namespace, admin_token: str) -> dict:
                 record["observation"]["sequence_number"] + 1,
             )
             return record
-        raise ValueError("credentials file is not resumable; it has no saved bootstrap token")
+        raise ValueError(
+            "credentials file is not resumable; it has no saved bootstrap token"
+        )
     if credentials_path.exists():
         raise FileExistsError(
             f"{credentials_path} already exists; choose another path or pass --reuse-credentials"
@@ -255,14 +267,20 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Create a simulated Ear and publish one protocol-validated TLS observation."
     )
-    parser.add_argument("--hub-host", required=True, help="Hub LAN IP or certificate-valid hostname")
-    parser.add_argument("--hub-port", type=int, default=8443, help="HTTPS listener port (default: 8443)")
+    parser.add_argument(
+        "--hub-host", required=True, help="Hub LAN IP or certificate-valid hostname"
+    )
+    parser.add_argument(
+        "--hub-port", type=int, default=8443, help="HTTPS listener port (default: 8443)"
+    )
     parser.add_argument(
         "--base-path",
         default=os.environ.get("DBMAP_PUBLIC_BASE_PATH", ""),
         help="Optional public path prefix, for example /dbmap",
     )
-    parser.add_argument("--ca", default="shared/trust/ca.crt", help="Path to the local hub CA")
+    parser.add_argument(
+        "--ca", default="shared/trust/ca.crt", help="Path to the local hub CA"
+    )
     parser.add_argument(
         "--credentials-file",
         default="/tmp/dbmap-ear-simulator-credentials.json",
@@ -356,7 +374,9 @@ def main() -> int:
 
     for observation_id in published_ids:
         print(f"Published observation {observation_id} from {credentials['node_id']}.")
-    print(f"Credentials are stored in {args.credentials_file} (mode 0600); keep it private.")
+    print(
+        f"Credentials are stored in {args.credentials_file} (mode 0600); keep it private."
+    )
     print(
         f'Verify with: curl --cacert {args.ca} -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" '
         f"'{args.api_url}/api/v1/observations?node_id={credentials['node_id']}'"

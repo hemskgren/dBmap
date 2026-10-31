@@ -34,7 +34,9 @@ REACHABILITY_COMPONENTS = ("api", "database", "nginx", "web")
 CRITICAL_AVAILABILITY_COMPONENTS = ("api", "mqtt")
 COMPONENT_IDS = ("api", "database", "nginx", "web", "mqtt", "opa")
 # Firmware Builder is intentionally excluded from Health and Availability.
-EXCLUDED_FROM_MONITORING = frozenset({"firmware-builder", "firmware_builder", "firmware"})
+EXCLUDED_FROM_MONITORING = frozenset(
+    {"firmware-builder", "firmware_builder", "firmware"}
+)
 OK_STATES = frozenset({"ok", "online", "healthy", "disabled"})
 COMPONENT_UNAVAILABLE_STATES = frozenset(
     {"offline", "unhealthy", "error", "unavailable"}
@@ -79,13 +81,9 @@ def health_score(state: str) -> int | None:
     return None
 
 
-def _failed_components(
-    components: dict[str, str], names: tuple[str, ...]
-) -> list[str]:
+def _failed_components(components: dict[str, str], names: tuple[str, ...]) -> list[str]:
     return [
-        name
-        for name in names
-        if components.get(name) in COMPONENT_UNAVAILABLE_STATES
+        name for name in names if components.get(name) in COMPONENT_UNAVAILABLE_STATES
     ]
 
 
@@ -107,9 +105,7 @@ def assess_states(components: dict[str, str]) -> tuple[str, str]:
             components.get(name) in {None, "unknown"}
             for name in REACHABILITY_COMPONENTS
         )
-        if unknown_core and not _failed_components(
-            components, REACHABILITY_COMPONENTS
-        ):
+        if unknown_core and not _failed_components(components, REACHABILITY_COMPONENTS):
             return "unknown", "unavailable"
         return "unhealthy", "unavailable"
 
@@ -285,9 +281,7 @@ def _latest_sample(db: Session) -> HubMonitorSample | None:
     )
 
 
-def _maybe_record_gap(
-    db: Session, now: datetime
-) -> tuple[datetime, datetime] | None:
+def _maybe_record_gap(db: Session, now: datetime) -> tuple[datetime, datetime] | None:
     """Record a monitoring_resumed event when needed.
 
     Returns (gap_start, gap_end) when an unobserved wall-clock gap was detected
@@ -504,9 +498,7 @@ def run_check(db: Session, *, record_startup_gap: bool = True) -> dict[str, Any]
         from app import device_monitor
 
         try:
-            device_monitor.sample_devices(
-                db, observed_at=observed_at, hub_gap=hub_gap
-            )
+            device_monitor.sample_devices(db, observed_at=observed_at, hub_gap=hub_gap)
         except Exception:
             log.exception("device monitor cycle failed")
         db.commit()
@@ -553,7 +545,9 @@ def _parse_sample_payload(sample: HubMonitorSample) -> dict[str, Any]:
         "reasons": payload.get("reasons")
         if isinstance(payload.get("reasons"), dict)
         else {},
-        "docker": payload.get("docker") if isinstance(payload.get("docker"), dict) else {},
+        "docker": payload.get("docker")
+        if isinstance(payload.get("docker"), dict)
+        else {},
     }
 
 
@@ -582,7 +576,9 @@ def _attribute_interval(
     return 0.0, 0.0, confirmed + unobserved
 
 
-def _format_percent(available: float, eligible: float, unavailable: float) -> float | None:
+def _format_percent(
+    available: float, eligible: float, unavailable: float
+) -> float | None:
     if eligible <= 0:
         return None
     raw = 100.0 * available / eligible
@@ -609,9 +605,7 @@ def _window_result(
     short_window = window_seconds <= 24 * 3600 + 1
     score_ready = (not insufficient) and (short_window or not low_coverage)
     percent = (
-        None
-        if insufficient
-        else _format_percent(available, eligible, unavailable)
+        None if insufficient else _format_percent(available, eligible, unavailable)
     )
     if insufficient:
         state_summary = "unknown"
@@ -933,7 +927,11 @@ def build_monitoring_summary(
     all_gaps: list[dict[str, str]] = []
     for name, delta in WINDOW_SPECS:
         window = compute_availability_window(
-            [item for item in history if _ensure_aware(item.observed_at) >= now - delta],
+            [
+                item
+                for item in history
+                if _ensure_aware(item.observed_at) >= now - delta
+            ],
             window_start=now - delta,
             window_end=now,
             interval_s=settings.hub_monitor_interval_s,
@@ -986,16 +984,18 @@ def build_monitoring_summary(
     for component_id in COMPONENT_WINDOW_IDS:
         component_windows[component_id] = {}
         for name, delta in WINDOW_SPECS:
-            component_windows[component_id][name] = compute_component_availability_window(
-                [
-                    item
-                    for item in history
-                    if _ensure_aware(item.observed_at) >= now - delta
-                ],
-                component_id=component_id,
-                window_start=now - delta,
-                window_end=now,
-                interval_s=settings.hub_monitor_interval_s,
+            component_windows[component_id][name] = (
+                compute_component_availability_window(
+                    [
+                        item
+                        for item in history
+                        if _ensure_aware(item.observed_at) >= now - delta
+                    ],
+                    component_id=component_id,
+                    window_start=now - delta,
+                    window_end=now,
+                    interval_s=settings.hub_monitor_interval_s,
+                )
             )
 
     insufficient = any(window.get("insufficient_data") for window in windows.values())
@@ -1061,7 +1061,8 @@ def build_monitoring_summary(
             ),
         },
         "last_checks": {
-            component_id: last_success.get(component_id) for component_id in COMPONENT_IDS
+            component_id: last_success.get(component_id)
+            for component_id in COMPONENT_IDS
         },
         "last_state_change": last_change,
         "recent_events": [],
@@ -1085,7 +1086,9 @@ def _event_view(event: HubMonitorEvent) -> dict[str, Any]:
     }
 
 
-def list_recent_events(db: Session, *, limit: int = RECENT_EVENT_LIMIT) -> dict[str, Any]:
+def list_recent_events(
+    db: Session, *, limit: int = RECENT_EVENT_LIMIT
+) -> dict[str, Any]:
     """Return the newest monitoring events for on-demand UI expansion."""
     bounded = max(1, min(int(limit), 50))
     # Fetch a little extra then drop excluded components (e.g. historical noise).

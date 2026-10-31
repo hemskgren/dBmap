@@ -3,7 +3,9 @@ from uuid import uuid4
 
 from app.config import settings
 
-settings.database_url = "sqlite:///" + str(Path("/tmp/dbmap-bootstrap-chip-identity-test.db"))
+settings.database_url = "sqlite:///" + str(
+    Path("/tmp/dbmap-bootstrap-chip-identity-test.db")
+)
 settings.admin_token = "test-admin"
 settings.viewer_token = "test-viewer"
 settings.mqtt_enabled = False

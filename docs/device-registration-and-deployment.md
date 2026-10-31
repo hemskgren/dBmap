@@ -181,7 +181,7 @@ Existing Chip MAC or `DBMAP_DEVICE_ID` matches reuse the existing device lifecyc
 
 **Pending configuration change** is computed by the Hub by comparing Desired vs Reported `firmware_version`, `config_version`, `calibration_version`, and `classifier_version`. Current firmware resolves `*.local` Hub hostnames over mDNS after Wi-Fi is up, so Local Hub call-home can use `https://hub.local:…` when the host publishes that name (see `scripts/publish-hub-mdns.sh`).
 
-In **Firmware → Configure device over USB**, an administrator can update Wi-Fi and the Local/External call-home route. The write also stores the current Hub `hub_id` when the UI knows it. The bootstrap token field is optional; omitting it keeps the token already stored in NVS. The panel shows an NVS write preview (secrets masked) before anything is sent. Provisioned firmware still only opens a short USB configuration window after reset.
+In **Firmware → Configure device over USB**, an administrator can update Wi-Fi and the Local/External call-home route. The write also stores the current Hub `hub_id` when the UI knows it. The bootstrap token field is optional; omitting it keeps the token already stored in NVS. The panel shows an NVS write preview (secrets masked) before anything is sent. Provisioned firmware opens a short USB configuration window after reset (~10 s). If Wi-Fi is down at boot or first-time provision needs USB, the board keeps a bounded recovery window (default 3 minutes) then reboots instead of waiting forever without a cable.
 
 Alternatively, load `.env` and create an Output node using the API:
 

@@ -36,13 +36,20 @@ class HubFirmwareError(RuntimeError):
 def create_metadata(bundle_path: Path, build_date_utc: str) -> Path:
     firmware_id = bundle_path.stem
     if not FIRMWARE_ID_PATTERN.fullmatch(firmware_id):
-        raise HubFirmwareError("Firmware ZIP filename must use a safe 1-64 character firmware ID.")
-    if not bundle_path.is_file() or not 0 < bundle_path.stat().st_size <= MAX_BUNDLE_BYTES:
+        raise HubFirmwareError(
+            "Firmware ZIP filename must use a safe 1-64 character firmware ID."
+        )
+    if (
+        not bundle_path.is_file()
+        or not 0 < bundle_path.stat().st_size <= MAX_BUNDLE_BYTES
+    ):
         raise HubFirmwareError("Firmware ZIP must be between 1 byte and 128 MiB.")
     try:
         build_date = datetime.fromisoformat(build_date_utc.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise HubFirmwareError("--build-date-utc must be an ISO-8601 timestamp with a timezone.") from exc
+        raise HubFirmwareError(
+            "--build-date-utc must be an ISO-8601 timestamp with a timezone."
+        ) from exc
     if build_date.tzinfo is None:
         raise HubFirmwareError("--build-date-utc must include a timezone.")
     try:
@@ -51,8 +58,16 @@ def create_metadata(bundle_path: Path, build_date_utc: str) -> Path:
             if manifest_info.file_size > MAX_MANIFEST_BYTES:
                 raise HubFirmwareError("Firmware manifest exceeds the 64 KiB limit.")
             manifest = json.loads(archive.read("manifest.json"))
-    except (OSError, UnicodeDecodeError, zipfile.BadZipFile, KeyError, json.JSONDecodeError) as exc:
-        raise HubFirmwareError("Firmware ZIP must contain a valid manifest.json.") from exc
+    except (
+        OSError,
+        UnicodeDecodeError,
+        zipfile.BadZipFile,
+        KeyError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise HubFirmwareError(
+            "Firmware ZIP must contain a valid manifest.json."
+        ) from exc
     if not isinstance(manifest, dict):
         raise HubFirmwareError("Firmware manifest must be a JSON object.")
     required_strings = (
@@ -63,7 +78,10 @@ def create_metadata(bundle_path: Path, build_date_utc: str) -> Path:
         "firmware_version",
         "esp_idf_version",
     )
-    if any(not isinstance(manifest.get(field), str) or not manifest[field].strip() for field in required_strings):
+    if any(
+        not isinstance(manifest.get(field), str) or not manifest[field].strip()
+        for field in required_strings
+    ):
         raise HubFirmwareError("Firmware manifest is missing required build metadata.")
     configuration_version = manifest.get("configuration_version")
     if (
@@ -71,10 +89,14 @@ def create_metadata(bundle_path: Path, build_date_utc: str) -> Path:
         or isinstance(configuration_version, bool)
         or configuration_version < 0
     ):
-        raise HubFirmwareError("Firmware manifest has an invalid configuration_version.")
+        raise HubFirmwareError(
+            "Firmware manifest has an invalid configuration_version."
+        )
     metadata = {
         "firmware_id": firmware_id,
-        "build_date_utc": build_date.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "build_date_utc": build_date.astimezone(timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z"),
         "target": manifest["target"],
         "node_type": manifest["node_type"],
         "platform": manifest["chip"],
@@ -90,7 +112,9 @@ def create_metadata(bundle_path: Path, build_date_utc: str) -> Path:
             output.write(json.dumps(metadata, indent=2) + "\n")
         metadata_path.chmod(0o600)
     except FileExistsError as exc:
-        raise HubFirmwareError(f"Metadata sidecar already exists: {metadata_path}") from exc
+        raise HubFirmwareError(
+            f"Metadata sidecar already exists: {metadata_path}"
+        ) from exc
     except OSError as exc:
         raise HubFirmwareError(f"Could not write metadata sidecar: {exc}") from exc
     return metadata_path
@@ -133,7 +157,9 @@ def _request(
         raise HubFirmwareError(f"could not reach the Hub API: {exc.reason}") from exc
 
 
-def _multipart(bundle: bytes, metadata: bytes, firmware_name: str, metadata_name: str) -> tuple[bytes, str]:
+def _multipart(
+    bundle: bytes, metadata: bytes, firmware_name: str, metadata_name: str
+) -> tuple[bytes, str]:
     boundary = f"----dBmapFirmware{uuid.uuid4().hex}"
     chunks = []
     for field, filename, content_type, content in (
@@ -160,7 +186,9 @@ def upload(args: argparse.Namespace, base_url: str, admin_token: str) -> dict[st
     if not Path(args.ca).is_file():
         raise HubFirmwareError(f"CA file does not exist: {args.ca}")
     if len(admin_token) < 32:
-        raise HubFirmwareError("DBMAP_ADMIN_TOKEN must be loaded from the private .env file.")
+        raise HubFirmwareError(
+            "DBMAP_ADMIN_TOKEN must be loaded from the private .env file."
+        )
     bundle_path = Path(args.bundle)
     metadata_path = Path(args.metadata)
     if not bundle_path.is_file() or not metadata_path.is_file():
@@ -174,15 +202,26 @@ def upload(args: argparse.Namespace, base_url: str, admin_token: str) -> dict[st
         metadata_bytes = metadata_path.read_bytes()
         metadata = json.loads(metadata_bytes)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise HubFirmwareError(f"could not read a valid firmware ZIP and metadata JSON: {exc}") from exc
-    if not isinstance(metadata, dict) or not isinstance(metadata.get("firmware_id"), str):
+        raise HubFirmwareError(
+            f"could not read a valid firmware ZIP and metadata JSON: {exc}"
+        ) from exc
+    if not isinstance(metadata, dict) or not isinstance(
+        metadata.get("firmware_id"), str
+    ):
         raise HubFirmwareError("metadata JSON must contain a string firmware_id.")
     firmware_id = metadata["firmware_id"]
-    if bundle_path.name != f"{firmware_id}.zip" or metadata_path.name != f"{firmware_id}.json":
-        raise HubFirmwareError("Upload filenames must be <firmware_id>.zip and <firmware_id>.json.")
+    if (
+        bundle_path.name != f"{firmware_id}.zip"
+        or metadata_path.name != f"{firmware_id}.json"
+    ):
+        raise HubFirmwareError(
+            "Upload filenames must be <firmware_id>.zip and <firmware_id>.json."
+        )
     digest = hashlib.sha256(bundle).hexdigest()
     if metadata.get("artifact_sha256") != digest:
-        raise HubFirmwareError("metadata artifact_sha256 does not match the selected ZIP.")
+        raise HubFirmwareError(
+            "metadata artifact_sha256 does not match the selected ZIP."
+        )
     encoded_id = urllib.parse.quote(firmware_id, safe="")
     status, current = _request(
         base_url,
@@ -192,10 +231,16 @@ def upload(args: argparse.Namespace, base_url: str, admin_token: str) -> dict[st
         f"/api/v1/firmware/catalog/{encoded_id}",
     )
     if status == 200:
-        raise HubFirmwareError(f"firmware ID {firmware_id} is already present in the catalog.")
+        raise HubFirmwareError(
+            f"firmware ID {firmware_id} is already present in the catalog."
+        )
     if status != 404:
-        detail = current.get("detail", current) if isinstance(current, dict) else current
-        raise HubFirmwareError(f"firmware catalog preflight failed (HTTP {status}): {detail}")
+        detail = (
+            current.get("detail", current) if isinstance(current, dict) else current
+        )
+        raise HubFirmwareError(
+            f"firmware catalog preflight failed (HTTP {status}): {detail}"
+        )
     payload, content_type = _multipart(
         bundle,
         metadata_bytes,
@@ -217,11 +262,15 @@ def upload(args: argparse.Namespace, base_url: str, admin_token: str) -> dict[st
     return result
 
 
-def list_firmware(ca_file: str, admin_token: str, base_url: str) -> list[dict[str, Any]]:
+def list_firmware(
+    ca_file: str, admin_token: str, base_url: str
+) -> list[dict[str, Any]]:
     if not Path(ca_file).is_file():
         raise HubFirmwareError(f"CA file does not exist: {ca_file}")
     if len(admin_token) < 32:
-        raise HubFirmwareError("DBMAP_ADMIN_TOKEN must be loaded from the private .env file.")
+        raise HubFirmwareError(
+            "DBMAP_ADMIN_TOKEN must be loaded from the private .env file."
+        )
     status, result = _request(
         base_url,
         ca_file,
@@ -229,11 +278,15 @@ def list_firmware(ca_file: str, admin_token: str, base_url: str) -> list[dict[st
         "GET",
         "/api/v1/firmware/catalog",
     )
-    if status != 200 or not isinstance(result, list) or not all(
-        isinstance(entry, dict) for entry in result
+    if (
+        status != 200
+        or not isinstance(result, list)
+        or not all(isinstance(entry, dict) for entry in result)
     ):
         detail = result.get("detail", result) if isinstance(result, dict) else result
-        raise HubFirmwareError(f"firmware catalog request failed (HTTP {status}): {detail}")
+        raise HubFirmwareError(
+            f"firmware catalog request failed (HTTP {status}): {detail}"
+        )
     return result
 
 
@@ -243,12 +296,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_hub_connection_arguments(parser)
     commands = parser.add_subparsers(dest="command")
-    commands.add_parser("list", help="List registered firmware and unregistered candidates")
-    upload_parser = commands.add_parser("upload", help="Upload an ID-matched ZIP and JSON pair")
+    commands.add_parser(
+        "list", help="List registered firmware and unregistered candidates"
+    )
+    upload_parser = commands.add_parser(
+        "upload", help="Upload an ID-matched ZIP and JSON pair"
+    )
     upload_parser.add_argument("bundle", help="Firmware bundle named <firmware_id>.zip")
     upload_parser.add_argument("metadata", help="Sidecar named <firmware_id>.json")
-    metadata_parser = commands.add_parser("metadata", help="Create a matching JSON sidecar from a firmware ZIP")
-    metadata_parser.add_argument("bundle", help="Firmware bundle named <firmware_id>.zip")
+    metadata_parser = commands.add_parser(
+        "metadata", help="Create a matching JSON sidecar from a firmware ZIP"
+    )
+    metadata_parser.add_argument(
+        "bundle", help="Firmware bundle named <firmware_id>.zip"
+    )
     metadata_parser.add_argument(
         "--build-date-utc",
         required=True,
