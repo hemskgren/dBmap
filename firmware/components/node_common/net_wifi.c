@@ -23,10 +23,41 @@ static dbmap_backoff_t s_backoff;
 static esp_timer_handle_t s_reconnect_timer;
 static bool s_reconnect_armed;
 static bool s_disconnect_counted;
+/** Rate-limit STA_DISCONNECTED logs from the Wi-Fi event task (microseconds). */
+static int64_t s_disconnect_log_us;
+static uint32_t s_disconnect_log_suppressed;
+static int s_disconnect_log_reason = -1;
+
+#define WIFI_DISCONNECT_LOG_INTERVAL_US (30000000LL)
 
 static int64_t now_ms(void)
 {
     return esp_timer_get_time() / 1000;
+}
+
+static void log_sta_disconnected_rate_limited(int reason)
+{
+    const int64_t now_us = esp_timer_get_time();
+    const bool reason_changed = (reason != s_disconnect_log_reason);
+    if (s_disconnect_log_us == 0
+        || reason_changed
+        || (now_us - s_disconnect_log_us) >= WIFI_DISCONNECT_LOG_INTERVAL_US) {
+        if (s_disconnect_log_suppressed > 0) {
+            ESP_LOGW(
+                TAG,
+                "disconnected from access point (reason=%d); suppressed %lu duplicate log(s)",
+                reason,
+                (unsigned long)s_disconnect_log_suppressed
+            );
+            s_disconnect_log_suppressed = 0;
+        } else {
+            ESP_LOGW(TAG, "disconnected from access point (reason=%d)", reason);
+        }
+        s_disconnect_log_us = now_us;
+        s_disconnect_log_reason = reason;
+    } else {
+        s_disconnect_log_suppressed++;
+    }
 }
 
 static uint32_t wifi_rand32(void)
@@ -124,7 +155,8 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
     (void)base;
     if (id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *event = data;
-        ESP_LOGW(TAG, "disconnected from access point (reason=%d)", event->reason);
+        /* reason 201 = WIFI_REASON_NO_AP_FOUND: keep retrying with backoff, not fatal. */
+        log_sta_disconnected_rate_limited((int)event->reason);
         xEventGroupClearBits(s_wifi, GOT_IP);
         dbmap_backoff_set_in_flight(&s_backoff, false);
         if (dbmap_lifecycle_ota_reboot_pending()) {
@@ -135,10 +167,13 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
             }
             return;
         }
+        /* Advance backoff on every failed join attempt. Counting only the first
+         * disconnect left delays stuck near the 1 s initial value while the AP
+         * remained missing. */
+        dbmap_backoff_note_failure(&s_backoff, now_ms());
         if (!s_disconnect_counted) {
             s_disconnect_counted = true;
             dbmap_diag_note_wifi_disconnect();
-            dbmap_backoff_note_failure(&s_backoff, now_ms());
         }
         schedule_wifi_reconnect();
     }

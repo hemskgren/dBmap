@@ -22,24 +22,24 @@ import dns.rdataclass
 import dns.rdatatype
 import dns.rrset
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-MDNS_ADDR = '224.0.0.251'
+MDNS_ADDR = "224.0.0.251"
 MDNS_PORT = 5353
 
 DEFAULTS = {
-    'hostname': 'tinytester',
-    'ipv4': '127.0.0.1',
-    'instance': 'ESP32',
-    'service': '_http',
-    'proto': '_tcp',
-    'port': 100,
+    "hostname": "tinytester",
+    "ipv4": "127.0.0.1",
+    "instance": "ESP32",
+    "service": "_http",
+    "proto": "_tcp",
+    "port": 100,
 }
 
 
 def _fqdn(*labels: str) -> str:
-    return '.'.join(labels) + '.local.'
+    return ".".join(labels) + ".local."
 
 
 def create_socket(interface: str | None) -> socket.socket:
@@ -51,15 +51,21 @@ def create_socket(interface: str | None) -> socket.socket:
         pass
 
     if interface:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, interface.encode() + b'\0')
+        sock.setsockopt(
+            socket.SOL_SOCKET, socket.SO_BINDTODEVICE, interface.encode() + b"\0"
+        )
 
-    sock.bind(('', MDNS_PORT))
-    membership = struct.pack('=4s4s', socket.inet_aton(MDNS_ADDR), socket.inet_aton('0.0.0.0'))
+    sock.bind(("", MDNS_PORT))
+    membership = struct.pack(
+        "=4s4s", socket.inet_aton(MDNS_ADDR), socket.inet_aton("0.0.0.0")
+    )
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
     return sock
 
 
-def build_a_response(query: dns.message.Message, hostname: str, ipv4: str) -> dns.message.Message:
+def build_a_response(
+    query: dns.message.Message, hostname: str, ipv4: str
+) -> dns.message.Message:
     host_name = _fqdn(hostname)
     # Exact QR|AA (0x8400). dnspython make_response also sets RD, which is fine for
     # answer parsing but keep mDNS-shaped packets consistent with bonjour fixtures.
@@ -91,7 +97,7 @@ def build_srv_response(
             120,
             dns.rdataclass.IN,
             dns.rdatatype.SRV,
-            f'0 0 {port} {host_name}',
+            f"0 0 {port} {host_name}",
         )
     )
     response.additional.append(
@@ -105,9 +111,9 @@ def match_question(query: dns.message.Message, args: argparse.Namespace):
     instance_name = dns.name.from_text(_fqdn(args.instance, args.service, args.proto))
     for question in query.question:
         if question.rdtype == dns.rdatatype.A and question.name == host_name:
-            return 'A'
+            return "A"
         if question.rdtype == dns.rdatatype.SRV and question.name == instance_name:
-            return 'SRV'
+            return "SRV"
     return None
 
 
@@ -115,16 +121,18 @@ def send_response(sock: socket.socket, payload: bytes, source: tuple[str, int]) 
     # mDNS queries usually come from port 5353 → multicast reply; one-shot dig uses ephemeral ports.
     destination = (MDNS_ADDR, MDNS_PORT) if source[1] == MDNS_PORT else source
     sock.sendto(payload, destination)
-    logger.info('Sent %d byte response to %s (from %s:%d)', len(payload), destination, *source)
+    logger.info(
+        "Sent %d byte response to %s (from %s:%d)", len(payload), destination, *source
+    )
 
 
 def serve(args: argparse.Namespace) -> None:
     sock = create_socket(args.interface)
     logger.info(
-        'Querier responder on %s:%d (%s): A %s.local -> %s; SRV %s.%s.%s.local -> %s.local:%d',
+        "Querier responder on %s:%d (%s): A %s.local -> %s; SRV %s.%s.%s.local -> %s.local:%d",
         MDNS_ADDR,
         MDNS_PORT,
-        args.interface or 'all interfaces',
+        args.interface or "all interfaces",
         args.hostname,
         args.ipv4,
         args.instance,
@@ -138,22 +146,24 @@ def serve(args: argparse.Namespace) -> None:
         try:
             data, source = sock.recvfrom(9000)
         except KeyboardInterrupt:
-            logger.info('Stopping querier responder')
+            logger.info("Stopping querier responder")
             break
 
         try:
             query = dns.message.from_wire(data)
         except Exception as exc:  # noqa: BLE001
-            logger.debug('Ignoring non-DNS payload from %s:%d (%s)', source[0], source[1], exc)
+            logger.debug(
+                "Ignoring non-DNS payload from %s:%d (%s)", source[0], source[1], exc
+            )
             continue
 
         if query.flags & dns.flags.QR:
             continue
 
         kind = match_question(query, args)
-        if kind == 'A':
+        if kind == "A":
             response = build_a_response(query, args.hostname, args.ipv4)
-        elif kind == 'SRV':
+        elif kind == "SRV":
             response = build_srv_response(
                 query,
                 instance=args.instance,
@@ -171,13 +181,13 @@ def serve(args: argparse.Namespace) -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--interface', default='eth0')
-    parser.add_argument('--hostname', default=DEFAULTS['hostname'])
-    parser.add_argument('--ipv4', default=DEFAULTS['ipv4'])
-    parser.add_argument('--instance', default=DEFAULTS['instance'])
-    parser.add_argument('--service', default=DEFAULTS['service'])
-    parser.add_argument('--proto', default=DEFAULTS['proto'])
-    parser.add_argument('--port', type=int, default=DEFAULTS['port'])
+    parser.add_argument("--interface", default="eth0")
+    parser.add_argument("--hostname", default=DEFAULTS["hostname"])
+    parser.add_argument("--ipv4", default=DEFAULTS["ipv4"])
+    parser.add_argument("--instance", default=DEFAULTS["instance"])
+    parser.add_argument("--service", default=DEFAULTS["service"])
+    parser.add_argument("--proto", default=DEFAULTS["proto"])
+    parser.add_argument("--port", type=int, default=DEFAULTS["port"])
     return parser.parse_args(argv)
 
 
@@ -187,5 +197,5 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

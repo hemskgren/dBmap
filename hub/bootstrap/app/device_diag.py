@@ -23,9 +23,7 @@ from app.models import DeviceDiagEvent, DeviceDiagState, DeviceMonitorEvent
 
 log = logging.getLogger("hub-bootstrap.device-diag")
 
-UNEXPECTED_RESETS = frozenset(
-    {"PANIC", "TASK_WDT", "INT_WDT", "WDT", "BROWNOUT"}
-)
+UNEXPECTED_RESETS = frozenset({"PANIC", "TASK_WDT", "INT_WDT", "WDT", "BROWNOUT"})
 COUNTER_FIELDS = (
     ("wifi_disconnects", "wifi_disconnect_burst"),
     ("mqtt_disconnects", "mqtt_disconnect_burst"),
@@ -87,15 +85,18 @@ def _load_previous_diag(payload_json: str | None) -> dict[str, Any] | None:
     if nested is not None:
         return nested
     # device_diag_state.last_diag_json stores the bare diag object.
-    if any(key in payload for key in (
-        "wifi_disconnects",
-        "mqtt_disconnects",
-        "mqtt_reconnects",
-        "mqtt_connect_attempts",
-        "mqtt_connect_failures",
-        "desired_failures",
-        "last_reset_reason",
-    )):
+    if any(
+        key in payload
+        for key in (
+            "wifi_disconnects",
+            "mqtt_disconnects",
+            "mqtt_reconnects",
+            "mqtt_connect_attempts",
+            "mqtt_connect_failures",
+            "desired_failures",
+            "last_reset_reason",
+        )
+    ):
         return payload
     return None
 
@@ -156,9 +157,7 @@ def ingest_ota_report(
     ota_phase = str(payload.get("ota_phase") or "")
     reboot_reason = str(payload.get("reboot_reason") or "")
     previous = str(
-        payload.get("previous_firmware_version")
-        or previous_firmware_version
-        or ""
+        payload.get("previous_firmware_version") or previous_firmware_version or ""
     )
     target = str(payload.get("target_firmware_version") or "")
     running = str(payload.get("firmware_version") or "")
@@ -180,9 +179,7 @@ def ingest_ota_report(
             node_id=node_id,
             event_type="ota_install_reported",
             count=1,
-            reason=(
-                f"OTA image installed pending reboot: {previous} -> {target}"
-            ),
+            reason=(f"OTA image installed pending reboot: {previous} -> {target}"),
             detail={
                 "previous_firmware_version": previous,
                 "target_firmware_version": target,
@@ -192,7 +189,11 @@ def ingest_ota_report(
             },
             now=now,
         )
-        return {"handled": True, "phase": "installed_pending_reboot", "pending": pending}
+        return {
+            "handled": True,
+            "phase": "installed_pending_reboot",
+            "pending": pending,
+        }
 
     if message_type == "ota_update" and event == "boot_confirmed":
         if not target or running != target:
@@ -279,7 +280,11 @@ def ingest_ota_report(
         now=now,
     )
     _set_pending_ota(state, None)
-    return {"handled": True, "phase": "boot_confirmed", "correlated_from": "hello_or_health"}
+    return {
+        "handled": True,
+        "phase": "boot_confirmed",
+        "correlated_from": "hello_or_health",
+    }
 
 
 def _prune_fifo(db: Session, node_id: str) -> None:
@@ -337,7 +342,9 @@ def _record_or_aggregate(
             if not isinstance(existing, dict):
                 existing = {}
             existing.update(detail)
-            latest.detail_json = json.dumps(existing, separators=(",", ":"), sort_keys=True)
+            latest.detail_json = json.dumps(
+                existing, separators=(",", ":"), sort_keys=True
+            )
         return
 
     # Make room before insert so the hard ceiling is never exceeded.
@@ -398,7 +405,10 @@ def assess_health(
     if not online:
         return "unknown", "no recent heartbeat within the online window"
     if not has_diag_evidence and not diag:
-        return "unknown", "no device diagnostics observed yet (older firmware or no diag)"
+        return (
+            "unknown",
+            "no device diagnostics observed yet (older firmware or no diag)",
+        )
 
     reset = ""
     if diag and isinstance(diag.get("last_reset_reason"), str):
@@ -480,7 +490,11 @@ def ingest_reported_diag(
                     event_type=event_type,
                     count=delta,
                     reason=f"{field} increased by {delta}",
-                    detail={"field": field, "delta": delta, "total": _counter(current, field)},
+                    detail={
+                        "field": field,
+                        "delta": delta,
+                        "total": _counter(current, field),
+                    },
                     now=now,
                 )
 
@@ -509,12 +523,16 @@ def ingest_reported_diag(
                     now=now,
                 )
 
-        state.last_diag_json = json.dumps(current, separators=(",", ":"), sort_keys=True)
+        state.last_diag_json = json.dumps(
+            current, separators=(",", ":"), sort_keys=True
+        )
 
     health_state, health_reason = assess_health(
         online=online,
         has_diag_evidence=bool(state.has_diag_evidence),
-        diag=current if current is not None else (
+        diag=current
+        if current is not None
+        else (
             json.loads(state.last_diag_json)
             if state.last_diag_json and state.last_diag_json != "{}"
             else None

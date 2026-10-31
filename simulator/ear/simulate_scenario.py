@@ -122,9 +122,8 @@ def _bearing_deg(first: dict[str, float], second: dict[str, float]) -> float:
     lat2 = math.radians(second["latitude"])
     lon_delta = math.radians(second["longitude"] - first["longitude"])
     y = math.sin(lon_delta) * math.cos(lat2)
-    x = (
-        math.cos(lat1) * math.sin(lat2)
-        - math.sin(lat1) * math.cos(lat2) * math.cos(lon_delta)
+    x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(
+        lon_delta
     )
     return math.degrees(math.atan2(y, x)) % 360
 
@@ -143,20 +142,32 @@ def load_scenario(path: Path) -> dict[str, Any]:
             f"scenario fields mismatch; missing={sorted(missing)}, unexpected={sorted(unexpected)}"
         )
     scenario_id = scenario["scenario_id"]
-    if not isinstance(scenario_id, str) or not scenario_id.strip() or len(scenario_id) > 64:
-        raise ScenarioError("scenario_id must be a non-empty string of at most 64 characters")
+    if (
+        not isinstance(scenario_id, str)
+        or not scenario_id.strip()
+        or len(scenario_id) > 64
+    ):
+        raise ScenarioError(
+            "scenario_id must be a non-empty string of at most 64 characters"
+        )
 
     source = scenario["source"]
     if not isinstance(source, dict) or set(source) != _SOURCE_FIELDS:
-        raise ScenarioError(
-            f"source must contain exactly {sorted(_SOURCE_FIELDS)}"
-        )
+        raise ScenarioError(f"source must contain exactly {sorted(_SOURCE_FIELDS)}")
     source_id = source["ground_truth_id"]
     source_family = source["source_family"]
     if not isinstance(source_id, str) or not source_id.strip() or len(source_id) > 64:
-        raise ScenarioError("source.ground_truth_id must be a non-empty string of at most 64 characters")
-    if not isinstance(source_family, str) or not source_family.strip() or len(source_family) > 64:
-        raise ScenarioError("source.source_family must be a non-empty string of at most 64 characters")
+        raise ScenarioError(
+            "source.ground_truth_id must be a non-empty string of at most 64 characters"
+        )
+    if (
+        not isinstance(source_family, str)
+        or not source_family.strip()
+        or len(source_family) > 64
+    ):
+        raise ScenarioError(
+            "source.source_family must be a non-empty string of at most 64 characters"
+        )
     movement = source["movement"]
     if not isinstance(movement, dict) or set(movement) != _MOVEMENT_FIELDS:
         raise ScenarioError(
@@ -164,7 +175,9 @@ def load_scenario(path: Path) -> dict[str, Any]:
         )
     start = _validate_point(movement["start"], "source.movement.start")
     end = _validate_point(movement["end"], "source.movement.end")
-    speed = _finite_number(movement["speed_m_s"], "source.movement.speed_m_s", minimum=0)
+    speed = _finite_number(
+        movement["speed_m_s"], "source.movement.speed_m_s", minimum=0
+    )
     if speed == 0:
         raise ScenarioError("source.movement.speed_m_s must be greater than zero")
     route_distance_m = _distance_m(start, end)
@@ -177,7 +190,9 @@ def load_scenario(path: Path) -> dict[str, Any]:
         raise ScenarioError("ears must be a non-empty object keyed by scenario alias")
     ears: dict[str, dict[str, float]] = {}
     for alias, ear_raw in ears_raw.items():
-        if not isinstance(alias, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", alias):
+        if not isinstance(alias, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,64}", alias
+        ):
             raise ScenarioError(f"invalid Ear alias in ears: {alias!r}")
         if not isinstance(ear_raw, dict) or set(ear_raw) != _EAR_FIELDS:
             raise ScenarioError(
@@ -204,9 +219,12 @@ def load_scenario(path: Path) -> dict[str, Any]:
         if not isinstance(observation, dict):
             raise ScenarioError(f"observations[{index}] must be an object")
         unexpected = set(observation) - _OBSERVATION_FIELDS
-        missing = {"at_seconds", "ear", "bearing_confidence", "classification_confidence"} - set(
-            observation
-        )
+        missing = {
+            "at_seconds",
+            "ear",
+            "bearing_confidence",
+            "classification_confidence",
+        } - set(observation)
         if unexpected or missing:
             raise ScenarioError(
                 f"observations[{index}] fields mismatch; "
@@ -218,7 +236,9 @@ def load_scenario(path: Path) -> dict[str, Any]:
             minimum=0,
         )
         if at_seconds < previous_time:
-            raise ScenarioError("observations must be ordered by non-decreasing at_seconds")
+            raise ScenarioError(
+                "observations must be ordered by non-decreasing at_seconds"
+            )
         previous_time = at_seconds
         ear = observation["ear"]
         if not isinstance(ear, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", ear):
@@ -305,7 +325,9 @@ def parse_ear_arguments(values: list[str]) -> dict[str, Path]:
     for value in values:
         alias, separator, path = value.partition("=")
         if not separator or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", alias) or not path:
-            raise ScenarioError("--ear must use the form ALIAS=/path/to/credentials.json")
+            raise ScenarioError(
+                "--ear must use the form ALIAS=/path/to/credentials.json"
+            )
         if alias in ears:
             raise ScenarioError(f"duplicate --ear alias: {alias}")
         ears[alias] = Path(path)
@@ -332,22 +354,37 @@ def load_ear_credentials(
     for alias, path in paths.items():
         try:
             if path.stat().st_mode & 0o077:
-                raise PermissionError(f"{path} must not be accessible by group or other users")
+                raise PermissionError(
+                    f"{path} must not be accessible by group or other users"
+                )
             credentials = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ScenarioError(f"could not load credentials for {alias}: {exc}") from exc
-        if not isinstance(credentials, dict) or credentials.get("state") != "provisioned":
-            raise ScenarioError(f"credentials for {alias} are not in the provisioned state")
+            raise ScenarioError(
+                f"could not load credentials for {alias}: {exc}"
+            ) from exc
+        if (
+            not isinstance(credentials, dict)
+            or credentials.get("state") != "provisioned"
+        ):
+            raise ScenarioError(
+                f"credentials for {alias} are not in the provisioned state"
+            )
         node_id = credentials.get("node_id")
         if not isinstance(node_id, str) or not node_id.startswith("SIM-EAR-"):
-            raise ScenarioError(f"credentials for {alias} must belong to a SIM-EAR-* node")
+            raise ScenarioError(
+                f"credentials for {alias} must belong to a SIM-EAR-* node"
+            )
         if node_id in node_ids:
-            raise ScenarioError(f"each Ear alias must use a distinct node; repeated node {node_id}")
+            raise ScenarioError(
+                f"each Ear alias must use a distinct node; repeated node {node_id}"
+            )
         node_ids.add(node_id)
         endpoint = credentials.get("mqtt")
         topics = credentials.get("topics")
         if not isinstance(endpoint, dict) or endpoint.get("use_tls") is not True:
-            raise ScenarioError(f"credentials for {alias} do not contain a TLS MQTT endpoint")
+            raise ScenarioError(
+                f"credentials for {alias} do not contain a TLS MQTT endpoint"
+            )
         host = endpoint.get("host")
         port = endpoint.get("port")
         username = endpoint.get("username")
@@ -363,18 +400,24 @@ def load_ear_credentials(
             or not isinstance(password, str)
             or not password
         ):
-            raise ScenarioError(f"credentials for {alias} contain an invalid MQTT endpoint")
+            raise ScenarioError(
+                f"credentials for {alias} contain an invalid MQTT endpoint"
+            )
         if not isinstance(topics, dict) or topics.get("observation") != (
             f"esp-ear/local/{node_id.lower()}/observation"
         ):
-            raise ScenarioError(f"credentials for {alias} contain an invalid observation topic")
+            raise ScenarioError(
+                f"credentials for {alias} contain an invalid observation topic"
+            )
         pending = credentials.get("pending_observation")
         if pending is not None and not allow_pending:
             raise ScenarioError(
                 f"{path} has a pending observation; retry or resolve it before running a scenario"
             )
         if pending is not None and credentials.get("pending_scenario_id") is None:
-            raise ScenarioError(f"{path} has a pending observation from another simulator mode")
+            raise ScenarioError(
+                f"{path} has a pending observation from another simulator mode"
+            )
         saved_observation = credentials.get("observation")
         if not isinstance(saved_observation, dict):
             raise ScenarioError(f"credentials for {alias} have no saved observation")
@@ -384,13 +427,21 @@ def load_ear_credentials(
             or not isinstance(saved_sequence, int)
             or saved_sequence < 0
         ):
-            raise ScenarioError(f"credentials for {alias} have an invalid saved sequence number")
+            raise ScenarioError(
+                f"credentials for {alias} have an invalid saved sequence number"
+            )
         next_sequence = credentials.get(
             "next_sequence_number",
             saved_sequence + 1,
         )
-        if isinstance(next_sequence, bool) or not isinstance(next_sequence, int) or next_sequence < 0:
-            raise ScenarioError(f"credentials for {alias} have an invalid next sequence number")
+        if (
+            isinstance(next_sequence, bool)
+            or not isinstance(next_sequence, int)
+            or next_sequence < 0
+        ):
+            raise ScenarioError(
+                f"credentials for {alias} have an invalid next sequence number"
+            )
         credentials["next_sequence_number"] = next_sequence
         credentials_by_alias[alias] = credentials
     return credentials_by_alias
@@ -412,7 +463,8 @@ def make_scenario_observation(
         "node_id": node_id,
         "sequence_number": sequence_number,
         "event_time_utc": (started_at_utc + timedelta(seconds=at_seconds)).isoformat(),
-        "capture_timestamp_monotonic_us": started_at_monotonic_us + round(at_seconds * 1_000_000),
+        "capture_timestamp_monotonic_us": started_at_monotonic_us
+        + round(at_seconds * 1_000_000),
         "timing_quality": "estimated",
         "clock_offset_ms": None,
         "timestamp_uncertainty_ms": 10.0,
@@ -540,7 +592,8 @@ def retry_pending_observations(
     save: Callable[..., None] = save_credentials,
 ) -> list[str]:
     pending_aliases = [
-        alias for alias, credentials in credentials_by_alias.items()
+        alias
+        for alias, credentials in credentials_by_alias.items()
         if credentials.get("pending_observation") is not None
     ]
     if not pending_aliases:
@@ -555,9 +608,14 @@ def retry_pending_observations(
         payload = credentials["pending_observation"]
         ObservationBody.model_validate(payload)
         if payload["node_id"] != credentials["node_id"]:
-            raise ScenarioError(f"pending observation for {alias} belongs to another Ear")
+            raise ScenarioError(
+                f"pending observation for {alias} belongs to another Ear"
+            )
         hints = (payload.get("classification") or {}).get("hints")
-        if not isinstance(hints, dict) or hints.get("simulated_source_id") != scenario["source_id"]:
+        if (
+            not isinstance(hints, dict)
+            or hints.get("simulated_source_id") != scenario["source_id"]
+        ):
             raise ScenarioError(
                 f"pending observation for {alias} has a different simulated source hint"
             )
@@ -577,7 +635,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Publish a time-ordered scenario of Ear observations over TLS MQTT."
     )
-    parser.add_argument("--scenario-file", required=True, help="Scenario definition in JSON")
+    parser.add_argument(
+        "--scenario-file", required=True, help="Scenario definition in JSON"
+    )
     parser.add_argument(
         "--ear",
         action="append",
@@ -591,7 +651,9 @@ def main() -> int:
         default=1.0,
         help="Scale wall-clock waits; logical event times remain unchanged (default: 1)",
     )
-    parser.add_argument("--ca", default="shared/trust/ca.crt", help="Path to the local hub CA")
+    parser.add_argument(
+        "--ca", default="shared/trust/ca.crt", help="Path to the local hub CA"
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -641,16 +703,27 @@ def main() -> int:
             args.time_scale,
         )
     except KeyboardInterrupt:
-        print("Scenario interrupted. Any unpublished pending observation is preserved in its credentials file.")
+        print(
+            "Scenario interrupted. Any unpublished pending observation is preserved in its credentials file."
+        )
         return 130
-    except (KeyError, MQTTException, OSError, RuntimeError, ScenarioError, ValueError) as exc:
+    except (
+        KeyError,
+        MQTTException,
+        OSError,
+        RuntimeError,
+        ScenarioError,
+        ValueError,
+    ) as exc:
         print(f"Scenario simulation failed: {exc}", file=sys.stderr)
         return 1
 
     print(f"Scenario {scenario['scenario_id']} published {len(ids)} observations:")
     for observation_id in ids:
         print(f"  {observation_id}")
-    print("Use scripts/hub_event_track.py to inspect the observations; no Hub logic was deployed.")
+    print(
+        "Use scripts/hub_event_track.py to inspect the observations; no Hub logic was deployed."
+    )
     return 0
 
 

@@ -48,9 +48,13 @@ def request_json(
             return json.load(response)
     except urllib.error.HTTPError as exc:
         detail = exc.read(1024).decode(errors="replace")
-        raise EarAudioCompareError(f"hub API returned HTTP {exc.code}: {detail}") from exc
+        raise EarAudioCompareError(
+            f"hub API returned HTTP {exc.code}: {detail}"
+        ) from exc
     except urllib.error.URLError as exc:
-        raise EarAudioCompareError(f"could not reach the hub API: {exc.reason}") from exc
+        raise EarAudioCompareError(
+            f"could not reach the hub API: {exc.reason}"
+        ) from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise EarAudioCompareError(f"hub returned invalid JSON for {path}") from exc
 
@@ -95,17 +99,36 @@ def _format_number(value: object) -> str:
     return "—"
 
 
+def _transport_status(audio: dict[str, Any], mic: dict[str, Any]) -> str:
+    return str(
+        audio.get("audio_transport_status")
+        or audio.get("subsystem_status")
+        or mic.get("status")
+        or "—"
+    )
+
+
+def _microphone_status(audio: dict[str, Any], mic: dict[str, Any]) -> str:
+    return str(audio.get("microphone_status") or mic.get("microphone_status") or "—")
+
+
 def ear_audio_row(node: dict[str, Any]) -> tuple[str, ...]:
     audio = _audio_block(node)
     mic = _primary_microphone(audio)
+    reason = mic.get("classification_reason") or "—"
     return (
         str(node.get("node_id", "")),
         str(node.get("status", "offline")),
-        str(audio.get("subsystem_status") or "—"),
-        str(mic.get("status") or "—"),
+        _transport_status(audio, mic),
+        _microphone_status(audio, mic),
+        str(reason),
         _format_number(mic.get("rms_dbfs")),
         _format_number(mic.get("peak_dbfs")),
         _format_number(mic.get("sample_count")),
+        _format_number(mic.get("expected_sample_count")),
+        _format_number(mic.get("timeout_reads")),
+        _format_number(mic.get("empty_reads")),
+        _format_number(mic.get("read_errors")),
         str(node.get("last_seen_at") or "never"),
     )
 
@@ -116,11 +139,16 @@ def format_ear_audio_list(nodes: list[dict[str, Any]]) -> str:
     headers = (
         "Device",
         "Status",
-        "Audio",
+        "Transport",
         "Mic",
+        "Reason",
         "RMS dBFS",
         "Peak dBFS",
         "Samples",
+        "Expected",
+        "Timeout",
+        "Empty",
+        "Errors",
         "Last seen",
     )
     rows: list[tuple[str, ...]] = [headers]
@@ -135,8 +163,9 @@ def format_ear_audio_list(nodes: list[dict[str, Any]]) -> str:
     ]
     lines.append("")
     lines.append(
-        "Levels are dBFS (digital full-scale), not SPL. "
-        "Room/placement differences are expected."
+        "Transport = I2S fill health; Mic = structure-based presence "
+        "(noise_suspected for floating DIN; disconnected_suspected for digital silence). "
+        "Levels are dBFS, not SPL."
     )
     return "\n".join(lines)
 

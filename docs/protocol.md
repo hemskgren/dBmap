@@ -311,6 +311,7 @@ MQTT uses MQTT 3.1.1 over TLS. The current QoS behavior is:
 | `hello` | 1 |
 | Output `health` and `keepalive` | 0 |
 | Output `status` | 1 |
+| Ear `status` (OTA install / boot confirmation) | 1 |
 | Output command subscription | 1 |
 | Ear observation publication and hub subscription | 1 |
 | `ack` | 1 in the current Output firmware |

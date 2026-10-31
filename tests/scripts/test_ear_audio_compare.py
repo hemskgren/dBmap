@@ -32,6 +32,8 @@ def test_format_ear_audio_list_filters_to_ear_and_shows_mic_levels() -> None:
                     "payload": {
                         "audio": {
                             "subsystem_status": "ok",
+                            "audio_transport_status": "ok",
+                            "microphone_status": "signal_present",
                             "microphones": [
                                 {
                                     "index": 0,
@@ -39,7 +41,13 @@ def test_format_ear_audio_list_filters_to_ear_and_shows_mic_levels() -> None:
                                     "rms_dbfs": -42.5,
                                     "peak_dbfs": -28.1,
                                     "sample_count": 16000,
+                                    "expected_sample_count": 16000,
+                                    "timeout_reads": 0,
+                                    "empty_reads": 0,
+                                    "read_errors": 0,
                                     "status": "ok",
+                                    "microphone_status": "signal_present",
+                                    "classification_reason": "ambient_like_energy",
                                 }
                             ],
                         }
@@ -59,15 +67,22 @@ def test_format_ear_audio_list_filters_to_ear_and_shows_mic_levels() -> None:
     lines = text.splitlines()
     assert lines[0].startswith("Device")
     assert "Status" in lines[0]
-    assert "Audio" in lines[0]
+    assert "Transport" in lines[0]
     assert "Mic" in lines[0]
+    assert "Reason" in lines[0]
     assert "RMS dBFS" in lines[0]
     assert "Peak dBFS" in lines[0]
+    assert "Expected" in lines[0]
+    assert "Timeout" in lines[0]
+    assert "Empty" in lines[0]
+    assert "Errors" in lines[0]
     assert lines[1].startswith("EAR-001")
     assert "offline" in lines[1]
     assert "—" in lines[1]
     assert lines[2].startswith("EAR-002")
     assert "online" in lines[2]
+    assert "signal_present" in lines[2]
+    assert "ambient_like_energy" in lines[2]
     assert "-42.5" in lines[2]
     assert "-28.1" in lines[2]
     assert "16000" in lines[2]

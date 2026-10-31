@@ -45,6 +45,8 @@ def app_bin_name_for_node_type(node_type: str) -> str:
     if node_type == "ear":
         return "esp-ear.bin"
     return "esp-output.bin"
+
+
 ESP_WEB_TOOLS_CHIP_FAMILIES = {
     "esp32": "ESP32",
     "esp32c2": "ESP32-C2",

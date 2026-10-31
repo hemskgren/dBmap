@@ -9,6 +9,7 @@
 #include "driver/uart_vfs.h"
 #include "esp_timer.h"
 #include "dbmap_nvs.h"
+#include "dbmap_wifi.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -16,8 +17,17 @@
 
 #define SERIAL_FRAME_MAX 1024
 #define SERIAL_RX_BUFFER_SIZE 2048
+/** Rate-limit repeated UART / recovery error lines (microseconds). */
+#define SERIAL_ERR_LOG_INTERVAL_US (30000000LL)
 
 static const char *TAG = "dbmap_serial";
+
+static bool s_uart_ready;
+static bool s_uart_init_failed;
+static int64_t s_uart_err_log_us;
+static uint32_t s_uart_err_suppressed;
+static int64_t s_recovery_err_log_us;
+static uint32_t s_recovery_err_suppressed;
 
 static bool copy_json_string(const cJSON *object, const char *key, char *out, size_t out_size, bool allow_empty)
 {
@@ -81,14 +91,68 @@ static bool valid_hub_id(const char *hub_id)
     return true;
 }
 
+static void log_uart_error_rate_limited(const char *detail, esp_err_t err)
+{
+    const int64_t now = esp_timer_get_time();
+    if (s_uart_err_log_us == 0 || (now - s_uart_err_log_us) >= SERIAL_ERR_LOG_INTERVAL_US) {
+        if (s_uart_err_suppressed > 0) {
+            ESP_LOGW(
+                TAG,
+                "UART console init still failing (%s); suppressed %lu duplicate log(s)",
+                esp_err_to_name(err),
+                (unsigned long)s_uart_err_suppressed
+            );
+            s_uart_err_suppressed = 0;
+        } else {
+            ESP_LOGE(TAG, "%s: %s", detail, esp_err_to_name(err));
+        }
+        s_uart_err_log_us = now;
+    } else {
+        s_uart_err_suppressed++;
+    }
+}
+
+/**
+ * Idempotent UART0 driver + VFS console input for USB provisioning.
+ * ESP-IDF returns ESP_FAIL (and logs "UART driver already installed") when the
+ * driver is present — not ESP_ERR_INVALID_STATE — so callers must check
+ * uart_is_driver_installed() before uart_driver_install().
+ */
+static esp_err_t ensure_uart_console(void)
+{
+    if (s_uart_ready) {
+        return ESP_OK;
+    }
+    if (s_uart_init_failed) {
+        log_uart_error_rate_limited("could not enable UART console input", ESP_FAIL);
+        return ESP_FAIL;
+    }
+
+    if (!uart_is_driver_installed(UART_NUM_0)) {
+        esp_err_t uart_err = uart_driver_install(UART_NUM_0, SERIAL_RX_BUFFER_SIZE, 0, 0, NULL, 0);
+        if (uart_err != ESP_OK) {
+            /* Race: another path installed between the check and install. */
+            if (!uart_is_driver_installed(UART_NUM_0)) {
+                s_uart_init_failed = true;
+                log_uart_error_rate_limited("could not enable UART console input", uart_err);
+                return uart_err;
+            }
+        }
+    }
+
+    uart_vfs_dev_use_driver(UART_NUM_0);
+    s_uart_ready = true;
+    s_uart_init_failed = false;
+    s_uart_err_suppressed = 0;
+    return ESP_OK;
+}
+
 esp_err_t dbmap_serial_config_wait(dbmap_effective_t *cfg, int timeout_seconds)
 {
-    esp_err_t uart_err = uart_driver_install(UART_NUM_0, SERIAL_RX_BUFFER_SIZE, 0, 0, NULL, 0);
-    if (uart_err != ESP_OK && uart_err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "could not enable UART console input: %s", esp_err_to_name(uart_err));
+    esp_err_t uart_err = ensure_uart_console();
+    if (uart_err != ESP_OK) {
         return uart_err;
     }
-    uart_vfs_dev_use_driver(UART_NUM_0);
     ESP_LOGI(TAG, "waiting for local USB provisioning configuration");
     char frame[SERIAL_FRAME_MAX];
     size_t frame_len = 0;
@@ -232,4 +296,76 @@ esp_err_t dbmap_serial_config_wait(dbmap_effective_t *cfg, int timeout_seconds)
         return ESP_OK;
     }
     return ESP_FAIL;
+}
+
+static void log_recovery_slice_error_rate_limited(esp_err_t cfg_err)
+{
+    const int64_t now = esp_timer_get_time();
+    if (s_recovery_err_log_us == 0 || (now - s_recovery_err_log_us) >= SERIAL_ERR_LOG_INTERVAL_US) {
+        if (s_recovery_err_suppressed > 0) {
+            ESP_LOGW(
+                TAG,
+                "USB recovery slice still failing (%s); suppressed %lu duplicate log(s)",
+                esp_err_to_name(cfg_err),
+                (unsigned long)s_recovery_err_suppressed
+            );
+            s_recovery_err_suppressed = 0;
+        } else {
+            ESP_LOGW(TAG, "USB recovery slice ended: %s", esp_err_to_name(cfg_err));
+        }
+        s_recovery_err_log_us = now;
+    } else {
+        s_recovery_err_suppressed++;
+    }
+}
+
+esp_err_t dbmap_boot_wait_wifi_ip_or_usb(dbmap_effective_t *cfg, int timeout_seconds)
+{
+    if (cfg == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const bool bounded = timeout_seconds > 0;
+    if (bounded) {
+        ESP_LOGW(
+            TAG,
+            "Wi-Fi not up yet; waiting up to %d s for IP (USB configure still accepted)",
+            timeout_seconds
+        );
+    } else {
+        ESP_LOGW(
+            TAG,
+            "Wi-Fi not up yet; waiting for IP indefinitely (USB configure still accepted; no reboot for missing AP)"
+        );
+    }
+    const int64_t started_us = esp_timer_get_time();
+    const int64_t limit_us = bounded ? ((int64_t)timeout_seconds * 1000000) : 0;
+    while (!dbmap_wifi_has_ip()) {
+        int64_t elapsed_us = esp_timer_get_time() - started_us;
+        if (bounded && elapsed_us >= limit_us) {
+            return ESP_ERR_TIMEOUT;
+        }
+        int slice_s = 5;
+        if (bounded) {
+            int remain_s = (int)((limit_us - elapsed_us + 999999) / 1000000);
+            if (remain_s < 1) {
+                remain_s = 1;
+            }
+            slice_s = remain_s > 5 ? 5 : remain_s;
+        }
+        /* Short slices so a late GOT_IP is noticed without ending the USB window early. */
+        esp_err_t cfg_err = dbmap_serial_config_wait(cfg, slice_s);
+        if (cfg_err == ESP_OK) {
+            /* Accepted configure reboots inside serial_config_wait. */
+            return ESP_OK;
+        }
+        if (cfg_err == ESP_ERR_TIMEOUT) {
+            continue;
+        }
+        /* UART init failure must not spin: yield so the idle task feeds the WDT
+         * while background Wi-Fi reconnect timers keep running. */
+        log_recovery_slice_error_rate_limited(cfg_err);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    ESP_LOGI(TAG, "Wi-Fi IP available; continuing boot");
+    return ESP_OK;
 }

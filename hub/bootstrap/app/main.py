@@ -43,9 +43,7 @@ def create_app() -> FastAPI:
         _validate_security_settings()
         ensure_broker_security()
         start_mqtt_thread()
-    app = FastAPI(
-        title="dBmap hub-bootstrap", version="0.1.0", lifespan=_lifespan
-    )
+    app = FastAPI(title="dBmap hub-bootstrap", version="0.1.0", lifespan=_lifespan)
     app.include_router(router)
     return app
 

@@ -713,9 +713,7 @@ def apply_reported(db: Session, node_id: str, payload: dict) -> None:
     db.commit()
 
 
-def node_view(
-    db: Session, node: Node, *, include_monitoring: bool = False
-) -> NodeView:
+def node_view(db: Session, node: Node, *, include_monitoring: bool = False) -> NodeView:
     desired = db.get(DesiredState, node.node_id)
     reported = db.get(ReportedState, node.node_id)
     installation = db.get(InstallationMetadata, node.node_id)

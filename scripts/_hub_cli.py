@@ -25,7 +25,9 @@ def load_project_env(project_root: Path | None = None) -> None:
     except FileNotFoundError:
         return
     except OSError as exc:
-        raise HubCliError(f"could not read project environment file {env_file}: {exc}") from exc
+        raise HubCliError(
+            f"could not read project environment file {env_file}: {exc}"
+        ) from exc
 
     for line in lines:
         stripped = line.strip()
@@ -64,9 +66,13 @@ def add_hub_connection_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def validate_hub_connection(args: argparse.Namespace, parser: argparse.ArgumentParser) -> tuple[str, str]:
+def validate_hub_connection(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> tuple[str, str]:
     if not args.hub_host:
-        parser.error("Hub address not configured; set DBMAP_LAN_IP in the project .env file")
+        parser.error(
+            "Hub address not configured; set DBMAP_LAN_IP in the project .env file"
+        )
     base_path = args.base_path.rstrip("/")
     if base_path and (
         not base_path.startswith("/")

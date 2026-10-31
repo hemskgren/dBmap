@@ -75,7 +75,9 @@ def test_sample_records_overdue_and_resume() -> None:
 
         reported = db.get(ReportedState, "OUTAAAAA")
         assert reported is not None
-        reported.last_seen_at = now - timedelta(seconds=settings.device_online_window_s + 5)
+        reported.last_seen_at = now - timedelta(
+            seconds=settings.device_online_window_s + 5
+        )
         db.commit()
 
         later = now + timedelta(seconds=120)
@@ -189,9 +191,10 @@ def test_hub_gap_marks_unobserved_and_excludes_from_percent() -> None:
             window_end=gap_end + timedelta(minutes=1),
         )
         assert window["unobserved_seconds"] > 0
-        assert window["available_seconds"] + window["unavailable_seconds"] == window[
-            "eligible_seconds"
-        ]
+        assert (
+            window["available_seconds"] + window["unavailable_seconds"]
+            == window["eligible_seconds"]
+        )
     finally:
         db.close()
 

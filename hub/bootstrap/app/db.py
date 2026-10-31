@@ -67,7 +67,9 @@ def _migrate_node_chip_identity() -> None:
     columns = {column["name"] for column in inspect(engine).get_columns("nodes")}
     with engine.begin() as connection:
         if "chip_mac" not in columns:
-            connection.execute(text("ALTER TABLE nodes ADD COLUMN chip_mac VARCHAR(17)"))
+            connection.execute(
+                text("ALTER TABLE nodes ADD COLUMN chip_mac VARCHAR(17)")
+            )
         if "chip_variant" not in columns:
             connection.execute(
                 text("ALTER TABLE nodes ADD COLUMN chip_variant VARCHAR(128)")

@@ -205,8 +205,7 @@ def _emit_transition(
     if previous == "available" and new == "unavailable":
         event_type = "heartbeat_overdue"
         reason = (
-            f"no keepalive within {int(settings.device_online_window_s)}s "
-            "online window"
+            f"no keepalive within {int(settings.device_online_window_s)}s online window"
         )
     elif previous == "unavailable" and new == "available":
         event_type = "heartbeat_resumed"
@@ -260,9 +259,7 @@ def sample_devices(
         if state is None:
             continue
         previous = _latest_sample(db, node.node_id)
-        previous_state = (
-            previous.overall_availability if previous is not None else None
-        )
+        previous_state = previous.overall_availability if previous is not None else None
 
         if hub_gap is not None and previous is not None:
             gap_start, gap_end = (_ensure_aware(hub_gap[0]), _ensure_aware(hub_gap[1]))

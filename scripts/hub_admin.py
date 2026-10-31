@@ -177,7 +177,9 @@ def set_installation(args: argparse.Namespace, base_url: str, admin_token: str) 
         raise ValueError("set-installation requires at least one field to change")
     body.update(updates)
     if body["latitude"] is None or body["longitude"] is None:
-        raise ValueError("latitude and longitude are required for a node without installation data")
+        raise ValueError(
+            "latitude and longitude are required for a node without installation data"
+        )
     node_id = urllib.parse.quote(args.node_id, safe="")
     return request_json(
         base_url,
@@ -200,13 +202,17 @@ def build_parser() -> argparse.ArgumentParser:
     show = commands.add_parser("show", help="Show one node")
     show.add_argument("node_id")
 
-    desired = commands.add_parser("set-desired", help="Update selected desired-state fields")
+    desired = commands.add_parser(
+        "set-desired", help="Update selected desired-state fields"
+    )
     desired.add_argument("node_id")
     desired.add_argument("--firmware-version")
     desired.add_argument("--config-version", type=int)
     desired.add_argument("--calibration-version", type=int)
     desired.add_argument("--classifier-version")
-    desired.add_argument("--payload-file", help="JSON object to replace the desired payload")
+    desired.add_argument(
+        "--payload-file", help="JSON object to replace the desired payload"
+    )
 
     installation = commands.add_parser(
         "set-installation",
@@ -217,13 +223,19 @@ def build_parser() -> argparse.ArgumentParser:
     installation.add_argument("--longitude", type=float)
     installation.add_argument("--floor", type=int)
     installation.add_argument("--height-m", dest="height_m", type=float)
-    installation.add_argument("--height-accuracy-m", dest="height_accuracy_m", type=float)
+    installation.add_argument(
+        "--height-accuracy-m", dest="height_accuracy_m", type=float
+    )
     installation.add_argument("--mount-type")
     installation.add_argument("--environment")
     installation.add_argument("--orientation-deg", dest="orientation_deg", type=float)
 
     for name, state, help_text in (
-        ("deactivate", "deactivated", "Deactivate a node but retain its history and MQTT credentials"),
+        (
+            "deactivate",
+            "deactivated",
+            "Deactivate a node but retain its history and MQTT credentials",
+        ),
         ("reactivate", "active", "Reactivate a previously deactivated node"),
     ):
         command = commands.add_parser(name, help=help_text)
@@ -245,7 +257,9 @@ def main() -> int:
     base_url, admin_token = validate_hub_connection(args, parser)
     try:
         if args.command == "list":
-            devices = request_json(base_url, args.ca, admin_token, "GET", "/api/v1/devices")
+            devices = request_json(
+                base_url, args.ca, admin_token, "GET", "/api/v1/devices"
+            )
             if not isinstance(devices, list) or not all(
                 isinstance(device, dict) and "node_id" in device for device in devices
             ):

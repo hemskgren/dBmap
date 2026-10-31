@@ -48,30 +48,51 @@ def _add_node(db, node_id: str = "OUTAAAAA") -> None:
 
 
 def test_assess_health_rules() -> None:
-    assert device_diag.assess_health(
-        online=False, has_diag_evidence=True, diag={"wifi_disconnects": 1}, wifi_rssi_dbm=-40
-    )[0] == "unknown"
-    assert device_diag.assess_health(
-        online=True, has_diag_evidence=False, diag=None, wifi_rssi_dbm=-40
-    )[0] == "unknown"
-    assert device_diag.assess_health(
-        online=True,
-        has_diag_evidence=True,
-        diag={"last_reset_reason": "PANIC"},
-        wifi_rssi_dbm=-40,
-    )[0] == "unhealthy"
-    assert device_diag.assess_health(
-        online=True,
-        has_diag_evidence=True,
-        diag={"wifi_disconnects": 2},
-        wifi_rssi_dbm=-40,
-    )[0] == "degraded"
-    assert device_diag.assess_health(
-        online=True, has_diag_evidence=True, diag={}, wifi_rssi_dbm=-90
-    )[0] == "degraded"
-    assert device_diag.assess_health(
-        online=True, has_diag_evidence=True, diag={}, wifi_rssi_dbm=-40
-    )[0] == "healthy"
+    assert (
+        device_diag.assess_health(
+            online=False,
+            has_diag_evidence=True,
+            diag={"wifi_disconnects": 1},
+            wifi_rssi_dbm=-40,
+        )[0]
+        == "unknown"
+    )
+    assert (
+        device_diag.assess_health(
+            online=True, has_diag_evidence=False, diag=None, wifi_rssi_dbm=-40
+        )[0]
+        == "unknown"
+    )
+    assert (
+        device_diag.assess_health(
+            online=True,
+            has_diag_evidence=True,
+            diag={"last_reset_reason": "PANIC"},
+            wifi_rssi_dbm=-40,
+        )[0]
+        == "unhealthy"
+    )
+    assert (
+        device_diag.assess_health(
+            online=True,
+            has_diag_evidence=True,
+            diag={"wifi_disconnects": 2},
+            wifi_rssi_dbm=-40,
+        )[0]
+        == "degraded"
+    )
+    assert (
+        device_diag.assess_health(
+            online=True, has_diag_evidence=True, diag={}, wifi_rssi_dbm=-90
+        )[0]
+        == "degraded"
+    )
+    assert (
+        device_diag.assess_health(
+            online=True, has_diag_evidence=True, diag={}, wifi_rssi_dbm=-40
+        )[0]
+        == "healthy"
+    )
 
 
 def test_hello_without_diag_does_not_reinflame_counters() -> None:

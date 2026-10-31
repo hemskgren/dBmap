@@ -18,7 +18,9 @@ def load_credentials(path: Path) -> dict:
     with path.open(encoding="utf-8") as stream:
         credentials = json.load(stream)
     if credentials.get("state") != "provisioned":
-        raise ValueError("credentials file must contain an already provisioned simulator Ear")
+        raise ValueError(
+            "credentials file must contain an already provisioned simulator Ear"
+        )
     node_id = credentials.get("node_id")
     if not isinstance(node_id, str) or not node_id.startswith("SIM-EAR-"):
         raise ValueError("credentials file does not identify a SIM-EAR-* device")
@@ -28,7 +30,9 @@ def load_credentials(path: Path) -> dict:
     if not isinstance(endpoint, dict) or endpoint.get("use_tls") is not True:
         raise ValueError("credentials file has no TLS MQTT endpoint")
     if topic != expected_topic:
-        raise ValueError("credentials file does not contain this Ear's expected keepalive topic")
+        raise ValueError(
+            "credentials file does not contain this Ear's expected keepalive topic"
+        )
     return credentials
 
 
@@ -77,9 +81,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Publish a TLS keepalive for an existing simulated Ear (without creating a device)."
     )
-    parser.add_argument("--credentials-file", default="/tmp/dbmap-ear-simulator-credentials.json")
-    parser.add_argument("--ca", default="shared/trust/ca.crt", help="Path to the local hub CA")
-    parser.add_argument("--watch", action="store_true", help="Keep the simulated Ear online until Ctrl+C")
+    parser.add_argument(
+        "--credentials-file", default="/tmp/dbmap-ear-simulator-credentials.json"
+    )
+    parser.add_argument(
+        "--ca", default="shared/trust/ca.crt", help="Path to the local hub CA"
+    )
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Keep the simulated Ear online until Ctrl+C",
+    )
     parser.add_argument(
         "--interval-seconds",
         type=float,

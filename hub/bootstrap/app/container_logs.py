@@ -253,7 +253,9 @@ def inspect_runtime(component: str) -> dict:
         restart_count = info.get("RestartCount") if isinstance(info, dict) else None
     if not isinstance(restart_count, int):
         restart_count = None
-    started_at = state.get("StartedAt") if isinstance(state.get("StartedAt"), str) else None
+    started_at = (
+        state.get("StartedAt") if isinstance(state.get("StartedAt"), str) else None
+    )
     return {
         "service": service_name,
         "compose_service": compose_service,

@@ -23,7 +23,9 @@ def test_simulator_identity_requires_simulated_ear_prefix() -> None:
         simulate_observation.require_simulator_identity("EAR-001")
 
 
-def test_old_hub_identity_is_rejected_before_consuming_bootstrap_token(monkeypatch) -> None:
+def test_old_hub_identity_is_rejected_before_consuming_bootstrap_token(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         simulate_observation,
         "api_request",
@@ -39,7 +41,9 @@ def test_old_hub_identity_is_rejected_before_consuming_bootstrap_token(monkeypat
         )
 
 
-def test_observation_batch_uses_unique_ids_and_monotonic_sequences(monkeypatch, tmp_path) -> None:
+def test_observation_batch_uses_unique_ids_and_monotonic_sequences(
+    monkeypatch, tmp_path
+) -> None:
     observation = simulate_observation.make_observation("SIM-EAR-001")
     credentials = {
         "node_id": "SIM-EAR-001",

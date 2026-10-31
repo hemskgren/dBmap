@@ -63,13 +63,19 @@ def load_test_scenario(tmp_path):
 
 def test_load_scenario_rejects_out_of_order_observations(tmp_path) -> None:
     path = tmp_path / "scenario.json"
-    path.write_text(json.dumps({**SCENARIO, "observations": list(reversed(SCENARIO["observations"]))}))
+    path.write_text(
+        json.dumps(
+            {**SCENARIO, "observations": list(reversed(SCENARIO["observations"]))}
+        )
+    )
 
     with pytest.raises(simulate_scenario.ScenarioError, match="non-decreasing"):
         simulate_scenario.load_scenario(path)
 
 
-def test_scenario_validation_rejects_non_finite_or_out_of_range_values(tmp_path) -> None:
+def test_scenario_validation_rejects_non_finite_or_out_of_range_values(
+    tmp_path,
+) -> None:
     invalid = {
         **SCENARIO,
         "ears": {
@@ -117,7 +123,9 @@ def test_scenario_validation_rejects_non_finite_or_out_of_range_values(tmp_path)
         simulate_scenario.load_scenario(path)
 
 
-def test_ear_credentials_require_private_file_and_distinct_simulated_nodes(tmp_path) -> None:
+def test_ear_credentials_require_private_file_and_distinct_simulated_nodes(
+    tmp_path,
+) -> None:
     record = {
         "state": "provisioned",
         "node_id": "SIM-EAR-001",
@@ -146,7 +154,9 @@ def test_ear_credentials_require_private_file_and_distinct_simulated_nodes(tmp_p
         simulate_scenario.load_ear_credentials({"ear_b": second})
 
 
-def test_scenario_builds_protocol_observations_with_per_ear_sequences_and_timeline(tmp_path) -> None:
+def test_scenario_builds_protocol_observations_with_per_ear_sequences_and_timeline(
+    tmp_path,
+) -> None:
     scenario = load_test_scenario(tmp_path)
     started_at = datetime(2026, 10, 5, 18, 0, tzinfo=timezone.utc)
     credentials = {
@@ -204,7 +214,9 @@ def test_scenario_builds_protocol_observations_with_per_ear_sequences_and_timeli
     assert published[0]["bearing"]["deg"] != published[2]["bearing"]["deg"]
     assert all(0 <= item["bearing"]["deg"] < 360 for item in published)
     assert published[0]["bearing"]["deg"] == pytest.approx(90, abs=0.01)
-    assert scenario["observations"][0]["source_distance_m"] == pytest.approx(111.2, abs=1)
+    assert scenario["observations"][0]["source_distance_m"] == pytest.approx(
+        111.2, abs=1
+    )
     assert scenario["movement"]["speed_m_s"] == 12
     assert [item["sequence_number"] for item in published] == [3, 8, 4]
     assert [item["event_time_utc"] for item in published] == [
@@ -218,7 +230,9 @@ def test_scenario_builds_protocol_observations_with_per_ear_sequences_and_timeli
         6_000_000,
     ]
     assert sleeps == [0.5, 0.75]
-    assert [item["classification"]["hints"]["simulated_source_id"] for item in published] == [
+    assert [
+        item["classification"]["hints"]["simulated_source_id"] for item in published
+    ] == [
         "SIM-VEHICLE-TEST",
         "SIM-VEHICLE-TEST",
         "SIM-VEHICLE-TEST",
@@ -227,7 +241,9 @@ def test_scenario_builds_protocol_observations_with_per_ear_sequences_and_timeli
     assert credentials["ear_b"]["next_sequence_number"] == 9
 
 
-def test_retry_pending_reuses_same_observation_id_and_advances_sequence(tmp_path) -> None:
+def test_retry_pending_reuses_same_observation_id_and_advances_sequence(
+    tmp_path,
+) -> None:
     scenario = load_test_scenario(tmp_path)
     pending = simulate_scenario.make_scenario_observation(
         "SIM-EAR-001",
@@ -253,7 +269,9 @@ def test_retry_pending_reuses_same_observation_id_and_advances_sequence(tmp_path
         credentials,
         {"ear_a": Path("ear-a.json")},
         "ca.crt",
-        publish=lambda current, payload, ca: published.append(payload) or payload["observation_id"],
+        publish=lambda current, payload, ca: (
+            published.append(payload) or payload["observation_id"]
+        ),
         save=lambda path, value: saved.append((path, dict(value))),
     )
 
@@ -264,7 +282,9 @@ def test_retry_pending_reuses_same_observation_id_and_advances_sequence(tmp_path
     assert saved[0][0] == Path("ear-a.json")
 
 
-def test_retry_pending_rejects_pending_observation_from_different_scenario(tmp_path) -> None:
+def test_retry_pending_rejects_pending_observation_from_different_scenario(
+    tmp_path,
+) -> None:
     scenario = load_test_scenario(tmp_path)
     credentials = {
         "ear_a": {
@@ -273,13 +293,17 @@ def test_retry_pending_rejects_pending_observation_from_different_scenario(tmp_p
             "next_sequence_number": 2,
         }
     }
-    with pytest.raises(simulate_scenario.ScenarioError, match="belongs to another scenario"):
+    with pytest.raises(
+        simulate_scenario.ScenarioError, match="belongs to another scenario"
+    ):
         simulate_scenario.retry_pending_observations(
             scenario,
             credentials,
             {"ear_a": Path("ear-a.json")},
             "ca.crt",
-            publish=lambda *args: pytest.fail("must not publish another scenario's observation"),
+            publish=lambda *args: pytest.fail(
+                "must not publish another scenario's observation"
+            ),
         )
 
 
@@ -308,5 +332,7 @@ def test_retry_pending_rejects_observation_for_a_different_ear(tmp_path) -> None
             credentials,
             {"ear_a": Path("ear-a.json")},
             "ca.crt",
-            publish=lambda *args: pytest.fail("must not publish an observation for another Ear"),
+            publish=lambda *args: pytest.fail(
+                "must not publish an observation for another Ear"
+            ),
         )

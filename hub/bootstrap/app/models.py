@@ -534,12 +534,8 @@ class DeviceDiagEvent(Base):
     observed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
-    first_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow
-    )
-    last_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow
-    )
+    first_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     event_type: Mapped[str] = mapped_column(String(64))
     event_count: Mapped[int] = mapped_column(Integer, default=1)
     reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
