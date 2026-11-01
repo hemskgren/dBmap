@@ -1,6 +1,7 @@
 #include "dbmap_mqtt.h"
 
 #include <stdio.h>
+#include <strings.h>
 #include <string.h>
 
 #include "dbmap_backoff.h"
@@ -28,9 +29,14 @@ static char s_client_id[DBMAP_NODE_ID_MAX];
 static dbmap_backoff_t s_backoff;
 static esp_timer_handle_t s_reconnect_timer;
 static esp_timer_handle_t s_stable_timer;
+static esp_timer_handle_t s_connect_watchdog;
 static EventGroupHandle_t s_pub_events;
 static int s_wait_msg_id;
+static bool s_force_stop_start;
 #define PUBACK_BIT BIT0
+/* Longer than network.timeout_ms so a hanging connect cannot leave in_flight stuck. */
+#define MQTT_CONNECT_WATCHDOG_MS 30000u
+#define MQTT_RECONNECT_ESCALATE_AFTER 3u
 
 static int64_t now_ms(void)
 {
@@ -44,7 +50,9 @@ static uint32_t mqtt_rand32(void)
 
 static void reconnect_timer_cb(void *arg);
 static void stable_timer_cb(void *arg);
+static void connect_watchdog_cb(void *arg);
 static void schedule_reconnect(void);
+static void arm_connect_watchdog(void);
 
 static void cancel_timer(esp_timer_handle_t *timer)
 {
@@ -74,6 +82,11 @@ static void arm_oneshot(esp_timer_handle_t *timer, uint64_t delay_ms, esp_timer_
     }
 }
 
+static void arm_connect_watchdog(void)
+{
+    arm_oneshot(&s_connect_watchdog, MQTT_CONNECT_WATCHDOG_MS, connect_watchdog_cb);
+}
+
 static void try_reconnect(void)
 {
     if (dbmap_lifecycle_ota_reboot_pending()) {
@@ -83,9 +96,16 @@ static void try_reconnect(void)
         return;
     }
     if (dbmap_backoff_is_in_flight(&s_backoff)) {
+        /* A prior reconnect() returned OK but CONNECTED/DISCONNECTED never arrived.
+         * Keep a watchdog alive so in_flight cannot stall reconnect forever. */
+        if (s_connect_watchdog == NULL) {
+            ESP_LOGW(TAG, "connect still in flight; arming watchdog");
+            arm_connect_watchdog();
+        }
         return;
     }
     if (!dbmap_wifi_has_ip()) {
+        ESP_LOGW(TAG, "deferring MQTT reconnect; Wi-Fi has no IP");
         arm_oneshot(&s_reconnect_timer, 2000, reconnect_timer_cb);
         return;
     }
@@ -96,11 +116,27 @@ static void try_reconnect(void)
 
     dbmap_backoff_set_in_flight(&s_backoff, true);
     dbmap_diag_note_mqtt_connect_attempt();
-    esp_err_t err = esp_mqtt_client_reconnect(s_client);
+    arm_connect_watchdog();
+
+    const bool escalate = s_force_stop_start ||
+                          s_backoff.consecutive_failures >= MQTT_RECONNECT_ESCALATE_AFTER;
+    s_force_stop_start = false;
+    esp_err_t err;
+    if (escalate) {
+        ESP_LOGW(TAG, "MQTT recovery via stop/start (failures=%lu)",
+                 (unsigned long)s_backoff.consecutive_failures);
+        (void)esp_mqtt_client_stop(s_client);
+        err = esp_mqtt_client_start(s_client);
+    } else {
+        err = esp_mqtt_client_reconnect(s_client);
+    }
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "reconnect start failed: %s", esp_err_to_name(err));
+        cancel_timer(&s_connect_watchdog);
         dbmap_diag_note_mqtt_connect_failure();
         dbmap_backoff_note_failure(&s_backoff, now_ms());
+        dbmap_backoff_set_in_flight(&s_backoff, false);
+        s_force_stop_start = true;
         schedule_reconnect();
     }
 }
@@ -130,6 +166,22 @@ static void reconnect_timer_cb(void *arg)
     try_reconnect();
 }
 
+static void connect_watchdog_cb(void *arg)
+{
+    (void)arg;
+    if (s_connected || dbmap_lifecycle_ota_reboot_pending()) {
+        return;
+    }
+    ESP_LOGW(TAG, "MQTT connect watchdog fired; forcing stop/start recovery");
+    cancel_timer(&s_reconnect_timer);
+    dbmap_backoff_set_in_flight(&s_backoff, false);
+    dbmap_diag_note_mqtt_connect_failure();
+    dbmap_backoff_note_failure(&s_backoff, now_ms());
+    s_disconnect_handled = true;
+    s_force_stop_start = true;
+    schedule_reconnect();
+}
+
 static void stable_timer_cb(void *arg)
 {
     (void)arg;
@@ -142,8 +194,10 @@ static void on_connected(void)
 {
     s_connected = true;
     s_disconnect_handled = false;
+    s_force_stop_start = false;
     dbmap_backoff_set_in_flight(&s_backoff, false);
     cancel_timer(&s_reconnect_timer);
+    cancel_timer(&s_connect_watchdog);
     if (dbmap_lifecycle_ota_reboot_pending()) {
         ESP_LOGI(TAG, "connected during OTA reboot pending (ignored)");
         return;
@@ -165,6 +219,7 @@ static void on_disconnected(void)
     s_connected = false;
     dbmap_backoff_set_in_flight(&s_backoff, false);
     cancel_timer(&s_stable_timer);
+    cancel_timer(&s_connect_watchdog);
 
     if (dbmap_lifecycle_ota_reboot_pending()) {
         /* Expected teardown before OTA reboot: log only, no reconnect/diag. */
@@ -207,7 +262,7 @@ static void mqtt_event(void *handler_args, esp_event_base_t base, int32_t event_
         on_disconnected();
         break;
     case MQTT_EVENT_ERROR:
-        /* Log only. DISCONNECTED is the authoritative transition for counters/backoff. */
+        /* Prefer DISCONNECTED for counters; still keep recovery alive if ERROR is alone. */
         if (event->error_handle) {
             ESP_LOGW(TAG,
                      "error type=%d connect_return=%d esp_tls=%d tls_stack=%d sock=%d",
@@ -218,6 +273,13 @@ static void mqtt_event(void *handler_args, esp_event_base_t base, int32_t event_
                      event->error_handle->esp_tls_cert_verify_flags);
         } else {
             ESP_LOGW(TAG, "error");
+        }
+        if (!s_connected && !dbmap_lifecycle_ota_reboot_pending()) {
+            if (dbmap_backoff_is_in_flight(&s_backoff) && s_connect_watchdog == NULL) {
+                arm_connect_watchdog();
+            } else if (s_reconnect_timer == NULL && !dbmap_backoff_is_in_flight(&s_backoff)) {
+                schedule_reconnect();
+            }
         }
         break;
     case MQTT_EVENT_DATA:
@@ -251,7 +313,7 @@ esp_err_t dbmap_mqtt_start(const dbmap_effective_t *cfg, dbmap_command_cb_t on_c
     dbmap_backoff_config_mqtt(&bo_cfg);
     dbmap_backoff_init(&s_backoff, &bo_cfg);
 
-    const char *host = cfg->network.mqtt_host[0] ? cfg->network.mqtt_host : "hub.local";
+    const char *configured_host = cfg->network.mqtt_host[0] ? cfg->network.mqtt_host : "hub.local";
     if (!cfg->network.mqtt_use_tls || cfg->network.mqtt_username[0] == '\0' ||
         cfg->network.mqtt_password[0] == '\0') {
         ESP_LOGE(TAG, "refusing MQTT connection without TLS and per-node credentials");
@@ -262,14 +324,32 @@ esp_err_t dbmap_mqtt_start(const dbmap_effective_t *cfg, dbmap_command_cb_t on_c
         return ESP_ERR_INVALID_STATE;
     }
 
+    /* Pre-resolve only .local names (mDNS). Putting a public A-record IP into
+     * mqtts:// makes TLS verify that IP against the broker cert SAN; DDNS
+     * addresses are usually DNS names on the cert, not the changing public IP. */
+    const char *connect_host = configured_host;
+    const char *verify_name = NULL;
     char resolved_host[16];
-    if (dbmap_resolve_ipv4(host, resolved_host, sizeof(resolved_host)) == ESP_OK) {
-        ESP_LOGI(TAG, "MQTT host %s -> %s", host, resolved_host);
-        host = resolved_host;
+    size_t configured_len = strlen(configured_host);
+    bool is_local = configured_len > 6 &&
+                    strcasecmp(configured_host + configured_len - 6, ".local") == 0;
+    if (is_local) {
+        if (dbmap_resolve_ipv4(configured_host, resolved_host, sizeof(resolved_host)) == ESP_OK) {
+            ESP_LOGI(TAG, "MQTT host %s -> %s", configured_host, resolved_host);
+            connect_host = resolved_host;
+            verify_name = configured_host;
+        } else {
+            ESP_LOGW(TAG, "could not pre-resolve MQTT host %s; broker client will retry",
+                     configured_host);
+        }
+    } else if (dbmap_resolve_ipv4(configured_host, resolved_host, sizeof(resolved_host)) == ESP_OK) {
+        ESP_LOGI(TAG, "MQTT host %s resolves to %s (keeping DNS name for TLS)", configured_host,
+                 resolved_host);
     } else {
-        ESP_LOGW(TAG, "could not pre-resolve MQTT host %s; broker client will retry", host);
+        ESP_LOGW(TAG, "could not pre-resolve MQTT host %s; broker client will retry",
+                 configured_host);
     }
-    int uri_len = snprintf(s_uri, sizeof(s_uri), "mqtts://%s:%u", host, cfg->network.mqtt_port);
+    int uri_len = snprintf(s_uri, sizeof(s_uri), "mqtts://%s:%u", connect_host, cfg->network.mqtt_port);
     if (uri_len <= 0 || (size_t)uri_len >= sizeof(s_uri)) {
         ESP_LOGE(TAG, "MQTT URI is too long");
         return ESP_ERR_INVALID_SIZE;
@@ -280,6 +360,7 @@ esp_err_t dbmap_mqtt_start(const dbmap_effective_t *cfg, dbmap_command_cb_t on_c
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = s_uri,
         .broker.verification.certificate = (const char *)root_ca_pem_start,
+        .broker.verification.common_name = verify_name,
         .credentials.client_id = s_client_id,
         .credentials.username = cfg->network.mqtt_username,
         .credentials.authentication.password = cfg->network.mqtt_password,
@@ -296,6 +377,7 @@ esp_err_t dbmap_mqtt_start(const dbmap_effective_t *cfg, dbmap_command_cb_t on_c
     ESP_LOGI(TAG, "starting client_id=%s uri=%s (exponential reconnect backoff)", s_client_id, s_uri);
     dbmap_backoff_set_in_flight(&s_backoff, true);
     dbmap_diag_note_mqtt_connect_attempt();
+    arm_connect_watchdog();
     return esp_mqtt_client_start(s_client);
 }
 
@@ -307,6 +389,22 @@ esp_mqtt_client_handle_t dbmap_mqtt_handle(void)
 bool dbmap_mqtt_is_connected(void)
 {
     return s_connected && s_client != NULL;
+}
+
+void dbmap_mqtt_request_reconnect(void)
+{
+    if (s_client == NULL || s_connected || dbmap_lifecycle_ota_reboot_pending()) {
+        return;
+    }
+    if (dbmap_backoff_is_in_flight(&s_backoff)) {
+        if (s_connect_watchdog == NULL) {
+            arm_connect_watchdog();
+        }
+        return;
+    }
+    if (s_reconnect_timer == NULL) {
+        schedule_reconnect();
+    }
 }
 
 esp_err_t dbmap_mqtt_publish_json(const char *topic, const char *json, int qos)
@@ -359,6 +457,7 @@ void dbmap_mqtt_prepare_ota_reboot(void)
 {
     cancel_timer(&s_reconnect_timer);
     cancel_timer(&s_stable_timer);
+    cancel_timer(&s_connect_watchdog);
     dbmap_backoff_set_in_flight(&s_backoff, false);
     if (s_client == NULL || !s_connected) {
         return;

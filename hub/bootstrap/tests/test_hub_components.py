@@ -26,10 +26,10 @@ def test_decode_docker_logs_reads_multiplexed_frames_and_plain_text() -> None:
     assert container_logs.decode_docker_logs(b"") == []
 
 
-def test_decode_docker_logs_keeps_the_last_ten_lines() -> None:
-    lines = "".join(f"line-{index}\n" for index in range(12))
+def test_decode_docker_logs_keeps_the_last_fifteen_lines() -> None:
+    lines = "".join(f"line-{index}\n" for index in range(17))
     assert container_logs.decode_docker_logs(lines.encode()) == [
-        f"line-{index}" for index in range(2, 12)
+        f"line-{index}" for index in range(2, 17)
     ]
 
 
@@ -55,11 +55,11 @@ def test_read_tail_requests_only_the_named_compose_service(monkeypatch) -> None:
     assert result["service"] == "Nginx"
     assert result["compose_service"] == "nginx"
     assert result["lines"] == ["nginx: ready"]
-    assert result["line_limit"] == 10
+    assert result["line_limit"] == 15
     listed = calls[1]
     assert "com.docker.compose.service%3Dnginx" in listed
     assert "com.docker.compose.project%3Ddbmap" in listed
-    assert calls[2].endswith("tail=10")
+    assert calls[2].endswith("tail=15")
 
 
 def test_read_tail_rejects_components_without_a_container() -> None:
@@ -137,6 +137,7 @@ def test_hub_status_lists_web_nginx_and_firmware_builder(monkeypatch) -> None:
         "name": "Nginx",
         "status": "online",
         "logs": True,
+        "connection_failures": False,
     }
     assert components["Web"]["status"] == "offline"
     assert components["Web"]["logs"] is True
@@ -145,6 +146,7 @@ def test_hub_status_lists_web_nginx_and_firmware_builder(monkeypatch) -> None:
     assert components["Hub API"]["id"] == "hub-api"
     assert components["Policy engine"]["id"] == "opa"
     assert components["MQTT broker"]["id"] == "mosquitto"
+    assert components["MQTT broker"]["connection_failures"] is True
 
 
 def test_admin_and_viewer_can_read_component_logs(monkeypatch) -> None:
@@ -155,7 +157,7 @@ def test_admin_and_viewer_can_read_component_logs(monkeypatch) -> None:
             "service": "Web",
             "compose_service": "dbmap-web",
             "lines": ["GET /"],
-            "line_limit": 10,
+            "line_limit": 15,
         }
 
     monkeypatch.setattr(container_logs, "read_tail", fake_tail)

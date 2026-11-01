@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Run a multi-Ear observation scenario (see docs/simulator.md).
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+exec uv run --project hub/bootstrap python simulator/ear/simulate_scenario.py "$@"

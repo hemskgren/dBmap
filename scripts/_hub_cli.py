@@ -1,6 +1,9 @@
 """Shared local configuration and connection defaults for Hub command-line tools."""
 
+from __future__ import annotations
+
 import argparse
+import json
 import os
 import re
 import sys
@@ -9,6 +12,64 @@ from pathlib import Path
 
 class HubCliError(ValueError):
     pass
+
+
+def summarize_hub_http_error_body(body: bytes | str, *, max_chars: int = 160) -> str:
+    """Turn an HTTP error body into a single short CLI-safe phrase.
+
+    Nginx HTML maintenance pages stay friendly in the browser; CLI tools should
+    not dump that markup. Prefer JSON ``detail`` when the Hub API answered.
+    """
+    if isinstance(body, bytes):
+        text = body.decode("utf-8", errors="replace").strip()
+    else:
+        text = str(body).strip()
+    if not text:
+        return ""
+
+    lowered = text.lstrip().lower()
+    if lowered.startswith("<!doctype html") or lowered.startswith("<html"):
+        return "Hub temporarily unavailable"
+
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        detail = payload.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            text = detail.strip()
+        elif isinstance(detail, list):
+            parts: list[str] = []
+            for item in detail:
+                if isinstance(item, dict):
+                    msg = item.get("msg")
+                    if isinstance(msg, str) and msg.strip():
+                        parts.append(msg.strip())
+                elif isinstance(item, str) and item.strip():
+                    parts.append(item.strip())
+            text = "; ".join(parts) if parts else json.dumps(detail, separators=(",", ":"))
+        elif detail is not None:
+            text = str(detail)
+
+    one_line = " ".join(text.split())
+    if len(one_line) > max_chars:
+        return one_line[: max_chars - 1] + "…"
+    return one_line
+
+
+def format_hub_http_error(
+    code: int,
+    body: bytes | str = b"",
+    *,
+    path: str | None = None,
+) -> str:
+    """Single-line Hub API HTTP failure message for CLI stderr."""
+    where = f"hub API {path}" if path else "hub API"
+    summary = summarize_hub_http_error_body(body)
+    if summary:
+        return f"{where} returned HTTP {code}: {summary}"
+    return f"{where} returned HTTP {code}"
 
 
 def print_help_without_arguments(parser: argparse.ArgumentParser) -> bool:

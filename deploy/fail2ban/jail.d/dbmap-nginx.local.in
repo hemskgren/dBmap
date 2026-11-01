@@ -1,0 +1,16 @@
+# Template installed by scripts/install-fail2ban-nginx.sh (@@placeholders@@ replaced).
+# Bans the client IP on Hub HTTPS and MQTT after repeated API 401 responses.
+# Private LAN and localhost are ignored so home/admin mistakes do not lock you out.
+
+[dbmap-nginx]
+enabled = true
+filter = dbmap-nginx-auth
+logpath = @@NGINX_LOGPATH@@
+backend = auto
+maxretry = 10
+findtime = 10m
+bantime = 1h
+ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+# Docker publishes Hub ports via DNAT; ban in DOCKER-USER before the container ports.
+# API bans also close MQTT so a password-spray on /api/ cannot pivot to the broker.
+action = iptables-multiport[name=dbmap-nginx, port="@@HTTPS_PORT@@,@@MQTT_PORT@@", protocol=tcp, chain=DOCKER-USER]

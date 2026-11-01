@@ -306,6 +306,8 @@ def test_monitoring_gap_is_unobserved(monkeypatch) -> None:
             interval_s=60,
         )
         assert window["unobserved_seconds"] > 0
+        assert window["not_running_seconds"] > 0
+        assert any(gap.get("kind") == "not_running" for gap in window["gaps"])
     finally:
         db.close()
 

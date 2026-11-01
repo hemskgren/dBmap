@@ -589,11 +589,23 @@ def _format_percent(
     return percent
 
 
+def _observation_gap(
+    start: datetime, end: datetime, kind: str
+) -> dict[str, str]:
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "certainty": "inferred",
+        "kind": kind,
+    }
+
+
 def _window_result(
     *,
     available: float,
     unavailable: float,
     unobserved: float,
+    not_running: float = 0,
     window_seconds: float,
     sample_count: int,
     gaps: list[dict[str, str]],
@@ -626,6 +638,7 @@ def _window_result(
         "available_seconds": int(available),
         "unavailable_seconds": int(unavailable),
         "unobserved_seconds": int(unobserved),
+        "not_running_seconds": int(not_running),
         "sample_count": sample_count,
         "insufficient_data": insufficient,
         "low_coverage": low_coverage,
@@ -676,25 +689,13 @@ def compute_availability_window(
 
     if not ordered:
         unobserved = window_seconds
-        gaps.append(
-            {
-                "start": window_start.isoformat(),
-                "end": window_end.isoformat(),
-                "certainty": "inferred",
-            }
-        )
+        gaps.append(_observation_gap(window_start, window_end, "not_started"))
     else:
         first_at = _ensure_aware(ordered[0].observed_at)
         if first_at > window_start:
             leading = (first_at - window_start).total_seconds()
             unobserved += leading
-            gaps.append(
-                {
-                    "start": window_start.isoformat(),
-                    "end": first_at.isoformat(),
-                    "certainty": "inferred",
-                }
-            )
+            gaps.append(_observation_gap(window_start, first_at, "not_started"))
         for index, sample in enumerate(ordered):
             start = max(_ensure_aware(sample.observed_at), window_start)
             if index + 1 < len(ordered):
@@ -712,18 +713,26 @@ def compute_availability_window(
             if unobs > 0:
                 confirmed_end = start + timedelta(seconds=avail + unavail)
                 if confirmed_end < end:
-                    gaps.append(
-                        {
-                            "start": confirmed_end.isoformat(),
-                            "end": end.isoformat(),
-                            "certainty": "inferred",
-                        }
-                    )
+                    # The monitor was not writing samples. A stopped Hub
+                    # container and a powered-off computer look the same here.
+                    gaps.append(_observation_gap(confirmed_end, end, "not_running"))
 
+    not_running = sum(
+        max(
+            (
+                datetime.fromisoformat(gap["end"])
+                - datetime.fromisoformat(gap["start"])
+            ).total_seconds(),
+            0.0,
+        )
+        for gap in gaps
+        if gap.get("kind") == "not_running"
+    )
     return _window_result(
         available=available,
         unavailable=unavailable,
         unobserved=unobserved,
+        not_running=not_running,
         window_seconds=window_seconds,
         sample_count=len(ordered),
         gaps=gaps,
@@ -939,7 +948,7 @@ def build_monitoring_summary(
         gaps = window.pop("gaps", [])
         windows[name] = window
         if name == "30d":
-            all_gaps = [
+            tagged = [
                 {
                     **gap,
                     "window": name,
@@ -947,6 +956,15 @@ def build_monitoring_summary(
                 for gap in gaps
                 if isinstance(gap, dict)
             ]
+            # Keep Hub-down gaps even when the window also has a long
+            # "monitoring had not started" gap at the front of the list.
+            not_running_gaps = [
+                gap for gap in tagged if gap.get("kind") == "not_running"
+            ]
+            other_gaps = [
+                gap for gap in tagged if gap.get("kind") != "not_running"
+            ]
+            all_gaps = (not_running_gaps + other_gaps)[:10]
 
     # Avoid loading the event list on every Hub status refresh; callers that need
     # the timeline use list_recent_events() / GET /api/v1/hub/monitoring/events.

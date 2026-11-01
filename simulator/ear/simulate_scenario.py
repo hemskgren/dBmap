@@ -12,23 +12,124 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from app.schemas import ObservationBody
-from paho.mqtt import MQTTException
-
-_simulator_spec = spec_from_file_location(
-    "dbmap_ear_simulator",
-    Path(__file__).with_name("simulate_observation.py"),
+_SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+from _hub_cli import (  # noqa: E402
+    load_project_env,
+    print_help_without_arguments,
 )
-if _simulator_spec is None or _simulator_spec.loader is None:
-    raise RuntimeError("could not load shared Ear simulator helpers")
-_simulator_module = module_from_spec(_simulator_spec)
-_simulator_spec.loader.exec_module(_simulator_module)
-publish_payload = _simulator_module.publish_payload
-save_credentials = _simulator_module.save_credentials
+
+_simulator_module = None
+_keepalive_module = None
+
+
+def _load_sibling_module(module_name: str, filename: str):
+    spec = spec_from_file_location(module_name, Path(__file__).with_name(filename))
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load {filename}")
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _observation_helpers():
+    """Load MQTT publish helpers only when a command needs them (not for --help)."""
+    global _simulator_module
+    if _simulator_module is None:
+        _simulator_module = _load_sibling_module(
+            "dbmap_ear_simulator", "simulate_observation.py"
+        )
+    return _simulator_module.publish_payload, _simulator_module.save_credentials
+
+
+def _keepalive_helpers():
+    """Load keepalive helpers only when a command needs them (not for --help)."""
+    global _keepalive_module
+    if _keepalive_module is None:
+        _keepalive_module = _load_sibling_module(
+            "dbmap_ear_keepalive", "simulate_keepalive.py"
+        )
+    return _keepalive_module.make_keepalive, _keepalive_module.publish_keepalive
+
+
+def _observation_body():
+    from app.schemas import ObservationBody
+
+    return ObservationBody
 
 
 class ScenarioError(ValueError):
     pass
+
+
+def ear_shortname(alias: str) -> str:
+    if alias.startswith("ear_"):
+        return alias[4:]
+    return alias
+
+
+def run_wall_clock_seconds(scenario: dict[str, Any], time_scale: float) -> float:
+    last_at = scenario["observations"][-1]["at_seconds"]
+    return last_at * time_scale
+
+
+def print_scenario_banner(
+    scenario: dict[str, Any],
+    *,
+    count: int | None = None,
+    time_scale: float | None = None,
+) -> None:
+    observation_count = (
+        len(scenario["observations"]) if count is None else count
+    )
+    print(
+        f"Scenario {scenario['scenario_id']} publishing {observation_count} observations:",
+        flush=True,
+    )
+    movement = scenario["movement"]
+    print(
+        f"  source_family={scenario['source_family']}  "
+        f"speed={movement['speed_m_s']:g} m/s  "
+        f"source={scenario['source_id']}",
+        flush=True,
+    )
+    if time_scale is not None:
+        wall = run_wall_clock_seconds(scenario, time_scale)
+        print(
+            f"  movement={movement['distance_m']:.1f}m / "
+            f"{movement['duration_seconds']:.1f}s logical  "
+            f"wall-clock≈{wall:.1f}s at --time-scale {time_scale:g}",
+            flush=True,
+        )
+
+
+def publish_keepalives_for_ears(
+    credentials_by_alias: dict[str, dict[str, Any]],
+    ca_file: str,
+    *,
+    label: str,
+    publish_keepalive: Callable[[dict[str, Any], str, dict[str, Any]], None]
+    | None = None,
+    make_keepalive: Callable[[dict[str, Any], int], dict[str, Any]] | None = None,
+    uptime_s: int = 0,
+) -> None:
+    if publish_keepalive is None or make_keepalive is None:
+        default_make, default_publish = _keepalive_helpers()
+        if make_keepalive is None:
+            make_keepalive = default_make
+        if publish_keepalive is None:
+            publish_keepalive = default_publish
+    print(f"  keepalive ({label}):", flush=True)
+    for alias in sorted(credentials_by_alias):
+        credentials = credentials_by_alias[alias]
+        publish_keepalive(
+            credentials, ca_file, make_keepalive(credentials, uptime_s)
+        )
+        print(
+            f"    {ear_shortname(alias)}  {credentials['node_id']}",
+            flush=True,
+        )
 
 
 _SCENARIO_FIELDS = {"scenario_id", "source", "ears", "observations"}
@@ -483,7 +584,7 @@ def make_scenario_observation(
         }
     if "signal_level_dbfs" in event:
         payload["signal_level_dbfs"] = event["signal_level_dbfs"]
-    ObservationBody.model_validate(payload)
+    _observation_body().model_validate(payload)
     return payload
 
 
@@ -494,15 +595,35 @@ def run_scenario(
     ca_file: str,
     time_scale: float,
     *,
-    publish: Callable[[dict[str, Any], dict[str, Any], str], str] = publish_payload,
+    publish: Callable[[dict[str, Any], dict[str, Any], str], str] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
     started_at_utc: datetime | None = None,
     started_at_monotonic_us: int | None = None,
-    save: Callable[..., None] = save_credentials,
+    save: Callable[..., None] | None = None,
+    publish_keepalive: Callable[[dict[str, Any], str, dict[str, Any]], None]
+    | None = None,
+    make_keepalive: Callable[[dict[str, Any], int], dict[str, Any]] | None = None,
+    announce: bool = True,
 ) -> list[str]:
+    if publish is None or save is None:
+        default_publish, default_save = _observation_helpers()
+        if publish is None:
+            publish = default_publish
+        if save is None:
+            save = default_save
     if not math.isfinite(time_scale) or time_scale <= 0:
         raise ScenarioError("time scale must be finite and greater than zero")
+    if announce:
+        print_scenario_banner(scenario, time_scale=time_scale)
+    publish_keepalives_for_ears(
+        credentials_by_alias,
+        ca_file,
+        label="start",
+        publish_keepalive=publish_keepalive,
+        make_keepalive=make_keepalive,
+        uptime_s=0,
+    )
     scenario_start = started_at_utc or datetime.now(timezone.utc)
     monotonic_start = (
         started_at_monotonic_us
@@ -511,7 +632,7 @@ def run_scenario(
     )
     wall_start = monotonic()
     published_ids = []
-    for event in scenario["observations"]:
+    for index, event in enumerate(scenario["observations"], start=1):
         target_elapsed = event["at_seconds"] * time_scale
         delay = target_elapsed - (monotonic() - wall_start)
         if delay > 0:
@@ -540,10 +661,24 @@ def run_scenario(
         credentials.pop("pending_observation", None)
         credentials.pop("pending_scenario_id", None)
         save(credentials_paths[alias], credentials)
+        print(
+            f"{index:02d}  t={event['at_seconds']:g}s  "
+            f"{ear_shortname(alias)}  {observation_id}",
+            flush=True,
+        )
+    elapsed_s = int(max(0.0, monotonic() - wall_start))
+    publish_keepalives_for_ears(
+        credentials_by_alias,
+        ca_file,
+        label="end",
+        publish_keepalive=publish_keepalive,
+        make_keepalive=make_keepalive,
+        uptime_s=elapsed_s,
+    )
     return published_ids
 
 
-def print_schedule(scenario: dict[str, Any]) -> None:
+def print_schedule(scenario: dict[str, Any], *, time_scale: float = 1.0) -> None:
     started_at = datetime.now(timezone.utc)
     started_at_monotonic_us = time.monotonic_ns() // 1000
     sequences: dict[str, int] = {}
@@ -559,20 +694,31 @@ def print_schedule(scenario: dict[str, Any]) -> None:
             started_at_monotonic_us,
         )
         sequences[alias] = sequence + 1
+    movement = scenario["movement"]
+    wall = run_wall_clock_seconds(scenario, time_scale)
+    last_at = scenario["observations"][-1]["at_seconds"]
     print(f"Scenario: {scenario['scenario_id']}")
     print(
         f"Ground truth source: {scenario['source_id']} "
-        f"({scenario['source_family']}; test metadata only)"
+        f"(test metadata only)"
     )
-    movement = scenario["movement"]
     print(
-        f"Movement: {movement['distance_m']:.1f}m at {movement['speed_m_s']:g}m/s "
-        f"({movement['duration_seconds']:.1f}s)"
+        f"source_family={scenario['source_family']}  "
+        f"speed={movement['speed_m_s']:g} m/s"
+    )
+    print(
+        f"Movement: {movement['distance_m']:.1f}m over "
+        f"{movement['duration_seconds']:.1f}s logical"
+    )
+    print(
+        f"Run wall-clock: ≈{wall:.1f}s at --time-scale {time_scale:g} "
+        f"(last observation at t={last_at:g}s; keepalives bookend the run)"
     )
     print("No Hub event, track, or geographic position is generated.")
     for index, event in enumerate(scenario["observations"], start=1):
         print(
-            f"{index:02d}  t={event['at_seconds']:g}s  Ear={event['ear']}  "
+            f"{index:02d}  t={event['at_seconds']:g}s  "
+            f"{ear_shortname(event['ear'])}  "
             f"bearing={event['bearing_deg']:.1f} deg "
             f"(confidence={event.get('bearing_confidence', 'not set')})  "
             f"classification confidence={event['classification_confidence']}  "
@@ -588,9 +734,19 @@ def retry_pending_observations(
     credentials_paths: dict[str, Path],
     ca_file: str,
     *,
-    publish: Callable[[dict[str, Any], dict[str, Any], str], str] = publish_payload,
-    save: Callable[..., None] = save_credentials,
+    publish: Callable[[dict[str, Any], dict[str, Any], str], str] | None = None,
+    save: Callable[..., None] | None = None,
+    publish_keepalive: Callable[[dict[str, Any], str, dict[str, Any]], None]
+    | None = None,
+    make_keepalive: Callable[[dict[str, Any], int], dict[str, Any]] | None = None,
+    announce: bool = True,
 ) -> list[str]:
+    if publish is None or save is None:
+        default_publish, default_save = _observation_helpers()
+        if publish is None:
+            publish = default_publish
+        if save is None:
+            save = default_save
     pending_aliases = [
         alias
         for alias, credentials in credentials_by_alias.items()
@@ -598,7 +754,7 @@ def retry_pending_observations(
     ]
     if not pending_aliases:
         raise ScenarioError("no pending scenario observations to retry")
-    ids = []
+    pending_payloads: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
     for alias in pending_aliases:
         credentials = credentials_by_alias[alias]
         if credentials.get("pending_scenario_id") != scenario["scenario_id"]:
@@ -606,7 +762,7 @@ def retry_pending_observations(
                 f"pending observation for {alias} belongs to another scenario"
             )
         payload = credentials["pending_observation"]
-        ObservationBody.model_validate(payload)
+        _observation_body().model_validate(payload)
         if payload["node_id"] != credentials["node_id"]:
             raise ScenarioError(
                 f"pending observation for {alias} belongs to another Ear"
@@ -619,6 +775,22 @@ def retry_pending_observations(
             raise ScenarioError(
                 f"pending observation for {alias} has a different simulated source hint"
             )
+        pending_payloads.append((alias, credentials, payload))
+    pending_credentials = {
+        alias: credentials for alias, credentials, _ in pending_payloads
+    }
+    if announce:
+        print_scenario_banner(scenario, count=len(pending_payloads))
+    publish_keepalives_for_ears(
+        pending_credentials,
+        ca_file,
+        label="start",
+        publish_keepalive=publish_keepalive,
+        make_keepalive=make_keepalive,
+        uptime_s=0,
+    )
+    ids = []
+    for index, (alias, credentials, payload) in enumerate(pending_payloads, start=1):
         observation_id = publish(credentials, payload, ca_file)
         ids.append(observation_id)
         credentials["next_sequence_number"] = max(
@@ -628,15 +800,28 @@ def retry_pending_observations(
         credentials.pop("pending_observation", None)
         credentials.pop("pending_scenario_id", None)
         save(credentials_paths[alias], credentials)
+        event_time = payload.get("event_time_utc", "?")
+        print(
+            f"{index:02d}  {event_time}  "
+            f"{ear_shortname(alias)}  {observation_id}",
+            flush=True,
+        )
+    publish_keepalives_for_ears(
+        pending_credentials,
+        ca_file,
+        label="end",
+        publish_keepalive=publish_keepalive,
+        make_keepalive=make_keepalive,
+        uptime_s=0,
+    )
     return ids
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Publish a time-ordered scenario of Ear observations over TLS MQTT."
-    )
+def _add_scenario_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--scenario-file", required=True, help="Scenario definition in JSON"
+        "--scenario-file",
+        required=True,
+        help="Scenario definition in JSON",
     )
     parser.add_argument(
         "--ear",
@@ -646,62 +831,112 @@ def main() -> int:
         help="Map a scenario Ear alias to a private provisioned simulator credentials file",
     )
     parser.add_argument(
+        "--ca", default="shared/trust/ca.crt", help="Path to the local hub CA"
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Time-ordered Ear scenario over TLS MQTT. "
+            "Use dry-run, run, or retry-pending."
+        )
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    dry = commands.add_parser(
+        "dry-run",
+        help="Validate and print the timeline without loading credentials or publishing",
+    )
+    _add_scenario_common_args(dry)
+    dry.add_argument(
+        "--time-scale",
+        type=float,
+        default=1.0,
+        help="Estimate run wall-clock with this scale (default: 1; same as run)",
+    )
+
+    run = commands.add_parser(
+        "run",
+        help="Publish keepalives, then scenario observations over MQTT, then keepalives",
+    )
+    _add_scenario_common_args(run)
+    run.add_argument(
         "--time-scale",
         type=float,
         default=1.0,
         help="Scale wall-clock waits; logical event times remain unchanged (default: 1)",
     )
-    parser.add_argument(
-        "--ca", default="shared/trust/ca.crt", help="Path to the local hub CA"
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Validate and print the timeline without loading credentials or publishing",
-    )
-    parser.add_argument(
-        "--retry-pending",
-        action="store_true",
+
+    retry = commands.add_parser(
+        "retry-pending",
         help="Retry a saved in-flight observation from this scenario, then exit",
     )
+    _add_scenario_common_args(retry)
+    return parser
+
+
+def main() -> int:
+    try:
+        load_project_env()
+    except ValueError as exc:
+        print(f"Hub configuration failed: {exc}", file=sys.stderr)
+        return 1
+    parser = build_parser()
+    if print_help_without_arguments(parser):
+        return 0
     args = parser.parse_args()
 
     try:
-        if args.dry_run and args.retry_pending:
-            raise ScenarioError("--dry-run and --retry-pending cannot be combined")
+        from paho.mqtt import MQTTException
+    except ImportError:  # pragma: no cover - help path does not need paho
+        MQTTException = ()  # type: ignore[misc, assignment]
+
+    try:
         scenario = load_scenario(Path(args.scenario_file))
-        if not math.isfinite(args.time_scale) or args.time_scale <= 0:
-            raise ScenarioError("--time-scale must be finite and greater than zero")
         ear_paths = parse_ear_arguments(args.ear)
         validate_ear_aliases(scenario, ear_paths)
-        if args.dry_run:
-            print_schedule(scenario)
+        if args.command == "dry-run":
+            if not math.isfinite(args.time_scale) or args.time_scale <= 0:
+                raise ScenarioError("--time-scale must be finite and greater than zero")
+            print_schedule(scenario, time_scale=args.time_scale)
             return 0
 
         if not Path(args.ca).is_file():
             raise ScenarioError(f"CA file does not exist: {args.ca}")
-        credentials_by_alias = load_ear_credentials(
-            ear_paths,
-            allow_pending=args.retry_pending,
-        )
-        if args.retry_pending:
+        if args.command == "run":
+            if not math.isfinite(args.time_scale) or args.time_scale <= 0:
+                raise ScenarioError("--time-scale must be finite and greater than zero")
+            credentials_by_alias = load_ear_credentials(ear_paths, allow_pending=False)
+            ids = run_scenario(
+                scenario,
+                credentials_by_alias,
+                ear_paths,
+                args.ca,
+                args.time_scale,
+            )
+            print(
+                f"Scenario {scenario['scenario_id']} finished: "
+                f"{len(ids)}/{len(scenario['observations'])} MQTT publishes acknowledged.",
+                flush=True,
+            )
+        else:
+            credentials_by_alias = load_ear_credentials(ear_paths, allow_pending=True)
             ids = retry_pending_observations(
                 scenario,
                 credentials_by_alias,
                 ear_paths,
                 args.ca,
             )
-            print(f"Retried {len(ids)} pending observation(s):")
-            for observation_id in ids:
-                print(f"  {observation_id}")
-            return 0
-        ids = run_scenario(
-            scenario,
-            credentials_by_alias,
-            ear_paths,
-            args.ca,
-            args.time_scale,
+            print(
+                f"Scenario {scenario['scenario_id']} finished: "
+                f"{len(ids)} pending observation(s) retried.",
+                flush=True,
+            )
+        print(
+            "Use scripts/hub_event_track.py to inspect the observations; no Hub logic was deployed."
         )
+        return 0
     except KeyboardInterrupt:
         print(
             "Scenario interrupted. Any unpublished pending observation is preserved in its credentials file."
@@ -717,14 +952,6 @@ def main() -> int:
     ) as exc:
         print(f"Scenario simulation failed: {exc}", file=sys.stderr)
         return 1
-
-    print(f"Scenario {scenario['scenario_id']} published {len(ids)} observations:")
-    for observation_id in ids:
-        print(f"  {observation_id}")
-    print(
-        "Use scripts/hub_event_track.py to inspect the observations; no Hub logic was deployed."
-    )
-    return 0
 
 
 if __name__ == "__main__":

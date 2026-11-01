@@ -1,5 +1,6 @@
 import subprocess
 import sys
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,34 @@ HUB_SCRIPTS = (
     "hub_firmware.py",
     "hub_summary.py",
 )
+
+_hub_cli_spec = spec_from_file_location(
+    "dbmap_hub_cli",
+    SCRIPT_DIRECTORY / "_hub_cli.py",
+)
+assert _hub_cli_spec is not None and _hub_cli_spec.loader is not None
+hub_cli = module_from_spec(_hub_cli_spec)
+_hub_cli_spec.loader.exec_module(hub_cli)
+
+
+def test_format_hub_http_error_keeps_html_gateway_pages_to_one_line() -> None:
+    html = (
+        "<!doctype html>\n<html lang=\"en\"><head><title>Hub temporarily unavailable"
+        " · dBmap</title></head><body><h1>The Hub is taking a short listening break."
+        "</h1></body></html>"
+    )
+    message = hub_cli.format_hub_http_error(502, html, path="/api/v1/nodes")
+    assert message == (
+        "hub API /api/v1/nodes returned HTTP 502: Hub temporarily unavailable"
+    )
+    assert "<" not in message
+
+
+def test_format_hub_http_error_prefers_json_detail() -> None:
+    message = hub_cli.format_hub_http_error(
+        401, b'{"detail":"valid local access token required"}'
+    )
+    assert message == "hub API returned HTTP 401: valid local access token required"
 
 
 @pytest.mark.parametrize("script_name", HUB_SCRIPTS)

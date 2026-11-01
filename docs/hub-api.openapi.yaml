@@ -1552,6 +1552,60 @@ paths:
       description: "Includes current Hub health, historical availability windows, last state change, and observation gaps. Recent monitoring events are loaded separately from GET /api/v1/hub/monitoring/events. See docs/health-and-availability.md."
       security:
         - bearerAuth: []
+  /api/v1/hub/environmental-context:
+    get:
+      summary: Regional environmental weather context
+      description: >
+        Hub-owned regional weather snapshot (Open-Meteo) for analysis metadata.
+        Does not alter detection, association, or Track scoring. Optional `at`
+        selects the observation/event time; `ensure=true` refreshes from the
+        provider when the regional cache is missing or stale.
+      operationId: getHubEnvironmentalContext
+      parameters:
+        - name: at
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Observation/event time (ISO-8601 with timezone). Defaults to Hub now.
+        - name: ensure
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Refresh from Open-Meteo when cache is missing or stale.
+      responses:
+        "200":
+          description: Regional weather snapshot or unavailable marker
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          description: Missing or invalid local bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "403":
+          description: "Authenticated, but OPA denied the action."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "422":
+          description: Invalid `at` timestamp
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+      tags:
+        - Hub
+      security:
+        - bearerAuth: []
   /api/v1/hub/monitoring/events:
     get:
       summary: Recent Hub monitoring events
@@ -1686,7 +1740,48 @@ paths:
                 $ref: "#/components/schemas/ErrorMessage"
       tags:
         - Hub
-      description: Returns the last 10 lines for an allowlisted Compose service. Available to local admin and viewer tokens.
+      description: Returns the last 15 lines for an allowlisted Compose service. Available to local admin and viewer tokens.
+      security:
+        - bearerAuth: []
+  "/api/v1/hub/components/{component}/connection-failures":
+    get:
+      summary: Recent MQTT connection failures
+      operationId: getHubComponentConnectionFailures
+      parameters:
+        - name: component
+          in: path
+          required: true
+          schema:
+            type: string
+            title: Component
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubComponentConnectionFailures"
+        "401":
+          description: Missing or invalid local bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "403":
+          description: "Authenticated, but OPA denied the action."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "404":
+          description: The requested resource was not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+      tags:
+        - Hub
+      description: Mosquitto only. Returns auth, TLS/CA, and protocol/socket failure lines from the host-mounted broker log for the last 3 hours. Fail2ban drops never reach Mosquitto and are omitted. Available to local admin and viewer tokens.
       security:
         - bearerAuth: []
   /api/v1/nodes:
@@ -4356,7 +4451,43 @@ components:
             type: string
         line_limit:
           type: integer
-          example: 10
+          example: 15
+    HubComponentConnectionFailures:
+      type: object
+      required:
+        - service
+        - compose_service
+        - window_hours
+        - source
+        - lines
+        - count
+        - notices
+      properties:
+        service:
+          type: string
+        compose_service:
+          type: string
+          example: mosquitto
+        window_hours:
+          type: integer
+          example: 3
+        source:
+          type: string
+          enum:
+            - file
+            - unavailable
+        path:
+          type: string
+        lines:
+          type: array
+          items:
+            type: string
+        count:
+          type: integer
+        notices:
+          type: array
+          items:
+            type: string
   securitySchemes:
     bearerAuth:
       type: http

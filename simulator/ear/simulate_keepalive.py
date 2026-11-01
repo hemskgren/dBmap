@@ -9,7 +9,39 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-import paho.mqtt.client as mqtt
+_SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+from _hub_cli import (  # noqa: E402
+    load_project_env,
+    print_help_without_arguments,
+)
+
+DEFAULT_EAR = "a"
+EAR_SLOTS = ("a", "b", "c")
+
+
+def credentials_file_for_ear(ear: str) -> str:
+    return f"shared/simulator/sim-ear-{ear}.json"
+
+
+def resolve_credentials_files(args: argparse.Namespace) -> list[str]:
+    if args.credentials_file:
+        if args.ear == "all":
+            raise ValueError("--credentials-file cannot be combined with --ear all")
+        return [args.credentials_file]
+    if args.ear == "all":
+        paths = [
+            credentials_file_for_ear(slot)
+            for slot in EAR_SLOTS
+            if Path(credentials_file_for_ear(slot)).is_file()
+        ]
+        if not paths:
+            raise ValueError(
+                "no shared/simulator/sim-ear-{a,b,c}.json files found for --ear all"
+            )
+        return paths
+    return [credentials_file_for_ear(args.ear)]
 
 
 def load_credentials(path: Path) -> dict:
@@ -50,6 +82,8 @@ def make_keepalive(credentials: dict, uptime_s: int) -> dict:
 
 
 def publish_keepalive(credentials: dict, ca_file: str, payload: dict) -> None:
+    import paho.mqtt.client as mqtt
+
     endpoint = credentials["mqtt"]
     topic = credentials["topics"]["keepalive"]
     client = mqtt.Client(
@@ -77,41 +111,85 @@ def publish_keepalive(credentials: dict, ca_file: str, payload: dict) -> None:
         client.loop_stop()
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Publish a TLS keepalive for an existing simulated Ear (without creating a device)."
+def _add_ear_selection_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--ear",
+        choices=(*EAR_SLOTS, "all"),
+        default=DEFAULT_EAR,
+        help=(
+            "Sim Ear slot → shared/simulator/sim-ear-{a,b,c}.json "
+            "(default: a; all = every slot that has a credentials file)"
+        ),
     )
     parser.add_argument(
-        "--credentials-file", default="/tmp/dbmap-ear-simulator-credentials.json"
+        "--credentials-file",
+        default=None,
+        help="Override credentials path (single Ear; cannot combine with --ear all)",
     )
     parser.add_argument(
         "--ca", default="shared/trust/ca.crt", help="Path to the local hub CA"
     )
-    parser.add_argument(
-        "--watch",
-        action="store_true",
-        help="Keep the simulated Ear online until Ctrl+C",
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Publish TLS keepalives for provisioned simulated Ears. "
+            "once = one round then exit; watch = continuous until Ctrl+C."
+        )
     )
-    parser.add_argument(
+    commands = parser.add_subparsers(dest="command", required=True)
+    once = commands.add_parser(
+        "once",
+        help="Publish one keepalive per selected Ear, then exit",
+    )
+    _add_ear_selection_args(once)
+    watch = commands.add_parser(
+        "watch",
+        help="Publish keepalives continuously until Ctrl+C (default every 30s)",
+    )
+    _add_ear_selection_args(watch)
+    watch.add_argument(
         "--interval-seconds",
         type=float,
         default=30,
-        help="Delay between keepalives in watch mode (default: 30)",
+        help="Delay between rounds (default: 30)",
     )
+    return parser
+
+
+def main() -> int:
+    try:
+        load_project_env()
+    except ValueError as exc:
+        print(f"Hub configuration failed: {exc}", file=sys.stderr)
+        return 1
+    parser = build_parser()
+    if print_help_without_arguments(parser):
+        return 0
     args = parser.parse_args()
-    if args.interval_seconds <= 0:
+    if args.command == "watch" and args.interval_seconds <= 0:
         parser.error("--interval-seconds must be greater than zero")
     if not Path(args.ca).is_file():
         parser.error(f"CA file does not exist: {args.ca}")
 
     try:
-        credentials = load_credentials(Path(args.credentials_file))
+        credential_paths = resolve_credentials_files(args)
+        loaded = [
+            (path, load_credentials(Path(path))) for path in credential_paths
+        ]
         started = time.monotonic()
         while True:
-            payload = make_keepalive(credentials, int(time.monotonic() - started))
-            publish_keepalive(credentials, args.ca, payload)
-            print(f"Published keepalive for {credentials['node_id']}.", flush=True)
-            if not args.watch:
+            for path, credentials in loaded:
+                payload = make_keepalive(
+                    credentials, int(time.monotonic() - started)
+                )
+                publish_keepalive(credentials, args.ca, payload)
+                print(
+                    f"Published keepalive for {credentials['node_id']} ({path}).",
+                    flush=True,
+                )
+            if args.command != "watch":
                 break
             time.sleep(args.interval_seconds)
     except KeyboardInterrupt:

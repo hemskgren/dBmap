@@ -50,6 +50,7 @@ def test_print_monitoring_includes_windows_and_events(capsys) -> None:
                         "percent": 99.1,
                         "eligible_seconds": 86400,
                         "unavailable_seconds": 120,
+                        "not_running_seconds": 21924,
                         "insufficient_data": False,
                         "low_coverage": False,
                         "score_ready": True,
@@ -113,6 +114,7 @@ def test_print_monitoring_includes_windows_and_events(capsys) -> None:
                         "start": "2026-10-27T10:00:00+00:00",
                         "end": "2026-10-27T11:00:00+00:00",
                         "certainty": "inferred",
+                        "kind": "not_running",
                     }
                 ],
             },
@@ -146,6 +148,8 @@ def test_print_monitoring_includes_windows_and_events(capsys) -> None:
     assert "Current state: unavailable" in output
     assert "99.1%" in output
     assert "unavailable 2m" in output
+    assert "hub not running 6.1h" in output
+    assert "stopped Hub container" in output
     assert "Component availability (24h)" in output
     assert "MQTT availability:" in output
     assert "API availability:" in output

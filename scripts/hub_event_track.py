@@ -15,12 +15,19 @@ from typing import Any
 
 from _hub_cli import (
     add_hub_connection_arguments,
+    format_hub_http_error,
     load_project_env,
     print_help_without_arguments,
     validate_hub_connection,
 )
 
 EARTH_RADIUS_M = 6_371_000
+DEFAULT_EVENT_GAP_SECONDS = 30.0
+DEFAULT_MAX_ASSOCIATION_DISTANCE_M = 500.0
+
+
+def is_sim_ear(node_id: str) -> bool:
+    return node_id.startswith("SIM-EAR-")
 
 
 class HubApiError(RuntimeError):
@@ -53,8 +60,9 @@ def fetch_observations(
         with urllib.request.urlopen(request, context=context, timeout=15) as response:
             observations = json.load(response)
     except urllib.error.HTTPError as exc:
-        detail = exc.read(1024).decode(errors="replace")
-        raise HubApiError(f"hub API {path} returned HTTP {exc.code}: {detail}") from exc
+        raise HubApiError(
+            format_hub_http_error(exc.code, exc.read(1024), path=path)
+        ) from exc
     except urllib.error.URLError as exc:
         raise HubApiError(f"could not reach the hub API: {exc.reason}") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -79,8 +87,9 @@ def fetch_nodes(
         with urllib.request.urlopen(request, context=context, timeout=15) as response:
             nodes = json.load(response)
     except urllib.error.HTTPError as exc:
-        detail = exc.read(1024).decode(errors="replace")
-        raise HubApiError(f"hub API {path} returned HTTP {exc.code}: {detail}") from exc
+        raise HubApiError(
+            format_hub_http_error(exc.code, exc.read(1024), path=path)
+        ) from exc
     except urllib.error.URLError as exc:
         raise HubApiError(f"could not reach the hub API: {exc.reason}") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -97,6 +106,78 @@ def fetch_nodes(
     ):
         raise HubApiError("hub returned an invalid node list or installation metadata")
     return {node["node_id"]: node for node in nodes}
+
+
+def fetch_environmental_context(
+    base_url: str,
+    ca_file: str,
+    admin_token: str,
+    *,
+    at: datetime | None = None,
+    ensure: bool = False,
+) -> dict[str, Any] | None:
+    query: dict[str, str] = {}
+    if at is not None:
+        query["at"] = at.astimezone(timezone.utc).isoformat()
+    if ensure:
+        query["ensure"] = "true"
+    path = "/api/v1/hub/environmental-context"
+    if query:
+        path = path + "?" + urllib.parse.urlencode(query)
+    request = admin_request(f"{base_url}{path}", admin_token)
+    context = ssl.create_default_context(cafile=ca_file)
+    try:
+        with urllib.request.urlopen(request, context=context, timeout=15) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        # Older Hubs without the endpoint should not fail the whole report.
+        if exc.code == 404:
+            return None
+        raise HubApiError(
+            format_hub_http_error(exc.code, exc.read(1024), path=path)
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise HubApiError(f"could not reach the hub API: {exc.reason}") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HubApiError("hub returned invalid environmental context JSON") from exc
+    if not isinstance(payload, dict):
+        raise HubApiError("hub returned an invalid environmental context object")
+    return payload
+
+
+def format_environmental_context_lines(weather: dict[str, Any] | None) -> list[str]:
+    if weather is None:
+        return []
+    availability = weather.get("availability", "unavailable")
+    lines = [
+        "Regional environmental context (informational; not association input):"
+    ]
+    region = weather.get("region_id", "?")
+    provider = weather.get("provider", "?")
+    mode = weather.get("source_mode") or "-"
+    cache = "cache" if weather.get("from_cache") else "fetch"
+    age = weather.get("age_s")
+    age_text = f"{age:.0f}s" if isinstance(age, (int, float)) else "-"
+    lines.append(
+        f"  region={region}  provider={provider}  mode={mode}  "
+        f"availability={availability}  via={cache}  age={age_text}"
+    )
+    if availability == "unavailable":
+        lines.append("  weather unavailable (no fabricated values)")
+        return lines
+    fetched = weather.get("fetched_at") or weather.get("valid_from") or "?"
+    temp = weather.get("temperature_c")
+    humidity = weather.get("relative_humidity_pct")
+    wind_speed = weather.get("wind_speed_ms")
+    wind_dir = weather.get("wind_direction_deg")
+    lines.append(f"  snapshot={fetched}")
+    lines.append(
+        f"  temp={temp if temp is not None else '-'}°C  "
+        f"humidity={humidity if humidity is not None else '-'}%  "
+        f"wind={wind_speed if wind_speed is not None else '-'} m/s "
+        f"@ {wind_dir if wind_dir is not None else '-'}°"
+    )
+    return lines
 
 
 def observation_time(observation: dict[str, Any]) -> datetime | None:
@@ -193,9 +274,29 @@ def format_installation(node_id: str, node: dict[str, Any] | None) -> str:
     return f"{node_id}: " + ", ".join(fields)
 
 
+def association_range_note(
+    first_id: str,
+    second_id: str,
+    distance_m: float,
+    *,
+    max_association_distance_m: float,
+    allow_long_range_sim_ears: bool,
+) -> str:
+    limit = f"{max_association_distance_m:g}m"
+    if distance_m <= max_association_distance_m:
+        return f"≤{limit}"
+    both_sim = is_sim_ear(first_id) and is_sim_ear(second_id)
+    if both_sim and allow_long_range_sim_ears:
+        return f">{limit}, SIM eligible"
+    return f">{limit}"
+
+
 def report_site_distances(
     observations: list[dict[str, Any]],
     nodes: dict[str, dict[str, Any]],
+    *,
+    max_association_distance_m: float = DEFAULT_MAX_ASSOCIATION_DISTANCE_M,
+    allow_long_range_sim_ears: bool = False,
 ) -> list[str]:
     node_ids = sorted(
         {
@@ -207,7 +308,9 @@ def report_site_distances(
     if len(node_ids) < 2:
         return []
 
-    lines = ["Ear installation distances (site context only; not source associations):"]
+    lines = [
+        "Ear installation distances (site context only; not source associations):"
+    ]
     for first_id, second_id in combinations(node_ids, 2):
         first_node = nodes.get(first_id)
         second_node = nodes.get(second_id)
@@ -235,7 +338,14 @@ def report_site_distances(
                 f"      {first_id} ↔ {second_id}: invalid installation coordinates"
             )
             continue
-        lines.append(f"      {first_id} ↔ {second_id}: {distance:.0f}m")
+        note = association_range_note(
+            first_id,
+            second_id,
+            distance,
+            max_association_distance_m=max_association_distance_m,
+            allow_long_range_sim_ears=allow_long_range_sim_ears,
+        )
+        lines.append(f"      {first_id} ↔ {second_id}: {distance:.0f}m ({note})")
     return lines
 
 
@@ -329,10 +439,16 @@ def format_observation(observation: dict[str, Any]) -> str:
 
 def report(
     observations: list[dict[str, Any]],
-    event_gap_seconds: float = 15,
+    event_gap_seconds: float = DEFAULT_EVENT_GAP_SECONDS,
     nodes: dict[str, dict[str, Any]] | None = None,
+    *,
+    max_association_distance_m: float = DEFAULT_MAX_ASSOCIATION_DISTANCE_M,
+    allow_long_range_sim_ears: bool = False,
+    environmental_context: dict[str, Any] | None = None,
+    include_site_context: bool = True,
 ) -> list[str]:
     parse_positive_interval(event_gap_seconds)
+    parse_positive_interval(max_association_distance_m)
     nodes = nodes or {}
     lines = [
         f"Observation analysis at {format_local_datetime(datetime.now().astimezone())} (local time)",
@@ -343,19 +459,6 @@ def report(
         ),
     ]
     candidates = candidate_groups(observations)
-    observed_node_ids = sorted(
-        {
-            item["node_id"]
-            for item in observations
-            if isinstance(item.get("node_id"), str)
-        }
-    )
-    if observed_node_ids:
-        lines.append(
-            "Node installation metadata (mount height is Ear height, not source altitude):"
-        )
-        for node_id in observed_node_ids:
-            lines.append(f"  {format_installation(node_id, nodes.get(node_id))}")
     if candidates:
         for index, (_, items) in enumerate(candidates, start=1):
             candidate_node_ids = sorted(
@@ -369,7 +472,37 @@ def report(
                 lines.append(f"    {format_observation(item)}")
     else:
         lines.append("  none")
-    lines.extend(report_site_distances(observations, nodes))
+
+    if include_site_context:
+        observed_node_ids = sorted(
+            {
+                item["node_id"]
+                for item in observations
+                if isinstance(item.get("node_id"), str)
+            }
+        )
+        if observed_node_ids:
+            lines.append(
+                "Node installation metadata (mount height is Ear height, not source altitude):"
+            )
+            for node_id in observed_node_ids:
+                lines.append(f"  {format_installation(node_id, nodes.get(node_id))}")
+        distance_lines = report_site_distances(
+            observations,
+            nodes,
+            max_association_distance_m=max_association_distance_m,
+            allow_long_range_sim_ears=allow_long_range_sim_ears,
+        )
+        lines.extend(distance_lines)
+        if allow_long_range_sim_ears and any(
+            "SIM eligible" in line for line in distance_lines
+        ):
+            lines.append(
+                "Note: SIM eligible = long-range SIM-EAR pair kept for analysis "
+                f"(--allow-long-range-sim-ears); not an association decision. "
+                f"Typical range remains {max_association_distance_m:g}m."
+            )
+        lines.extend(format_environmental_context_lines(environmental_context))
 
     lines.append(
         f"Per-Ear activity episodes (not Events): {event_gap_seconds:g}s of silence "
@@ -423,7 +556,7 @@ def report(
             )
             lines.append(f"    observations: {', '.join(observation_ids)}")
     lines.append(
-        "No Event or Track association is attempted. Classification, bearing, "
+        "No Event or Track association is attempted yet. Classification, bearing, "
         "time, and site distances are analysis inputs; simulator ground truth is excluded."
     )
     return lines
@@ -478,10 +611,28 @@ def main() -> int:
         command.add_argument(
             "--event-gap-seconds",
             type=float,
-            default=15,
+            default=DEFAULT_EVENT_GAP_SECONDS,
             help=(
                 "Silence after an observation interval that closes a time episode; "
-                "not a source-correlation threshold (default: 15)"
+                f"not a source-correlation threshold (default: {DEFAULT_EVENT_GAP_SECONDS:g})"
+            ),
+        )
+        command.add_argument(
+            "--max-association-distance-m",
+            type=float,
+            default=DEFAULT_MAX_ASSOCIATION_DISTANCE_M,
+            help=(
+                "Typical cross-Ear association range used only to annotate site "
+                f"distances (default: {DEFAULT_MAX_ASSOCIATION_DISTANCE_M:g})"
+            ),
+        )
+        command.add_argument(
+            "--allow-long-range-sim-ears",
+            action="store_true",
+            help=(
+                "Keep SIM-EAR↔SIM-EAR pairs eligible for association analysis even "
+                "when site distance exceeds --max-association-distance-m "
+                "(distances are still printed)"
             ),
         )
     watch_command.add_argument(
@@ -495,7 +646,10 @@ def main() -> int:
     args = parser.parse_args()
     base_url, admin_token = validate_hub_connection(args, parser)
     watching = args.command == "watch"
-    intervals = [("event gap", args.event_gap_seconds)]
+    intervals = [
+        ("event gap", args.event_gap_seconds),
+        ("max association distance", args.max_association_distance_m),
+    ]
     if watching:
         intervals.append(("watch interval", args.interval_seconds))
     for label, value in intervals:
@@ -506,10 +660,26 @@ def main() -> int:
     try:
         observations = fetch_observations(base_url, args.ca, admin_token, args.node_id)
         nodes = fetch_nodes(base_url, args.ca, admin_token)
+        reference_times = [
+            observation_time(item)
+            for item in observations
+            if observation_time(item) is not None
+        ]
+        weather_at = max(reference_times) if reference_times else None
+        weather = fetch_environmental_context(
+            base_url,
+            args.ca,
+            admin_token,
+            at=weather_at,
+            ensure=True,
+        )
         for line in report(
             observations,
             args.event_gap_seconds,
             nodes,
+            max_association_distance_m=args.max_association_distance_m,
+            allow_long_range_sim_ears=args.allow_long_range_sim_ears,
+            environmental_context=weather,
         ):
             print(line)
         known_ids = {
@@ -529,14 +699,17 @@ def main() -> int:
             new_observations, known_ids = observation_diff(known_ids, current)
             if not new_observations:
                 continue
-            nodes = fetch_nodes(base_url, args.ca, admin_token)
-            print("Reanalyzing the current fetched observation set after new records:")
+            print(
+                f"Reanalyzing after {len(new_observations)} new observation(s) "
+                f"(site/weather context omitted in watch updates; use list for full context):",
+                flush=True,
+            )
             for line in report(
                 current,
                 args.event_gap_seconds,
-                nodes,
+                include_site_context=False,
             ):
-                print(line)
+                print(line, flush=True)
     except KeyboardInterrupt:
         print("Stopped watching.")
         return 0

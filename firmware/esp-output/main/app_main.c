@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <string.h>
 
 #include "dbmap_audio.h"
@@ -102,15 +103,19 @@ void app_main(void)
     int backoff_ms = 1000;
     while (1) {
         dbmap_ota_report_pending_boot(&s_cfg);
-        if (dbmap_publish_hello(&s_cfg) == ESP_OK) {
-            backoff_ms = 1000;
+        if (!dbmap_mqtt_is_connected()) {
+            dbmap_mqtt_request_reconnect();
         }
+        const bool hello_ok = dbmap_publish_hello(&s_cfg) == ESP_OK;
         dbmap_publish_health(&s_cfg);
-        vTaskDelay(pdMS_TO_TICKS(backoff_ms < 120000 ? backoff_ms : 120000));
-        if (backoff_ms < 120000) {
+        vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+        /* Steady 30s hello/health when MQTT publish works. Back off only on failure. */
+        if (hello_ok) {
+            backoff_ms = 30000;
+        } else if (backoff_ms < 120000) {
             backoff_ms *= 2;
+        } else {
+            backoff_ms = 120000;
         }
-        /* Output keeps a persistent session; health is frequent. Ear 24h poll is later. */
-        backoff_ms = 30000;
     }
 }

@@ -13,7 +13,7 @@ from app.config import settings
 
 log = logging.getLogger("hub-bootstrap.container-logs")
 
-LOG_TAIL_LINES = 10
+LOG_TAIL_LINES = 15
 _TARGETS = {
     "nginx": ("Nginx", "nginx"),
     "web": ("Web", "dbmap-web"),

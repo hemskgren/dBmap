@@ -9,6 +9,7 @@ from app.hub_monitor import start_monitor_thread
 from app.logging_config import configure_logging
 from app.mqtt_listener import start_mqtt_thread
 from app.mqtt_security import ensure_broker_security
+from app.regional_environment import start_weather_worker
 
 configure_logging()
 
@@ -34,6 +35,7 @@ async def _lifespan(_app: FastAPI):
     # Start after import/create_app so unit tests can disable the monitor first.
     # MQTT may already be running; the monitor tolerates MQTT being down.
     start_monitor_thread()
+    start_weather_worker()
     yield
 
 

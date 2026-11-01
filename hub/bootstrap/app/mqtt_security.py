@@ -5,6 +5,7 @@ import uuid
 from typing import Any
 
 import paho.mqtt.client as mqtt
+from paho.mqtt import MQTTException
 
 from app.config import settings
 from app.topics import topic_root
@@ -93,7 +94,7 @@ def _command(command: dict[str, Any]) -> dict[str, Any]:
         return response
     except MqttSecurityError:
         raise
-    except (OSError, ValueError, mqtt.MQTTException) as exc:
+    except (OSError, ValueError, MQTTException) as exc:
         raise MqttSecurityError("MQTT security control request failed") from exc
     finally:
         if client.is_connected():

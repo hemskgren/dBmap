@@ -310,11 +310,23 @@ OPERATIONS = {
         "operationId": "getHubComponentLogs",
         "summary": "Latest container log lines",
         "description": (
-            "Returns the last 10 lines for an allowlisted Compose service. "
+            "Returns the last 15 lines for an allowlisted Compose service. "
             "Available to local admin and viewer tokens."
         ),
         "response": "HubComponentLogs",
         "errors": ["401", "403", "404", "503"],
+    },
+    ("GET", "/api/v1/hub/components/{component}/connection-failures"): {
+        "operationId": "getHubComponentConnectionFailures",
+        "summary": "Recent MQTT connection failures",
+        "description": (
+            "Mosquitto only. Returns auth, TLS/CA, and protocol/socket failure lines "
+            "from the host-mounted broker log for the last 3 hours. "
+            "Fail2ban drops never reach Mosquitto and are omitted. "
+            "Available to local admin and viewer tokens."
+        ),
+        "response": "HubComponentConnectionFailures",
+        "errors": ["401", "403", "404"],
     },
     ("POST", "/api/v1/provision"): {
         "operationId": "provisionNode",
@@ -684,6 +696,14 @@ EXTRA_SCHEMAS = {
             "available_seconds": {"type": "integer"},
             "unavailable_seconds": {"type": "integer"},
             "unobserved_seconds": {"type": "integer"},
+            "not_running_seconds": {
+                "type": "integer",
+                "description": (
+                    "Seconds the Hub monitor was not running inside this window. "
+                    "A stopped Hub container and a powered-off computer are both "
+                    "recorded this way and are excluded from the percentage."
+                ),
+            },
             "sample_count": {"type": "integer"},
             "insufficient_data": {"type": "boolean"},
             "low_coverage": {"type": "boolean"},
@@ -854,7 +874,29 @@ EXTRA_SCHEMAS = {
             "service": {"type": "string"},
             "compose_service": {"type": "string"},
             "lines": {"type": "array", "items": {"type": "string"}},
-            "line_limit": {"type": "integer", "example": 10},
+            "line_limit": {"type": "integer", "example": 15},
+        },
+    },
+    "HubComponentConnectionFailures": {
+        "type": "object",
+        "required": [
+            "service",
+            "compose_service",
+            "window_hours",
+            "source",
+            "lines",
+            "count",
+            "notices",
+        ],
+        "properties": {
+            "service": {"type": "string"},
+            "compose_service": {"type": "string", "example": "mosquitto"},
+            "window_hours": {"type": "integer", "example": 3},
+            "source": {"type": "string", "enum": ["file", "unavailable"]},
+            "path": {"type": "string"},
+            "lines": {"type": "array", "items": {"type": "string"}},
+            "count": {"type": "integer"},
+            "notices": {"type": "array", "items": {"type": "string"}},
         },
     },
 }

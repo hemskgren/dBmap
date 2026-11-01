@@ -67,7 +67,7 @@ Hub overview **Details** uses the same browser → Nginx → `hub-bootstrap` →
 | Web | `GET https://dbmap-web/health`, a short response. The probe reads that response to completion. |
 | Firmware builder | `GET https://firmware-builder:8443/health`. No answer means the optional profile is not running. Admin Components/details only — excluded from Health and Availability scoring. |
 
-Administrators and viewers can also open **Logs** on a container component. `hub-bootstrap` reads the latest 10 lines from the local Docker engine for that Compose service. The database is not a container, so it has no log button. Viewer tokens can read component status, details, and logs.
+Administrators and viewers can also open **Logs** on a container component. `hub-bootstrap` reads the latest 15 lines from the local Docker engine for that Compose service. The database is not a container, so it has no log button. For the MQTT broker, **Failed connections (last 3h)** filters the host-mounted Mosquitto log for auth failures, TLS/CA errors, and protocol/socket errors in that window (clean client disconnects are omitted). Attempts dropped by host fail2ban never reach Mosquitto and therefore do not appear there. Viewer tokens can read component status, details, and logs.
 
 CLI tools on the laptop (`curl`, `scripts/hub_summary.py`, `scripts/hub_admin.py`, `scripts/hub_event_track.py`) are the same HTTPS client as the browser: they call Nginx and stop there. They do not open MQTT.
 
@@ -119,7 +119,7 @@ Steady messages after that session is up:
 | `hub-bootstrap` | `command` | 1 | Output | Not stored as a command log. The board drives GPIO and publishes `ack` and `status`. |
 | either side | `config` | — | ACL allows it | No sender implements it. |
 
-`hub-bootstrap` also subscribes to Mosquitto `$SYS` counters on that same long-lived session (client id `hub-bootstrap`). Broker limits on this listener are a 4096-byte message cap and 100 connections.
+`hub-bootstrap` also subscribes to Mosquitto `$SYS` counters on that same long-lived session (client id `hub-bootstrap`). Broker limits on this listener are a 4096-byte MQTT packet cap and 100 connections.
 
 ## Observation, write and read
 

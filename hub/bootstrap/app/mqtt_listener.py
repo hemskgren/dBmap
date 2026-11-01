@@ -185,6 +185,13 @@ def _ingest_observation(node_id: str, message: bytes) -> None:
             log.info(
                 "duplicate observation %s from %s ignored", body.observation_id, node_id
             )
+        else:
+            try:
+                from app.regional_environment import schedule_weather_ensure
+
+                schedule_weather_ensure(body.event_time_utc)
+            except Exception:  # noqa: BLE001 - weather must never block ingest
+                log.debug("weather schedule after observation failed", exc_info=True)
     except ValueError as exc:
         log.warning("rejected observation from %s: %s", node_id, exc)
     except Exception:

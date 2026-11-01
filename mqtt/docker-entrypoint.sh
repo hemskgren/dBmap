@@ -9,7 +9,14 @@ INIT_CONFIG=/mosquitto/data/mosquitto-init.conf
 CTRL_OPTIONS=/mosquitto/data/mosquitto-ctrl.options
 HEALTH_OPTIONS=/mosquitto/data/mosquitto-health.options
 
-mkdir -p /mosquitto/config /mosquitto/data "$CERT_DIR" "$RUNTIME_DIR"
+mkdir -p /mosquitto/config /mosquitto/data /mosquitto/log "$CERT_DIR" "$RUNTIME_DIR"
+# Host bind-mount for fail2ban; mosquitto drops privileges to uid 1883.
+chown mosquitto:mosquitto /mosquitto/log
+chmod 755 /mosquitto/log
+# Ensure the log file exists and is writable before mosquitto opens it.
+touch /mosquitto/log/mosquitto.log
+chown mosquitto:mosquitto /mosquitto/log/mosquitto.log
+chmod 644 /mosquitto/log/mosquitto.log
 
 if [ ! -f "$CERT_DIR/ca.crt" ] || [ ! -f "$CERT_DIR/mosquitto.crt" ] || [ ! -f "$CERT_DIR/mosquitto.key" ]; then
   echo "MQTT TLS certs missing in $CERT_DIR. Run scripts/gen-mqtt-certs.sh on the host." >&2
