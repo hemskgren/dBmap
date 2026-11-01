@@ -14,6 +14,7 @@ from typing import Any
 
 from _hub_cli import (
     add_hub_connection_arguments,
+    format_hub_http_error,
     load_project_env,
     print_help_without_arguments,
     validate_hub_connection,
@@ -34,8 +35,9 @@ def api_get(base_url: str, ca_file: str, admin_token: str, path: str) -> Any:
         with urllib.request.urlopen(request, context=context, timeout=15) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
-        detail = exc.read(1024).decode(errors="replace")
-        raise HubApiError(f"hub API returned HTTP {exc.code}: {detail}") from exc
+        raise HubApiError(
+            format_hub_http_error(exc.code, exc.read(1024), path=path)
+        ) from exc
     except urllib.error.URLError as exc:
         raise HubApiError(f"could not reach the hub API: {exc.reason}") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -295,11 +297,28 @@ def _format_availability_window(window: Any) -> str:
         if unavailable_s > 0
         else ""
     )
+    not_running = window.get("not_running_seconds") or 0
+    try:
+        not_running_s = float(not_running)
+    except (TypeError, ValueError):
+        not_running_s = 0.0
+    not_running_note = (
+        f"; hub not running {_format_duration_seconds(not_running_s)}"
+        if not_running_s > 0
+        else ""
+    )
     if window.get("score_ready") is False:
-        return f"Incomplete ({observed} observed{unavailable_note})"
+        return (
+            f"Incomplete ({observed} observed{unavailable_note}{not_running_note})"
+        )
     if window.get("low_coverage"):
-        return f"{window['percent']}% of {observed} observed{unavailable_note}"
-    return f"{window['percent']}% (eligible {observed}{unavailable_note})"
+        return (
+            f"{window['percent']}% of {observed} observed"
+            f"{unavailable_note}{not_running_note}"
+        )
+    return (
+        f"{window['percent']}% (eligible {observed}{unavailable_note}{not_running_note})"
+    )
 
 
 def print_monitoring(monitoring: dict[str, Any]) -> None:
@@ -369,6 +388,18 @@ def print_monitoring(monitoring: dict[str, Any]) -> None:
     gaps = availability.get("gaps")
     if isinstance(gaps, list) and gaps:
         print(f"  Observation gaps reported: {len(gaps)}")
+        not_running = [
+            gap
+            for gap in gaps
+            if isinstance(gap, dict) and gap.get("kind") == "not_running"
+        ]
+        if not_running:
+            print(
+                "  Hub was not running during "
+                f"{len(not_running)} gap(s). A stopped Hub container is recorded "
+                "the same way as the computer being off, and that time is left "
+                "out of the percentage."
+            )
         for gap in gaps[:5]:
             if isinstance(gap, dict):
                 print(

@@ -206,7 +206,7 @@ The Hub stores only a hash of the token and cannot show it again. Save it immedi
 
 If a pending device's token is lost, an administrator can issue a replacement from the node's Devices detail view. The previous unused token is invalidated immediately. A token cannot be rotated after the node has been provisioned; this prevents an already consumed token from creating another provisioning session. A fully erased, already provisioned board needs a separate recovery procedure; do not create a duplicate node as a workaround.
 
-If the old device may still be operating, deactivate its Hub node before relying on a replacement. Deactivation suspends MQTT access while retaining its identity, observations, and history. See [Administer Hub nodes](./local-deployment.md#administer-hub-nodes).
+If the old device may still be operating, deactivate its Hub node before relying on a replacement. Deactivation suspends MQTT access while retaining its identity, observations, and history. See [Hub host tools](./local-deployment.md#hub-host-tools) (`scripts/hub_admin.py deactivate` / `reactivate`).
 
 If the device still has its NVS identity and credentials, reflashing without erasing NVS should preserve the same Hub node; a new registration is not needed. `erase-flash` clears that local state.
 

@@ -1,45 +1,45 @@
 # dBmap
 
-Distributed acoustic sensing, built around **hub-bootstrap** and **ESP-Output**.
+dBmap is a small, self-hosted system for listening to places — distributed acoustic sensing with a local Hub and ESP32 devices in the field.
 
-## Current slice
+Ears hear. Outputs can react. The Hub is the home those devices call: identity, configuration, telemetry, and a simple web console. The long-term idea is a map of sound and events across a site, not a single gadget demo.
 
-- The first hub profile is **LOCAL_MEDIUM** on an Intel mini-PC with `linux/amd64` containers; profile for Raspberry Pi is planed.
-- `hub-bootstrap` owns node identity, one-time bootstrap tokens, desired/reported state, and initial MQTT telemetry ingestion.
-- ESP-Output supports NVS identity/configuration, Wi-Fi STA, HTTPS provisioning, MQTT hello/health/command/ack, and relay (GPIO16)/audio stubs.
-- The broker uses TLS on port `8883`; the web UI and API are reached through Nginx over HTTPS on port `8443` by default. Provisioned nodes receive unique MQTT credentials and topic-scoped permissions.
-- The local stack includes Hub status, a dynamic device summary and list, a recent-observations tab with expandable JSON and Ear site distances, and an offline ESPConnect workspace at `/espconnect/`. Hub component details, including Nginx, Web, and the optional firmware builder, are fetched only when opened from the Hub overview. Admin and viewer tokens can read the latest container log lines from that list. ESPConnect opens in a separate window and does not receive the Hub token. Separate local admin/viewer tokens control device-management actions and read-only status, device detail (including Desired/Reported state), and observation access; the API enforces those roles.
-- The API sends authenticated actions to OPA for authorization. OPA is private to the Compose network; if it cannot return a decision, protected API requests fail closed.
+This repository is **work in progress**. The local Hub stack runs today; the product around it is still taking shape.
 
-## Documentation
+## What works today
 
-- [Local deployment and operations](docs/local-deployment.md): mini-PC setup, certificates, ESP-IDF setup, node administration, simulators, and local workflows.
-- [Device wiring and pinout](docs/device-wiring-and-pinout.md): Output relay/amp GPIOs and Ear I2S mic map (indexes 0–3 reserved).
-- [Connectivity map](docs/connectivity.md): clients, protocols, ports, and which functions share a process.
-- [Protocol reference](docs/protocol.md): device and Hub API message formats.
-- [Hub API](docs/hub-api.openapi.yaml): OpenAPI 3.0 description of the Hub HTTPS API.
-- [Health and availability](docs/health-and-availability.md): Local Hub health score, availability windows, monitoring history, and limitations.
-- [Authorization policy](docs/authorization.md): OPA actions, current local roles, future owner/quota inputs, and policy test instructions.
-- [User identity and operating modes](docs/identity-and-operating-modes.md): current local access, optional multi-user design, account lifecycle, and identity separation.
-- [Security policy](SECURITY.md): secret handling and private vulnerability reporting.
+- A **local Hub** you run with Docker on a mini-PC (`linux/amd64`): MQTT, HTTPS API, web UI, and policy checks.
+- **Ear** and **Output** firmware that share the same client path: Wi-Fi, TLS, provisioning, and MQTT call-home.
+- USB-first registration and configuration from the Hub UI, plus a firmware catalog and optional on-Hub builder.
+- Device and Hub **health / availability** history so you can see when things were actually reachable.
+- Local admin and viewer access; simulators and scripts for Hub and Ear flows without hardware.
+
+Richer map/rules, cross-Ear tracking, and regional Hub pieces are planned, not finished. See the working/todo table in [Local deployment](docs/local-deployment.md#working-today--still-to-do).
+
+## What to do next
+
+1. Stand up the local Hub — start with [Local deployment](docs/local-deployment.md).
+2. Flash and register a device — wiring in [Device wiring and pinout](docs/device-wiring-and-pinout.md); registration and USB configure in the Hub UI.
+3. Without Ear hardware, use the [Ear simulator](docs/simulator.md).
+4. When you need ports, topics, or API shapes, use [Connectivity](docs/connectivity.md), [Protocol](docs/protocol.md), and [Hub API](docs/hub-api.openapi.yaml).
+
+Other docs (authorization, identity, health, security) live under [`docs/`](docs/) and [`SECURITY.md`](SECURITY.md).
 
 ## Repository layout
 
 ```text
-hub/bootstrap                         Local Hub identity + desired/reported state
-mqtt                                  Mosquitto config, Dynamic Security, local TLS
-firmware/components/node_common      Shared Ear/Output client
-firmware/esp-output                  First L0 firmware
-simulator/ear                         Ear observation and scenario simulators
-scripts                               Hub summary, admin, and observation tools
-docs                                  Deployment, protocol, and architecture documentation
-tests                                 Tests for scripts and simulator
-compose.yaml                         LOCAL_MEDIUM stack
+hub/bootstrap          Local Hub service
+mqtt                   Broker config and TLS
+web                    Hub UI
+firmware/              Shared client, Ear, and Output
+firmware-builder/      Optional ESP-IDF build service
+simulator/             Ear and scenario tools
+scripts/               Ops and admin helpers
+docs/                  How to run and how it fits together
+compose.yaml           Local Hub stack
 ```
 
-Not in this slice: `hub-event`, rules, Ear DSP, Home Assistant, Regional Hub.
-
-## Tests and lint
+## Tests
 
 From `hub/bootstrap`:
 
@@ -49,6 +49,4 @@ uv run ruff check app
 uv run pytest tests ../../tests
 ```
 
-Run Rego authorization tests from the repository root with `sh scripts/test-policy.sh` (requires OPA or Docker).
-
-The hub container uses Python 3.14 with SQLAlchemy 2.0.54. The full Hub and repository test suite passes on Python 3.14.4. Package metadata continues to allow Python 3.11 and later.
+Policy tests from the repo root: `sh scripts/test-policy.sh`.

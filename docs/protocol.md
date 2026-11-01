@@ -133,14 +133,23 @@ real-world identity or an event/track identifier. Tracker analysis must not
 consume that hint for association.
 Previously stored observations using the earlier flat `confidence`,
 `bearing_deg`, and `classification_hints` fields must be cleared before
-deploying this schema revision. See the simulator cleanup instructions in the
-README. New MQTT observations must use this structured form; legacy fields
-are rejected rather than silently discarded.
+deploying this schema revision. See the database wipe steps in
+[Ear simulator — clear observations](./simulator.md#clear-observations-keep-sim-ears)
+or the destructive device wipe in
+[Local deployment](./local-deployment.md#wipe-hub-device-data-destructive). New MQTT
+observations must use this structured form; legacy fields are rejected rather
+than silently discarded.
 
 `scripts/hub_event_track.py` is a read-only exploratory report. It fetches node
 installation metadata, prints each observation independently, and reports
-pairwise Ear site distances as context. It deliberately does not read
-`classification.hints.simulated_source_id` for grouping or correlation.
+pairwise Ear site distances as context (annotated `≤500m` / `>500m`;
+`--allow-long-range-sim-ears` marks far `SIM-EAR-*` pairs `SIM eligible`
+without changing the 500 m threshold or creating associations). It also prints
+one Hub regional weather block from
+`GET /api/v1/hub/environmental-context` (Open-Meteo; informational only).
+Per-Ear inactivity episodes default to a 30 s silence window. It deliberately
+does not read `classification.hints.simulated_source_id` for grouping or
+correlation.
 Per-Ear inactivity episodes are time summaries only, not Events or claims that
 the observations share a source. The tracker does not yet produce predicted
 cross-Ear associations or Tracks. Watch mode re-fetches observations and node

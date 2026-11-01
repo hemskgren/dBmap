@@ -69,9 +69,36 @@
         width: 28px;
         height: 40px;
       }
-      .map-pin svg { display: block; width: 28px; height: 40px; filter: drop-shadow(0 1px 2px rgb(15 23 42 / 35%)); }
+      .map-pin svg {
+        position: relative;
+        z-index: 1;
+        display: block;
+        width: 28px;
+        height: 40px;
+        filter: drop-shadow(0 1px 2px rgb(15 23 42 / 35%));
+      }
+      .map-pin .obs-halo {
+        position: absolute;
+        left: 50%;
+        top: 12px;
+        z-index: 0;
+        width: 22px;
+        height: 22px;
+        transform: translate(-50%, -50%);
+        border-radius: 50%;
+        background: rgb(234 88 12 / 32%);
+        box-shadow: 0 0 0 3px rgb(234 88 12 / 60%);
+        pointer-events: none;
+        animation: obs-pulse 1.8s ease-out infinite;
+      }
+      @keyframes obs-pulse {
+        0% { transform: translate(-50%, -50%) scale(0.92); opacity: 1; }
+        70% { transform: translate(-50%, -50%) scale(1.35); opacity: 0.35; }
+        100% { transform: translate(-50%, -50%) scale(1.45); opacity: 0; }
+      }
       .map-pin .count {
         position: absolute;
+        z-index: 2;
         top: -0.35rem;
         right: -0.45rem;
         min-width: 1.15rem;
@@ -84,6 +111,7 @@
         text-align: center;
         border: 2px solid #fff;
       }
+      .map-pin.has-obs .count { background: #c2410c; }
       .map-pin.is-offline svg .pin-body { opacity: 0.72; }
       .map-pin.is-offline svg .pin-stroke { stroke: #8a5a12; }
     </style>
@@ -92,29 +120,34 @@
     <header>
       <div>
         <h1>Device map</h1>
-        <p>Active devices with installation coordinates · OpenStreetMap</p>
+        <p>Active devices with installation coordinates · observations in the last 15 min · OpenStreetMap</p>
       </div>
       <div class="actions">
         <span id="status" role="status">Waiting for Hub session…</span>
+        <button id="fit-view" class="secondary" type="button" hidden>Fit devices</button>
         <button id="refresh" class="secondary" type="button" hidden>Refresh</button>
       </div>
     </header>
     <div id="map-root">
       <p id="bootstrap-message" class="notice">
         Open this window from the signed-in Hub (Map button). It reuses your Hub login and
-        <code>GET /api/v1/devices</code>. Basemap tiles need browser internet; Leaflet assets are local.
+        <code>GET /api/v1/devices</code> plus recent observations. Basemap tiles need browser internet; Leaflet assets are local.
       </p>
     </div>
     <script src="./vendor/leaflet/leaflet.js"></script>
     <script>
-      const REFRESH_MS = 15000;
+      const REFRESH_MS = 60000;
+      const OBSERVATION_WINDOW_MS = 15 * 60 * 1000;
       const statusEl = document.getElementById('status');
       const refreshBtn = document.getElementById('refresh');
+      const fitViewBtn = document.getElementById('fit-view');
       const mapRoot = document.getElementById('map-root');
       let map;
       let markerLayer;
       let refreshTimer;
       let session = null;
+      let hasFittedView = false;
+      let lastBounds = [];
 
       function setStatus(text) {
         statusEl.textContent = text;
@@ -219,12 +252,18 @@
         return '<text x="14" y="16.2" text-anchor="middle" fill="#fff" font-size="10" font-weight="700" font-family="system-ui,sans-serif">?</text>';
       }
 
-      function needleIcon(kind, online, count) {
+      function needleIcon(kind, online, { deviceCount = 1, obsCount = 0 } = {}) {
         const fill = TYPE_COLORS[kind] || TYPE_COLORS.other;
+        const hasObs = obsCount > 0;
         const offlineClass = online ? '' : ' is-offline';
-        const countHtml = count > 1 ? `<span class="count">${count}</span>` : '';
+        const obsClass = hasObs ? ' has-obs' : '';
+        // Multi-device sites: device count. Single device with obs: observation count.
+        const badge = deviceCount > 1 ? deviceCount : (hasObs ? obsCount : 0);
+        const countHtml = badge > 0 ? `<span class="count">${badge}</span>` : '';
+        const haloHtml = hasObs ? '<span class="obs-halo" aria-hidden="true"></span>' : '';
         const html = `
-          <div class="map-pin${offlineClass}" title="">
+          <div class="map-pin${offlineClass}${obsClass}" title="">
+            ${haloHtml}
             <svg viewBox="0 0 28 40" aria-hidden="true">
               <path class="pin-body" d="M14 1.8c-6.2 0-11.2 5-11.2 11.2 0 8.4 11.2 24.2 11.2 24.2S25.2 21.4 25.2 13C25.2 6.8 20.2 1.8 14 1.8z" fill="${fill}"/>
               <path class="pin-stroke" d="M14 1.8c-6.2 0-11.2 5-11.2 11.2 0 8.4 11.2 24.2 11.2 24.2S25.2 21.4 25.2 13C25.2 6.8 20.2 1.8 14 1.8z" fill="none" stroke="#fff" stroke-width="1.6"/>
@@ -256,7 +295,9 @@
         legend.innerHTML = [
           `<div>${legendPin('ear')} Ear</div>`,
           `<div>${legendPin('output')} Output</div>`,
-          `<div>${legendPin('mixed')} Mixed site (count badge)</div>`,
+          `<div>${legendPin('mixed')} Mixed site (device-count badge)</div>`,
+          '<div>Orange pulse ring = observations in last 15 min</div>',
+          '<div>Orange badge on one Ear = observation count</div>',
           '<div>Dimmed pin = all offline at that point</div>',
         ].join('');
         mapRoot.append(legend);
@@ -270,59 +311,100 @@
         markerLayer = L.layerGroup().addTo(map);
         map.setView([59.91, 10.75], 6);
         refreshBtn.hidden = false;
+        fitViewBtn.hidden = false;
       }
 
-      function devicePopupLines(device) {
-        const status = device.status === 'online' ? 'online' : 'offline';
-        return (
-          `<p class="popup-title">${escapeHtml(device.node_id)}`
-          + ` · <span class="status-${status}">${status}</span></p>`
-          + `<p class="popup-meta">Last seen: ${escapeHtml(formatSeen(device.last_seen_at))}</p>`
-        );
+      function recentObservationStats(observations, nowMs = Date.now()) {
+        const cutoff = nowMs - OBSERVATION_WINDOW_MS;
+        const byNode = new Map();
+        let total = 0;
+        for (const item of observations) {
+          if (!item || typeof item !== 'object') continue;
+          const stamp = Date.parse(item.received_time_utc || item.event_time_utc || '');
+          if (!Number.isFinite(stamp) || stamp < cutoff) continue;
+          const nodeId = item.node_id;
+          if (typeof nodeId !== 'string' || !nodeId) continue;
+          total += 1;
+          const entry = byNode.get(nodeId) || { count: 0, latest_dbfs: null, latest_at: null };
+          entry.count += 1;
+          if (entry.latest_at === null || stamp > entry.latest_at) {
+            entry.latest_at = stamp;
+            entry.latest_dbfs = typeof item.signal_level_dbfs === 'number'
+              ? item.signal_level_dbfs
+              : null;
+          }
+          byNode.set(nodeId, entry);
+        }
+        return { total, byNode };
       }
 
-      function popupHtml(group) {
+      function popupHtml(group, obsByNode) {
         const { lat, lon, devices } = group;
         const coords = `<p class="popup-meta">${lat.toFixed(5)}, ${lon.toFixed(5)}</p>`;
-        if (devices.length === 1) {
-          return coords + devicePopupLines(devices[0]);
-        }
         const items = devices.map((device) => {
           const status = device.status === 'online' ? 'online' : 'offline';
+          const entry = obsByNode.get(device.node_id);
+          let obsText = '<br>Obs (15 min): none';
+          if (entry && entry.count) {
+            const level = entry.latest_dbfs === null || entry.latest_dbfs === undefined
+              ? ''
+              : ` · latest ${entry.latest_dbfs.toFixed(1)} dBFS`;
+            obsText = `<br>Obs (15 min): ${entry.count}${level}`;
+          }
           return (
             `<li><strong>${escapeHtml(device.node_id)}</strong>`
             + ` · <span class="status-${status}">${status}</span>`
-            + `<br>Last seen: ${escapeHtml(formatSeen(device.last_seen_at))}</li>`
+            + `<br>Last seen: ${escapeHtml(formatSeen(device.last_seen_at))}`
+            + `${obsText}</li>`
           );
         }).join('');
         return coords + `<ul class="popup-list">${items}</ul>`;
       }
 
-      function renderMarkers(devices) {
+      function fitDevices(bounds) {
+        if (!bounds.length) return;
+        if (bounds.length === 1) {
+          map.setView(bounds[0], 14);
+        } else {
+          map.fitBounds(bounds, { padding: [36, 36], maxZoom: 15 });
+        }
+        hasFittedView = true;
+      }
+
+      function renderMarkers(devices, observations) {
         const points = mappableDevices(devices);
         const groups = groupDevicesByCoordinate(points);
+        const { total: recentObsTotal, byNode: obsByNode } = recentObservationStats(observations);
         markerLayer.clearLayers();
         const bounds = [];
         for (const group of groups) {
           const kind = groupKind(group.devices);
           const online = groupOnline(group.devices);
+          const recentAtSite = group.devices.reduce(
+            (sum, device) => sum + (obsByNode.get(device.node_id)?.count || 0),
+            0,
+          );
           const marker = L.marker([group.lat, group.lon], {
-            icon: needleIcon(kind, online, group.devices.length),
+            icon: needleIcon(kind, online, {
+              deviceCount: group.devices.length,
+              obsCount: recentAtSite,
+            }),
           });
-          marker.bindPopup(popupHtml(group));
+          marker.bindPopup(popupHtml(group, obsByNode));
           marker.addTo(markerLayer);
           bounds.push([group.lat, group.lon]);
         }
-        if (bounds.length === 1) {
-          map.setView(bounds[0], 14);
-        } else if (bounds.length > 1) {
-          map.fitBounds(bounds, { padding: [36, 36], maxZoom: 15 });
+        lastBounds = bounds;
+        // Preserve pan/zoom across auto-refresh; fit only on the first successful layout.
+        if (!hasFittedView && bounds.length) {
+          fitDevices(bounds);
         }
         const siteLabel = groups.length === 1 ? 'site' : 'sites';
+        const obsLabel = `${recentObsTotal} observation${recentObsTotal === 1 ? '' : 's'} in last 15 min`;
         setStatus(
           points.length
-            ? `${points.length} device${points.length === 1 ? '' : 's'} on ${groups.length} ${siteLabel}`
-            : 'No active devices with installation coordinates',
+            ? `${points.length} device${points.length === 1 ? '' : 's'} on ${groups.length} ${siteLabel} · ${obsLabel}`
+            : `No active devices with installation coordinates · ${obsLabel}`,
         );
       }
 
@@ -334,29 +416,43 @@
           .replaceAll('"', '&quot;');
       }
 
-      async function fetchDevices() {
+      async function fetchJson(path) {
         if (!ensureSession()) {
           throw new Error('Hub session unavailable. Keep the Hub window open and use its Map button.');
         }
         const base = String(session.basePath || '').replace(/\/$/, '');
-        const response = await fetch(`${base}/api/v1/devices`, {
+        const response = await fetch(`${base}${path}`, {
           headers: { Authorization: `Bearer ${session.token}` },
           cache: 'no-store',
         });
-        const body = await response.json().catch(() => ([]));
+        const body = await response.json().catch(() => (null));
         if (!response.ok) {
           const detail = body && typeof body === 'object' ? body.detail : '';
           throw new Error(typeof detail === 'string' && detail ? detail : `Request failed (${response.status}).`);
         }
+        return body;
+      }
+
+      async function fetchDevices() {
+        const body = await fetchJson('/api/v1/devices');
         if (!Array.isArray(body)) throw new Error('Hub returned an invalid device list.');
+        return body;
+      }
+
+      async function fetchObservations() {
+        const body = await fetchJson('/api/v1/observations?limit=500');
+        if (!Array.isArray(body)) throw new Error('Hub returned an invalid observation list.');
         return body;
       }
 
       async function refresh() {
         try {
           if (!map) initMap();
-          const devices = await fetchDevices();
-          renderMarkers(devices);
+          const [devices, observations] = await Promise.all([
+            fetchDevices(),
+            fetchObservations(),
+          ]);
+          renderMarkers(devices, observations);
         } catch (error) {
           setStatus(error.message || String(error));
           if (!map) {
@@ -378,6 +474,10 @@
 
       refreshBtn.addEventListener('click', () => {
         refresh();
+      });
+
+      fitViewBtn.addEventListener('click', () => {
+        if (map && lastBounds.length) fitDevices(lastBounds);
       });
 
       refresh().then(startAutoRefresh);

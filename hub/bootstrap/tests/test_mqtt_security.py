@@ -1,4 +1,33 @@
+import pytest
 from app import mqtt_security
+
+
+def test_broker_connect_failure_is_reported_as_security_error(monkeypatch) -> None:
+    class _Client:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def username_pw_set(self, *_args, **_kwargs) -> None:
+            return None
+
+        def tls_set(self, *_args, **_kwargs) -> None:
+            return None
+
+        def connect(self, *_args, **_kwargs) -> None:
+            raise OSError("Temporary failure in name resolution")
+
+        def is_connected(self) -> bool:
+            return False
+
+        def loop_stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(mqtt_security.mqtt, "Client", _Client)
+
+    with pytest.raises(
+        mqtt_security.MqttSecurityError, match="security control request failed"
+    ):
+        mqtt_security._command({"command": "getClient", "username": "hub-bootstrap"})
 
 
 def test_node_role_is_scoped_to_its_topics(monkeypatch) -> None:

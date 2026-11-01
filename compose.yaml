@@ -1,8 +1,15 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   mosquitto:
     image: eclipse-mosquitto:latest@sha256:38c0da4f2ef84284d47b3b3eeea1cb3bdeabe81ee10caf0cd5c5ff61ee3ea408
     platform: linux/amd64
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "${DBMAP_LAN_IP:?Set DBMAP_LAN_IP in .env}:8883:8883"
     environment:
@@ -11,6 +18,7 @@ services:
       - ./mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./mqtt/docker-entrypoint.sh:/docker-entrypoint.sh:ro
       - ./shared/mosquitto/certs:/mosquitto/certs:ro
+      - ./shared/mosquitto/logs:/mosquitto/log
       - mosquitto-data:/mosquitto/data
     entrypoint: ["/bin/sh", "/docker-entrypoint.sh"]
     healthcheck:
@@ -25,6 +33,7 @@ services:
       context: ./web
     platform: linux/amd64
     restart: unless-stopped
+    logging: *default-logging
     expose:
       - "443"
     volumes:
@@ -44,6 +53,7 @@ services:
     image: openpolicyagent/opa:1.21.1
     platform: linux/amd64
     restart: unless-stopped
+    logging: *default-logging
     command:
       - run
       - --server
@@ -80,6 +90,7 @@ services:
       context: ./nginx
     platform: linux/amd64
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "${DBMAP_LAN_IP:?Set DBMAP_LAN_IP in .env}:${DBMAP_HTTPS_PORT:-8443}:${DBMAP_HTTPS_PORT:-8443}"
     environment:
@@ -88,6 +99,7 @@ services:
       NGINX_ENVSUBST_FILTER: ^DBMAP_HTTPS_PORT$|^DBMAP_PUBLIC_BASE_PATH$
     volumes:
       - ./shared/nginx/certs:/certs:ro
+      - ./shared/nginx/logs:/var/log/nginx/dbmap
     networks:
       - default
       - firmware-private
@@ -102,6 +114,7 @@ services:
       context: ./hub/bootstrap
     platform: linux/amd64
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       mosquitto:
         condition: service_healthy
@@ -144,10 +157,16 @@ services:
       DBMAP_FIRMWARE_CATALOG_DIR: /firmware-catalog
       DBMAP_PUBLIC_BASE_PATH: ${DBMAP_PUBLIC_BASE_PATH:-}
       DBMAP_NGINX_PROBE_PORT: ${DBMAP_HTTPS_PORT:-8443}
+      DBMAP_WEATHER_ENABLED: ${DBMAP_WEATHER_ENABLED:-true}
+      DBMAP_WEATHER_REGION_ID: ${DBMAP_WEATHER_REGION_ID:-${DBMAP_HUB_ID:-local-01}}
+      DBMAP_WEATHER_REGION_LATITUDE: ${DBMAP_WEATHER_REGION_LATITUDE:-59.345879}
+      DBMAP_WEATHER_REGION_LONGITUDE: ${DBMAP_WEATHER_REGION_LONGITUDE:-18.060589}
+      DBMAP_WEATHER_CACHE_TTL_S: ${DBMAP_WEATHER_CACHE_TTL_S:-900}
     volumes:
       - bootstrap-data:/data
       - firmware-catalog:/firmware-catalog
       - ./shared/hub-bootstrap/certs:/certs:ro
+      - ./shared/mosquitto/logs:/mosquitto/log:ro
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - default
@@ -166,6 +185,7 @@ services:
       context: ./firmware-builder
     platform: linux/amd64
     restart: unless-stopped
+    logging: *default-logging
     environment:
       DBMAP_ADMIN_TOKEN: ${DBMAP_ADMIN_TOKEN:?Set DBMAP_ADMIN_TOKEN in .env}
       DBMAP_NTP_SERVER: ${DBMAP_NTP_SERVER:-se.pool.ntp.org}

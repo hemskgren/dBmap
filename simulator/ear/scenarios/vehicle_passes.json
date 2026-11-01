@@ -5,25 +5,25 @@
     "source_family": "vehicle",
     "movement": {
       "start": {
-        "latitude": 59.91,
-        "longitude": 10.75
+        "latitude": 59.374868678394485,
+        "longitude": 18.001342117095227
       },
       "end": {
-        "latitude": 59.9145,
-        "longitude": 10.75
+        "latitude": 59.335118371024905,
+        "longitude": 18.12680373585177
       },
       "speed_m_s": 12
     }
   },
   "ears": {
     "ear_a": {
-      "latitude": 59.909,
-      "longitude": 10.75,
+      "latitude": 59.374868678394485,
+      "longitude": 18.001342117095227,
       "orientation_deg": 0
     },
     "ear_b": {
-      "latitude": 59.9125,
-      "longitude": 10.752,
+      "latitude": 59.335118371024905,
+      "longitude": 18.12680373585177,
       "orientation_deg": 270
     }
   },

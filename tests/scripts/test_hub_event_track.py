@@ -249,7 +249,9 @@ def test_report_prints_installations_and_site_distance_without_associating_sourc
         "Ear installation distances (site context only; not source associations)"
         in output
     )
-    assert "EAR-001 ↔ EAR-002: 556m" in output
+    assert "EAR-001 ↔ EAR-002: 556m (>500m)" in output
+    # Candidates appear before installation metadata.
+    assert output.index("Candidate C1:") < output.index("Node installation metadata")
 
 
 def test_report_never_uses_airborne_ground_truth_hint_for_grouping() -> None:
@@ -280,11 +282,146 @@ def test_report_never_uses_airborne_ground_truth_hint_for_grouping() -> None:
 
     assert output.count("Candidate C") == 2
     assert "SIM-DRONE-001" not in output
-    assert "EAR-001 ↔ EAR-002: 556m" in output
+    assert "EAR-001 ↔ EAR-002: 556m (>500m)" in output
     assert "Ground-truth simulator IDs are not used" in output
 
 
-def test_default_inactivity_window_closes_episode_only_after_silence_exceeds_15_seconds() -> (
+def test_report_can_omit_site_context_for_watch_updates() -> None:
+    observations = [
+        {
+            "observation_id": "obs-1",
+            "node_id": "SIM-EAR-001",
+            "event_time_utc": "2026-10-05T18:00:00Z",
+        },
+        {
+            "observation_id": "obs-2",
+            "node_id": "SIM-EAR-002",
+            "event_time_utc": "2026-10-05T18:00:03Z",
+        },
+    ]
+    nodes = {
+        "SIM-EAR-001": {
+            "installation": {
+                "latitude": 59.374868678394485,
+                "longitude": 18.001342117095227,
+                "height_m": 32,
+            }
+        },
+        "SIM-EAR-002": {
+            "installation": {
+                "latitude": 59.335118371024905,
+                "longitude": 18.12680373585177,
+                "height_m": 155,
+            }
+        },
+    }
+    weather = {
+        "region_id": "local-01",
+        "provider": "open-meteo",
+        "availability": "ok",
+        "from_cache": True,
+        "age_s": 1,
+        "temperature_c": 8.0,
+        "relative_humidity_pct": 70,
+        "wind_speed_ms": 2.0,
+        "wind_direction_deg": 200,
+    }
+    output = "\n".join(
+        hub_event_track.report(
+            observations,
+            nodes=nodes,
+            environmental_context=weather,
+            include_site_context=False,
+        )
+    )
+    assert "Candidate C1:" in output
+    assert "Ear activity episode" in output
+    assert "Node installation metadata" not in output
+    assert "Ear installation distances" not in output
+    assert "Regional environmental context" not in output
+
+
+def test_report_prints_single_regional_weather_block() -> None:
+    observations = [
+        {
+            "observation_id": "obs-1",
+            "node_id": "SIM-EAR-001",
+            "event_time_utc": "2026-10-05T18:00:00Z",
+        }
+    ]
+    weather = {
+        "region_id": "local-01",
+        "provider": "open-meteo",
+        "source_mode": "live",
+        "availability": "ok",
+        "from_cache": True,
+        "age_s": 12,
+        "fetched_at": "2026-10-05T18:00:00+00:00",
+        "temperature_c": 8.5,
+        "relative_humidity_pct": 70,
+        "wind_speed_ms": 2.1,
+        "wind_direction_deg": 200,
+    }
+    output = "\n".join(
+        hub_event_track.report(
+            observations,
+            environmental_context=weather,
+        )
+    )
+    assert "Regional environmental context (informational; not association input)" in output
+    assert "region=local-01  provider=open-meteo  mode=live" in output
+    assert "temp=8.5°C" in output
+    assert output.count("Regional environmental context") == 1
+
+
+def test_sim_ear_long_range_option_keeps_pair_eligible_without_hiding_distance() -> None:
+    observations = [
+        {
+            "observation_id": "obs-1",
+            "node_id": "SIM-EAR-001",
+            "event_time_utc": "2026-10-05T18:00:00Z",
+        },
+        {
+            "observation_id": "obs-2",
+            "node_id": "SIM-EAR-002",
+            "event_time_utc": "2026-10-05T18:00:03Z",
+        },
+    ]
+    nodes = {
+        "SIM-EAR-001": {
+            "installation": {
+                "latitude": 59.374868678394485,
+                "longitude": 18.001342117095227,
+                "height_m": 32,
+            }
+        },
+        "SIM-EAR-002": {
+            "installation": {
+                "latitude": 59.335118371024905,
+                "longitude": 18.12680373585177,
+                "height_m": 155,
+            }
+        },
+    }
+
+    default_output = "\n".join(
+        hub_event_track.report(observations, nodes=nodes)
+    )
+    allowed_output = "\n".join(
+        hub_event_track.report(
+            observations,
+            nodes=nodes,
+            allow_long_range_sim_ears=True,
+        )
+    )
+
+    assert "SIM-EAR-001 ↔ SIM-EAR-002: 8373m (>500m)" in default_output
+    assert "SIM eligible" not in default_output
+    assert "SIM-EAR-001 ↔ SIM-EAR-002: 8373m (>500m, SIM eligible)" in allowed_output
+    assert "SIM eligible = long-range SIM-EAR pair kept for analysis" in allowed_output
+
+
+def test_default_inactivity_window_closes_episode_only_after_silence_exceeds_30_seconds() -> (
     None
 ):
     observations = [
@@ -305,7 +442,7 @@ def test_default_inactivity_window_closes_episode_only_after_silence_exceeds_15_
         {
             "observation_id": "obs-3",
             "node_id": "EAR-001",
-            "event_time_utc": "2026-10-05T18:00:31Z",
+            "event_time_utc": "2026-10-05T18:00:50Z",
             "duration_ms": 650,
             "classification": {"hints": {"simulated_source_id": "SIM-VEHICLE-001"}},
         },
@@ -313,10 +450,10 @@ def test_default_inactivity_window_closes_episode_only_after_silence_exceeds_15_
 
     output = "\n".join(hub_event_track.report(observations))
 
-    assert "15s of silence after interval end closes an episode" in output
+    assert "30s of silence after interval end closes an episode" in output
     assert "Ear activity episode A1 for EAR-001: 2 observation(s)" in output
     assert "Ear activity episode A2 for EAR-001: 1 observation(s)" in output
-    assert "gap 15.3s exceeds 15s window" in output
+    assert "gap 34.4s exceeds 30s window" in output
     assert "does not mean observations inside an episode share one source" in output
 
 

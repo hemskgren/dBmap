@@ -144,7 +144,10 @@
       #firmware-upload-form label { flex: 1 1 16rem; margin: 0; }
       #tab-firmware input:not([type="checkbox"]) { padding: 0.45rem 0.58rem; font-size: 0.94rem; }
       #firmware-catalog-list { display: grid; gap: 0.45rem; margin-top: 0.5rem; }
-      #firmware-build-jobs { display: grid; gap: 0.45rem; margin-top: 0.75rem; }
+      .firmware-build-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; margin-top: 0.75rem; }
+      .firmware-build-toolbar label { display: flex; align-items: center; gap: 0.4rem; margin: 0; }
+      .firmware-build-toolbar .actions { margin-top: 0; }
+      #firmware-build-jobs { display: grid; gap: 0.45rem; margin-top: 0.45rem; }
       .firmware-build-job { display: grid; gap: 0.35rem; padding: 0.75rem; border: 1px solid #bbb; border-radius: 0.5rem; }
       .firmware-build-job [data-build-error] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .firmware-build-log > summary { cursor: pointer; }
@@ -267,6 +270,14 @@
         </form>
       </section>
       <div id="dashboard" hidden>
+        <!-- Keep outside hidden tabs and collapsed panels. showModal() there leaves an invisible backdrop that blocks every click. -->
+        <dialog id="registration-complete-dialog" class="usb-console-dialog" aria-labelledby="registration-complete-title">
+          <h3 id="registration-complete-title">Registration complete</h3>
+          <p id="registration-complete-message" class="notice success" role="status"></p>
+          <div class="actions">
+            <button id="registration-complete-dismiss" type="button">OK</button>
+          </div>
+        </dialog>
         <nav class="tab-list" role="tablist" aria-label="Hub sections">
           <button id="tab-button-hub" type="button" role="tab" aria-selected="true" aria-controls="tab-hub" data-tab="hub">Hub</button>
           <button id="tab-button-devices" type="button" role="tab" aria-selected="false" aria-controls="tab-devices" data-tab="devices">Devices</button>
@@ -423,13 +434,6 @@
                 <span id="registration-provision-status" class="notice" role="status" aria-live="polite">Flash and register the device first.</span>
               </div>
             </section>
-            <dialog id="registration-complete-dialog" class="usb-console-dialog" aria-labelledby="registration-complete-title">
-              <h3 id="registration-complete-title">Registration complete</h3>
-              <p id="registration-complete-message" class="notice success" role="status"></p>
-              <div class="actions">
-                <button id="registration-complete-dismiss" type="button">OK</button>
-              </div>
-            </dialog>
             <details id="build-handoff" hidden>
               <summary>Handoff preview</summary>
               <p class="notice">This allowlisted preview excludes Wi-Fi credentials, the bootstrap token, the Hub access token, and the device API token. The device API token is issued once at HTTPS provisioning and stored only in device NVS.</p>
@@ -510,6 +514,17 @@
               </label>
               <button id="start-firmware-build" type="button" disabled>Build firmware</button>
               <span id="firmware-build-status" class="notice" role="status">Checking the optional builder…</span>
+            </div>
+            <div id="firmware-build-toolbar" class="firmware-build-toolbar" hidden>
+              <label id="firmware-builds-show-deleted-label">
+                <input id="firmware-builds-show-deleted" type="checkbox">
+                Show deleted builds
+              </label>
+              <div class="actions">
+                <button id="firmware-builds-previous" class="secondary" type="button">Previous</button>
+                <span id="firmware-builds-page"></span>
+                <button id="firmware-builds-next" class="secondary" type="button">Next</button>
+              </div>
             </div>
             <div id="firmware-build-jobs" aria-live="polite"></div>
           </section>
@@ -889,13 +904,17 @@
         const unavailableLabel = unavailable > 0
           ? `; unavailable ${formatDurationSeconds(unavailable)}`
           : '';
+        const notRunning = Number(window.not_running_seconds) || 0;
+        const notRunningLabel = notRunning > 0
+          ? `; hub not running ${formatDurationSeconds(notRunning)}`
+          : '';
         if (window.score_ready === false) {
-          return `Incomplete (${observed} observed${unavailableLabel})`;
+          return `Incomplete (${observed} observed${unavailableLabel}${notRunningLabel})`;
         }
         if (window.low_coverage) {
-          return `${window.percent}% of ${observed} observed${unavailableLabel}`;
+          return `${window.percent}% of ${observed} observed${unavailableLabel}${notRunningLabel}`;
         }
-        return `${window.percent}% (eligible ${observed}${unavailableLabel})`;
+        return `${window.percent}% (eligible ${observed}${unavailableLabel}${notRunningLabel})`;
       }
 
       function monitoringSourceLabel(source) {
@@ -1011,6 +1030,27 @@
         return states;
       }
 
+      function gapSeconds(gap) {
+        const start = Date.parse(gap?.start);
+        const end = Date.parse(gap?.end);
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
+        return (end - start) / 1000;
+      }
+
+      function hubNotRunningNote(gaps) {
+        const running = (Array.isArray(gaps) ? gaps : []).filter((gap) => gap && gap.kind === 'not_running');
+        if (!running.length) return '';
+        const seconds = running.reduce((sum, gap) => sum + gapSeconds(gap), 0);
+        const latest = running.reduce((best, gap) => (
+          Date.parse(gap.end) > Date.parse(best.end) ? gap : best
+        ));
+        const span = `${formatSeen(latest.start)}–${formatSeen(latest.end)}`;
+        const latestBit = running.length > 1
+          ? ` (latest ${formatDurationSeconds(gapSeconds(latest))}, ${span})`
+          : ` (${span})`;
+        return `Hub was not running for ${formatDurationSeconds(seconds)}${latestBit}. A stopped Hub container is recorded the same way as the computer being off, and that time is left out of the percentage.`;
+      }
+
       function renderHubMonitoring(monitoring) {
         const health = monitoring?.health || {};
         const availability = monitoring?.availability || {};
@@ -1051,9 +1091,8 @@
           if (incomplete) {
             parts.push('7d/30d scores stay incomplete until at least half that window has been observed.');
           }
-          if (gapCount > 0) {
-            parts.push(`${gapCount} observation gap(s) recorded; unobserved time is excluded from availability.`);
-          }
+          const notRunningNote = hubNotRunningNote(availability.gaps);
+          if (notRunningNote) parts.push(notRunningNote);
           warning.textContent = parts.join(' ');
         } else {
           warning.hidden = true;
@@ -1200,6 +1239,17 @@
               logsButton.addEventListener('click', () => toggleComponentPanel(componentId, 'logs'));
               actions.append(logsButton);
             }
+            if (component.connection_failures) {
+              const failButton = el(
+                'button',
+                openComponentPanel === `${componentId}:failures` ? 'Hide failures' : 'Failed connections (last 3h)',
+                'secondary',
+              );
+              failButton.type = 'button';
+              failButton.dataset.failComponent = componentId;
+              failButton.addEventListener('click', () => toggleComponentPanel(componentId, 'failures'));
+              actions.append(failButton);
+            }
             row.append(actions);
           }
           components.append(row);
@@ -1283,9 +1333,28 @@
         const panel = document.getElementById('component-details');
         panel.replaceChildren();
         panel.append(el('h4', `${body.service} logs`));
-        panel.append(el('p', `Latest container log lines, up to ${body.line_limit || 10}.`, 'notice'));
+        panel.append(el('p', `Latest container log lines, up to ${body.line_limit || 15}.`, 'notice'));
         const lines = Array.isArray(body.lines) ? body.lines : [];
         panel.append(el('pre', lines.join('\n') || 'No recent log lines.', 'component-log'));
+      }
+
+      function renderComponentFailures(body) {
+        const panel = document.getElementById('component-details');
+        panel.replaceChildren();
+        const hours = body.window_hours || 3;
+        panel.append(el('h4', `${body.service} failed connections (last ${hours}h)`));
+        panel.append(el(
+          'p',
+          'Includes MQTT auth failures, TLS/CA errors (for example unknown CA with the private Hub CA), and protocol/socket errors — not clean disconnects.',
+          'notice',
+        ));
+        for (const notice of body.notices || []) {
+          panel.append(el('p', notice, 'notice'));
+        }
+        const lines = Array.isArray(body.lines) ? body.lines : [];
+        const count = body.count ?? lines.length;
+        panel.append(el('p', count ? `${count} matching line(s).` : 'No matching failures in this window.', 'notice'));
+        panel.append(el('pre', lines.join('\n') || '—', 'component-log'));
       }
 
       function syncComponentButtons() {
@@ -1294,6 +1363,11 @@
         });
         document.querySelectorAll('[data-log-component]').forEach((button) => {
           button.textContent = openComponentPanel === `${button.dataset.logComponent}:logs` ? 'Hide logs' : 'Logs';
+        });
+        document.querySelectorAll('[data-fail-component]').forEach((button) => {
+          button.textContent = openComponentPanel === `${button.dataset.failComponent}:failures`
+            ? 'Hide failures'
+            : 'Failed connections (last 3h)';
         });
       }
 
@@ -1309,11 +1383,19 @@
         openComponentPanel = token;
         syncComponentButtons();
         panel.hidden = false;
-        panel.replaceChildren(el('p', mode === 'logs' ? 'Loading logs…' : 'Loading details…', 'notice'));
+        const loading = mode === 'logs'
+          ? 'Loading logs…'
+          : mode === 'failures'
+            ? 'Loading failed connections…'
+            : 'Loading details…';
+        panel.replaceChildren(el('p', loading, 'notice'));
         try {
           if (mode === 'logs') {
             const body = await api(`/api/v1/hub/components/${component}/logs`);
             if (openComponentPanel === token) renderComponentLogs(body);
+          } else if (mode === 'failures') {
+            const body = await api(`/api/v1/hub/components/${component}/connection-failures`);
+            if (openComponentPanel === token) renderComponentFailures(body);
           } else {
             const details = await api(`/api/v1/hub/components/${component}/details`);
             if (openComponentPanel === token) renderComponentDetails(component, details);
@@ -2312,19 +2394,37 @@
       let registrationFirmwareEntries = [];
       let registrationFirmwareId = '';
       const wifiSsidInput = document.getElementById('wifi-ssid');
+      const provisionSsidInput = document.getElementById('provision-ssid');
       const wifiPasswordInput = document.getElementById('wifi-password');
       const createSubmitButton = document.querySelector('#create-panel button[type="submit"]');
+      function cacheWifiSsid(value) {
+        const ssid = (value || '').trim();
+        if (!ssid) return;
+        try {
+          localStorage.setItem('dbmap-wifi-ssid', ssid);
+        } catch {
+          /* ignore quota / private mode */
+        }
+      }
       try {
         const cachedSsid = localStorage.getItem('dbmap-wifi-ssid');
-        if (cachedSsid && !wifiSsidInput.value) wifiSsidInput.value = cachedSsid;
+        if (cachedSsid) {
+          if (!wifiSsidInput.value) wifiSsidInput.value = cachedSsid;
+          if (!provisionSsidInput.value) provisionSsidInput.value = cachedSsid;
+        }
       } catch {
         /* ignore */
       }
       wifiSsidInput.addEventListener('change', () => {
-        try {
-          if (wifiSsidInput.value) localStorage.setItem('dbmap-wifi-ssid', wifiSsidInput.value);
-        } catch {
-          /* ignore */
+        cacheWifiSsid(wifiSsidInput.value);
+        if (wifiSsidInput.value.trim() && !provisionSsidInput.value.trim()) {
+          provisionSsidInput.value = wifiSsidInput.value.trim();
+        }
+      });
+      provisionSsidInput.addEventListener('change', () => {
+        cacheWifiSsid(provisionSsidInput.value);
+        if (provisionSsidInput.value.trim() && !wifiSsidInput.value.trim()) {
+          wifiSsidInput.value = provisionSsidInput.value.trim();
         }
       });
       const registrationFirmwareSelect = document.getElementById('registration-firmware');
@@ -3045,6 +3145,10 @@
 
       let firmwareBuildPollTimer = null;
       let firmwareBuildInProgress = false;
+      let firmwareBuildJobs = [];
+      let firmwareBuildPage = 0;
+      let firmwareBuildsShowDeleted = false;
+      const FIRMWARE_BUILD_PAGE_SIZE = 5;
       const expandedFirmwareBuildLogs = new Set();
       const firmwareBuildLogCache = new Map();
       const firmwareBuildLogLoads = new Map();
@@ -3121,16 +3225,56 @@
         return 'Build log';
       }
 
-      function renderFirmwareBuilds(jobs) {
+      function updateFirmwareBuildPager(visibleCount, deletedCount) {
+        const toolbar = document.getElementById('firmware-build-toolbar');
+        const showDeletedLabel = document.getElementById('firmware-builds-show-deleted-label');
+        const previous = document.getElementById('firmware-builds-previous');
+        const next = document.getElementById('firmware-builds-next');
+        const label = document.getElementById('firmware-builds-page');
+        toolbar.hidden = firmwareBuildJobs.length === 0;
+        showDeletedLabel.hidden = deletedCount === 0;
+        const start = visibleCount === 0 ? 0 : firmwareBuildPage * FIRMWARE_BUILD_PAGE_SIZE + 1;
+        const end = Math.min(visibleCount, (firmwareBuildPage + 1) * FIRMWARE_BUILD_PAGE_SIZE);
+        const hiddenNote = deletedCount > 0 && !firmwareBuildsShowDeleted
+          ? ` · ${deletedCount} deleted hidden`
+          : '';
+        label.textContent = visibleCount
+          ? `${start}–${end} of ${visibleCount}${hiddenNote}`
+          : `${deletedCount} deleted hidden`;
+        const paged = visibleCount > FIRMWARE_BUILD_PAGE_SIZE;
+        previous.hidden = !paged;
+        next.hidden = !paged;
+        previous.disabled = firmwareBuildPage <= 0;
+        next.disabled = end >= visibleCount;
+      }
+
+      function renderFirmwareBuilds(loadedJobs = firmwareBuildJobs) {
+        firmwareBuildJobs = Array.isArray(loadedJobs) ? loadedJobs : [];
         const list = document.getElementById('firmware-build-jobs');
         const buildButton = document.getElementById('start-firmware-build');
         const buildTarget = document.getElementById('firmware-build-target');
-        firmwareBuildInProgress = jobs.some((job) => ['queued', 'running'].includes(job.status));
+        firmwareBuildInProgress = firmwareBuildJobs.some((job) => ['queued', 'running'].includes(job.status));
         buildButton.disabled = firmwareBuildInProgress || !buildTarget.value;
-        if (!jobs.length) {
-          list.replaceChildren(el('p', 'No firmware builds yet.', 'notice'));
+        const deletedCount = firmwareBuildJobs.filter((job) => job.status === 'deleted').length;
+        const visible = firmwareBuildsShowDeleted
+          ? firmwareBuildJobs
+          : firmwareBuildJobs.filter((job) => job.status !== 'deleted');
+        const pageCount = Math.max(1, Math.ceil(visible.length / FIRMWARE_BUILD_PAGE_SIZE));
+        if (firmwareBuildPage > pageCount - 1) firmwareBuildPage = pageCount - 1;
+        if (firmwareBuildPage < 0) firmwareBuildPage = 0;
+        updateFirmwareBuildPager(visible.length, deletedCount);
+        const pageJobs = visible.slice(
+          firmwareBuildPage * FIRMWARE_BUILD_PAGE_SIZE,
+          (firmwareBuildPage + 1) * FIRMWARE_BUILD_PAGE_SIZE,
+        );
+        if (!pageJobs.length) {
+          const message = firmwareBuildJobs.length
+            ? 'Deleted builds are hidden.'
+            : 'No firmware builds yet.';
+          list.replaceChildren(el('p', message, 'notice'));
           return;
         }
+        const jobs = pageJobs;
         const jobIds = new Set(jobs.map((job) => job.id));
         for (const row of list.querySelectorAll('article[data-build-id]')) {
           if (!jobIds.has(row.dataset.buildId)) row.remove();
@@ -3284,6 +3428,8 @@
           const message = builderStopped
             ? 'Build history will appear when the optional firmware builder is started.'
             : `Could not load builder history: ${error.message}`;
+          firmwareBuildJobs = [];
+          document.getElementById('firmware-build-toolbar').hidden = true;
           list.replaceChildren(el('p', message, builderStopped ? 'notice' : 'notice error'));
         }
       }
@@ -3316,6 +3462,7 @@
           sessionStorage.removeItem('dbmap-pending-build-key');
           sessionStorage.removeItem('dbmap-pending-build-target');
           status.textContent = `Build ${job.id} ${job.status}: ${job.stage}.`;
+          firmwareBuildPage = 0;
           await refreshFirmwareBuilds();
         } catch (error) {
           status.textContent = `Build request failed or its result is uncertain. Retry the same request safely: ${error.message}`;
@@ -3765,24 +3912,27 @@
           const successText = payload.configuration.bootstrap_token
             ? 'Success. NVS configuration accepted. The device is restarting on its own; Hub connectivity is pending until it calls home.'
             : 'Success. Wi-Fi and call-home settings saved to NVS. The device is restarting on its own; confirm connectivity in the Devices tab when it returns.';
-          status.textContent = successText;
-          status.className = 'notice success';
           if (payload.configuration.bootstrap_token) pendingBootstrapTokens.delete(nodeId);
           document.getElementById('provision-bootstrap-token').value = '';
           document.getElementById('provision-wifi-password').value = '';
-          const provisionStatus = document.getElementById('registration-provision-status');
-          provisionStatus.textContent = successText;
-          provisionStatus.className = 'notice success';
-          document.getElementById('registration-provision-step').hidden = false;
-          document.getElementById('registration-provision-button').disabled = true;
-          const createdToken = document.getElementById('created-token');
-          createdToken.hidden = true;
-          createdToken.replaceChildren();
-          document.getElementById('build-handoff').hidden = true;
-          document.getElementById('build-handoff-json').textContent = '';
-          completeRegistrationWorkflow(nodeId);
-          showRegistrationCompleteDialog(nodeId);
+          cacheWifiSsid(document.getElementById('provision-ssid').value);
+          if (options.buttonElement) {
+            const provisionStatus = document.getElementById('registration-provision-status');
+            provisionStatus.textContent = successText;
+            provisionStatus.className = 'notice success';
+            document.getElementById('registration-provision-step').hidden = false;
+            document.getElementById('registration-provision-button').disabled = true;
+            const createdToken = document.getElementById('created-token');
+            createdToken.hidden = true;
+            createdToken.replaceChildren();
+            document.getElementById('build-handoff').hidden = true;
+            document.getElementById('build-handoff-json').textContent = '';
+            completeRegistrationWorkflow(nodeId);
+            showRegistrationCompleteDialog(nodeId);
+          }
           updateProvisionHubUrl();
+          status.textContent = successText;
+          status.className = 'notice success';
           refreshDevices().catch(() => {});
         } catch (error) {
           status.textContent = error.message.includes('waiting for the device provisioning prompt')
@@ -4102,6 +4252,19 @@
         document.getElementById('start-firmware-build').disabled = firmwareBuildInProgress || !event.currentTarget.value;
       });
       document.getElementById('start-firmware-build').addEventListener('click', startFirmwareBuild);
+      document.getElementById('firmware-builds-show-deleted').addEventListener('change', (event) => {
+        firmwareBuildsShowDeleted = event.currentTarget.checked;
+        firmwareBuildPage = 0;
+        renderFirmwareBuilds();
+      });
+      document.getElementById('firmware-builds-previous').addEventListener('click', () => {
+        firmwareBuildPage = Math.max(0, firmwareBuildPage - 1);
+        renderFirmwareBuilds();
+      });
+      document.getElementById('firmware-builds-next').addEventListener('click', () => {
+        firmwareBuildPage += 1;
+        renderFirmwareBuilds();
+      });
       document.getElementById('flash-device').addEventListener('change', () => {
         refreshCompatibleFirmware();
         refreshDeploymentAttempts();
@@ -4277,11 +4440,7 @@
           route: registrationCallHome,
         };
         pendingBootstrapTokens.set(created.node_id, created.bootstrap_token);
-        try {
-          localStorage.setItem('dbmap-wifi-ssid', wifiSsid);
-        } catch {
-          /* ignore quota / private mode */
-        }
+        cacheWifiSsid(wifiSsid);
         tokenBox.replaceChildren(
           el('strong', `Created ${created.node_id}.`),
           el('p', `Assigned owner: ${owner?.dataset.ownerName || ownerId} (${ownerType}).`),
@@ -4503,6 +4662,11 @@
         firmwareBuildLogLoads.clear();
         firmwareBuildStatuses.clear();
         expandedFirmwareBuildLogs.clear();
+        firmwareBuildJobs = [];
+        firmwareBuildPage = 0;
+        firmwareBuildsShowDeleted = false;
+        document.getElementById('firmware-builds-show-deleted').checked = false;
+        document.getElementById('firmware-build-toolbar').hidden = true;
         document.getElementById('firmware-build-jobs').replaceChildren();
         currentDeploymentAttempt = null;
         authToken.value = '';

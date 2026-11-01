@@ -1,0 +1,14 @@
+# Template installed by scripts/install-fail2ban-nginx.sh (@@placeholders@@ replaced).
+# Bans the client IP on Hub HTTPS and MQTT after repeated MQTT auth failures.
+# Same ignore ranges and thresholds as dbmap-nginx.
+
+[dbmap-mqtt]
+enabled = true
+filter = dbmap-mqtt-auth
+logpath = @@MQTT_LOGPATH@@
+backend = auto
+maxretry = 10
+findtime = 10m
+bantime = 1h
+ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+action = iptables-multiport[name=dbmap-mqtt, port="@@HTTPS_PORT@@,@@MQTT_PORT@@", protocol=tcp, chain=DOCKER-USER]

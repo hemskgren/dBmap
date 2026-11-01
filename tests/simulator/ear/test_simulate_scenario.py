@@ -191,6 +191,9 @@ def test_scenario_builds_protocol_observations_with_per_ear_sequences_and_timeli
         started_at_utc=started_at,
         started_at_monotonic_us=1_000_000,
         save=lambda *args, **kwargs: None,
+        publish_keepalive=lambda *args, **kwargs: None,
+        make_keepalive=lambda credentials, uptime_s: {"uptime_s": uptime_s},
+        announce=False,
     )
 
     assert ids == [item["observation_id"] for item in published]
@@ -273,6 +276,9 @@ def test_retry_pending_reuses_same_observation_id_and_advances_sequence(
             published.append(payload) or payload["observation_id"]
         ),
         save=lambda path, value: saved.append((path, dict(value))),
+        publish_keepalive=lambda *args, **kwargs: None,
+        make_keepalive=lambda credentials, uptime_s: {"uptime_s": uptime_s},
+        announce=False,
     )
 
     assert ids == [pending["observation_id"]]
@@ -304,6 +310,9 @@ def test_retry_pending_rejects_pending_observation_from_different_scenario(
             publish=lambda *args: pytest.fail(
                 "must not publish another scenario's observation"
             ),
+            publish_keepalive=lambda *args, **kwargs: None,
+            make_keepalive=lambda credentials, uptime_s: {"uptime_s": uptime_s},
+            announce=False,
         )
 
 
@@ -335,4 +344,7 @@ def test_retry_pending_rejects_observation_for_a_different_ear(tmp_path) -> None
             publish=lambda *args: pytest.fail(
                 "must not publish an observation for another Ear"
             ),
+            publish_keepalive=lambda *args, **kwargs: None,
+            make_keepalive=lambda credentials, uptime_s: {"uptime_s": uptime_s},
+            announce=False,
         )

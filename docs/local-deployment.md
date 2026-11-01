@@ -1,55 +1,52 @@
-# dBmap
+# Local Hub deployment
 
-Distributed acoustic sensing. This repository starts from **hub-bootstrap** and **ESP-Output**, not from a Raspberry Pi Ear prototype.
+Run dBmap’s **local Hub** on an Intel mini-PC (`linux/amd64` Docker). Ears listen; Outputs can warn or switch in a place; the Hub is what those devices call home.
 
-The architecture document still says “Pi first” and “V0-A single Ear”. Hardware and deployment here are different:
+## Contents
 
-- Initial ESP-Output bootstrap test: ESP32-WROOM-32 (classic ESP32, 4 MB flash, no PSRAM).
-- Planned ESP-Ear hardware: ESP32-S3 with 16 MB flash. Ear firmware will reuse `firmware/components/node_common`; it is separate from this initial Output test.
-- First hub profile: **LOCAL_MEDIUM** — Intel mini-PC, `linux/amd64` containers.
-- V0/V1 do **not** target Raspberry Pi.
-- The mini-PC is expected to be used as a **Cursor remote / SSH host**.
+1. [What it is for](#what-it-is-for)
+2. [Working today / still to do](#working-today--still-to-do)
+3. [Bring-up](#bring-up)
+4. [Certificates and Compose](#certificates-and-compose)
+5. [Host fail2ban](#host-fail2ban-https-api-and-mqtt)
+6. [Using the Hub](#using-the-hub)
+7. [Devices and firmware](#devices-and-firmware)
+8. [Hub host tools](#hub-host-tools)
+9. [Wipe Hub device data](#wipe-hub-device-data-destructive)
+10. [Ear simulator](#ear-simulator)
+11. [Layout and tests](#layout-and-tests)
 
-## Current slice
+Related: [Connectivity](./connectivity.md) · [Health and availability](./health-and-availability.md) · [Device registration](./device-registration-and-deployment.md) · [Wiring](./device-wiring-and-pinout.md) · [Protocol](./protocol.md) · [Hub API](./hub-api.openapi.yaml) · [Simulator](./simulator.md) · [SECURITY.md](../SECURITY.md)
 
-`hub-bootstrap` owns node identity, one-time bootstrap tokens, desired/reported state, and initial MQTT telemetry ingestion.
+## What it is for
 
-ESP-Output firmware supports NVS identity/configuration, Wi-Fi STA, HTTPS provisioning, MQTT hello/health/command/ack, relay (GPIO16), and MAX98357 playback (BCLK 26 / WS 25 / DIN 22). See [device wiring and pinout](device-wiring-and-pinout.md).
+| Role | Intent |
+| --- | --- |
+| **Hub** | Identity, config, telemetry, and a small web console for a site. Devices provision over HTTPS, then use MQTT over TLS. |
+| **Ear** | Sense sound at a location and report observations (and health) to the Hub. |
+| **Output** | Act in a **limited geographic area**: for example turn a relay on for *N* seconds, and/or play a short **info / warning** clip on a speaker so people nearby can hear it. |
+| **Map / observations UI** | See where active devices sit and what recently arrived — not a finished event/track product yet. |
 
-The broker is TLS-only on port `8883`; the web UI and API are served through Nginx over HTTPS on port `8443` by default. Hop-by-hop clients, protocols, and ports are drawn in [Connectivity](./connectivity.md). Import the Hub routes from [hub-api.openapi.yaml](./hub-api.openapi.yaml). `DBMAP_HTTPS_PORT` can change that listener and host port together. Hub bootstrap, web, and OPA listeners are internal to Compose. Each provisioned node gets a unique MQTT login and topic-scoped permissions. Hub services use a separate broker identity. The local CA is trusted by firmware and clients; keep its private key and `.env` secrets private.
+Hardware in this repo today: ESP32-based Ear and Output firmware (shared `node_common` client). Hub profile: mini-PC with Docker Compose — not a Raspberry Pi Hub image.
 
-The local deployment now includes a minimal edge proxy and web frontend as part of the Phase A architecture refactor:
+## Working today / still to do
 
-- `https://<hub-host>:8443/` serves the lightweight dBmap web UI
-- `https://<hub-host>:8443/api/...` proxies to the Hub bootstrap API
-- `https://<hub-host>:8443/api/v1/firmware/catalog...` proxies to the Hub firmware catalog API; catalog ZIPs and metadata are retained in the `firmware-catalog` named volume
-- Hub bootstrap is reachable only on the internal Compose network; Nginx proxies to it using verified HTTPS
-- Nginx also verifies HTTPS to the web service and OPA using separate certificates
-- Nginx accepts TLS 1.2 and 1.3, disables session tickets and version disclosure, and sends browser security headers
-- Missing pages and unavailable upstream services receive local dBmap-branded error pages; the latter keeps the original gateway error status
-- Set `DBMAP_PUBLIC_BASE_PATH=/dbmap` (or `/hub`) to serve the UI and API below that path; leave it empty for root deployment. The browser UI uses the configured prefix, and CLI/simulator tools read it from the environment or accept `--base-path`.
-- authorization is still enforced by the backend API; the browser UI is not a trust boundary
-- Nginx verifies the Hub's upstream TLS certificate using the stable `hub.local` certificate name, regardless of whether clients connect to the proxy by IP or hostname
+| Area | Working | To do |
+| --- | --- | --- |
+| Hub stack | Compose: Mosquitto TLS, Nginx HTTPS, Hub API, web UI, OPA, SQLite | Regional Hub, planned maintenance windows |
+| Security | Per-device MQTT logins, local CA, bearer admin/viewer tokens, optional host fail2ban | Device flash encryption / secure boot, mTLS, automated cert rotation |
+| Ear | Wi-Fi, provision, MQTT hello/health/keepalive, mic path / reported levels, Hub observation ingest | On-device DSP/classification product path, cross-Ear event/track engine |
+| Output | Provision, MQTT, relay on/off timed, HTTPS/file audio play/stop, Hub command API | Hub “rules” that choose Outputs by map area automatically; richer media library UX |
+| Ops UI | Devices, observations, groups, firmware catalog, map popup, health/availability | Fuller product analytics |
+| Simulator | Laptop `SIM-EAR-*` observation and scenario tools | Same as tracker/eval gaps above |
 
-The Hub API delegates role and action decisions to OPA. OPA is attached to a private Compose network shared only with Hub bootstrap and has no host-published port. Hub-to-OPA calls use HTTPS and validate OPA's certificate against the local CA. This is TLS server authentication, not mutual TLS. The default decision URL is `https://opa:8181/v1/data/dbmap/authz/allow`; deployments can override it with `DBMAP_OPA_DECISION_URL`, which must use HTTPS. If OPA is unavailable or returns no boolean decision, protected API requests return HTTP 503 rather than being allowed. The Rego policy is mounted read-only from `policy/`, and OPA watches that directory to reload changed policy files. Compose checks OPA's HTTPS `/health?plugins=true` endpoint using the mounted local CA and reports the result in `docker compose ps`.
+## Bring-up
 
-Normal Compose startup does not build or start the ESP-IDF firmware builder. Its code and build artifacts are retained behind the optional `firmware-build` profile for future use. The Hub catalog stores external firmware ZIPs and matching JSON sidecars in the persistent `firmware-catalog` volume. Uploads begin as unregistered candidates; admins can review, promote, and delete entries, while viewers can list and download every entry, including candidates, without changing catalog state. Admin-only device-specific APIs list registered firmware matching stored node type and hardware revision and validate a selected release, but do not start flashing. The current node record does not store a verified chip platform, so the API reports that dimension as unknown and requires explicit admin acknowledgment.
-
-Run the policy unit tests from the repository root with:
-
-```bash
-sh scripts/test-policy.sh
-```
-
-See the [security policy](../SECURITY.md) for private vulnerability reporting and secret-handling guidance.
-
-## Mini-PC bring-up
-
-Do this on the Intel host. Choose its stable LAN IPv4 address (a DHCP reservation is recommended). `hub.local` is the hostname that devices and clients use; it resolves to this address through mDNS. The numeric address is still needed by Docker to bind the published ports specifically to the LAN interface, and is included in the TLS certificate for clients that connect by IP. It is not a replacement for `hub.local`.
+On the Hub host, pick a stable LAN IPv4 (DHCP reservation recommended). `hub.local` is the usual name (mDNS); Docker still binds published ports to `DBMAP_LAN_IP`, and that IP is in the TLS certificate for IP clients.
 
 ### If `.env` already exists
 
-Do **not** run `init-local-secrets.sh`; it creates `.env` only when the file does not exist and deliberately refuses to overwrite an existing one. Edit the existing `.env` and make sure it contains:
+Do **not** run `init-local-secrets.sh` (it will not overwrite). Ensure `.env` has at least:
 
 ```dotenv
 DBMAP_LAN_IP=<mini-PC-LAN-IP>
@@ -68,25 +65,17 @@ DBMAP_PUBLIC_HUB_URL=
 DBMAP_PUBLIC_HUB_HOST=
 ```
 
-Replace the angle-bracket values with real values (do not type the brackets). Set `DBMAP_LAN_IP` to the NUC's address. Generate a separate secret for each of the four token/password entries by running `openssl rand -hex 32` four times. Keep admin and viewer tokens distinct; do not keep the earlier `change-me-admin-token` value or reuse the old shared MQTT password. Keep `.env` private; it should have mode `0600`:
+Generate each secret with `openssl rand -hex 32`. Keep admin and viewer tokens different. `chmod 600 .env`.
 
-```bash
-chmod 600 .env
-```
-
-`DBMAP_HUB_ID` is the stable local Hub ID shown in the UI and status API (`hub_id`). It defaults to `local-01`; assign a distinct value to each Hub if you plan to connect multiple Hubs to a Regional Hub later (for example, `l-hub-agg-01`). It is configuration, not a first-boot database value: you can change it in `.env` later and recreate `hub-bootstrap` to apply it. The current local Hub does not yet configure a Regional Hub relationship.
+`DBMAP_HUB_ID` is the Hub id shown in the UI (default `local-01`). Change it in `.env` and recreate `hub-bootstrap` if you run several Hubs later.
 
 ### If `.env` does not exist
-
-Create it once with the script; this generates four independent secrets and sets restrictive file permissions:
 
 ```bash
 ./scripts/init-local-secrets.sh <mini-PC-LAN-IP>
 ```
 
-### Generate certificates and start the services
-
-Compose reads `.env` automatically when you run it from the project directory. The following `source` step is separate: it loads the values into this terminal so the certificate script can use `DBMAP_LAN_IP`.
+## Certificates and Compose
 
 ```bash
 set -a
@@ -96,278 +85,56 @@ set +a
 docker compose up --build -d
 ```
 
-The certificate generator writes material under `shared/`: public trust at `shared/trust/ca.crt` (for host tools and browsers), the CA private key host-only at `shared/ca/ca.key` (never mounted into containers), and each Compose service's leaf cert/key plus a copy of `ca.crt` under `shared/<service>/certs/`. Compose mounts only that service directory read-only, so no container sees peer private keys or `ca.key`. An existing CA in the legacy `mqtt/certs/` layout is migrated automatically on the next generator run. Nginx covers `hub.local`, `localhost`, `127.0.0.1`, `DBMAP_LAN_IP`, `DBMAP_PUBLIC_HUB_HOST`, and `DBMAP_LOCAL_MQTT_HOST`. Mosquitto covers `mosquitto`, `127.0.0.1`, `DBMAP_LAN_IP`, `DBMAP_LOCAL_MQTT_HOST`, and `DBMAP_PUBLIC_MQTT_HOST`. Hub bootstrap covers only `hub-bootstrap` and `localhost`. Service-to-service HTTPS uses separate `dbmap-web`, `opa`, and `firmware-builder` certificates. OPA uses HTTPS only and remains unpublished to the host. If it reports that an existing CA is unsuitable, run `./scripts/gen-mqtt-certs.sh --rotate-ca` to replace it. CA rotation invalidates trust on previously flashed devices; copy the new CA and erase/reflash each device.
+Material lands under `shared/` (public trust at `shared/trust/ca.crt`; CA key only on the host). Each Compose service gets its own leaf under `shared/<service>/certs/`. Nginx publishes HTTPS on `DBMAP_HTTPS_PORT` (default `8443`); Mosquitto publishes `8883` on `DBMAP_LAN_IP`. Hub API, web, and OPA stay on the Compose network.
 
-When applying the OPA policy watcher or web healthcheck to an existing deployment, recreate those services with `docker compose up -d --force-recreate opa dbmap-web`. Later changes under `policy/` are reloaded by OPA automatically. `docker compose ps` reports the web service's health.
+- Optional path prefix: `DBMAP_PUBLIC_BASE_PATH=/dbmap` (or empty for `/`).
+- OPA is HTTPS-only on a private network; policy lives in `policy/` and reloads on change. Policy unit tests: `sh scripts/test-policy.sh`.
+- Optional firmware builder: Compose profile `firmware-build` (not required for normal Hub use).
+- Trust `shared/trust/ca.crt` in browsers/OS clients that talk to the Hub; CLI tools use `--cacert shared/trust/ca.crt`.
+- Optional mDNS: `./scripts/publish-hub-mdns.sh "$DBMAP_LAN_IP"`.
 
-The local CA is not automatically trusted by browsers or operating systems. Install `shared/trust/ca.crt` in the trusted root store on each client using that platform's documented process, then browse to `hub.local` or the certificate-covered LAN IP. For command-line requests, pass `--cacert shared/trust/ca.crt`. The Nginx certificate covers `hub.local`, `localhost`, `127.0.0.1`, the configured LAN IP, `DBMAP_PUBLIC_HUB_HOST`, and `DBMAP_LOCAL_MQTT_HOST`. Do not treat a browser certificate warning as successful verification.
+Local vs external device call-home pairs come from `.env` (`DBMAP_LOCAL_*` / `DBMAP_PUBLIC_*`), not the browser URL. After changing hosts or certs: re-run `gen-mqtt-certs.sh`, rebuild firmware that embeds the CA, then `docker compose up -d`.
 
-Optional mDNS publishing can be started on a host with Avahi installed:
+## Host fail2ban (HTTPS API and MQTT)
 
-```bash
-./scripts/publish-hub-mdns.sh "$DBMAP_LAN_IP"
-```
+Optional host jails: after **10** bad API logins or MQTT auth failures in **10 minutes**, ban the IP for **1 hour** on **both** HTTPS and MQTT. Private LAN ranges are ignored. Install and operate with `sudo ./scripts/install-fail2ban-nginx.sh` (check/unban/stop commands are printed by the script). See also Nginx access log `shared/nginx/logs/access.log` and Mosquitto `shared/mosquitto/logs/mosquitto.log`.
 
-Keep the publisher running while you need the name; it stops advertising when the process exits. Publishing is optional and a missing/unavailable Avahi installation does not affect the Hub. Current device firmware includes an mDNS client so nodes can resolve `hub.local` on the LAN after Wi-Fi connects; the access point must allow multicast between the Hub host and devices. Compose publishes Nginx on `DBMAP_HTTPS_PORT` (default `8443`) and Mosquitto on `8883` at `DBMAP_LAN_IP`. The Hub API, web, and OPA ports remain internal to Compose. An existing Nginx can terminate public HTTPS on 443 and proxy to `https://<hub-host>:8443`, verifying the local CA.
+API gateway failures return JSON `{"detail":"Hub temporarily unavailable"}`; the browser UI keeps a separate HTML page.
 
-Device registration supports paired **Local Hub** and **External Hub** call-home routes. Both pairs come from `.env`, not from the browser address bar. Local uses `https://$DBMAP_LOCAL_MQTT_HOST:$DBMAP_HTTPS_PORT` (plus an optional public base path) for HTTPS and `DBMAP_LOCAL_MQTT_HOST`/`DBMAP_LOCAL_MQTT_PORT` for MQTT. External uses `DBMAP_PUBLIC_HUB_URL` for HTTPS and `DBMAP_PUBLIC_MQTT_HOST`/`DBMAP_PUBLIC_MQTT_PORT` for MQTT. Configure both external endpoints and make them resolve and route to this Hub from the remote device's network. The Hub overview shows those configured values; registration and USB configure send the selected pair to the device.
+## Using the Hub
 
-The builder embeds `shared/trust/ca.crt` into firmware. Nginx's certificate includes `DBMAP_PUBLIC_HUB_HOST`. Mosquitto's certificate includes `DBMAP_LOCAL_MQTT_HOST` and `DBMAP_PUBLIC_MQTT_HOST`. Set `DBMAP_PUBLIC_HUB_HOST` to the DNS name or IP used in `DBMAP_PUBLIC_HUB_URL`. Re-run `scripts/gen-mqtt-certs.sh` after changing these values, then rebuild firmware so it embeds the current CA. This local-CA setup requires remote devices to use firmware built with that CA; browsers opening an external Hub URL also need to trust it. A public CA/browser-trusted external deployment needs a separately managed certificate and firmware trust chain.
+Open `https://hub.local:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/` with the admin or viewer token.
 
-For a local-only device deployment, set `DBMAP_PUBLIC_MQTT_HOST` to a host/IP reachable by the device and covered by the Mosquitto certificate when you also use External call-home, or leave Local selected. Current firmware sends the selected profile during provisioning, and the Hub returns the matching MQTT endpoint. After changing `.env` or certificates, apply the configuration and restart services:
+- **Hub** tab: mode, health/availability, component details/logs (and MQTT failed connections). Details: [Health and availability](./health-and-availability.md).
+- **Devices** / **Groups** / **Observations** / firmware and USB tools: day-to-day site ops.
+- **Map**: opens from the signed-in Hub window; needs installation coordinates on devices.
 
-```bash
-sudo docker compose up -d
-```
+Viewer is read-mostly; admin can register devices and change lifecycle. The browser is not the security boundary — the API checks the token.
 
-For node registration, bootstrap-token recovery, and ESP-Output build/flash instructions, see [Register and deploy a device](./device-registration-and-deployment.md).
-
-The browser UI at `https://hub.local:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/` accepts either `DBMAP_ADMIN_TOKEN` or `DBMAP_VIEWER_TOKEN`. The Hub tab shows local mode plus a combined **Health, availability and Logs** section from the in-process monitor (see [Health and availability](./health-and-availability.md)). One component list covers Nginx, Web, Hub API, Database, Policy engine, MQTT broker, and the optional Firmware builder, using monitor probe state where available. Click **Details** or **Logs** to fetch those on demand. The database has no separate container log. Container logs are read through the local Docker engine socket mounted into `hub-bootstrap`; the API only requests those tails for the known Compose services. Multi-day availability scores stay incomplete until enough of that window has been observed. Recent monitoring events load only when that section is expanded. Database details include the SQLite version, storage use, and table row counts. Policy details show OPA HTTPS health and plugin readiness. MQTT details show the broker metrics received by the Hub over its existing TLS connection. The Devices tab summarizes device counts, lifecycle, availability, and the device list. The Observations tab shows up to the latest 100 observations in a timeline using local date and time; select an entry to view its original JSON, which retains UTC timestamps. Ear installation distances are site context only and load when expanded. It lists all pairwise distances when there are fewer than 10 registered Ears; for 10 or more, it shows only the shortest and longest valid distances and points to `scripts/hub_event_track.py` for detailed site analysis. The viewer token grants read-only access to device details (including Desired and Reported state), Hub status, component logs, and observation data; the admin token also enables device creation and lifecycle actions. Tokens are held in browser memory only and cleared on sign-out or page reload. The browser is not the security boundary: the API independently checks the token and role. Device status is online when the Hub received a keepalive within `DBMAP_DEVICE_ONLINE_WINDOW_S` (default 90 seconds); otherwise it is offline. Device detail also shows Hub-observed availability windows from that same signal (see [Health and availability](./health-and-availability.md)).
-
-The Groups tab shows member names, copyable dBmap user IDs, and linked GitHub numeric IDs. Local administrators can manage group membership and roles there; viewers can inspect the directory.
-
-Web timestamps use day/month/year and a 24-hour clock in the browser's local time zone. Human-readable Python reports use the same date/time order in the host's local time zone. API timestamps and `--output json` retain UTC ISO 8601 values.
-
-The ESPConnect tab is a separate power-user tool for local admin/viewer accounts. Device registration reads the dBmap node ID from compatible firmware over USB serial; it does not use the USB-to-UART vendor ID as device identity. See [Register and deploy a device](./device-registration-and-deployment.md) for prerequisites and the manual deployment flow.
-
-The local ESP32-WROOM-32 test uses the `esp32` target and 4 MB flash, not the planned ESP32-S3/16 MB Ear target. See the device guide for bootstrap-token handling, firmware settings, and flashing.
-
-### Record installation metadata
-
-Installation metadata is stored by the hub, not reported by ESP firmware. Each record must include the node's geographic position as WGS84 latitude and longitude in decimal degrees; other placement details are optional. Replace the example coordinates below with the actual installation coordinates:
+Installation coordinates (WGS84) are Hub-side metadata, not firmware-reported:
 
 ```bash
 curl -sS --cacert shared/trust/ca.crt \
   -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
   -H "Content-Type: application/json" \
   -X PUT \
-  -d '{"latitude":59.91,"longitude":10.75,"floor":7,"height_m":21,"height_accuracy_m":2,"mount_type":"balcony","environment":"urban","orientation_deg":180}' \
+  -d '{"latitude":59.91,"longitude":10.75,"orientation_deg":180}' \
   "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes/<node-id>/installation"
 ```
 
-The response includes the saved `installation` object. `latitude` must be between -90 and 90, `longitude` between -180 and 180, and optional `orientation_deg` between 0 (inclusive) and 360 (exclusive). Update a node's record by repeating the PUT with its complete installation object; geographic coordinates remain required.
+## Devices and firmware
 
-### Simulate an ESP-Ear observation
+Registration, USB configure, flash, and catalog flows: [Register and deploy a device](./device-registration-and-deployment.md). Pins: [Device wiring and pinout](./device-wiring-and-pinout.md).
 
-The simulator is kept separate from device firmware under `simulator/ear/`. It registers with a `SIM-EAR-*` identity (for example, `SIM-EAR-001`), so simulator records are distinguishable from physical `EAR-*` nodes. Its observation payload uses protocol version 1 and the `observation` message type. The hub validates that envelope and the observation fields before storing anything. The existing Output firmware protocol is unchanged.
+**Output commands (implemented)** — prefer the Hub API (admin token). Intent: short local action (relay and/or speaker), not site-wide automation yet.
 
-The hub must be running the current repository version; changing local source files does not update an already running container. After pulling or editing hub code, rebuild and recreate the hub service on the host:
-
-```bash
-sudo docker compose up --build -d hub-bootstrap
-sudo docker compose ps
-```
-
-The simulator creates and provisions a test Ear using the hub API, saves its one-time MQTT credentials in a mode-`0600` file, then publishes one sample observation to that Ear's TLS-protected topic. Run from the repository root after loading `.env`; `DBMAP_LAN_IP` must be reachable and included in the local TLS certificate:
-
-```bash
-uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
-  --hub-host "$DBMAP_LAN_IP"
-```
-
-The simulator reports a node ID and observation ID, not the credentials. Query the authenticated observations API:
-
-```bash
-curl -sS --cacert shared/trust/ca.crt \
-  -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" \
-  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/observations?node_id=<node-id-from-simulator>"
-```
-
-Replace `<node-id-from-simulator>` with the `SIM-EAR-*` node ID printed by the simulator. The response contains the validated protocol envelope, observation and hub `received_time_utc`. Classification and bearing have separate confidence values. Bearing is relative to the node reference axis, not a compass direction; the hub does not yet convert it using installation orientation. `signal_level_dbfs` is digital full-scale, not dB SPL. Each observation also includes a UUID, sequence number, timezone-aware event timestamp, monotonic capture timestamp, and timing-quality and uncertainty fields. Repeating publication with the same observation ID is deduplicated. To retry a publish after an error without provisioning another test node, run the command again with `--credentials-file /tmp/dbmap-ear-simulator-credentials.json --reuse-credentials`. Keep that file private; delete it when the simulator credentials are no longer needed.
-
-To publish a keepalive for that already provisioned simulated Ear, use the saved credentials file. This does not call the Hub API or create another device; it publishes one TLS keepalive, which refreshes the device's reported state and online status:
-
-```bash
-uv run --project hub/bootstrap python simulator/ear/simulate_keepalive.py \
-  --credentials-file /tmp/dbmap-ear-simulator-credentials.json
-```
-
-Add `--watch` to publish every 30 seconds until `Ctrl+C`, or set `--interval-seconds 15` to change the cadence. The simulator verifies that the credentials file is private and the keepalive topic belongs to its `SIM-EAR-*` node. The local CA is used to validate the broker certificate.
-
-To simulate several observations from the same synthetic vehicle, use a finite count. Each observation gets a new UUID and increasing sequence number; all share the supplied synthetic source ID. The default delay between publications is 15 seconds:
-
-```bash
-uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
-  --hub-host "$DBMAP_LAN_IP" \
-  --credentials-file /tmp/dbmap-ear-simulator-credentials.json \
-  --reuse-credentials \
-  --count 4 \
-  --interval-seconds 15 \
-  --vehicle-id SIM-VEHICLE-001
-```
-
-The single-observation default remains an idempotent retry using the saved observation ID. Multi-observation mode advances and persists its sequence number after each successful publish, so rerunning it starts new observations. The synthetic source ID is ground truth for later evaluation only; it is not a real acoustic identity and the tracker must not use it for association.
-
-### Run a time-ordered Ear scenario
-
-For repeatable tests, `simulator/ear/simulate_scenario.py` loads a **Scenario** describing one ground-truth source moving along a route, Ear site coordinates/orientations, and explicit observation times/Ear aliases. The source follows a constant-speed great-circle path between start and end. For each scheduled detection, the simulator calculates source position, source-to-Ear distance, and node-relative bearing; no acoustic propagation or audibility model is implied. Classification/bearing confidence and signal level remain explicit per-observation scenario inputs. Each generated message uses the same version-1 Observation envelope as an Ear and has its own ID and per-Ear sequence number. `ground_truth_id` is included in the observation only as a test hint; the tracker must not read it or use it for candidate grouping. It is available for a separate after-the-fact comparison once a tracker produces predicted associations. `--time-scale` changes only wall-clock delays; logical observation times still follow the scenario timeline.
-
-The example `vehicle_pass_01` has a 500 m route at 12 m/s and observations at t=0, 2, 4, 6, and 15 seconds. Its two scenario Ear positions should match the registered nodes' installation coordinates and orientations in the Hub; set those installation records before using spatial tracker analysis. The aliases `ear_a` and `ear_b` map to credentials files. First, create or reuse one provisioned simulator credentials file per alias. If you do not already have two, create them with distinct paths (each command registers/provisions an Ear and publishes one initial test observation):
-
-```bash
-uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
-  --hub-host "$DBMAP_LAN_IP" \
-  --credentials-file /tmp/dbmap-ear-a.json
-
-uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
-  --hub-host "$DBMAP_LAN_IP" \
-  --credentials-file /tmp/dbmap-ear-b.json
-```
-
-The MQTT host is saved in each credentials file when that Ear is provisioned. Set `DBMAP_PUBLIC_MQTT_HOST` or `DBMAP_LOCAL_MQTT_HOST` in `.env` to a host/IP reachable from the machine running this scenario before provisioning; existing credentials are not updated when `.env` changes.
-
-Validate the scenario and credentials aliases locally before publishing. Dry-run does not need the Hub token, CA, broker, or credentials file contents:
-
-```bash
-uv run --project hub/bootstrap python simulator/ear/simulate_scenario.py \
-  --scenario-file simulator/ear/scenarios/vehicle_passes.json \
-  --ear ear_a=/tmp/dbmap-ear-a.json \
-  --ear ear_b=/tmp/dbmap-ear-b.json \
-  --dry-run
-```
-
-Publish it to the already-running Hub over TLS MQTT, accelerated to 10% of wall-clock time:
-
-```bash
-uv run --project hub/bootstrap python simulator/ear/simulate_scenario.py \
-  --scenario-file simulator/ear/scenarios/vehicle_passes.json \
-  --ear ear_a=/tmp/dbmap-ear-a.json \
-  --ear ear_b=/tmp/dbmap-ear-b.json \
-  --time-scale 0.1
-```
-
-If a publish fails or the run is interrupted, the credentials file preserves the exact in-flight observation. Resolve that observation with the same scenario and alias mappings before starting another run:
-
-```bash
-uv run --project hub/bootstrap python simulator/ear/simulate_scenario.py \
-  --scenario-file simulator/ear/scenarios/vehicle_passes.json \
-  --ear ear_a=/tmp/dbmap-ear-a.json \
-  --ear ear_b=/tmp/dbmap-ear-b.json \
-  --retry-pending
-```
-
-Inspect the resulting records with the existing read-only explorer:
-
-```bash
-uv run python scripts/hub_event_track.py watch
-```
-
-This lets us exercise observation ingestion, review the independent tracker input, and compare it with scenario ground truth only after the tracker has produced predictions. It does not change or require rebuilding the Hub container.
-
-Before deploying the revised version-1 observation shape, clear the local hub database. This removes all node registrations and node-tied rows (ownership history, registration requests, deployment attempts, device monitor/diag), installation metadata, desired/reported state, bootstrap tokens, hub-side MQTT credentials, and observations. It does not remove Hub users/groups, firmware catalog entries, hub_monitor history, Mosquitto's dynamic-security users, or the TLS certificates. Run these commands from a shell with Docker access (for example, after `newgrp docker`); the one-off container only deletes rows from the existing `bootstrap-data` volume:
-
-```bash
-docker compose stop hub-bootstrap
-docker compose run --rm --no-deps --entrypoint python hub-bootstrap -c 'import os,sqlite3; p="/data/bootstrap.db"; assert os.path.isfile(p), "Hub database not found"; db=sqlite3.connect(p); db.execute("PRAGMA foreign_keys=ON"); db.executescript("BEGIN IMMEDIATE; DELETE FROM observations; DELETE FROM deployment_attempt_events; DELETE FROM deployment_attempts; DELETE FROM device_ownership; DELETE FROM registration_requests; DELETE FROM device_monitor_samples; DELETE FROM device_monitor_events; DELETE FROM device_diag_events; DELETE FROM device_diag_state; DELETE FROM installation_metadata; DELETE FROM bootstrap_tokens; DELETE FROM node_credentials; DELETE FROM desired_state; DELETE FROM reported_state; DELETE FROM nodes; COMMIT;"); tables=("observations","deployment_attempt_events","deployment_attempts","device_ownership","registration_requests","device_monitor_samples","device_monitor_events","device_diag_events","device_diag_state","installation_metadata","bootstrap_tokens","node_credentials","desired_state","reported_state","nodes"); print({table: db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in tables}); db.close()'
-docker compose up --build -d hub-bootstrap
-```
-
-Do this only when you intend to discard all local hub test data. Then use a new credentials file to create and provision a fresh simulated Ear; the first observation will use the revised structure:
-
-```bash
-uv run --project hub/bootstrap python simulator/ear/simulate_observation.py \
-  --hub-host "$DBMAP_LAN_IP" \
-  --credentials-file /tmp/dbmap-ear-simulator-v1.json
-```
-
-For a concise, authenticated list of Hub service statuses, run:
-
-```bash
-uv run python scripts/hub_summary.py list
-```
-
-All `scripts/hub_*.py` command-line tools use the same Hub connection defaults from the project-root `.env`: `DBMAP_LAN_IP`, `DBMAP_HTTPS_PORT` (default `8443`), `DBMAP_PUBLIC_BASE_PATH`, and `DBMAP_ADMIN_TOKEN`. The local CA defaults to `shared/trust/ca.crt`. Exported shell values take precedence; options such as `--hub-host`, `--hub-port`, `--base-path`, and `--ca` are optional overrides.
-
-The `list` command shows the Hub mode and ID, one status line for each Hub component, current health and availability windows from the same monitoring payload as the Hub tab, and a concise device summary with counts by type, lifecycle, availability, and installation state. Use `list --output json` for machine-readable output from the Hub status endpoint. Use `watch` to poll service statuses every 15 seconds; text mode reports service changes, while JSON mode emits one JSON object per poll. Use `watch --interval-seconds 30` to change the interval. Component details such as broker metrics remain available on demand in the web UI. Stop watch mode with `Ctrl+C`. Definitions and limitations are in [Health and availability](./health-and-availability.md).
-
-### Explore observation source hints
-
-`scripts/hub_event_track.py` is a read-only observation/site report, not an event/track engine or API. It fetches node installation metadata, prints each observation independently, and reports pairwise Ear site distances as context. It deliberately does **not** read `classification.hints.simulated_source_id` for grouping or correlation; candidate output currently keeps each observation separate. Per-Ear inactivity episodes are only time summaries and do not assert common source identity. The tracker does not yet produce predicted cross-Ear associations or Tracks.
-
-The default 15-second inactivity window closes a per-Ear activity summary only after that much silence following an observation interval (`event_time_utc + duration_ms`). This is a time boundary, not evidence that observations inside the episode came from the same source; simultaneous sources can still be distinct. The summary is only printed, never persisted or used to control a node. The tool does not create Events/Tracks or infer geographic source positions from bearing. Watch mode re-fetches observations and node metadata, then reprints the analysis when new observations arrive.
-
-```bash
-uv run python scripts/hub_event_track.py list
-```
-
-To monitor and recalculate the report every 15 seconds, use `watch`; customize the polling interval with `watch --interval-seconds 30`. Change the per-Ear inactivity summary window with `--event-gap-seconds 20` after either `list` or `watch`. To inspect one Ear only, add `--node-id SIM-EAR-001` after either command. The script fetches at most the latest 500 observations per poll.
-
-### Administer Hub nodes
-
-The authenticated admin CLI lists and inspects nodes, updates desired state or installation metadata, and reversibly deactivates/reactivates a node without deleting its observations or MQTT account. While deactivated, the Hub rejects new observations and refuses provisioning, and the node's MQTT role ACLs are suspended; reactivation restores the role ACLs without changing the account or password. A broker ACL failure returns HTTP 503. If reactivation reports that Hub state is active while broker access remains suspended, retry the `reactivate` command after fixing broker access.
-
-Use `scripts/hub_admin.py`; it loads the Hub address and admin token from the project-root `.env`:
-
-```bash
-uv run python scripts/hub_admin.py list
-uv run python scripts/hub_admin.py show OUT-009
-uv run python scripts/hub_admin.py set-desired OUT-009 --config-version 2
-uv run python scripts/hub_admin.py set-installation OUT-009 \
-  --latitude 59.91 --longitude 10.75 --orientation-deg 180
-uv run python scripts/hub_admin.py deactivate OUT-009
-uv run python scripts/hub_admin.py reactivate OUT-009
-```
-
-After sign-in, **Map** in the header opens a same-origin popup with Leaflet + OpenStreetMap pins for active devices that have installation latitude/longitude. The popup reuses the Hub login via `window.opener` and `GET /api/v1/devices` (no separate map API). Keep the Hub window open. Basemap tiles need browser internet; Leaflet assets are served from `/map/`.
-
-To compare Ear status and latest mic levels (dBFS from reported hello/health; type EAR only):
-
-```bash
-uv run python scripts/ear_audio_compare.py list
-uv run python scripts/ear_audio_compare.py watch
-uv run python scripts/ear_audio_compare.py watch --interval-seconds 5
-```
-
-Installation updates preserve fields not supplied on the command line; latitude and longitude must already exist or be supplied together. Desired-state updates likewise preserve fields that are not explicitly changed. Both commands validate the resulting complete object through the Hub API. Keep `.env` and the local CA private.
-
-`PUT /api/v1/nodes/{node_id}/desired` replaces the Desired version fields (`firmware_version`, `config_version`, `calibration_version`, `classifier_version`, `payload`). It does **not** change `firmware_id`. When a `firmware_id` is already set, the Hub rejects a `firmware_version` that does not match that catalog entry (HTTP 422)—bumping only the version string would otherwise OTA-loop the same image. Send the complete object (omit only `payload` if empty). The CLI merges for you; with `curl`, GET the node first and reuse unchanged fields:
-
-```bash
-curl -sS --cacert shared/trust/ca.crt \
-  -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
-  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes/<node-id>"
-
-curl -sS --cacert shared/trust/ca.crt \
-  -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -X PUT \
-  -d '{"firmware_version":"0.1.16","config_version":2,"calibration_version":0,"classifier_version":"","payload":{}}' \
-  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes/<node-id>/desired"
-```
-
-For device OTA, point Desired at a **registered** catalog release (both `firmware_id` and `firmware_version`). Uploads start as unregistered candidates; promote first, then select. Do not use `set-desired --firmware-version` alone:
-
-```bash
-# Promote the candidate once (Firmware tab or API):
-curl -sS --cacert shared/trust/ca.crt \
-  -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
-  -X POST \
-  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/firmware/catalog/<firmware_id>/promote"
-
-# Then set Desired on the node:
-curl -sS --cacert shared/trust/ca.crt \
-  -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -X POST \
-  -d '{"firmware_id":"dbmap-output-generic-0.1.17-<build>","acknowledge_unverified_platform":true}' \
-  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes/<node-id>/firmware-selection"
-```
-
-To test an unregistered candidate without promoting, add `"allow_candidate":true` to the firmware-selection body. Without that flag, selection of a candidate returns HTTP 404 explaining that the entry is still a candidate.
-
-To send an Output command, use either the Hub API or the authenticated TLS broker account. Supported `action` values:
-
-| Action | Required fields | Notes |
-| --- | --- | --- |
-| `RELAY_1_ON` | `duration_s` (1–3600) | Drives relay GPIO16 high for the interval (GPIO2 LED blinks as a bench cue) |
-| `RELAY_1_OFF` | — | Clears the relay immediately |
-| `AUDIO_PLAY_HTTPS` | `url` (`https://…`) | Streams MP3 over HTTPS to the MAX98357 (BCLK 26 / WS 25 / DIN 22) |
-| `AUDIO_PLAY_FILE` | `path` | Plays a file under the LittleFS `/media` mount |
-| `AUDIO_STOP` | — | Stops playback |
-
-Pin maps for Output and Ear (including reserved Ear mics 0–3) are in [device wiring and pinout](device-wiring-and-pinout.md).
-
-Prefer the Hub API: it authenticates with the admin token, validates the body, and publishes on the broker for you. Replace `<node-id>` with the Output node ID (for example `OUT-009`):
+| Action | Purpose |
+| --- | --- |
+| `RELAY_1_ON` + `duration_s` | Energize relay for 1–3600 s |
+| `RELAY_1_OFF` | Clear relay |
+| `AUDIO_PLAY_HTTPS` + `url` | Play warning/info MP3 over HTTPS to the speaker amp |
+| `AUDIO_PLAY_FILE` + `path` | Play a file from device LittleFS `/media` |
+| `AUDIO_STOP` | Stop playback |
 
 ```bash
 curl -sS --cacert shared/trust/ca.crt \
@@ -376,60 +143,66 @@ curl -sS --cacert shared/trust/ca.crt \
   -X POST \
   -d '{"action":"RELAY_1_ON","duration_s":5}' \
   "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes/<node-id>/commands"
-
-curl -sS --cacert shared/trust/ca.crt \
-  -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -X POST \
-  -d '{"action":"AUDIO_PLAY_HTTPS","url":"https://example.com/alert.mp3"}' \
-  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes/<node-id>/commands"
-
-curl -sS --cacert shared/trust/ca.crt \
-  -H "Authorization: Bearer ${DBMAP_ADMIN_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -X POST \
-  -d '{"action":"AUDIO_STOP"}' \
-  "https://${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nodes/<node-id>/commands"
 ```
 
-To publish directly on the broker instead, use the hub TLS account. Replace `out-xxx` with the node ID in lowercase:
+Desired firmware / catalog promote: use the Firmware tab or API (`firmware-selection` with a registered release). Candidate-only test flash needs `"allow_candidate":true`.
+
+Older lab boards that used plaintext MQTT need erase + reflash onto the current HTTPS/TLS path (`idf.py erase-flash`, then normal flash with a new bootstrap token).
+
+## Hub host tools
+
+All `scripts/hub_*.py` tools read Hub address and `DBMAP_ADMIN_TOKEN` from `.env` (optional `--hub-host`, `--hub-port`, `--base-path`, `--ca`).
 
 ```bash
-mosquitto_pub --cafile shared/trust/ca.crt -h "$DBMAP_LAN_IP" -p 8883 \
-  -u hub-bootstrap -P "$DBMAP_MQTT_HUB_PASSWORD" \
-  -t esp-output/local/out-xxx/command -q 1 \
-  -m '{"protocol_version":1,"action":"RELAY_1_ON","duration_s":5}'
+uv run python scripts/hub_summary.py list          # Hub / component snapshot
+uv run python scripts/hub_admin.py list            # Nodes
+uv run python scripts/hub_event_track.py list      # Read-only observation/site report (not a tracker)
+uv run python scripts/ear_audio_compare.py list    # Ear mic levels (dBFS)
+uv run python scripts/hub_observations_db.py prune # Drop old observation rows (SQLite; default >4h)
 ```
 
-`protocol_version` must be the number 1. The firmware logs and ignores a command that omits it or uses another value, and it does not drive the relay or publish an acknowledgement. Direct MQTT verifies command delivery, not physical switching.
+Regional weather (Open-Meteo) is Hub-owned and optional for ingest. Defaults use the SIM-Ear geographic centre; override with `DBMAP_WEATHER_REGION_LATITUDE` / `DBMAP_WEATHER_REGION_LONGITUDE`. Cache TTL defaults to 15 minutes (`DBMAP_WEATHER_CACHE_TTL_S`). Disable with `DBMAP_WEATHER_ENABLED=false`.
 
-## Moving from the earlier lab setup
+`hub_event_track.py watch` polls; it does not create Events/Tracks or group by simulator ground-truth hints. Health field meanings: [Health and availability](./health-and-availability.md).
 
-The earlier firmware used HTTP provisioning and a shared plaintext MQTT login. It cannot safely migrate those settings in place. Create a fresh Output node/token, copy the new CA certificate, then erase and reflash the board so it performs HTTPS provisioning and receives its own MQTT credentials:
+## Wipe Hub device data (destructive)
+
+Rare local reset. **`wipe-device-data` is not simulator-only** — it removes **every** registered node (`EAR-*`, `OUT-*`, `SIM-EAR-*`) and related rows from the Hub SQLite DB.
+
+**Deletes:** observations, nodes, node credentials, installation metadata, desired/reported state, bootstrap tokens, registration/deployment rows, device ownership, device monitor/diag samples and events.
+
+**Keeps:** local users/tokens in `.env`, firmware catalog, TLS material, Mosquitto DynSec (re-provision devices afterward), Hub monitor history tables that are not in the wipe list.
 
 ```bash
-idf.py erase-flash
+uv run python scripts/hub_observations_db.py wipe-device-data --yes
+# If you used the Ear simulator:
+rm -f shared/simulator/sim-ear-*.json
 ```
 
-Run the normal build/flash steps with the new token in menuconfig. Existing node records remain in the hub database; the reflashed board will register under the new node ID.
+To clear **observations only** (keep nodes), use `clear` / `prune` — see [Ear simulator](./simulator.md#clear-observations-keep-sim-ears).
 
-This baseline secures network transport and broker authorization on the trusted LAN. ESP32 flash encryption, secure boot, mutual TLS, and certificate rotation remain later work.
+## Ear simulator
 
-## Layout
+Laptop Ears under `simulator/ear/` (`SIM-EAR-*`). **How to run:** [Ear simulator](./simulator.md).
+Start with Ear A:
+
+```bash
+./scripts/sim-ear-observation add
+```
+
+## Layout and tests
 
 ```text
-hub/bootstrap                         Local Hub identity + desired/reported state
-mqtt                                  Mosquitto config, Dynamic Security, local TLS
-firmware/components/node_common      Shared Ear/Output client
-firmware/esp-output                  First L0 firmware
-scripts                               Local Hub summary, admin, and observation exploration tools
-tests                                 Tests for repository scripts and simulator
-compose.yaml                         LOCAL_MEDIUM stack
+hub/bootstrap          Local Hub API and monitor
+mqtt                   Mosquitto + Dynamic Security
+web                    Hub UI (+ /map)
+firmware/              Ear / Output + shared client
+firmware-builder/      Optional ESP-IDF builder profile
+simulator/ear          Laptop Ear simulators
+scripts/               Ops CLIs
+docs/                  This guide and related docs
+compose.yaml           Local Hub stack
 ```
-
-Not in this slice: `hub-event`, rules, Ear DSP, Home Assistant, Regional Hub.
-
-## Tests
 
 ```bash
 cd hub/bootstrap
@@ -438,4 +211,4 @@ uv run ruff check app
 uv run pytest tests ../../tests
 ```
 
-The Hub container uses Python 3.14 with SQLAlchemy 2.0.54. The full Hub and repository test suite passes on Python 3.14.4. Package metadata continues to allow Python 3.11 and later.
+Hub image uses Python 3.14; package metadata still allows 3.11+.

@@ -11,6 +11,7 @@ from typing import Any
 
 from _hub_cli import (
     add_hub_connection_arguments,
+    format_hub_http_error,
     load_project_env,
     print_help_without_arguments,
     validate_hub_connection,
@@ -44,8 +45,9 @@ def request_json(
         with urllib.request.urlopen(request, context=context, timeout=15) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
-        detail = exc.read(1024).decode(errors="replace")
-        raise HubAdminError(f"hub API returned HTTP {exc.code}: {detail}") from exc
+        raise HubAdminError(
+            format_hub_http_error(exc.code, exc.read(1024), path=path)
+        ) from exc
     except urllib.error.URLError as exc:
         raise HubAdminError(f"could not reach the hub API: {exc.reason}") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:

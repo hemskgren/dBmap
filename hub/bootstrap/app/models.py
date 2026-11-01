@@ -407,6 +407,42 @@ class Observation(Base):
     payload_json: Mapped[str] = mapped_column(Text)
 
 
+class RegionalEnvironmentalContext(Base):
+    """Hub-owned regional weather snapshot (not part of acoustic Observation rows)."""
+
+    __tablename__ = "regional_environmental_contexts"
+    __table_args__ = (
+        Index(
+            "ix_regional_env_region_valid",
+            "region_id",
+            "valid_from",
+            "valid_until",
+        ),
+        CheckConstraint("availability IN ('ok', 'unavailable', 'stale')"),
+        CheckConstraint("source_mode IN ('live', 'historical')"),
+    )
+
+    context_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    region_id: Mapped[str] = mapped_column(String(64), index=True)
+    provider: Mapped[str] = mapped_column(String(64))
+    latitude: Mapped[float] = mapped_column(Float)
+    longitude: Mapped[float] = mapped_column(Float)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    temperature_c: Mapped[float | None] = mapped_column(Float, nullable=True)
+    relative_humidity_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    wind_speed_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    wind_direction_deg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    wind_gusts_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pressure_hpa: Mapped[float | None] = mapped_column(Float, nullable=True)
+    precipitation_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    availability: Mapped[str] = mapped_column(String(16), default="ok")
+    source_mode: Mapped[str] = mapped_column(String(16))
+
+
 class HubMonitorSample(Base):
     __tablename__ = "hub_monitor_samples"
     __table_args__ = (

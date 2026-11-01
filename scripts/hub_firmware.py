@@ -20,6 +20,7 @@ from _hub_cli import (
     add_hub_connection_arguments,
     load_project_env,
     print_help_without_arguments,
+    summarize_hub_http_error_body,
     validate_hub_connection,
 )
 
@@ -148,10 +149,7 @@ def _request(
                 return response.status, body
     except urllib.error.HTTPError as exc:
         body = exc.read(4096)
-        try:
-            detail = json.loads(body).get("detail", body.decode(errors="replace"))
-        except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
-            detail = body.decode(errors="replace")
+        detail = summarize_hub_http_error_body(body) or f"HTTP {exc.code}"
         return exc.code, {"detail": detail}
     except urllib.error.URLError as exc:
         raise HubFirmwareError(f"could not reach the Hub API: {exc.reason}") from exc

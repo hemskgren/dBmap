@@ -114,7 +114,7 @@ If eligible time is under **50%** of the window length, `low_coverage: true` is 
 
 When any confirmed unavailable seconds exist, the displayed percentage is never rounded up to a bare `100.00`.
 
-Presentation includes, where practical: percentage, eligible duration, confirmed unavailable duration for that metric, and incomplete / low-coverage labels. **Unavailable duration always names what was unavailable** (for example “MQTT unavailable (24h)” vs “Core Hub unavailable (24h)”). MQTT unavailable duration is not total Hub downtime unless reachability also failed.
+Presentation includes, where practical: percentage, eligible duration, confirmed unavailable duration for that metric, Hub-not-running duration, and incomplete / low-coverage labels. **Hub not running** is time the monitor wrote no samples, which looks the same whether the Hub container stopped or the computer was off. That time is left out of the percentage. **Unavailable duration always names what was unavailable** (for example “MQTT unavailable (24h)” vs “Core Hub unavailable (24h)”). MQTT unavailable duration is not total Hub downtime unless reachability also failed.
 
 ### Component availability (MQTT / API / Web)
 
@@ -130,7 +130,7 @@ Unknown or missing component states are **unobserved** for that component and ar
 
 ### Gaps after restart
 
-A Local Hub cannot continuously record its own availability while it is fully offline. When monitoring resumes and the previous sample is older than two intervals, the Hub records a `monitoring_resumed` event with `certainty: inferred` and treats the intervening wall-clock time as unobserved. Exact outage start/end times inside that gap are not invented.
+A Local Hub cannot continuously record its own availability while it is fully offline. A stopped Hub container and a powered-off computer are the same situation: the monitor is not running. When monitoring resumes and the previous sample is older than two intervals, the Hub records a `monitoring_resumed` event with `certainty: inferred` and treats the intervening wall-clock time as unobserved (`kind: not_running`). Exact outage start/end times inside that gap are not invented. The Hub tab and `hub_summary` show that duration as “hub not running” and leave it out of the percentage.
 
 A detected `service_restart_detected` event (Docker `StartedAt` / `RestartCount` change) is diagnostic only. It does **not** invent an unavailable duration. Confirmed outage duration comes only from probe-based sample states. Restart event `previous_state` / `new_state` use `running` → `restart_detected` so they are not confused with health scores or availability enums.
 

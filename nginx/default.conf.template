@@ -8,6 +8,9 @@ server {
     ssl_session_timeout 1d;
     ssl_session_tickets off;
 
+    # Host-mounted for fail2ban (combined format: client IP + status).
+    access_log /var/log/nginx/dbmap/access.log combined;
+
     # Container IPs may change on recreation; query Docker DNS at request time.
     resolver 127.0.0.11 valid=10s ipv6=off;
     set $hub_bootstrap_upstream hub-bootstrap:8443;
@@ -18,6 +21,7 @@ server {
     ssl_certificate /certs/nginx.crt;
     ssl_certificate_key /certs/nginx.key;
 
+    # Browsers get the friendly HTML page. /api/ overrides this with JSON below.
     error_page 404 /dbmap-404.html;
     error_page 500 502 503 504 /dbmap-unavailable.html;
 
@@ -149,6 +153,8 @@ server {
     location ~ ^(?<request_base>/[^/]+(?:/[^/]+)*)?(?<api_uri>/api/.*)$ {
         if ($request_base != $dbmap_public_base_path) { return 404; }
         if ($api_uri !~ ^/api/v1/) { return 404; }
+        # Hub reboot / upstream down: JSON for CLIs and devices, not the HTML break page.
+        error_page 500 502 503 504 = @hub_api_unavailable;
         proxy_pass https://$hub_bootstrap_upstream$api_uri$is_args$args;
         proxy_ssl_server_name on;
         proxy_ssl_name hub-bootstrap;
@@ -159,6 +165,12 @@ server {
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Forwarded-Port $server_port;
+    }
+
+    location @hub_api_unavailable {
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+        return 503 '{"detail":"Hub temporarily unavailable"}';
     }
 
     location ~ ^(?<only_base>/[^/]+(?:/[^/]+)*)$ {

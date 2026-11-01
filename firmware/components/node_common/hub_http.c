@@ -1,6 +1,8 @@
 #include "dbmap_hub_http.h"
 
+#include <stdbool.h>
 #include <stdio.h>
+#include <strings.h>
 #include <string.h>
 
 #include "dbmap_resolve.h"
@@ -34,11 +36,20 @@ esp_err_t dbmap_hub_format_https_url(const char *hub_http_url, const char *api_p
         memcpy(hostname, host_start, host_len);
         hostname[host_len] = '\0';
         char ip[16];
+        bool is_local = host_len > 6 && strcasecmp(hostname + host_len - 6, ".local") == 0;
         if (dbmap_resolve_ipv4(hostname, ip, sizeof(ip)) == ESP_OK) {
-            int n = snprintf(resolved_base, sizeof(resolved_base), "https://%s%s", ip, host_end ? host_end : "");
-            if (n > 0 && (size_t)n < sizeof(resolved_base)) {
-                hub_base = resolved_base;
-                ESP_LOGI(TAG, "call-home HTTPS via %s (%s)", ip, hostname);
+            /* Only rewrite .local to an IP so mDNS works. Public DNS must stay
+             * in the URL so TLS matches the certificate DNS SAN. */
+            if (is_local) {
+                int n = snprintf(resolved_base, sizeof(resolved_base), "https://%s%s", ip,
+                                 host_end ? host_end : "");
+                if (n > 0 && (size_t)n < sizeof(resolved_base)) {
+                    hub_base = resolved_base;
+                    ESP_LOGI(TAG, "call-home HTTPS via %s (%s)", ip, hostname);
+                }
+            } else {
+                ESP_LOGI(TAG, "call-home HTTPS %s resolves to %s (keeping DNS name for TLS)",
+                         hostname, ip);
             }
         } else {
             ESP_LOGW(TAG, "could not resolve %s; attempting original Hub URL", hostname);

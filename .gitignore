@@ -18,6 +18,14 @@ __pycache__/
 artifacts/*
 # Legacy flat cert dir; TLS material now lives under shared/ (*.crt/*.key/*.srl already ignored).
 mqtt/certs/
+shared/nginx/logs/*
+!shared/nginx/logs/.gitkeep
+shared/mosquitto/logs/*
+!shared/mosquitto/logs/.gitkeep
+shared/simulator/*
+!shared/simulator/.gitkeep
+
+
 hub/bootstrap/data/
 firmware/**/build/
 firmware/**/sdkconfig

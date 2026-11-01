@@ -1,6 +1,7 @@
 import json
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -28,8 +29,10 @@ from app import (
     group_service,
     hub_monitor,
     identity_service,
+    mqtt_connection_failures,
     ownership_service,
     policy,
+    regional_environment,
     service,
 )
 from app.config import settings
@@ -874,6 +877,38 @@ def get_hub_monitoring_events(
 
 
 @router.get(
+    "/api/v1/hub/environmental-context",
+    dependencies=[Depends(require_policy("hub.status.read", "hub"))],
+)
+def get_hub_environmental_context(
+    at: str | None = Query(
+        default=None,
+        description="Observation/event time (ISO-8601). Defaults to Hub now.",
+    ),
+    ensure: bool = Query(
+        default=False,
+        description="When true, refresh from Open-Meteo if the cache is missing or stale.",
+    ),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Regional weather snapshot for analysis (informational; not association input)."""
+    event_time = None
+    if at is not None:
+        try:
+            event_time = datetime.fromisoformat(at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail="at must be an ISO-8601 timestamp"
+            ) from exc
+        if event_time.tzinfo is None or event_time.utcoffset() is None:
+            raise HTTPException(
+                status_code=422, detail="at must include a timezone"
+            )
+    return regional_environment.get_context_for_analysis(
+        db, event_time, ensure=ensure
+    )
+
+@router.get(
     "/api/v1/hub/components/{component}/details",
     dependencies=[Depends(require_policy("hub.status.read", "hub"))],
 )
@@ -937,17 +972,54 @@ def get_hub_component_details(component: str, db: Session = Depends(get_db)) -> 
 
 def _hub_components(mqtt_status: str, edge: dict[str, str]) -> list[dict]:
     return [
-        {"id": "nginx", "name": "Nginx", "status": edge["nginx"], "logs": True},
-        {"id": "web", "name": "Web", "status": edge["web"], "logs": True},
-        {"id": "hub-api", "name": "Hub API", "status": "online", "logs": True},
-        {"id": "database", "name": "Database", "status": "online", "logs": False},
-        {"id": "opa", "name": "Policy engine", "status": "online", "logs": True},
-        {"id": "mosquitto", "name": "MQTT broker", "status": mqtt_status, "logs": True},
+        {
+            "id": "nginx",
+            "name": "Nginx",
+            "status": edge["nginx"],
+            "logs": True,
+            "connection_failures": False,
+        },
+        {
+            "id": "web",
+            "name": "Web",
+            "status": edge["web"],
+            "logs": True,
+            "connection_failures": False,
+        },
+        {
+            "id": "hub-api",
+            "name": "Hub API",
+            "status": "online",
+            "logs": True,
+            "connection_failures": False,
+        },
+        {
+            "id": "database",
+            "name": "Database",
+            "status": "online",
+            "logs": False,
+            "connection_failures": False,
+        },
+        {
+            "id": "opa",
+            "name": "Policy engine",
+            "status": "online",
+            "logs": True,
+            "connection_failures": False,
+        },
+        {
+            "id": "mosquitto",
+            "name": "MQTT broker",
+            "status": mqtt_status,
+            "logs": True,
+            "connection_failures": True,
+        },
         {
             "id": "firmware-builder",
             "name": "Firmware builder",
             "status": edge["firmware-builder"],
             "logs": True,
+            "connection_failures": False,
         },
     ]
 
@@ -965,6 +1037,20 @@ def get_hub_component_logs(component: str) -> dict:
         raise HTTPException(status_code=404, detail=str(exc)) from None
     except container_logs.ContainerLogsUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
+
+
+@router.get(
+    "/api/v1/hub/components/{component}/connection-failures",
+    dependencies=[Depends(require_policy("hub.logs.read", "hub"))],
+)
+def get_hub_component_connection_failures(component: str) -> dict:
+    """Recent Mosquitto connection failures (auth, TLS/CA, protocol) from the broker log."""
+    if component != "mosquitto":
+        raise HTTPException(
+            status_code=404,
+            detail="connection failure summary is only available for the MQTT broker",
+        )
+    return mqtt_connection_failures.read_recent_failures()
 
 
 @router.post(

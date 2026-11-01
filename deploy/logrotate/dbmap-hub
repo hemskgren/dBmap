@@ -1,0 +1,12 @@
+# Installed by scripts/install-fail2ban-nginx.sh (@@placeholders@@ replaced).
+
+@@NGINX_LOGDIR@@/*.log
+@@MQTT_LOGDIR@@/*.log {
+    weekly
+    rotate 8
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}

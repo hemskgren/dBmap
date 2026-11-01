@@ -12,8 +12,59 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-import paho.mqtt.client as mqtt
-from app.schemas import ObservationBody
+_SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+from _hub_cli import (  # noqa: E402
+    add_hub_connection_arguments,
+    format_hub_http_error,
+    load_project_env,
+    print_help_without_arguments,
+    validate_hub_connection,
+)
+
+DEFAULT_EAR = "a"
+
+
+def credentials_file_for_ear(ear: str) -> str:
+    return f"shared/simulator/sim-ear-{ear}.json"
+
+
+def resolve_credentials_file(args: argparse.Namespace) -> str:
+    if getattr(args, "credentials_file", None):
+        return args.credentials_file
+    return credentials_file_for_ear(getattr(args, "ear", DEFAULT_EAR))
+
+
+def _observation_body():
+    from app.schemas import ObservationBody
+
+    return ObservationBody
+
+
+def _mqtt_client():
+    import paho.mqtt.client as mqtt
+
+    return mqtt
+
+
+def _keepalive_helpers():
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    spec = spec_from_file_location(
+        "dbmap_ear_keepalive",
+        Path(__file__).with_name("simulate_keepalive.py"),
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load keepalive helpers")
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.make_keepalive, module.publish_keepalive
+
+
+def publish_ear_keepalive(credentials: dict, ca_file: str, *, uptime_s: int = 0) -> None:
+    make_keepalive, publish_keepalive = _keepalive_helpers()
+    publish_keepalive(credentials, ca_file, make_keepalive(credentials, uptime_s))
 
 
 class UnsupportedSimulatorIdentity(RuntimeError):
@@ -51,13 +102,15 @@ def api_request(
         with urllib.request.urlopen(request, context=context, timeout=15) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
-        detail = exc.read(1024).decode(errors="replace")
-        raise RuntimeError(f"hub API returned HTTP {exc.code}: {detail}") from exc
+        raise RuntimeError(
+            format_hub_http_error(exc.code, exc.read(1024), path=path)
+        ) from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"could not reach the hub API: {exc.reason}") from exc
 
 
 def save_credentials(path: Path, credentials: dict, *, create: bool = False) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     if create:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -121,7 +174,7 @@ def finish_provisioning(
         {
             "bootstrap_token": record["bootstrap_token"],
             "hardware_revision": "SIM-EAR-V1",
-            "firmware_version": "0.1.0-simulator",
+            "firmware_version": "0.3.0-simulator",
         },
         admin_token,
     )
@@ -140,7 +193,7 @@ def finish_provisioning(
             "hub changed the node ID while provisioning the simulated Ear"
         )
     observation = make_observation(provisioned["node_id"])
-    ObservationBody.model_validate(observation)
+    _observation_body().model_validate(observation)
     result = {
         "state": "provisioned",
         "node_id": provisioned["node_id"],
@@ -176,7 +229,7 @@ def load_or_provision(args: argparse.Namespace, admin_token: str) -> dict:
         )
     if credentials_path.exists():
         raise FileExistsError(
-            f"{credentials_path} already exists; choose another path or pass --reuse-credentials"
+            f"{credentials_path} already exists; use publish (or choose another --ear / --credentials-file)"
         )
 
     save_credentials(credentials_path, {"state": "creating"}, create=True)
@@ -209,8 +262,9 @@ def publish_observation(credentials: dict, ca_file: str) -> str:
 def publish_payload(credentials: dict, payload: dict, ca_file: str) -> str:
     endpoint = credentials["mqtt"]
     topic = credentials["topics"]["observation"]
-    ObservationBody.model_validate(payload)
+    _observation_body().model_validate(payload)
 
+    mqtt = _mqtt_client()
     client = mqtt.Client(
         mqtt.CallbackAPIVersion.VERSION2,
         client_id=f"dbmap-ear-sim-{uuid4().hex[:12]}",
@@ -239,6 +293,8 @@ def publish_observation_batch(
     count: int,
     interval_seconds: float,
     vehicle_id: str,
+    *,
+    ear: str = DEFAULT_EAR,
 ) -> list[str]:
     published_ids = []
     for index in range(count):
@@ -260,42 +316,34 @@ def publish_observation_batch(
         )
         credentials.pop("pending_observation", None)
         save_credentials(credentials_path, credentials)
+        at_seconds = index * interval_seconds
+        print(
+            f"{index + 1:02d}  t={at_seconds:g}s  {ear}  {observation_id}",
+            flush=True,
+        )
     return published_ids
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Create a simulated Ear and publish one protocol-validated TLS observation."
-    )
+def _add_ear_selection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--hub-host", required=True, help="Hub LAN IP or certificate-valid hostname"
-    )
-    parser.add_argument(
-        "--hub-port", type=int, default=8443, help="HTTPS listener port (default: 8443)"
-    )
-    parser.add_argument(
-        "--base-path",
-        default=os.environ.get("DBMAP_PUBLIC_BASE_PATH", ""),
-        help="Optional public path prefix, for example /dbmap",
-    )
-    parser.add_argument(
-        "--ca", default="shared/trust/ca.crt", help="Path to the local hub CA"
+        "--ear",
+        choices=("a", "b", "c"),
+        default=DEFAULT_EAR,
+        help="Sim Ear slot → shared/simulator/sim-ear-{a,b,c}.json (default: a)",
     )
     parser.add_argument(
         "--credentials-file",
-        default="/tmp/dbmap-ear-simulator-credentials.json",
-        help="Private file used to preserve simulator MQTT credentials",
+        default=None,
+        help="Override credentials path (default: from --ear)",
     )
-    parser.add_argument(
-        "--reuse-credentials",
-        action="store_true",
-        help="Republish using an existing credentials file instead of creating another Ear",
-    )
+
+
+def _add_publish_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--count",
         type=int,
         default=1,
-        help="Number of observations to publish; 1 republishes the saved observation",
+        help="Number of observations to publish; 1 uses/republishes the saved observation",
     )
     parser.add_argument(
         "--interval-seconds",
@@ -308,14 +356,44 @@ def main() -> int:
         default="SIM-VEHICLE-001",
         help="Stable synthetic source ID shared by a simulated vehicle's observations",
     )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Simulated Ear observations. "
+            "Use add for a new SIM-EAR-* device, publish to reuse credentials."
+        )
+    )
+    add_hub_connection_arguments(parser)
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    add_cmd = commands.add_parser(
+        "add",
+        help="Register a new simulated Ear and publish one observation",
+    )
+    _add_ear_selection_args(add_cmd)
+    _add_publish_options(add_cmd)
+
+    publish_cmd = commands.add_parser(
+        "publish",
+        help="Publish using an existing shared/simulator/sim-ear-*.json credentials file",
+    )
+    _add_ear_selection_args(publish_cmd)
+    _add_publish_options(publish_cmd)
+    return parser
+
+
+def main() -> int:
+    try:
+        load_project_env()
+    except ValueError as exc:
+        print(f"Hub configuration failed: {exc}", file=sys.stderr)
+        return 1
+    parser = build_parser()
+    if print_help_without_arguments(parser):
+        return 0
     args = parser.parse_args()
-    args.base_path = args.base_path.rstrip("/")
-    if args.base_path and (
-        not args.base_path.startswith("/")
-        or "//" in args.base_path
-        or any(part in {".", ".."} for part in args.base_path.split("/"))
-    ):
-        parser.error("--base-path must be empty or a normalized absolute path")
     if args.count < 1:
         parser.error("--count must be at least 1")
     if args.interval_seconds < 0:
@@ -323,16 +401,19 @@ def main() -> int:
     if not args.vehicle_id.strip():
         parser.error("--vehicle-id cannot be empty")
 
-    admin_token = os.environ.get("DBMAP_ADMIN_TOKEN", "")
-    if len(admin_token) < 32:
-        parser.error("DBMAP_ADMIN_TOKEN must be loaded from the private .env file")
-    if not Path(args.ca).is_file():
-        parser.error(f"CA file does not exist: {args.ca}")
-
-    args.api_url = f"https://{args.hub_host}:{args.hub_port}{args.base_path}"
+    args.reuse_credentials = args.command == "publish"
+    args.credentials_file = resolve_credentials_file(args)
+    args.api_url, admin_token = validate_hub_connection(args, parser)
     credentials_path = Path(args.credentials_file)
     try:
         credentials = load_or_provision(args, admin_token)
+        node_id = credentials["node_id"]
+        print(
+            f"Publishing {args.count} observation(s) from {node_id} (--ear {args.ear}):",
+            flush=True,
+        )
+        publish_ear_keepalive(credentials, args.ca, uptime_s=0)
+        print(f"  keepalive  {args.ear}  {node_id}", flush=True)
         if args.count == 1:
             observation_id = publish_observation(credentials, args.ca)
             credentials["next_sequence_number"] = max(
@@ -342,6 +423,10 @@ def main() -> int:
             credentials.pop("pending_observation", None)
             save_credentials(credentials_path, credentials)
             published_ids = [observation_id]
+            print(
+                f"01  t=0s  {args.ear}  {observation_id}",
+                flush=True,
+            )
         else:
             published_ids = publish_observation_batch(
                 credentials,
@@ -350,12 +435,13 @@ def main() -> int:
                 args.count,
                 args.interval_seconds,
                 args.vehicle_id,
+                ear=args.ear,
             )
     except UnsupportedSimulatorIdentity as exc:
         print(f"Simulator setup failed: {exc}", file=sys.stderr)
         print(
             f"The pending node record is in {args.credentials_file}; "
-            "use a new credentials-file path after redeploying the hub.",
+            "use a new --ear / credentials-file path after redeploying the hub.",
             file=sys.stderr,
         )
         return 1
@@ -367,19 +453,18 @@ def main() -> int:
                 file=sys.stderr,
             )
         print(
-            "Retry with --reuse-credentials to resume provisioning or republish the same observation.",
+            "Use publish to resume provisioning or republish with the same credentials.",
             file=sys.stderr,
         )
         return 1
 
-    for observation_id in published_ids:
-        print(f"Published observation {observation_id} from {credentials['node_id']}.")
     print(
-        f"Credentials are stored in {args.credentials_file} (mode 0600); keep it private."
+        f"Credentials: {args.credentials_file} (mode 0600); "
+        f"reuse with: ./scripts/sim-ear-observation publish --ear {args.ear}"
     )
+    print(f"Inspect node: uv run python scripts/hub_admin.py show {node_id}")
     print(
-        f'Verify with: curl --cacert {args.ca} -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" '
-        f"'{args.api_url}/api/v1/observations?node_id={credentials['node_id']}'"
+        f"List observations: uv run python scripts/hub_event_track.py list --node-id {node_id}"
     )
     return 0
 
