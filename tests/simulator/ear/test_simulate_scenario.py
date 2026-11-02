@@ -348,3 +348,147 @@ def test_retry_pending_rejects_observation_for_a_different_ear(tmp_path) -> None
             make_keepalive=lambda credentials, uptime_s: {"uptime_s": uptime_s},
             announce=False,
         )
+
+
+def test_scripted_mode_preserves_authored_observations(tmp_path) -> None:
+    loaded = load_test_scenario(tmp_path)
+    prepared, diagnostics = simulate_scenario.apply_simulation_mode(
+        loaded,
+        mode="scripted",
+        time_step_seconds=1.0,
+        max_range_m=4000.0,
+    )
+    assert diagnostics is None
+    assert prepared["simulation_mode"] == "scripted"
+    assert [item["at_seconds"] for item in prepared["observations"]] == [0, 2, 5]
+    assert [item["ear"] for item in prepared["observations"]] == [
+        "ear_a",
+        "ear_b",
+        "ear_a",
+    ]
+
+
+def test_independent_detection_evaluates_all_ears_each_step(tmp_path) -> None:
+    loaded = load_test_scenario(tmp_path)
+    prepared, diagnostics = simulate_scenario.apply_simulation_mode(
+        loaded,
+        mode="independent_detection",
+        time_step_seconds=1.0,
+        max_range_m=500.0,
+        observation_interval_seconds=1.0,
+    )
+    assert diagnostics is not None
+    assert diagnostics.ear_count == 2
+    assert diagnostics.total_evaluations == diagnostics.simulation_steps * 2
+    assert diagnostics.simulation_steps >= 2
+    # Every step evaluates both ears; detections only when in range.
+    assert all(
+        stats.evaluations == diagnostics.simulation_steps
+        for stats in diagnostics.per_ear.values()
+    )
+    assert prepared["simulation_mode"] == "independent_detection"
+    assert all("bearing_confidence" not in event for event in prepared["observations"])
+    assert prepared["observations"]
+    # Stage 2: levels vary with distance (not a fixed -40 placeholder).
+    levels = [event["signal_level_dbfs"] for event in prepared["observations"]]
+    assert all(level <= 0 for level in levels)
+    distances = [event["source_distance_m"] for event in prepared["observations"]]
+    if len(set(round(d, 3) for d in distances)) > 1:
+        assert len(set(round(level, 6) for level in levels)) > 1
+
+
+def test_independent_detection_is_deterministic(tmp_path) -> None:
+    loaded = load_test_scenario(tmp_path)
+    first, first_diag = simulate_scenario.apply_simulation_mode(
+        loaded,
+        mode="independent_detection",
+        time_step_seconds=1.0,
+        max_range_m=800.0,
+        observation_interval_seconds=1.0,
+    )
+    second, second_diag = simulate_scenario.apply_simulation_mode(
+        loaded,
+        mode="independent_detection",
+        time_step_seconds=1.0,
+        max_range_m=800.0,
+        observation_interval_seconds=1.0,
+    )
+    assert [
+        (e["at_seconds"], e["ear"], e["bearing_deg"], e["source_distance_m"])
+        for e in first["observations"]
+    ] == [
+        (e["at_seconds"], e["ear"], e["bearing_deg"], e["source_distance_m"])
+        for e in second["observations"]
+    ]
+    assert first_diag.observations_generated == second_diag.observations_generated
+
+
+def test_independent_detection_omits_bearing_confidence_in_payload(tmp_path) -> None:
+    loaded = load_test_scenario(tmp_path)
+    prepared, _ = simulate_scenario.apply_simulation_mode(
+        loaded,
+        mode="independent_detection",
+        time_step_seconds=1.0,
+        max_range_m=2000.0,
+        observation_interval_seconds=1.0,
+    )
+    assert prepared["observations"]
+    payload = simulate_scenario.make_scenario_observation(
+        "SIM-EAR-001",
+        1,
+        loaded["source_id"],
+        prepared["observations"][0],
+        datetime(2026, 10, 5, 18, 0, tzinfo=timezone.utc),
+        1_000_000,
+    )
+    assert "confidence" not in payload["bearing"]
+    assert payload["signal_level_dbfs"] <= 0
+    assert payload["classification"]["confidence"] == 0.5
+    # Distance-dependent: nearer observation is louder (or equal if clamped).
+    nearer = min(prepared["observations"], key=lambda item: item["source_distance_m"])
+    farther = max(prepared["observations"], key=lambda item: item["source_distance_m"])
+    assert nearer["signal_level_dbfs"] >= farther["signal_level_dbfs"]
+
+
+def test_helicopter_independent_range_sweep_counts() -> None:
+    path = (
+        Path(__file__).parents[3]
+        / "simulator"
+        / "ear"
+        / "scenarios"
+        / "helicopter_east_west.json"
+    )
+    loaded = simulate_scenario.load_scenario(path)
+    rows = []
+    for max_range in (1000, 2000, 3000, 4000, 5000):
+        prepared, diagnostics = simulate_scenario.apply_simulation_mode(
+            loaded,
+            mode="independent_detection",
+            time_step_seconds=1.0,
+            max_range_m=float(max_range),
+            observation_interval_seconds=1.0,
+        )
+        assert diagnostics.total_evaluations == diagnostics.simulation_steps * 3
+        counts = {
+            alias: stats.detections for alias, stats in diagnostics.per_ear.items()
+        }
+        rows.append((max_range, counts, diagnostics.observations_generated))
+        # Ear B is closest; at 1 km only B (and maybe none of A).
+        if max_range == 1000:
+            assert counts["ear_a"] == 0
+            assert counts["ear_b"] > 0
+        if max_range >= 4000:
+            assert counts["ear_a"] > 0
+            assert counts["ear_b"] > 0
+            assert counts["ear_c"] > 0
+        # Detection windows come from the model, not authored exclusive blocks.
+        authored_times = {
+            (item["at_seconds"], item["ear"]) for item in loaded["observations"]
+        }
+        generated = {
+            (item["at_seconds"], item["ear"]) for item in prepared["observations"]
+        }
+        assert generated != authored_times
+    # Larger range must not reduce total observations.
+    totals = [total for _, _, total in rows]
+    assert totals == sorted(totals)

@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -637,6 +637,13 @@ def list_observations(
             received_at = received_at.replace(tzinfo=timezone.utc)
         observations.append(ObservationView(**payload, received_time_utc=received_at))
     return observations
+
+
+def count_observations(db: Session, node_id: str | None = None) -> int:
+    statement = select(func.count()).select_from(Observation)
+    if node_id is not None:
+        statement = statement.where(Observation.node_id == node_id.upper())
+    return int(db.scalar(statement) or 0)
 
 
 def apply_reported(db: Session, node_id: str, payload: dict) -> None:

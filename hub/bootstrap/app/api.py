@@ -65,6 +65,7 @@ from app.schemas import (
     LinkExternalIdentityBody,
     NodeLifecycleBody,
     NodeView,
+    ObservationCountView,
     ObservationView,
     OutputCommandBody,
     OutputCommandView,
@@ -1332,6 +1333,18 @@ def post_node_command(
         raise HTTPException(status_code=404, detail="unknown node") from None
     except service.OutputCommandUnavailable as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@router.get(
+    "/api/v1/observations/count",
+    response_model=ObservationCountView,
+    dependencies=[Depends(require_policy("observations.read", "observations"))],
+)
+def count_observations(
+    node_id: str | None = None,
+    db: Session = Depends(get_db),
+) -> ObservationCountView:
+    return ObservationCountView(total=service.count_observations(db, node_id))
 
 
 @router.get(

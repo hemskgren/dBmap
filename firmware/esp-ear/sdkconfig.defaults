@@ -22,3 +22,7 @@ CONFIG_DBMAP_NODE_TYPE_EAR=y
 CONFIG_DBMAP_HARDWARE_REVISION="esp32-s3-n16r8"
 CONFIG_DBMAP_EAR_MIC_MODEL_INMP441=y
 # I2S pin defaults are UNVERIFIED placeholders — see ear_mic Kconfig help.
+# Phase 2: RMS activity detector (thresholds provisional / uncalibrated).
+CONFIG_DBMAP_EAR_OBS_RMS_ACTIVITY=y
+CONFIG_DBMAP_EAR_OBS_TEST_PUBLISH_ONCE=n
+CONFIG_DBMAP_EAR_OBS_SEQ_BLOCK_SIZE=64

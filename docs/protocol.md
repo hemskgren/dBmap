@@ -115,8 +115,10 @@ axis: `0` is that axis, `90` is clockwise from it, `180` is behind it, and
 compass bearing. Installation `orientation_deg`, when present, is clockwise
 from geographic true north and defines the node's forward/reference axis.
 Combining installation orientation and node-relative bearing yields a
-geographic bearing modulo 360; the hub does not yet calculate or return that
-conversion.
+geographic bearing modulo 360 (`(orientation_deg + bearing.deg) % 360`,
+clockwise from true north). The hub API does not calculate or return that
+conversion; the exploratory `hub_event_track.py` report may compute it for
+diagnostic cross-Ear geometry only.
 
 `signal_level_dbfs` is a digital signal level relative to the audio chain's
 full-scale value. It is not dB SPL and is not comparable as an absolute

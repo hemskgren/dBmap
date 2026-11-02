@@ -34,7 +34,7 @@ web                    Hub UI
 firmware/              Shared client, Ear, and Output
 firmware-builder/      Optional ESP-IDF build service
 simulator/             Ear and scenario tools
-scripts/               Ops and admin helpers
+scripts/               Ops CLIs (`lib/` = shared helpers)
 docs/                  How to run and how it fits together
 compose.yaml           Local Hub stack
 ```

@@ -15,7 +15,7 @@ from uuid import uuid4
 _SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
-from _hub_cli import (  # noqa: E402
+from lib.hub_cli import (  # noqa: E402
     add_hub_connection_arguments,
     format_hub_http_error,
     load_project_env,

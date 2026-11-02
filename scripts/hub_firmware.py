@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from _hub_cli import (
+from lib.hub_cli import (
     add_hub_connection_arguments,
     load_project_env,
     print_help_without_arguments,

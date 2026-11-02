@@ -4,6 +4,7 @@
 #include "dbmap_desired.h"
 #include "dbmap_diag.h"
 #include "dbmap_ear_mic.h"
+#include "dbmap_ear_observation.h"
 #include "dbmap_health.h"
 #include "dbmap_mqtt.h"
 #include "dbmap_nvs.h"
@@ -111,6 +112,12 @@ void app_main(void)
         ESP_LOGW(TAG, "microphone init failed (%s); continuing without audio capture", esp_err_to_name(mic_err));
     }
 
+    /* Observation publisher after mic so health enrichers chain (mic then observation). */
+    esp_err_t obs_err = dbmap_ear_observation_start(&s_cfg);
+    if (obs_err != ESP_OK) {
+        ESP_LOGW(TAG, "observation publisher init failed (%s)", esp_err_to_name(obs_err));
+    }
+
     /* No Output command handler in this milestone. */
     ESP_ERROR_CHECK(dbmap_mqtt_start(&s_cfg, NULL, NULL));
     dbmap_ota_mark_valid_after_mqtt(&s_cfg);
@@ -124,6 +131,10 @@ void app_main(void)
         }
         const bool hello_ok = dbmap_publish_hello(&s_cfg) == ESP_OK;
         dbmap_publish_health(&s_cfg);
+#if CONFIG_DBMAP_EAR_OBS_TEST_PUBLISH_ONCE && !CONFIG_DBMAP_EAR_OBS_RMS_ACTIVITY
+        /* Phase 1 one-shot only when RMS activity task is not running. */
+        dbmap_ear_observation_poll_test_trigger(&s_cfg);
+#endif
         vTaskDelay(pdMS_TO_TICKS(backoff_ms));
         /* Steady 30s hello/health when MQTT publish works. Back off only on failure.
          * (A previous reset-to-1s-on-success ran before delay and defeated the 30s cadence.) */

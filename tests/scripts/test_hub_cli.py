@@ -16,7 +16,7 @@ HUB_SCRIPTS = (
 
 _hub_cli_spec = spec_from_file_location(
     "dbmap_hub_cli",
-    SCRIPT_DIRECTORY / "_hub_cli.py",
+    SCRIPT_DIRECTORY / "lib" / "hub_cli.py",
 )
 assert _hub_cli_spec is not None and _hub_cli_spec.loader is not None
 hub_cli = module_from_spec(_hub_cli_spec)

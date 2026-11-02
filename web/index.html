@@ -49,6 +49,17 @@
       .button-link { display: inline-block; border-radius: 7px; padding: 0.48rem 0.72rem; color: #fff; background: #2457a7; font-size: 0.94rem; font-weight: 600; text-decoration: none; }
       .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 0.65rem; }
       .toolbar h2 { margin: 0; }
+      .toolbar-actions { display: flex; align-items: center; gap: 0.85rem; flex-wrap: wrap; }
+      .toolbar-actions label {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        margin: 0;
+        font-size: 0.9rem;
+        color: #31425d;
+        white-space: nowrap;
+      }
+      .toolbar-actions input[type="checkbox"] { width: auto; margin: 0; }
       section { padding: 1rem; min-width: 0; }
       .table-wrap { overflow-x: auto; }
       table { width: 100%; border-collapse: collapse; text-align: left; }
@@ -120,11 +131,113 @@
       .device-admin-panel > .device-admin-body { margin-top: 0.65rem; }
       .espconnect-callout { max-width: 780px; }
       .espconnect-callout .actions { flex-wrap: wrap; }
-      .distance-list { display: grid; gap: 0.35rem; padding-left: 1.25rem; }
-      .observation-list { display: grid; gap: 0.55rem; max-height: 22rem; overflow-y: auto; margin: 0.65rem 0 0 0.55rem; padding: 0.1rem 0.5rem 0.1rem 1rem; border-left: 2px solid #d8e0eb; }
-      .timeline-entry { position: relative; width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #e3e9f1; border-radius: 8px; color: #172033; background: #fff; text-align: left; }
-      .timeline-entry::before { position: absolute; top: 0.8rem; left: -1.42rem; width: 0.55rem; height: 0.55rem; border: 2px solid #fff; border-radius: 50%; background: #2457a7; content: ""; }
-      .timeline-entry[aria-pressed="true"] { border-color: #2457a7; background: #f3f7ff; }
+      #tab-observations .obs-stats {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.45rem;
+        margin-bottom: 0.55rem;
+      }
+      #tab-observations .obs-stats .overview-card {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 0.55rem;
+        padding: 0.4rem 0.65rem;
+      }
+      #tab-observations .obs-stats .overview-card span {
+        margin: 0;
+        font-size: 0.8rem;
+      }
+      #tab-observations .obs-stats .overview-card strong {
+        margin: 0;
+        font-size: 1.05rem;
+        text-align: right;
+      }
+      .obs-slot-chart {
+        margin-top: 0.45rem;
+        display: grid;
+        gap: 0.35rem;
+      }
+      .obs-slot-meta { margin: 0; font-size: 0.82rem; color: #5b6b82; }
+      .obs-slot-plot {
+        display: flex;
+        align-items: flex-end;
+        gap: 2px;
+        height: 8.5rem;
+        padding: 0.35rem 0.35rem 0;
+        border: 1px solid #e3e9f1;
+        border-radius: 8px;
+        background: #f7f9fc;
+        overflow-x: auto;
+      }
+      .obs-slot-bar {
+        flex: 1 1 0;
+        min-width: 0.55rem;
+        max-width: 2.2rem;
+        border: 0;
+        border-radius: 4px 4px 0 0;
+        padding: 0;
+        margin: 0;
+        cursor: pointer;
+        background: #2457a7;
+        color: #fff;
+        font-size: 0.62rem;
+        font-weight: 600;
+        line-height: 1;
+        align-self: flex-end;
+      }
+      .obs-slot-bar:hover {
+        background: #1b3f7a;
+      }
+      .obs-slot-bar[aria-pressed="true"] {
+        background: #c47a12;
+        outline: 2px solid #e59a2d;
+        outline-offset: 1px;
+      }
+      .obs-slot-bar.is-empty {
+        min-height: 3px !important;
+        background: #d5dde8;
+        cursor: default;
+      }
+      .obs-slot-axis {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.5rem;
+        font-size: 0.72rem;
+        color: #5b6b82;
+      }
+      .observation-list {
+        display: grid;
+        gap: 0.45rem;
+        max-height: 22rem;
+        overflow-y: auto;
+        margin: 0.55rem 0 0;
+        padding: 0.1rem 0.15rem 0.1rem 0;
+      }
+      .timeline-entry {
+        position: relative;
+        width: 100%;
+        padding: 0.5rem 0.7rem;
+        border: 1px solid #e3e9f1;
+        border-radius: 8px;
+        color: #172033;
+        background: #fff;
+        text-align: left;
+        font-size: 0.9rem;
+      }
+      .timeline-entry[aria-pressed="true"]:not(.in-slot-focus) {
+        border-color: #2457a7;
+        background: #f3f7ff;
+      }
+      .timeline-entry.in-slot-focus {
+        border-color: #d08920;
+        background: #fff6e8;
+        box-shadow: inset 4px 0 0 #e59a2d;
+      }
+      .timeline-entry.in-slot-focus[aria-pressed="true"] {
+        border-color: #9a4f00;
+        background: #ffe0a8;
+        box-shadow: inset 4px 0 0 #9a4f00;
+      }
       #tab-devices > section { margin-top: 0.6rem; padding: 0.75rem; }
       #tab-devices > section h2, #tab-devices > section h3 { margin: 0 0 0.45rem; }
       #tab-devices > section h3:not(:first-child) { margin-top: 0.75rem; }
@@ -190,7 +303,6 @@
       .deployment-attempt strong { overflow-wrap: anywhere; }
       #tab-observations > section { margin-top: 0.6rem; padding: 0.75rem; }
       #tab-observations > section h3 { margin: 0 0 0.45rem; }
-      #site-distance-details > summary { cursor: pointer; font-weight: 650; }
       #component-details { margin-top: 0.8rem; padding: 1rem; border: 1px solid #d8e0eb; border-radius: 8px; }
       .notice { min-height: 1.5rem; margin: 0.6rem 0; color: #526078; }
       .error { color: #a83232; }
@@ -232,7 +344,8 @@
       #installation-form .actions { grid-column: 1 / -1; }
       [hidden] { display: none !important; }
       @media (max-width: 760px) {
-        .detail-grid, #installation-form, .overview-grid, .component-list, .call-home-routes { grid-template-columns: 1fr; }
+        .detail-grid, #installation-form, .overview-grid:not(.obs-stats), .component-list, .call-home-routes { grid-template-columns: 1fr; }
+        #tab-observations .obs-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
         #installation-form .actions { grid-column: auto; }
         .toolbar { align-items: flex-start; }
         #create-panel { grid-template-columns: 1fr; }
@@ -635,28 +748,29 @@
         <section id="tab-observations" role="tabpanel" aria-labelledby="tab-button-observations" hidden>
           <div class="toolbar">
             <div><h2>Observations</h2><p id="observation-refresh-status" class="notice" aria-live="polite"></p></div>
-            <button id="refresh-observations" class="secondary" type="button">Refresh</button>
+            <div class="toolbar-actions">
+              <label for="observation-auto-refresh">
+                <input id="observation-auto-refresh" type="checkbox" checked>
+                Auto-refresh
+              </label>
+              <button id="refresh-observations" class="secondary" type="button">Refresh</button>
+            </div>
           </div>
-          <div class="overview-grid hub-identity" aria-live="polite">
-            <article class="overview-card"><span>Recent observations</span><strong id="hub-observation-count">—</strong></article>
-            <article class="overview-card"><span>Latest observation</span><strong id="latest-observation-card">—</strong></article>
+          <div class="overview-grid obs-stats" aria-live="polite">
+            <article class="overview-card"><span>In database</span><strong id="hub-observation-db-total">—</strong></article>
+            <article class="overview-card"><span>Recent (max 100)</span><strong id="hub-observation-count">—</strong></article>
+            <article class="overview-card"><span>Latest</span><strong id="latest-observation-card">—</strong></article>
           </div>
           <section>
             <h3>Observation timeline</h3>
-            <p class="notice">Timeline times use your local time. Observation JSON keeps the original UTC timestamps.</p>
+            <p class="notice">Bars stack all devices into adaptive time slots (height = count). Amber = selected time slot; darker amber = selected row. Clicking a time slot turns Auto-refresh off; re-check Auto-refresh to return to the live latest view. Expanding the JSON panel alone does not pause refresh.</p>
+            <div id="observation-chart" class="obs-slot-chart" aria-live="polite"></div>
             <div id="observation-list" class="observation-list" aria-live="polite"><p class="notice">Loading observations…</p></div>
           </section>
           <section>
             <details id="latest-observation-details">
               <summary id="latest-observation-summary">Latest observation JSON</summary>
               <pre id="latest-observation-json">Loading latest observation…</pre>
-            </details>
-          </section>
-          <section>
-            <details id="site-distance-details">
-              <summary>Ear installation distances (site context only; not source associations)</summary>
-              <p id="distance-note" class="notice">Expand to load Ear installation distances.</p>
-              <ul id="ear-distance-list" class="distance-list"></ul>
             </details>
           </section>
         </section>
@@ -769,100 +883,348 @@
         return Number.isNaN(date.getTime()) ? 'Unknown' : EU_DATE_TIME_FORMATTER.format(date);
       }
 
-      const EARTH_RADIUS_M = 6371000;
-      function installationDistanceM(first, second) {
-        if (!first || !second) return null;
-        const values = [first.latitude, first.longitude, second.latitude, second.longitude].map(Number);
-        if (!values.every(Number.isFinite) || Math.abs(values[0]) > 90 || Math.abs(values[2]) > 90 || Math.abs(values[1]) > 180 || Math.abs(values[3]) > 180) return null;
-        const radians = (degrees) => degrees * Math.PI / 180;
-        const [lat1, lon1, lat2, lon2] = values.map(radians);
-        const latDelta = lat2 - lat1;
-        const lonDelta = lon2 - lon1;
-        const a = Math.sin(latDelta / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(lonDelta / 2) ** 2;
-        return EARTH_RADIUS_M * 2 * Math.asin(Math.sqrt(Math.min(1, a)));
+      function observationEventMs(observation) {
+        const start = Date.parse(observation.event_time_utc);
+        return Number.isFinite(start) ? start : null;
       }
 
-      function hasValidInstallation(device) {
-        return installationDistanceM(device.installation, device.installation) !== null;
+      function chooseObservationSlotMs(spanMs) {
+        /* Adaptive buckets from the span of the recent (≤100) observations. */
+        if (spanMs <= 2 * 60 * 1000) return 5 * 1000;
+        if (spanMs <= 10 * 60 * 1000) return 15 * 1000;
+        if (spanMs <= 20 * 60 * 1000) return 20 * 1000;
+        if (spanMs <= 60 * 60 * 1000) return 60 * 1000;
+        if (spanMs <= 3 * 60 * 60 * 1000) return 5 * 60 * 1000;
+        if (spanMs <= 12 * 60 * 60 * 1000) return 15 * 60 * 1000;
+        return 60 * 60 * 1000;
       }
 
-      async function refreshSiteDistances() {
-        const note = document.getElementById('distance-note');
-        const list = document.getElementById('ear-distance-list');
-        list.replaceChildren();
-        note.className = 'notice';
-        try {
-          const devices = await api('/api/v1/devices');
-          const ears = devices.filter((device) => device.node_type === 'ear').sort((a, b) => a.node_id.localeCompare(b.node_id));
-          const installedEars = ears.filter(hasValidInstallation);
-          if (installedEars.length < 2) {
-            note.textContent = ears.length
-              ? `${installedEars.length} of ${ears.length} registered Ears have completed installations; at least two are needed to compare installation sites.`
-              : 'No Ear devices are registered.';
-            return;
-          }
-          const distances = [];
-          for (let first = 0; first < installedEars.length; first += 1) {
-            for (let second = first + 1; second < installedEars.length; second += 1) {
-              distances.push({ first: installedEars[first].node_id, second: installedEars[second].node_id, distance: installationDistanceM(installedEars[first].installation, installedEars[second].installation) });
-            }
-          }
-          const available = distances.sort((a, b) => a.distance - b.distance);
-          if (ears.length < 10) {
-            note.textContent = `${installedEars.length} of ${ears.length} registered Ears have completed installations; showing pairwise installation-site distances for completed installations.`;
-            for (const pair of distances) {
-              list.append(el('li', `${pair.first} ↔ ${pair.second}: ${Math.round(pair.distance)} m`));
-            }
+      function formatSlotLabel(ms, slotMs) {
+        const date = new Date(ms);
+        if (slotMs < 60 * 1000) {
+          return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        }
+        if (slotMs < 60 * 60 * 1000) {
+          return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+        }
+        return date.toLocaleString(undefined, {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+      }
+
+      function formatSlotDuration(slotMs) {
+        if (slotMs < 1000) return `${slotMs} ms`;
+        if (slotMs < 60 * 1000) return `${Math.round(slotMs / 1000)} s`;
+        if (slotMs < 60 * 60 * 1000) return `${Math.round(slotMs / 60000)} min`;
+        return `${Math.round(slotMs / 3600000)} h`;
+      }
+
+      function buildObservationSlots(observations) {
+        const timed = observations
+          .map((observation) => ({ observation, at: observationEventMs(observation) }))
+          .filter((item) => item.at != null)
+          .sort((a, b) => a.at - b.at);
+        if (!timed.length) return { slots: [], slotMs: 0, rangeStart: 0, rangeEnd: 0 };
+
+        const rangeStart = timed[0].at;
+        const rangeEnd = timed[timed.length - 1].at;
+        const spanMs = Math.max(1000, rangeEnd - rangeStart);
+        const slotMs = chooseObservationSlotMs(spanMs);
+        const axisStart = Math.floor(rangeStart / slotMs) * slotMs;
+        const axisEnd = Math.floor(rangeEnd / slotMs) * slotMs + slotMs;
+        const slotCount = Math.max(1, Math.round((axisEnd - axisStart) / slotMs));
+        const slots = Array.from({ length: slotCount }, (_, index) => {
+          const start = axisStart + index * slotMs;
+          return { index, start, end: start + slotMs, items: [] };
+        });
+        for (const item of timed) {
+          let idx = Math.floor((item.at - axisStart) / slotMs);
+          if (idx < 0) idx = 0;
+          if (idx >= slots.length) idx = slots.length - 1;
+          slots[idx].items.push(item.observation);
+        }
+        return { slots, slotMs, rangeStart: axisStart, rangeEnd: axisEnd };
+      }
+
+      function renderObservationSlotChart(chart, slots, slotMs, onSlotSelect) {
+        chart.replaceChildren();
+        if (!slots.length) {
+          chart.append(el('p', 'No timed observations to chart.', 'notice'));
+          return;
+        }
+        const maxCount = Math.max(1, ...slots.map((slot) => slot.items.length));
+        const filled = slots.filter((slot) => slot.items.length > 0).length;
+        const meta = el('p', '', 'obs-slot-meta');
+        meta.textContent = `Slot size ${formatSlotDuration(slotMs)} · ${filled} occupied of ${slots.length} · height = observation count (all Ears)`;
+        chart.append(meta);
+
+        const plot = document.createElement('div');
+        plot.className = 'obs-slot-plot';
+        plot.setAttribute('role', 'list');
+
+        for (const slot of slots) {
+          const count = slot.items.length;
+          const bar = document.createElement('button');
+          bar.type = 'button';
+          bar.className = count ? 'obs-slot-bar' : 'obs-slot-bar is-empty';
+          bar.dataset.slotIndex = String(slot.index);
+          bar.setAttribute('aria-pressed', 'false');
+          const heightPx = count ? Math.max(8, Math.round((count / maxCount) * 112)) : 3;
+          bar.style.height = `${heightPx}px`;
+          bar.title = `${formatSlotLabel(slot.start, slotMs)} – ${formatSlotLabel(slot.end, slotMs)}\n${count} observation${count === 1 ? '' : 's'}`;
+          if (count >= 2 && heightPx >= 18) bar.textContent = String(count);
+          if (!count) {
+            bar.disabled = true;
           } else {
-            const shortest = available[0];
-            const longest = available[available.length - 1];
-            note.textContent = `${ears.length} registered Ears; showing only the shortest and longest valid distances. Use scripts/hub_event_track.py for detailed site analysis.`;
-            list.append(el('li', `Shortest: ${shortest.first} ↔ ${shortest.second}: ${Math.round(shortest.distance)} m`));
-            list.append(el('li', `Longest: ${longest.first} ↔ ${longest.second}: ${Math.round(longest.distance)} m`));
+            bar.addEventListener('click', () => {
+              plot.querySelectorAll('.obs-slot-bar').forEach((entry) => {
+                entry.setAttribute('aria-pressed', String(entry === bar));
+              });
+              onSlotSelect(slot);
+            });
           }
-        } catch (error) {
-          note.textContent = error.message;
-          note.className = 'notice error';
+          plot.append(bar);
+        }
+        chart.append(plot);
+
+        const axis = document.createElement('div');
+        axis.className = 'obs-slot-axis';
+        axis.append(el('span', formatSlotLabel(slots[0].start, slotMs)));
+        if (slots.length > 1) {
+          axis.append(el('span', formatSlotLabel(slots[slots.length - 1].start, slotMs)));
+        }
+        chart.append(axis);
+      }
+
+      let observationViewState = {
+        selectedId: null,
+        slotStartMs: null,
+        slotIds: null,
+        latestId: null,
+        autoRefresh: true,
+      };
+
+      function syncObservationAutoRefreshCheckbox() {
+        const box = document.getElementById('observation-auto-refresh');
+        if (box) box.checked = observationViewState.autoRefresh;
+      }
+
+      function clearObservationDigDown() {
+        observationViewState.selectedId = null;
+        observationViewState.slotStartMs = null;
+        observationViewState.slotIds = null;
+      }
+
+      function pauseObservationAutoRefresh() {
+        if (!observationViewState.autoRefresh) return;
+        observationViewState.autoRefresh = false;
+        syncObservationAutoRefreshCheckbox();
+      }
+
+      function setObservationAutoRefresh(enabled) {
+        observationViewState.autoRefresh = Boolean(enabled);
+        syncObservationAutoRefreshCheckbox();
+        if (observationViewState.autoRefresh) {
+          clearObservationDigDown();
+          refreshObservations({ force: true });
         }
       }
 
-      async function refreshObservations() {
+      function applyObservationListSelection(list, selectedId) {
+        list.querySelectorAll('.timeline-entry').forEach((entry) => {
+          const id = entry.dataset.observationId;
+          entry.setAttribute('aria-pressed', String(id === selectedId));
+          const inSlot = Boolean(observationViewState.slotIds?.has(id));
+          entry.classList.toggle('in-slot-focus', inSlot);
+        });
+      }
+
+      function renderObservationList(list, observations, onSelect) {
+        list.replaceChildren();
+        if (!observations.length) {
+          list.append(el('p', 'No observations have been received yet.', 'notice'));
+          return;
+        }
+        for (const observation of observations) {
+          const duration = Number(observation.duration_ms);
+          const durationLabel = Number.isFinite(duration) ? `${Math.round(duration)} ms` : 'n/a';
+          const family = observation.classification?.source_family || 'unclassified';
+          const item = el(
+            'button',
+            `${observation.node_id} · ${formatSeen(observation.event_time_utc)} (local) · ${durationLabel} · ${family}`,
+            'timeline-entry'
+          );
+          item.type = 'button';
+          item.dataset.observationId = observation.observation_id;
+          item.setAttribute('aria-pressed', 'false');
+          item.addEventListener('click', () => {
+            const id = observation.observation_id;
+            const stillInFocusedSlot = Boolean(observationViewState.slotIds?.has(id));
+            if (!stillInFocusedSlot) {
+              observationViewState.slotStartMs = null;
+              observationViewState.slotIds = null;
+              document.querySelectorAll('#observation-chart .obs-slot-bar').forEach((bar) => {
+                bar.setAttribute('aria-pressed', 'false');
+              });
+            }
+            // Digging into a specific row pauses live follow; latest stays live.
+            if (id !== observationViewState.latestId) pauseObservationAutoRefresh();
+            observationViewState.selectedId = id;
+            applyObservationListSelection(list, id);
+            onSelect(observation, { openDetails: true });
+          });
+          list.append(item);
+        }
+      }
+
+      function focusObservationSlot(list, slot, selectedId) {
+        observationViewState.slotStartMs = slot.start;
+        observationViewState.slotIds = new Set(slot.items.map((item) => item.observation_id));
+        const chooseId = selectedId && observationViewState.slotIds.has(selectedId)
+          ? selectedId
+          : (slot.items[0]?.observation_id || null);
+        observationViewState.selectedId = chooseId;
+        applyObservationListSelection(list, chooseId);
+        const target = chooseId
+          ? list.querySelector(`.timeline-entry[data-observation-id="${chooseId}"]`)
+          : null;
+        if (target) {
+          target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          target.focus({ preventScroll: true });
+        }
+        return chooseId ? slot.items.find((item) => item.observation_id === chooseId) : null;
+      }
+
+      async function refreshObservationTotalsOnly() {
+        try {
+          const countBody = await api('/api/v1/observations/count');
+          const dbTotal = Number(countBody?.total);
+          if (Number.isFinite(dbTotal)) {
+            document.getElementById('hub-observation-db-total').textContent = String(dbTotal);
+          }
+          const status = document.getElementById('observation-refresh-status');
+          status.className = 'notice';
+          status.textContent = `Auto-refresh off (dig-down). Totals still update. Re-check Auto-refresh to return to the live latest view. Database total ${Number.isFinite(dbTotal) ? dbTotal : '—'}.`;
+        } catch (_error) {
+          /* Keep the current inspection view intact. */
+        }
+      }
+
+      async function refreshObservations(options = {}) {
+        const force = Boolean(options.force);
+        if (!force && !observationViewState.autoRefresh) {
+          await refreshObservationTotalsOnly();
+          return;
+        }
+
+        const followLive = observationViewState.autoRefresh;
+        if (followLive) clearObservationDigDown();
+
         const status = document.getElementById('observation-refresh-status');
+        const chart = document.getElementById('observation-chart');
         const list = document.getElementById('observation-list');
+        const detailsOpen = document.getElementById('latest-observation-details').open;
         status.textContent = 'Loading latest observations…';
         status.className = 'notice';
+        chart.replaceChildren();
         list.replaceChildren();
         try {
-          const observations = await api('/api/v1/observations?limit=100');
+          const [observations, countBody] = await Promise.all([
+            api('/api/v1/observations?limit=100'),
+            api('/api/v1/observations/count'),
+          ]);
+          const dbTotal = Number(countBody?.total);
+          document.getElementById('hub-observation-db-total').textContent = Number.isFinite(dbTotal)
+            ? String(dbTotal)
+            : '—';
           document.getElementById('hub-observation-count').textContent = `${observations.length} / 100`;
-          document.getElementById('latest-observation-card').textContent = observations.length ? formatSeen(observations[0].received_time_utc) : 'None';
+          document.getElementById('latest-observation-card').textContent = observations.length
+            ? formatSeen(observations[0].received_time_utc)
+            : 'None';
           const latestJson = document.getElementById('latest-observation-json');
           const jsonSummary = document.getElementById('latest-observation-summary');
-          jsonSummary.textContent = 'Latest observation JSON';
-          latestJson.textContent = observations.length ? JSON.stringify(observations[0], null, 2) : 'No observations have been received yet.';
-          if (!observations.length) list.append(el('p', 'No observations have been received yet.', 'notice'));
-          for (const observation of observations) {
-            const item = el('button', `${observation.node_id} · ${formatSeen(observation.event_time_utc)} (local) · ${observation.observation_id}`, 'timeline-entry');
-            item.type = 'button';
-            item.setAttribute('aria-pressed', 'false');
-            item.addEventListener('click', () => {
-              list.querySelectorAll('.timeline-entry').forEach((entry) => entry.setAttribute('aria-pressed', String(entry === item)));
-              latestJson.textContent = JSON.stringify(observation, null, 2);
-              jsonSummary.textContent = observation === observations[0] ? 'Latest observation JSON' : `${observation.node_id} observation JSON`;
+          observationViewState.latestId = observations[0]?.observation_id || null;
+
+          const selectObservation = (observation, selectOptions = {}) => {
+            const openDetails = Boolean(selectOptions.openDetails);
+            observationViewState.selectedId = observation.observation_id;
+            latestJson.textContent = JSON.stringify(observation, null, 2);
+            jsonSummary.textContent = observation.observation_id === observationViewState.latestId
+              ? 'Latest observation JSON'
+              : `${observation.node_id} observation JSON`;
+            if (openDetails) {
               document.getElementById('latest-observation-details').open = true;
+            }
+          };
+
+          const { slots, slotMs } = buildObservationSlots(observations);
+          renderObservationSlotChart(chart, slots, slotMs, (slot) => {
+            pauseObservationAutoRefresh();
+            const chosen = focusObservationSlot(list, slot, observationViewState.selectedId);
+            document.querySelectorAll('#observation-chart .obs-slot-bar').forEach((bar) => {
+              bar.setAttribute('aria-pressed', String(Number(bar.dataset.slotIndex) === slot.index));
             });
-            list.append(item);
+            if (chosen) selectObservation(chosen, { openDetails: true });
+            status.className = 'notice';
+            status.textContent = 'Auto-refresh off while inspecting a time slot. Re-check Auto-refresh to return to the live latest view.';
+          });
+          renderObservationList(list, observations, selectObservation);
+
+          let selected = null;
+          if (!followLive && observationViewState.selectedId) {
+            selected = observations.find((item) => item.observation_id === observationViewState.selectedId) || null;
           }
-          if (observations.length) list.querySelector('.timeline-entry').setAttribute('aria-pressed', 'true');
-          status.textContent = `Showing ${observations.length} most recent observation${observations.length === 1 ? '' : 's'} (maximum 100). Updated ${formatSeen(new Date())}.`;
+          if (!selected && observations.length) {
+            selected = observations[0];
+            observationViewState.selectedId = selected.observation_id;
+            if (followLive) {
+              observationViewState.slotStartMs = null;
+              observationViewState.slotIds = null;
+            }
+          }
+          if (!followLive && observationViewState.slotStartMs != null) {
+            const slot = slots.find((item) => item.start === observationViewState.slotStartMs);
+            if (slot && slot.items.length) {
+              const chosen = focusObservationSlot(list, slot, observationViewState.selectedId);
+              document.querySelectorAll('#observation-chart .obs-slot-bar').forEach((bar) => {
+                bar.setAttribute('aria-pressed', String(Number(bar.dataset.slotIndex) === slot.index));
+              });
+              if (chosen) selected = chosen;
+            } else {
+              observationViewState.slotStartMs = null;
+              observationViewState.slotIds = null;
+            }
+          }
+          if (selected) {
+            applyObservationListSelection(list, selected.observation_id);
+            // Keep the JSON panel open/closed as the user left it during live follow.
+            selectObservation(selected, { openDetails: !followLive && detailsOpen });
+            if (followLive) {
+              document.getElementById('latest-observation-details').open = detailsOpen;
+            }
+          } else {
+            jsonSummary.textContent = 'Latest observation JSON';
+            latestJson.textContent = 'No observations have been received yet.';
+          }
+
+          const totalLabel = Number.isFinite(dbTotal) ? `${dbTotal} in database` : 'database total unavailable';
+          if (followLive) {
+            status.textContent = `Showing ${observations.length} most recent observation${observations.length === 1 ? '' : 's'} (maximum 100); ${totalLabel}. Updated ${formatSeen(new Date())}.`;
+          } else {
+            status.textContent = `Auto-refresh off (dig-down). Showing ${observations.length} most recent; ${totalLabel}. Re-check Auto-refresh for the live latest view. Updated ${formatSeen(new Date())}.`;
+          }
         } catch (error) {
+          document.getElementById('hub-observation-db-total').textContent = '—';
           document.getElementById('hub-observation-count').textContent = '—';
           document.getElementById('latest-observation-card').textContent = '—';
+          chart.replaceChildren();
           list.append(el('p', error.message, 'notice error'));
           status.textContent = 'Could not load observations.';
           status.className = 'notice error';
         }
-        if (document.getElementById('site-distance-details').open) await refreshSiteDistances();
       }
 
       function formatCounts(counts) {
@@ -1454,7 +1816,10 @@
         if (activeTab === 'users') refreshUsers();
         if (activeTab === 'groups') refreshGroups();
         if (activeTab === 'firmware') refreshFirmwareCatalog();
-        if (activeTab === 'observations') refreshObservations();
+        if (activeTab === 'observations') {
+          syncObservationAutoRefreshCheckbox();
+          refreshObservations({ force: observationViewState.autoRefresh });
+        }
       }
 
       function renderUsers(users) {
@@ -4361,10 +4726,13 @@
         document.getElementById('role-label').textContent = `${role} access`;
         selectedDeviceId = '';
         document.getElementById('device-detail').hidden = true;
+        observationViewState.autoRefresh = true;
+        clearObservationDigDown();
+        syncObservationAutoRefreshCheckbox();
         setActiveTab('hub');
         refreshTimer = window.setInterval(() => {
           refreshHubStatus();
-          if (activeTabName === 'observations') refreshObservations();
+          if (activeTabName === 'observations') refreshObservations({ force: false });
           else if (activeTabName === 'groups') refreshGroups();
           else if (activeTabName === 'firmware') refreshFirmwareCatalog();
           else refreshDevices();
@@ -4620,12 +4988,15 @@
         if (panel.open) loadMonitoringEvents();
       });
       document.getElementById('registration-route').addEventListener('change', updateProvisionHubUrl);
-      document.getElementById('refresh-observations').addEventListener('click', refreshObservations);
+      document.getElementById('observation-auto-refresh').addEventListener('change', (event) => {
+        setObservationAutoRefresh(event.currentTarget.checked);
+      });
+      document.getElementById('refresh-observations').addEventListener('click', () => {
+        if (observationViewState.autoRefresh) clearObservationDigDown();
+        refreshObservations({ force: true });
+      });
       document.getElementById('refresh-users').addEventListener('click', refreshUsers);
       document.getElementById('refresh-groups').addEventListener('click', refreshGroups);
-      document.getElementById('site-distance-details').addEventListener('toggle', (event) => {
-        if (event.currentTarget.open) refreshSiteDistances();
-      });
       document.querySelectorAll('[data-tab]').forEach((button) => {
         button.addEventListener('click', () => setActiveTab(button.dataset.tab));
         button.addEventListener('keydown', (event) => {

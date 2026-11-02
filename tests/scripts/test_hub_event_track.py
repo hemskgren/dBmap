@@ -106,6 +106,77 @@ def test_report_disclaims_event_track_and_geographic_position_inference() -> Non
     assert "SIM-VEHICLE-001" not in output
     assert "Ear activity episode A1 for SIM-EAR-001" in output
     assert "No Event or Track association is attempted" in output
+    assert "Cross-Ear Bearing Geometry (diagnostic only" in output
+    assert "Weather remains informational only" in output
+
+
+def test_report_cross_ear_geometry_detail_and_weather_unchanged() -> None:
+    observations = [
+        {
+            "observation_id": "obs-1",
+            "node_id": "EAR-001",
+            "event_time_utc": "2026-10-05T18:00:00Z",
+            "bearing": {"deg": 90.0, "reference": "node", "confidence": 0.9},
+            "classification": {"source_family": "helicopter", "confidence": 0.8},
+        },
+        {
+            "observation_id": "obs-2",
+            "node_id": "EAR-002",
+            "event_time_utc": "2026-10-05T18:00:02Z",
+            "bearing": {"deg": 0.0, "reference": "node", "confidence": 0.85},
+            "classification": {"source_family": "helicopter", "confidence": 0.7},
+        },
+    ]
+    nodes = {
+        "EAR-001": {
+            "installation": {
+                "latitude": 0.0,
+                "longitude": 0.0,
+                "orientation_deg": 0.0,
+            }
+        },
+        "EAR-002": {
+            "installation": {
+                "latitude": 0.0,
+                "longitude": 0.01,
+                "orientation_deg": 0.0,
+            }
+        },
+    }
+    weather = {
+        "region_id": "local-01",
+        "provider": "open-meteo",
+        "availability": "ok",
+        "from_cache": True,
+        "age_s": 1,
+        "temperature_c": 8.0,
+        "relative_humidity_pct": 70,
+        "wind_speed_ms": 2.0,
+        "wind_direction_deg": 200,
+    }
+    output = "\n".join(
+        hub_event_track.report(
+            observations,
+            nodes=nodes,
+            environmental_context=weather,
+            cross_ear_geometry_detail=True,
+        )
+    )
+    assert "Regional environmental context (informational; not association input)" in output
+    assert "temp=8.0°C" in output
+    assert "geographic=90.00°" in output
+    assert "geographic=0.00°" in output
+    assert "forward_intersection" in output
+    assert "not an Event/Track" in output
+    assert "angular σ=unavailable" in output
+    omitted = "\n".join(
+        hub_event_track.report(
+            observations,
+            nodes=nodes,
+            include_cross_ear_geometry=False,
+        )
+    )
+    assert "Cross-Ear Bearing Geometry" not in omitted
 
 
 def test_report_keeps_same_hint_observations_separate_and_groups_only_ear_activity() -> (
@@ -302,9 +373,9 @@ def test_report_can_omit_site_context_for_watch_updates() -> None:
     nodes = {
         "SIM-EAR-001": {
             "installation": {
-                "latitude": 59.374868678394485,
-                "longitude": 18.001342117095227,
-                "height_m": 32,
+                "latitude": 59.35100847144696,
+                "longitude": 18.04842390753845,
+                "height_m": 74,
             }
         },
         "SIM-EAR-002": {
@@ -390,9 +461,9 @@ def test_sim_ear_long_range_option_keeps_pair_eligible_without_hiding_distance()
     nodes = {
         "SIM-EAR-001": {
             "installation": {
-                "latitude": 59.374868678394485,
-                "longitude": 18.001342117095227,
-                "height_m": 32,
+                "latitude": 59.35100847144696,
+                "longitude": 18.04842390753845,
+                "height_m": 74,
             }
         },
         "SIM-EAR-002": {
@@ -415,9 +486,9 @@ def test_sim_ear_long_range_option_keeps_pair_eligible_without_hiding_distance()
         )
     )
 
-    assert "SIM-EAR-001 ↔ SIM-EAR-002: 8373m (>500m)" in default_output
+    assert "SIM-EAR-001 ↔ SIM-EAR-002: 4782m (>500m)" in default_output
     assert "SIM eligible" not in default_output
-    assert "SIM-EAR-001 ↔ SIM-EAR-002: 8373m (>500m, SIM eligible)" in allowed_output
+    assert "SIM-EAR-001 ↔ SIM-EAR-002: 4782m (>500m, SIM eligible)" in allowed_output
     assert "SIM eligible = long-range SIM-EAR pair kept for analysis" in allowed_output
 
 

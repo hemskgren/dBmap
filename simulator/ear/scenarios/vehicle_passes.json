@@ -5,8 +5,8 @@
     "source_family": "vehicle",
     "movement": {
       "start": {
-        "latitude": 59.374868678394485,
-        "longitude": 18.001342117095227
+        "latitude": 59.35100847144696,
+        "longitude": 18.04842390753845
       },
       "end": {
         "latitude": 59.335118371024905,
@@ -17,8 +17,8 @@
   },
   "ears": {
     "ear_a": {
-      "latitude": 59.374868678394485,
-      "longitude": 18.001342117095227,
+      "latitude": 59.35100847144696,
+      "longitude": 18.04842390753845,
       "orientation_deg": 0
     },
     "ear_b": {

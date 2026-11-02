@@ -1,0 +1,103 @@
+menu "dBmap Ear Observation"
+    depends on DBMAP_NODE_TYPE_EAR
+
+    config DBMAP_EAR_OBS_SEQ_BLOCK_SIZE
+        int "Sequence-number block size reserved per NVS write"
+        range 8 4096
+        default 64
+        help
+            NVS stores an exclusive sequence limit. RAM allocates within the
+            reserved block. Larger blocks mean fewer NVS writes; unused numbers
+            in a block are skipped after reboot (gaps OK, never reused).
+
+    config DBMAP_EAR_OBS_RMS_ACTIVITY
+        bool "Phase 2: RMS acoustic activity detector"
+        default y
+        help
+            Detect aggregate acoustic activity from windowed RMS (not source
+            classification). Emits start/periodic/end Observations. Detection
+            continues while MQTT is disconnected; undelivered emissions are
+            dropped without consuming sequence numbers.
+
+    config DBMAP_EAR_OBS_ENTER_THRESHOLD_DBFS_X1000
+        int "RMS enter threshold (dBFS × 1000)"
+        range -120000 0
+        default -45000
+        depends on DBMAP_EAR_OBS_RMS_ACTIVITY
+        help
+            Provisional: enter activity when rms_dbfs >= this value / 1000.
+            Example -45000 → -45.0 dBFS. Not calibrated.
+
+    config DBMAP_EAR_OBS_EXIT_THRESHOLD_DBFS_X1000
+        int "RMS exit threshold (dBFS × 1000)"
+        range -120000 0
+        default -55000
+        depends on DBMAP_EAR_OBS_RMS_ACTIVITY
+        help
+            Provisional hysteresis: leave activity when rms_dbfs < this / 1000.
+            Must be quieter than the enter threshold (more negative). Example
+            -55000 → -55.0 dBFS. Not calibrated.
+
+    config DBMAP_EAR_OBS_MIN_ACTIVITY_MS
+        int "Minimum activity duration before START emission (ms)"
+        range 100 60000
+        default 2000
+        depends on DBMAP_EAR_OBS_RMS_ACTIVITY
+
+    config DBMAP_EAR_OBS_EXIT_HOLD_MS
+        int "Time below exit threshold before END emission (ms)"
+        range 100 60000
+        default 1000
+        depends on DBMAP_EAR_OBS_RMS_ACTIVITY
+
+    config DBMAP_EAR_OBS_BOOT_SETTLE_MS
+        int "Ignore measurements for this long after I2S enable (ms)"
+        range 0 120000
+        default 5000
+        depends on DBMAP_EAR_OBS_RMS_ACTIVITY
+        help
+            Suppresses boot-time floating-DIN / unstable I2S windows. Does not
+            treat settle as acoustic silence.
+
+    config DBMAP_EAR_OBS_INTERVAL_MS
+        int "Periodic Observation interval while active (ms)"
+        range 1000 300000
+        default 5000
+        depends on DBMAP_EAR_OBS_RMS_ACTIVITY
+
+    config DBMAP_EAR_OBS_MAX_INVALID_HOLD_MS
+        int "Force END after this long without usable samples (ms)"
+        range 1000 600000
+        default 30000
+        depends on DBMAP_EAR_OBS_RMS_ACTIVITY
+        help
+            Invalid/missing measurements are never treated as silence, but an
+            activity episode must not remain open forever if the mic path stays
+            unusable. After this hold, emit END ending at the last usable
+            sample. Exit-hold and periodic timers do not advance during invalid
+            windows.
+
+    config DBMAP_EAR_OBS_TEST_PUBLISH_ONCE
+        bool "Phase 1: publish one test Observation after MQTT connects"
+        default n
+        help
+            Controlled Phase 1 trigger. Prefer the RMS activity detector for
+            ongoing Observations. Enable only for publisher bring-up without
+            the detector.
+
+    config DBMAP_EAR_OBS_TEST_SIGNAL_LEVEL_DBFS
+        int "Phase 1 placeholder signal_level_dbfs × 1000 when mic RMS unavailable"
+        range -120000 0
+        default -60000
+        depends on DBMAP_EAR_OBS_TEST_PUBLISH_ONCE
+        help
+            Used only when the microphone has not yet produced a measurement
+            window. Value is thousandths of a dBFS (e.g. -60000 → -60.0 dBFS).
+
+    config DBMAP_EAR_OBS_TEST_DURATION_MS
+        int "Phase 1 test Observation duration_ms when mic window unknown"
+        range 1 5000
+        default 1000
+        depends on DBMAP_EAR_OBS_TEST_PUBLISH_ONCE
+
+endmenu

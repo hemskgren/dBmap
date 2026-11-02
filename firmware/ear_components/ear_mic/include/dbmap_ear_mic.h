@@ -1,5 +1,8 @@
 #pragma once
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #include "cJSON.h"
 #include "dbmap_types.h"
 #include "esp_err.h"
@@ -26,6 +29,22 @@ typedef struct {
 } dbmap_ear_mic_config_t;
 
 /**
+ * Latest windowed RMS snapshot for Observation / activity detection.
+ * transport_status and microphone_status are diagnostic gates only — not
+ * Observation source_family classification.
+ */
+typedef struct {
+    bool valid;
+    float rms_dbfs;
+    uint32_t window_ms;
+    int64_t measured_at_us; /* esp_timer monotonic microseconds */
+    uint32_t window_seq;
+    uint32_t ms_since_i2s_enable;
+    char transport_status[16];
+    char microphone_status[24];
+} dbmap_ear_mic_levels_t;
+
+/**
  * Start the bounded I2S acquisition + telemetry task.
  * Registers a hello/health enricher that publishes microphone capabilities.
  * cfg must remain valid for the lifetime of the task (app_main static config).
@@ -37,6 +56,12 @@ const char *dbmap_ear_mic_model_id(void);
 
 /** Latest subsystem status string: ok | degraded | error | unavailable. */
 const char *dbmap_ear_mic_subsystem_status(void);
+
+/**
+ * Copy the latest completed measurement window levels.
+ * Returns ESP_OK with valid=false when no window has been measured yet.
+ */
+esp_err_t dbmap_ear_mic_get_levels(dbmap_ear_mic_levels_t *out);
 
 #ifdef __cplusplus
 }
