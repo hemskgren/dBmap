@@ -414,6 +414,12 @@ class ObservationView(ObservationBody):
     received_time_utc: datetime
 
 
+class ObservationCountView(BaseModel):
+    """Total rows in the observations table (optional node filter)."""
+
+    total: int = Field(ge=0)
+
+
 class NodeView(BaseModel):
     node_id: str
     node_type: str

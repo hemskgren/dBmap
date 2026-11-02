@@ -199,7 +199,7 @@ web                    Hub UI (+ /map)
 firmware/              Ear / Output + shared client
 firmware-builder/      Optional ESP-IDF builder profile
 simulator/ear          Laptop Ear simulators
-scripts/               Ops CLIs
+scripts/               Ops CLIs (`lib/` = shared helpers)
 docs/                  This guide and related docs
 compose.yaml           Local Hub stack
 ```

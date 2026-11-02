@@ -12,16 +12,33 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+_EAR_DIR = Path(__file__).resolve().parent
 _SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
-if str(_SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS))
-from _hub_cli import (  # noqa: E402
+for _path in (_EAR_DIR, _SCRIPTS):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+from lib.hub_cli import (  # noqa: E402
     load_project_env,
     print_help_without_arguments,
+)
+from independent_detection import (  # noqa: E402
+    DEFAULT_OBSERVATION_INTERVAL_S,
+    DEFAULT_PATH_LOSS_EXPONENT,
+    DEFAULT_REFERENCE_DISTANCE_M,
+    DEFAULT_REFERENCE_LEVEL_DBFS,
+    ObservationEmissionPolicy,
+    RangeDetectionConfig,
+    SignalLevelConfig,
+    format_independent_detection_diagnostics,
+    generate_independent_detection_events,
 )
 
 _simulator_module = None
 _keepalive_module = None
+
+SIMULATION_MODES = ("scripted", "independent_detection")
+DEFAULT_INDEPENDENT_MAX_RANGE_M = 4000.0
+DEFAULT_INDEPENDENT_TIME_STEP_S = 1.0
 
 
 def _load_sibling_module(module_name: str, filename: str):
@@ -70,7 +87,10 @@ def ear_shortname(alias: str) -> str:
 
 
 def run_wall_clock_seconds(scenario: dict[str, Any], time_scale: float) -> float:
-    last_at = scenario["observations"][-1]["at_seconds"]
+    if scenario["observations"]:
+        last_at = scenario["observations"][-1]["at_seconds"]
+    else:
+        last_at = scenario["movement"]["duration_seconds"]
     return last_at * time_scale
 
 
@@ -83,8 +103,10 @@ def print_scenario_banner(
     observation_count = (
         len(scenario["observations"]) if count is None else count
     )
+    mode = scenario.get("simulation_mode", "scripted")
     print(
-        f"Scenario {scenario['scenario_id']} publishing {observation_count} observations:",
+        f"Scenario {scenario['scenario_id']} publishing {observation_count} observations "
+        f"(mode={mode}):",
         flush=True,
     )
     movement = scenario["movement"]
@@ -435,8 +457,16 @@ def parse_ear_arguments(values: list[str]) -> dict[str, Path]:
     return ears
 
 
-def validate_ear_aliases(scenario: dict[str, Any], ears: dict[str, Path]) -> None:
-    required = {item["ear"] for item in scenario["observations"]}
+def validate_ear_aliases(
+    scenario: dict[str, Any],
+    ears: dict[str, Path],
+    *,
+    mode: str = "scripted",
+) -> None:
+    if mode == "independent_detection":
+        required = set(scenario["ears"])
+    else:
+        required = {item["ear"] for item in scenario["observations"]}
     missing = required - ears.keys()
     unused = ears.keys() - required
     if missing or unused:
@@ -577,15 +607,96 @@ def make_scenario_observation(
         "duration_ms": event.get("duration_ms", 850.0),
     }
     if "bearing_deg" in event:
-        payload["bearing"] = {
+        bearing: dict[str, Any] = {
             "deg": event["bearing_deg"],
             "reference": "node",
-            "confidence": event["bearing_confidence"],
         }
+        if "bearing_confidence" in event and event["bearing_confidence"] is not None:
+            bearing["confidence"] = event["bearing_confidence"]
+        payload["bearing"] = bearing
     if "signal_level_dbfs" in event:
         payload["signal_level_dbfs"] = event["signal_level_dbfs"]
     _observation_body().model_validate(payload)
     return payload
+
+
+def parse_ear_max_range_arguments(values: list[str]) -> dict[str, float]:
+    ranges: dict[str, float] = {}
+    for value in values:
+        alias, separator, raw = value.partition("=")
+        if not separator or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", alias) or not raw:
+            raise ScenarioError(
+                "--ear-max-range must use the form ALIAS=METERS"
+            )
+        if alias in ranges:
+            raise ScenarioError(f"duplicate --ear-max-range alias: {alias}")
+        try:
+            parsed = float(raw)
+        except ValueError as exc:
+            raise ScenarioError(
+                f"--ear-max-range {alias} must be a number"
+            ) from exc
+        meters = _finite_number(parsed, f"--ear-max-range {alias}", minimum=0)
+        if meters <= 0:
+            raise ScenarioError(f"--ear-max-range {alias} must be greater than zero")
+        ranges[alias] = meters
+    return ranges
+
+
+def apply_simulation_mode(
+    scenario: dict[str, Any],
+    *,
+    mode: str,
+    time_step_seconds: float,
+    max_range_m: float,
+    per_ear_max_range_m: dict[str, float] | None = None,
+    reference_level_dbfs: float = DEFAULT_REFERENCE_LEVEL_DBFS,
+    reference_distance_m: float = DEFAULT_REFERENCE_DISTANCE_M,
+    path_loss_exponent: float = DEFAULT_PATH_LOSS_EXPONENT,
+    observation_interval_seconds: float = DEFAULT_OBSERVATION_INTERVAL_S,
+) -> tuple[dict[str, Any], Any | None]:
+    """Return a runnable scenario copy and optional independent-detection diagnostics."""
+    if mode not in SIMULATION_MODES:
+        raise ScenarioError(
+            f"unsupported simulation mode {mode!r}; expected one of {SIMULATION_MODES}"
+        )
+    prepared = dict(scenario)
+    prepared["simulation_mode"] = mode
+    if mode == "scripted":
+        if not prepared["observations"]:
+            raise ScenarioError("scripted mode requires authored observations")
+        return prepared, None
+
+    config = RangeDetectionConfig(
+        max_range_m=max_range_m,
+        time_step_seconds=time_step_seconds,
+        per_ear_max_range_m=dict(per_ear_max_range_m or {}),
+    )
+    signal_level_config = SignalLevelConfig(
+        reference_level_dbfs=reference_level_dbfs,
+        reference_distance_m=reference_distance_m,
+        path_loss_exponent=path_loss_exponent,
+    )
+    emission_policy = ObservationEmissionPolicy(
+        observation_interval_seconds=observation_interval_seconds,
+    )
+    try:
+        events, diagnostics = generate_independent_detection_events(
+            movement=prepared["movement"],
+            ears=prepared["ears"],
+            source_family=prepared["source_family"],
+            config=config,
+            signal_level_config=signal_level_config,
+            emission_policy=emission_policy,
+            position_on_route=_position_on_route,
+            distance_m=_distance_m,
+            bearing_deg=_bearing_deg,
+        )
+    except ValueError as exc:
+        raise ScenarioError(str(exc)) from exc
+    prepared["observations"] = events
+    prepared["independent_detection"] = diagnostics
+    return prepared, diagnostics
 
 
 def run_scenario(
@@ -696,8 +807,14 @@ def print_schedule(scenario: dict[str, Any], *, time_scale: float = 1.0) -> None
         sequences[alias] = sequence + 1
     movement = scenario["movement"]
     wall = run_wall_clock_seconds(scenario, time_scale)
-    last_at = scenario["observations"][-1]["at_seconds"]
+    mode = scenario.get("simulation_mode", "scripted")
+    last_at = (
+        scenario["observations"][-1]["at_seconds"]
+        if scenario["observations"]
+        else movement["duration_seconds"]
+    )
     print(f"Scenario: {scenario['scenario_id']}")
+    print(f"Simulation mode: {mode}")
     print(
         f"Ground truth source: {scenario['source_id']} "
         f"(test metadata only)"
@@ -715,16 +832,37 @@ def print_schedule(scenario: dict[str, Any], *, time_scale: float = 1.0) -> None
         f"(last observation at t={last_at:g}s; keepalives bookend the run)"
     )
     print("No Hub event, track, or geographic position is generated.")
+    diagnostics = scenario.get("independent_detection")
+    if diagnostics is not None:
+        for line in format_independent_detection_diagnostics(diagnostics):
+            print(line)
+    if not scenario["observations"]:
+        print("No observations generated (no Ear passed detection).")
+        return
+    # Independent mode can emit hundreds of 1 Hz detections; keep dry-run readable.
+    list_all = mode == "scripted" or len(scenario["observations"]) <= 40
+    if not list_all:
+        print(
+            f"Generated {len(scenario['observations'])} observations "
+            "(per-step listing omitted; see diagnostics). "
+            "Re-run with a smaller --max-range-m to inspect a short timeline."
+        )
+        return
     for index, event in enumerate(scenario["observations"], start=1):
+        confidence = event.get("bearing_confidence", "not set")
+        synthetic = ""
+        if event.get("synthetic_fields"):
+            synthetic = "  [synthetic level/confidence placeholders]"
         print(
             f"{index:02d}  t={event['at_seconds']:g}s  "
             f"{ear_shortname(event['ear'])}  "
             f"bearing={event['bearing_deg']:.1f} deg "
-            f"(confidence={event.get('bearing_confidence', 'not set')})  "
+            f"(confidence={confidence})  "
             f"classification confidence={event['classification_confidence']}  "
             f"ground-truth distance={event['source_distance_m']:.1f}m  "
             f"level={event.get('signal_level_dbfs', 'not set')} dBFS  "
             f"duration={event.get('duration_ms', 850.0):g}ms"
+            f"{synthetic}"
         )
 
 
@@ -833,13 +971,86 @@ def _add_scenario_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--ca", default="shared/trust/ca.crt", help="Path to the local hub CA"
     )
+    parser.add_argument(
+        "--mode",
+        choices=SIMULATION_MODES,
+        default="scripted",
+        help=(
+            "scripted = authored observations (baseline); "
+            "independent_detection = shared trajectory + per-Ear range gate "
+            f"(default: scripted)"
+        ),
+    )
+    parser.add_argument(
+        "--time-step-seconds",
+        type=float,
+        default=DEFAULT_INDEPENDENT_TIME_STEP_S,
+        help=(
+            "Shared simulation step for independent_detection "
+            f"(default: {DEFAULT_INDEPENDENT_TIME_STEP_S:g})"
+        ),
+    )
+    parser.add_argument(
+        "--max-range-m",
+        type=float,
+        default=DEFAULT_INDEPENDENT_MAX_RANGE_M,
+        help=(
+            "Default detection range for independent_detection "
+            f"(default: {DEFAULT_INDEPENDENT_MAX_RANGE_M:g})"
+        ),
+    )
+    parser.add_argument(
+        "--ear-max-range",
+        action="append",
+        default=[],
+        metavar="ALIAS=METERS",
+        help="Optional per-Ear detection range override for independent_detection",
+    )
+    parser.add_argument(
+        "--reference-level-dbfs",
+        type=float,
+        default=DEFAULT_REFERENCE_LEVEL_DBFS,
+        help=(
+            "Stage 2 synthetic signal level at reference distance "
+            f"(independent_detection only; default: {DEFAULT_REFERENCE_LEVEL_DBFS:g})"
+        ),
+    )
+    parser.add_argument(
+        "--reference-distance-m",
+        type=float,
+        default=DEFAULT_REFERENCE_DISTANCE_M,
+        help=(
+            "Stage 2 reference distance for signal attenuation "
+            f"(independent_detection only; default: {DEFAULT_REFERENCE_DISTANCE_M:g})"
+        ),
+    )
+    parser.add_argument(
+        "--path-loss-exponent",
+        type=float,
+        default=DEFAULT_PATH_LOSS_EXPONENT,
+        help=(
+            "Stage 2 path-loss exponent (1.0 ≈ −6 dB per distance doubling; "
+            f"independent_detection only; default: {DEFAULT_PATH_LOSS_EXPONENT:g})"
+        ),
+    )
+    parser.add_argument(
+        "--observation-interval-seconds",
+        type=float,
+        default=DEFAULT_OBSERVATION_INTERVAL_S,
+        help=(
+            "Stage 3 logical reporting interval relative to each Ear detection-episode "
+            "start (emit start, then every N seconds, then end; "
+            f"independent_detection only; default: {DEFAULT_OBSERVATION_INTERVAL_S:g})"
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Time-ordered Ear scenario over TLS MQTT. "
-            "Use dry-run, run, or retry-pending."
+            "Use dry-run, run, or retry-pending. "
+            "Modes: scripted (authored) or independent_detection (range gate)."
         )
     )
     commands = parser.add_subparsers(dest="command", required=True)
@@ -893,9 +1104,21 @@ def main() -> int:
         MQTTException = ()  # type: ignore[misc, assignment]
 
     try:
-        scenario = load_scenario(Path(args.scenario_file))
+        loaded = load_scenario(Path(args.scenario_file))
         ear_paths = parse_ear_arguments(args.ear)
-        validate_ear_aliases(scenario, ear_paths)
+        per_ear_ranges = parse_ear_max_range_arguments(args.ear_max_range)
+        validate_ear_aliases(loaded, ear_paths, mode=args.mode)
+        scenario, diagnostics = apply_simulation_mode(
+            loaded,
+            mode=args.mode,
+            time_step_seconds=args.time_step_seconds,
+            max_range_m=args.max_range_m,
+            per_ear_max_range_m=per_ear_ranges,
+            reference_level_dbfs=args.reference_level_dbfs,
+            reference_distance_m=args.reference_distance_m,
+            path_loss_exponent=args.path_loss_exponent,
+            observation_interval_seconds=args.observation_interval_seconds,
+        )
         if args.command == "dry-run":
             if not math.isfinite(args.time_scale) or args.time_scale <= 0:
                 raise ScenarioError("--time-scale must be finite and greater than zero")
@@ -915,12 +1138,19 @@ def main() -> int:
                 args.ca,
                 args.time_scale,
             )
+            if diagnostics is not None:
+                for line in format_independent_detection_diagnostics(diagnostics):
+                    print(line, flush=True)
             print(
                 f"Scenario {scenario['scenario_id']} finished: "
                 f"{len(ids)}/{len(scenario['observations'])} MQTT publishes acknowledged.",
                 flush=True,
             )
         else:
+            if args.mode != "scripted":
+                raise ScenarioError(
+                    "retry-pending applies to saved payloads; use --mode scripted"
+                )
             credentials_by_alias = load_ear_credentials(ear_paths, allow_pending=True)
             ids = retry_pending_observations(
                 scenario,

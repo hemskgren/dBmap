@@ -80,7 +80,8 @@ def print_help_without_arguments(parser: argparse.ArgumentParser) -> bool:
 
 
 def load_project_env(project_root: Path | None = None) -> None:
-    env_file = (project_root or Path(__file__).resolve().parents[1]) / ".env"
+    # scripts/lib/hub_cli.py → parents[2] is the project root (was parents[1] at scripts/_hub_cli.py).
+    env_file = (project_root or Path(__file__).resolve().parents[2]) / ".env"
     try:
         lines = env_file.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:

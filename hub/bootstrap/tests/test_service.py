@@ -531,6 +531,56 @@ def test_observation_requires_timezone_and_valid_bearing() -> None:
     assert body.event_time_utc.isoformat() == "2026-10-04T18:00:00+00:00"
 
 
+def test_observation_count_endpoint_returns_table_total() -> None:
+    node_id = "EAR-COUNT-1"
+    db = SessionLocal()
+    try:
+        db.add(
+            Node(
+                node_id=node_id,
+                node_type="ear",
+                hardware_revision="EAR-SIM-V1",
+                provisioning_state="active",
+                availability="OPERATIONAL",
+            )
+        )
+        db.commit()
+        before = service.count_observations(db)
+        body = ObservationBody.model_validate(valid_observation_payload(node_id))
+        assert ingest_observation(db, node_id, body) is True
+        assert service.count_observations(db) == before + 1
+        assert service.count_observations(db, node_id) == 1
+    finally:
+        db.close()
+
+    client = TestClient(create_app())
+    headers = {"Authorization": "Bearer test-admin"}
+    response = client.get("/api/v1/observations/count", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["total"] >= 1
+    filtered = client.get(
+        f"/api/v1/observations/count?node_id={node_id}", headers=headers
+    )
+    assert filtered.status_code == 200
+    assert filtered.json()["total"] == 1
+    unauthorized = client.get("/api/v1/observations/count")
+    assert unauthorized.status_code == 401
+
+
+def test_observation_accepts_null_classification_and_bearing() -> None:
+    """Physical Ear Phase 1 publishes unclassified, bearing-less Observations."""
+    payload = valid_observation_payload("EAR-PHASE1")
+    payload["classification"] = None
+    payload["bearing"] = None
+    payload["duration_ms"] = 1000.0
+    payload["signal_level_dbfs"] = -42.5
+    body = ObservationBody.model_validate(payload)
+    assert body.classification is None
+    assert body.bearing is None
+    assert body.signal_level_dbfs == -42.5
+    assert body.duration_ms == 1000.0
+
+
 def test_observation_rejects_out_of_range_confidences_and_legacy_shape() -> None:
     payload = valid_observation_payload()
     payload["classification"]["confidence"] = 1.1

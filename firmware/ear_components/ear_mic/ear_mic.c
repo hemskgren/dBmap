@@ -148,6 +148,35 @@ const char *dbmap_ear_mic_subsystem_status(void)
     return s_status_cache;
 }
 
+esp_err_t dbmap_ear_mic_get_levels(dbmap_ear_mic_levels_t *out)
+{
+    if (out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(out, 0, sizeof(*out));
+    portENTER_CRITICAL(&s_lock);
+    if (s_latest.measured_at_us > 0) {
+        out->valid = true;
+        out->rms_dbfs = s_latest.rms_dbfs;
+        out->window_ms = s_latest.window_ms;
+        out->measured_at_us = s_latest.measured_at_us;
+        out->window_seq = s_latest.window_seq;
+        out->ms_since_i2s_enable = s_latest.ms_since_i2s_enable;
+        strncpy(
+            out->transport_status,
+            s_latest.transport_status[0] ? s_latest.transport_status : "unavailable",
+            sizeof(out->transport_status) - 1
+        );
+        strncpy(
+            out->microphone_status,
+            s_latest.microphone_status[0] ? s_latest.microphone_status : "unavailable",
+            sizeof(out->microphone_status) - 1
+        );
+    }
+    portEXIT_CRITICAL(&s_lock);
+    return ESP_OK;
+}
+
 static void set_status(ear_audio_snapshot_t *snap, uint32_t expected_samples)
 {
     /* Transport uses a combined non-data hint; telemetry keeps counters separate. */

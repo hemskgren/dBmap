@@ -26,8 +26,13 @@ Note the printed node id (for example `SIM-EAR-001`). `add` / `publish` send a k
 
 ```bash
 uv run python scripts/hub_admin.py set-installation SIM-EAR-001 \
-  --latitude 59.374868678394485 --longitude 18.001342117095227 --height-m 32
+  --latitude 59.35100847144696 --longitude 18.04842390753845 \
+  --height-m 74 --orientation-deg 0
 ```
+
+`orientation_deg` is clockwise from true north to the Ear reference axis and is
+required for cross-Ear geographic bearing diagnostics in `hub_event_track.py`.
+Match the values in the scenario JSON (`ears.*.orientation_deg`).
 
 **3. Publish again later (same Ear)**
 
@@ -65,16 +70,18 @@ Then install once (use the printed node ids):
 
 | `--ear` | Credentials file | Latitude | Longitude | Height |
 | --- | --- | ---: | ---: | ---: |
-| `a` (default) | `shared/simulator/sim-ear-a.json` | 59.374868678394485 | 18.001342117095227 | 32 m |
+| `a` (default) | `shared/simulator/sim-ear-a.json` | 59.35100847144696 | 18.04842390753845 | 74 m |
 | `b` | `shared/simulator/sim-ear-b.json` | 59.335118371024905 | 18.12680373585177 | 155 m |
 | `c` | `shared/simulator/sim-ear-c.json` | 59.32765051899676 | 18.05362024876985 | 72 m |
 
 ```bash
 uv run python scripts/hub_admin.py set-installation SIM-EAR-002 \
-  --latitude 59.335118371024905 --longitude 18.12680373585177 --height-m 155
+  --latitude 59.335118371024905 --longitude 18.12680373585177 \
+  --height-m 155 --orientation-deg 270
 
 uv run python scripts/hub_admin.py set-installation SIM-EAR-003 \
-  --latitude 59.32765051899676 --longitude 18.05362024876985 --height-m 72
+  --latitude 59.32765051899676 --longitude 18.05362024876985 \
+  --height-m 72 --orientation-deg 0
 ```
 
 Reuse:
@@ -134,17 +141,33 @@ Needs the Ears used by the scenario already added (and installed). Geometry matc
   --time-scale 0.1
 ```
 
-**Helicopter east→west** (`helicopter_east_west.json`) — passes between all three Ears (closest B, then C, then A). Each Ear also has a quiet low-confidence observation before and after its main cluster (long-range notice):
+**Helicopter east→west** (`helicopter_east_west.json`) — shared east→west route; closest approaches roughly B, then C/A (Ear A sits nearer the track than the old northern site).
+
+Default `--mode scripted` keeps the authored observation list (reproducible baseline; exclusive per-Ear windows by design).
+
+`--mode independent_detection` uses one shared clock (default 1 s) and evaluates **every** Ear at each step with a deterministic **range gate** (`--max-range-m`, optional `--ear-max-range ALIAS=m`). Overlap emerges from geometry + range, not authored windows. Detection eligibility is Stage 1 (range only). Stage 2 sets synthetic `signal_level_dbfs` from distance (`--reference-level-dbfs`, `--reference-distance-m`, `--path-loss-exponent`; defaults −30 dBFS @ 1000 m, exponent 1.0). Stage 3 emits observations on episode start / every `--observation-interval-seconds` (default 5, relative to each Ear’s detection-episode start) / episode end — not at every 1 s evaluation. Classification confidence stays a fixed synthetic 0.5; bearing confidence is omitted. Not acoustics.
 
 ```bash
+# Scripted baseline (unchanged meaning)
 ./scripts/sim-ear-scenario dry-run \
   --scenario-file simulator/ear/scenarios/helicopter_east_west.json \
   --ear ear_a=shared/simulator/sim-ear-a.json \
   --ear ear_b=shared/simulator/sim-ear-b.json \
   --ear ear_c=shared/simulator/sim-ear-c.json
 
+# Independent multi-Ear detection (example 4 km range)
+./scripts/sim-ear-scenario dry-run \
+  --scenario-file simulator/ear/scenarios/helicopter_east_west.json \
+  --mode independent_detection \
+  --max-range-m 4000 \
+  --ear ear_a=shared/simulator/sim-ear-a.json \
+  --ear ear_b=shared/simulator/sim-ear-b.json \
+  --ear ear_c=shared/simulator/sim-ear-c.json
+
 ./scripts/sim-ear-scenario run \
   --scenario-file simulator/ear/scenarios/helicopter_east_west.json \
+  --mode independent_detection \
+  --max-range-m 4000 \
   --ear ear_a=shared/simulator/sim-ear-a.json \
   --ear ear_b=shared/simulator/sim-ear-b.json \
   --ear ear_c=shared/simulator/sim-ear-c.json \
@@ -170,7 +193,7 @@ Interrupted publish (same `--ear` mapping as the run):
 | `./scripts/sim-ear-observation add [--ear a\|b\|c]` | New SIM device + one observation |
 | `./scripts/sim-ear-observation publish [--ear …]` | Reuse credentials; publish again |
 | `./scripts/sim-ear-keepalive once\|watch [--ear a\|b\|c\|all]` | Keepalive (`once` = one round; `watch` = continuous) |
-| `./scripts/sim-ear-scenario dry-run\|run\|retry-pending …` | Multi-Ear scripted pass |
+| `./scripts/sim-ear-scenario dry-run\|run\|retry-pending …` | Multi-Ear scenario (`--mode scripted` or `independent_detection`) |
 
 `--help` works on the wrappers and on the Python entrypoints (Hub MQTT deps load only when running a command).
 
@@ -181,6 +204,8 @@ Nodes, installations, and `shared/simulator/sim-ear-*.json` stay. Only Hub obser
 ```bash
 # Delete every observation
 uv run python scripts/hub_observations_db.py clear
+# same as:
+uv run python scripts/hub_observations_db.py prune --older-than-hours 0
 
 # Delete observations older than 4 hours (default)
 uv run python scripts/hub_observations_db.py prune

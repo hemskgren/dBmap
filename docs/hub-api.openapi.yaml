@@ -2442,6 +2442,47 @@ paths:
         - Nodes
       security:
         - bearerAuth: []
+  /api/v1/observations/count:
+    get:
+      summary: Count observations in the database
+      operationId: countObservations
+      parameters:
+        - name: node_id
+          in: query
+          required: false
+          schema:
+            title: Node Id
+            type: string
+            nullable: true
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ObservationCountView"
+        "401":
+          description: Missing or invalid local bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "403":
+          description: "Authenticated, but OPA denied the action."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "503":
+          description: "OPA, MQTT, or the Docker engine is unavailable."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+      tags:
+        - Observations
+      security:
+        - bearerAuth: []
   /api/v1/observations:
     get:
       summary: List recent observations
@@ -3491,6 +3532,17 @@ components:
       additionalProperties: false
       type: object
       title: ObservationClassification
+    ObservationCountView:
+      properties:
+        total:
+          type: integer
+          minimum: 0
+          title: Total
+      additionalProperties: false
+      type: object
+      required:
+        - total
+      title: ObservationCountView
     ObservationView:
       properties:
         protocol_version:

@@ -13,7 +13,11 @@ from datetime import datetime, timedelta, timezone
 from itertools import combinations
 from typing import Any
 
-from _hub_cli import (
+from lib.cross_ear_bearing_geometry import (
+    analyze_cross_ear_geometry,
+    format_cross_ear_geometry_lines,
+)
+from lib.hub_cli import (
     add_hub_connection_arguments,
     format_hub_http_error,
     load_project_env,
@@ -446,6 +450,8 @@ def report(
     allow_long_range_sim_ears: bool = False,
     environmental_context: dict[str, Any] | None = None,
     include_site_context: bool = True,
+    include_cross_ear_geometry: bool = True,
+    cross_ear_geometry_detail: bool = False,
 ) -> list[str]:
     parse_positive_interval(event_gap_seconds)
     parse_positive_interval(max_association_distance_m)
@@ -503,6 +509,19 @@ def report(
                 f"Typical range remains {max_association_distance_m:g}m."
             )
         lines.extend(format_environmental_context_lines(environmental_context))
+        if include_cross_ear_geometry:
+            geometry_report = analyze_cross_ear_geometry(
+                observations,
+                nodes,
+                environmental_context=environmental_context,
+            )
+            lines.extend(
+                format_cross_ear_geometry_lines(
+                    geometry_report,
+                    detail=cross_ear_geometry_detail,
+                    format_local_datetime=format_local_datetime,
+                )
+            )
 
     lines.append(
         f"Per-Ear activity episodes (not Events): {event_gap_seconds:g}s of silence "
@@ -557,7 +576,8 @@ def report(
             lines.append(f"    observations: {', '.join(observation_ids)}")
     lines.append(
         "No Event or Track association is attempted yet. Classification, bearing, "
-        "time, and site distances are analysis inputs; simulator ground truth is excluded."
+        "time, site distances, and cross-Ear bearing geometry are analysis inputs; "
+        "simulator ground truth is excluded. Weather remains informational only."
     )
     return lines
 
@@ -635,6 +655,19 @@ def main() -> int:
                 "(distances are still printed)"
             ),
         )
+        command.add_argument(
+            "--cross-ear-geometry-detail",
+            action="store_true",
+            help=(
+                "Print per-observation geographic bearings and pairwise ray "
+                "intersection detail (diagnostic only; default is a compact summary)"
+            ),
+        )
+        command.add_argument(
+            "--no-cross-ear-geometry",
+            action="store_true",
+            help="Omit the Cross-Ear Bearing Geometry diagnostic section",
+        )
     watch_command.add_argument(
         "--interval-seconds",
         type=float,
@@ -680,6 +713,8 @@ def main() -> int:
             max_association_distance_m=args.max_association_distance_m,
             allow_long_range_sim_ears=args.allow_long_range_sim_ears,
             environmental_context=weather,
+            include_cross_ear_geometry=not args.no_cross_ear_geometry,
+            cross_ear_geometry_detail=args.cross_ear_geometry_detail,
         ):
             print(line)
         known_ids = {

@@ -1,5 +1,6 @@
 #include "dbmap_health.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 
 #include "dbmap_diag.h"
@@ -8,11 +9,25 @@
 #include "esp_timer.h"
 #include "sdkconfig.h"
 
-static dbmap_health_enrich_fn s_enrich;
+#define DBMAP_HEALTH_MAX_ENRICHERS 4
+
+static dbmap_health_enrich_fn s_enrichers[DBMAP_HEALTH_MAX_ENRICHERS];
+static size_t s_enricher_count;
+
+void dbmap_health_add_enricher(dbmap_health_enrich_fn fn)
+{
+    if (fn == NULL || s_enricher_count >= DBMAP_HEALTH_MAX_ENRICHERS) {
+        return;
+    }
+    s_enrichers[s_enricher_count++] = fn;
+}
 
 void dbmap_health_set_enricher(dbmap_health_enrich_fn fn)
 {
-    s_enrich = fn;
+    s_enricher_count = 0;
+    if (fn != NULL) {
+        dbmap_health_add_enricher(fn);
+    }
 }
 
 static cJSON *build_state(const dbmap_effective_t *cfg, bool include_diag)
@@ -33,8 +48,10 @@ static cJSON *build_state(const dbmap_effective_t *cfg, bool include_diag)
     if (include_diag) {
         dbmap_diag_attach_json(o);
     }
-    if (s_enrich != NULL) {
-        s_enrich(o, cfg, include_diag);
+    for (size_t i = 0; i < s_enricher_count; ++i) {
+        if (s_enrichers[i] != NULL) {
+            s_enrichers[i](o, cfg, include_diag);
+        }
     }
     return o;
 }

@@ -8,7 +8,66 @@ Initial Ear application for ESP32-S3 + one I2S MEMS microphone.
 - Captures from **one** microphone model per image (currently **INMP441** via `ear_mic`).
 - Attaches windowed RMS/peak **dBFS** levels on hello/health/keepalive reported state (same path as `wifi_rssi_dbm`). Hub shows them under **Additional reported values** until a dedicated Ear UI exists.
 - JSON uses `audio.microphones[]` / `capabilities.microphones[]` so a later multi-mic Ear can add indexes without a schema break.
-- Does **not** include Output playback, ML observations, or a separate audio MQTT topic.
+- **Observation publisher** (`ear_observation`): protocol-v1 Observations on the provisioned `…/observation` topic (QoS 1, not retained) with `classification: null` and `bearing: null`.
+- **Phase 2 RMS activity detector**: one aggregate acoustic-activity stream per Ear (not source classification). Emits start / periodic / end Observations. Optional Phase 1 one-shot test trigger remains available (`DBMAP_EAR_OBS_TEST_PUBLISH_ONCE`, default off).
+- Does **not** include source-family ML classification, bearing/DoA, multi-source separation, detection_confidence, Event/Track logic, Output playback, or raw-audio MQTT.
+
+### Observation capabilities (reported state)
+
+`capabilities.observation` on hello/health/keepalive:
+
+| Field | Phase 2 value | Meaning |
+| --- | --- | --- |
+| `publisher` | `true` | Device can emit protocol-v1 Observations |
+| `protocol_version` | `1` | Observation envelope version |
+| `detector_kind` | `"rms_activity"` | Windowed RMS activity (not a sound-family classifier) |
+| `detector_version` | `1` | Detector implementation version |
+
+### Sequence-number NVS strategy
+
+Avoid one NVS write per Observation:
+
+| Layer | Role |
+| --- | --- |
+| NVS `ear_obs` / `seq_lim` | Exclusive upper bound of the currently reserved block |
+| RAM `next`…`limit` | Hand out numbers inside that block |
+
+On boot, `next` starts at the durable `seq_lim`, so any unused remainder of the previous block is **skipped** (gaps OK). A new block is reserved (`seq_lim := next + block_size`, default 64) and written to NVS **before** any number from that block is allocated (failed NVS commit rolls back the RAM limit). Phase 1 key `seq` meant “next to assign” (persisted before publish); when `seq_lim` is absent it migrates to `legacy_seq + block_size` (skip-forward). Overflow saturates at `UINT32_MAX` and stops allocation (no wrap).
+
+**Consumption point:** a sequence number is consumed when `dbmap_obs_seq_allocate()` returns it (the containing block limit is already in NVS). If MQTT publish fails afterward, that number is **not** reused. If MQTT is down when an emission is due, the emission is dropped and **no** sequence number is allocated.
+
+### RMS activity vs microphone diagnostics
+
+| Concern | Mechanism |
+| --- | --- |
+| Mic / I2S health | Existing hello/health `audio.*` fields (`microphone_status`, `classification_reason`, RMS/peak, counters) — unchanged |
+| Input-quality gate | Transport `ok`/`degraded`; reject hard faults (`unavailable`, `disconnected_suspected`, `noise_suspected`); allow `signal_present` **and** `unknown` |
+| Acoustic activity | RMS enter/exit thresholds only (not `signal_present` alone) |
+| Invalid / boot windows | Boot-settle ignored; invalid windows **hold** state (not silence); after `max_invalid_hold_ms` force END at last usable sample |
+
+How `microphone_status` is determined: `dbmap_audio_classify_microphone()` uses structure diagnostics (zero ratio, unique values, rail hits)—see `docs/ear-i2s-read-path-verification.md`. It is **not** an activity detector and **not** `source_family`.
+
+Thresholds are **provisional and uncalibrated**. One activity stream per Ear: overlapping sources are not separated.
+
+Field validation checklist: [`docs/ear-observation-phase3-validation.md`](../../docs/ear-observation-phase3-validation.md).
+
+### Emission timing (`duration_ms`)
+
+Each Observation describes an already measured interval `[event_time_utc, event_time_utc + duration_ms)`:
+
+| Kind | Interval |
+| --- | --- |
+| start | From first window that began the enter condition through the window that satisfied `min_activity_ms` |
+| periodic | Since the previous emission |
+| end | Remaining activity since the previous emission through episode end |
+
+`signal_level_dbfs` is the RMS of the window that closed that interval (digital FS, not SPL). Not the simulator’s synthetic 850 ms duration.
+
+### MQTT unavailable
+
+- Mic capture and the RMS detector task keep running.
+- Emissions while MQTT is down are dropped (no offline queue); sequence numbers are not consumed for those drops.
+- Network loss is not interpreted as absence of acoustic activity.
 
 ## Reported audio shape (excerpt)
 

@@ -7,9 +7,10 @@ import argparse
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-from _hub_cli import print_help_without_arguments
+from lib.hub_cli import print_help_without_arguments
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OLDER_THAN_HOURS = 4.0
@@ -107,24 +108,100 @@ print(json.dumps({"deleted": before - after, "remaining": after}))
     return json.loads(_run_python_in_hub(code))
 
 
+def parse_stored_utc(value: str) -> datetime:
+    """Parse Hub SQLite DateTime strings (space or ISO) as aware UTC."""
+    text = value.strip()
+    if " " in text and "T" not in text[:11]:
+        text = text.replace(" ", "T", 1)
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def prune_observation_ids(
+    rows: list[tuple[str, str]],
+    *,
+    cutoff: datetime,
+) -> list[str]:
+    """Return observation IDs whose received_time_utc is strictly before cutoff.
+
+    SQLite string compare is unsafe here: SQLAlchemy often stores
+    ``YYYY-MM-DD HH:MM:SS.ffffff`` while an ISO cutoff uses ``T`` and an offset.
+    Lexicographically, a space sorts before ``T``, so fresh rows can look older
+    than the cutoff and be deleted incorrectly.
+    """
+    if cutoff.tzinfo is None or cutoff.utcoffset() is None:
+        raise ValueError("cutoff must be timezone-aware")
+    cutoff_utc = cutoff.astimezone(timezone.utc)
+    doomed: list[str] = []
+    for observation_id, received in rows:
+        try:
+            received_at = parse_stored_utc(received)
+        except ValueError:
+            # Unparseable timestamps are treated as eligible for prune so bad
+            # rows do not accumulate forever.
+            doomed.append(observation_id)
+            continue
+        if received_at < cutoff_utc:
+            doomed.append(observation_id)
+    return doomed
+
+
 def prune_observations(*, older_than_hours: float) -> dict[str, int | float]:
-    if older_than_hours <= 0 or older_than_hours != older_than_hours:
-        raise ValueError("--older-than-hours must be finite and greater than zero")
+    if older_than_hours < 0 or older_than_hours != older_than_hours:
+        raise ValueError("--older-than-hours must be finite and at least zero")
+    if older_than_hours == 0:
+        result = clear_all_observations()
+        return {
+            "deleted": result["deleted"],
+            "remaining": result["remaining"],
+            "older_than_hours": 0.0,
+            "cutoff_utc": "all",
+        }
     code = f"""
 import json, os, sqlite3
 from datetime import datetime, timedelta, timezone
+
+def parse_stored_utc(value: str) -> datetime:
+    text = value.strip()
+    if " " in text and "T" not in text[:11]:
+        text = text.replace(" ", "T", 1)
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
 p = "/data/bootstrap.db"
 assert os.path.isfile(p), "Hub database not found"
 hours = {older_than_hours!r}
 cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-cutoff_text = cutoff.isoformat()
 db = sqlite3.connect(p)
 before = db.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+rows = db.execute(
+    "SELECT observation_id, received_time_utc FROM observations"
+).fetchall()
+doomed = []
+for observation_id, received in rows:
+    try:
+        received_at = parse_stored_utc(str(received))
+    except ValueError:
+        doomed.append(observation_id)
+        continue
+    if received_at < cutoff:
+        doomed.append(observation_id)
 db.execute("BEGIN IMMEDIATE")
-deleted = db.execute(
-    "DELETE FROM observations WHERE received_time_utc < ?",
-    (cutoff_text,),
-).rowcount
+deleted = 0
+if doomed:
+    deleted = db.execute(
+        "DELETE FROM observations WHERE observation_id IN (%s)"
+        % (",".join("?" for _ in doomed)),
+        doomed,
+    ).rowcount
 db.commit()
 after = db.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
 db.close()
@@ -132,7 +209,7 @@ print(json.dumps({{
     "deleted": deleted if deleted is not None else before - after,
     "remaining": after,
     "older_than_hours": hours,
-    "cutoff_utc": cutoff_text,
+    "cutoff_utc": cutoff.isoformat(),
 }}))
 """
     return json.loads(_run_python_in_hub(code))
@@ -185,7 +262,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--older-than-hours",
         type=float,
         default=DEFAULT_OLDER_THAN_HOURS,
-        help=f"Age cutoff in hours (default: {DEFAULT_OLDER_THAN_HOURS:g})",
+        help=(
+            f"Age cutoff in hours (default: {DEFAULT_OLDER_THAN_HOURS:g}; "
+            "0 deletes every observation, same as clear)"
+        ),
     )
     wipe = commands.add_parser(
         "wipe-device-data",
@@ -216,11 +296,17 @@ def main() -> int:
             )
         elif args.command == "prune":
             result = prune_observations(older_than_hours=args.older_than_hours)
-            print(
-                f"Pruned observations older than {result['older_than_hours']:g}h "
-                f"(cutoff {result['cutoff_utc']}): "
-                f"deleted={result['deleted']} remaining={result['remaining']}"
-            )
+            if result["older_than_hours"] == 0:
+                print(
+                    f"Pruned all observations: "
+                    f"deleted={result['deleted']} remaining={result['remaining']}"
+                )
+            else:
+                print(
+                    f"Pruned observations older than {result['older_than_hours']:g}h "
+                    f"(cutoff {result['cutoff_utc']}): "
+                    f"deleted={result['deleted']} remaining={result['remaining']}"
+                )
         else:
             if not args.yes:
                 parser.error("wipe-device-data requires --yes")

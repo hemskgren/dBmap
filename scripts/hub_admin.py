@@ -9,7 +9,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from _hub_cli import (
+from lib.hub_cli import (
     add_hub_connection_arguments,
     format_hub_http_error,
     load_project_env,

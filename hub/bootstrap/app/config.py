@@ -98,8 +98,8 @@ class Settings(BaseSettings):
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
     )
     # Geographic centre of SIM-EAR-001/002/003 (configurable; not recomputed per request).
-    weather_region_latitude: float = Field(default=59.345879, ge=-90.0, le=90.0)
-    weather_region_longitude: float = Field(default=18.060589, ge=-180.0, le=180.0)
+    weather_region_latitude: float = Field(default=59.337926, ge=-90.0, le=90.0)
+    weather_region_longitude: float = Field(default=18.076283, ge=-180.0, le=180.0)
     weather_cache_ttl_s: float = Field(default=900.0, ge=60.0, le=86400.0)
     weather_live_max_age_hours: float = Field(default=6.0, ge=0.5, le=72.0)
     weather_timeout_s: float = Field(default=8.0, ge=1.0, le=60.0)
