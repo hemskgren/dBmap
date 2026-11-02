@@ -36,6 +36,10 @@ static bool s_logged_wait_mqtt;
 static bool s_logged_mqtt_drop;
 static uint32_t s_dropped_while_mqtt_down;
 static dbmap_activity_detector_t s_detector;
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+static int64_t s_diag_last_snap_us;
+static int64_t s_diag_last_counters_us;
+#endif
 #endif
 
 /*
@@ -409,13 +413,109 @@ static void handle_emission(const dbmap_activity_emission_t *emission)
     }
 }
 
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+static const char *activity_state_name(dbmap_activity_state_t st)
+{
+    switch (st) {
+    case DBMAP_ACTIVITY_IDLE:
+        return "IDLE";
+    case DBMAP_ACTIVITY_PENDING_ENTER:
+        return "PENDING_ENTER";
+    case DBMAP_ACTIVITY_ACTIVE:
+        return "ACTIVE";
+    case DBMAP_ACTIVITY_PENDING_EXIT:
+        return "PENDING_EXIT";
+    default:
+        return "unknown";
+    }
+}
+
+/**
+ * Rate-limited console diagnostics. Runs only from activity_task (owns
+ * s_detector / drop counter). Mic levels are already snapshotted by
+ * dbmap_ear_mic_get_levels under its critical section. Does not block I2S.
+ */
+static void activity_serial_diag(const dbmap_ear_mic_levels_t *levels, bool levels_ok)
+{
+    const int64_t now_us = esp_timer_get_time();
+
+    if (s_diag_last_snap_us == 0 || (now_us - s_diag_last_snap_us) >= 1000000LL) {
+        s_diag_last_snap_us = now_us;
+
+        bool usable = false;
+        if (levels_ok && levels->valid) {
+            dbmap_activity_sample_t gate = {
+                .has_measurement = true,
+                .rms_dbfs = levels->rms_dbfs,
+                .window_ms = levels->window_ms,
+                .measured_at_us = levels->measured_at_us,
+                .window_seq = levels->window_seq,
+                .ms_since_i2s_enable = levels->ms_since_i2s_enable,
+                .transport_status = levels->transport_status,
+                .microphone_status = levels->microphone_status,
+            };
+            usable = dbmap_activity_sample_usable(&gate);
+        }
+
+        if (levels_ok && levels->valid) {
+            ESP_LOGI(
+                TAG,
+                "diag snap mono_us=%lld rms_dbfs=%.2f peak_dbfs=%.2f xport=%s mic=%s "
+                "state=%s enter=%.1f exit=%.1f win_valid=1 usable=%d win_seq=%lu",
+                (long long)now_us,
+                (double)levels->rms_dbfs,
+                (double)levels->peak_dbfs,
+                levels->transport_status[0] ? levels->transport_status : "unavailable",
+                levels->microphone_status[0] ? levels->microphone_status : "unavailable",
+                activity_state_name(dbmap_activity_detector_state(&s_detector)),
+                (double)s_detector.cfg.enter_threshold_dbfs,
+                (double)s_detector.cfg.exit_threshold_dbfs,
+                usable ? 1 : 0,
+                (unsigned long)levels->window_seq
+            );
+        } else {
+            ESP_LOGI(
+                TAG,
+                "diag snap mono_us=%lld rms_dbfs=n/a peak_dbfs=n/a xport=n/a mic=n/a "
+                "state=%s enter=%.1f exit=%.1f win_valid=0 usable=0",
+                (long long)now_us,
+                activity_state_name(dbmap_activity_detector_state(&s_detector)),
+                (double)s_detector.cfg.enter_threshold_dbfs,
+                (double)s_detector.cfg.exit_threshold_dbfs
+            );
+        }
+    }
+
+    if (s_diag_last_counters_us == 0 || (now_us - s_diag_last_counters_us) >= 5000000LL) {
+        s_diag_last_counters_us = now_us;
+        ESP_LOGI(
+            TAG,
+            "diag counters start=%lu periodic=%lu end=%lu invalid=%lu "
+            "forced_end_invalid=%lu mqtt_drop=%lu windows=%lu boot_settle=%lu",
+            (unsigned long)s_detector.emissions_start,
+            (unsigned long)s_detector.emissions_periodic,
+            (unsigned long)s_detector.emissions_end,
+            (unsigned long)s_detector.windows_invalid,
+            (unsigned long)s_detector.forced_ends_invalid,
+            (unsigned long)s_dropped_while_mqtt_down,
+            (unsigned long)s_detector.windows_seen,
+            (unsigned long)s_detector.windows_boot_settle
+        );
+    }
+}
+#endif
+
 static void activity_task(void *arg)
 {
     (void)arg;
     ESP_LOGI(TAG, "RMS activity task started");
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    ESP_LOGI(TAG, "serial diagnostics enabled (~1 Hz snap, ~5 s counters)");
+#endif
     while (1) {
         dbmap_ear_mic_levels_t levels;
-        if (dbmap_ear_mic_get_levels(&levels) == ESP_OK && levels.valid) {
+        const bool levels_ok = (dbmap_ear_mic_get_levels(&levels) == ESP_OK);
+        if (levels_ok && levels.valid) {
             dbmap_activity_sample_t sample = {
                 .has_measurement = true,
                 .rms_dbfs = levels.rms_dbfs,
@@ -429,6 +529,9 @@ static void activity_task(void *arg)
             dbmap_activity_emission_t emission = dbmap_activity_detector_feed(&s_detector, &sample);
             handle_emission(&emission);
         }
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+        activity_serial_diag(&levels, levels_ok);
+#endif
 #if CONFIG_DBMAP_EAR_OBS_TEST_PUBLISH_ONCE
         if (s_cfg != NULL) {
             dbmap_ear_observation_poll_test_trigger(s_cfg);

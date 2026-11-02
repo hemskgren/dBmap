@@ -34,7 +34,7 @@ web                    Hub UI
 firmware/              Shared client, Ear, and Output
 firmware-builder/      Optional ESP-IDF build service
 simulator/             Ear and scenario tools
-scripts/               Ops CLIs (`lib/` = shared helpers)
+scripts/               Ops CLIs (`lib/` = shared helpers; `ear_test_runner.py` for physical EAR period tests — see `docs/ear-test-runner.md`)
 docs/                  How to run and how it fits together
 compose.yaml           Local Hub stack
 ```

@@ -24,6 +24,8 @@ shared/mosquitto/logs/*
 !shared/mosquitto/logs/.gitkeep
 shared/simulator/*
 !shared/simulator/.gitkeep
+shared/results/ear-tests/**
+!shared/results/ear-tests/.gitkeep
 
 
 hub/bootstrap/data/

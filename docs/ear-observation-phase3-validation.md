@@ -67,6 +67,12 @@ Or: `uv run python scripts/hub_event_track.py list` (read-only).
 | 7 | Unplug / fault mic path briefly while active | No false END from short invalid; forced END only after max invalid hold |
 | 8 | Capabilities on hello/health | `detector_kind=rms_activity`, `detector_version=1` |
 
+## Opt-in serial diagnostics (field bring-up)
+
+For continuous RMS / detector visibility **without** relying on MQTT/HTTPS logs, enable `CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG` (default **off**). See [`firmware/esp-ear/README.md`](../firmware/esp-ear/README.md) § Opt-in serial diagnostics.
+
+Does **not** change thresholds, hysteresis, timing, detector transitions, or Observation schema. Disable for production fleet images.
+
 ## Out of scope
 
 Classification, bearing, multi-source separation, Hub Event/Track correlation, simulator changes, protocol schema changes, dataset/ML tooling.
