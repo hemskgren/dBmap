@@ -100,4 +100,15 @@ menu "dBmap Ear Observation"
         default 1000
         depends on DBMAP_EAR_OBS_TEST_PUBLISH_ONCE
 
+    config DBMAP_EAR_OBS_SERIAL_DIAG
+        bool "Opt-in serial diagnostics for RMS activity (rate-limited)"
+        default n
+        depends on DBMAP_EAR_OBS_RMS_ACTIVITY
+        help
+            When enabled, the activity task prints ~1 Hz measurement/state
+            snapshots and ~5 s emission/invalid/MQTT-drop counters on the
+            console UART. Independent of MQTT/HTTPS. Default off. Does not
+            change thresholds, hysteresis, timing, or Observation emission.
+            Do not enable in production fleet images.
+
 endmenu

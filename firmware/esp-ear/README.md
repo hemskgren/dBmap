@@ -144,6 +144,60 @@ Full wiring (Output + Ear, reserved 4-mic map): [`docs/device-wiring-and-pinout.
 | Slot alignment | 32-bit Philips, left slot, 24-bit left-justified `>> 8` | Unverified — confirm on scope/logic analyzer |
 | L/R strap (mic 0) | Left (GND) | Unverified on board |
 
+## Opt-in serial diagnostics (RMS activity)
+
+Default builds do **not** print continuous detector telemetry — ordinary logs mainly follow MQTT/HTTPS events. For field work (e.g. quiet-room vs fans RMS comparisons) enable a rate-limited console mode that runs in the activity task **even when MQTT/HTTPS are down**.
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG` | `n` | When `y`: ~1 Hz `diag snap` + ~5 s `diag counters` on UART |
+
+**Enable (local IDF):**
+
+```bash
+cd firmware/esp-ear
+# Cleanish opt-in: merge defaults + serial_diag overlay (reconfigure if sdkconfig already exists)
+idf.py fullclean   # optional; needed if switching an existing build tree
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.serial_diag" set-target esp32s3
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.serial_diag" build
+# or: idf.py menuconfig → "dBmap Ear Observation" → "Opt-in serial diagnostics…"
+```
+
+Do **not** ship this overlay in production fleet images. Thresholds, hysteresis, timing, and Observation emission are unchanged.
+
+**`diag snap` fields (~1 Hz)**
+
+| Field | Meaning |
+| --- | --- |
+| `mono_us` | `esp_timer` monotonic microseconds (uptime clock) |
+| `rms_dbfs` / `peak_dbfs` | Latest completed mic window (digital FS); `n/a` if no window yet |
+| `xport` / `mic` | `transport_status` / `microphone_status` from that window |
+| `state` | Detector: `IDLE` / `PENDING_ENTER` / `ACTIVE` / `PENDING_EXIT` |
+| `enter` / `exit` | Configured RMS thresholds (dBFS) |
+| `win_valid` | `1` if a completed window is available |
+| `usable` | `1` if the window passes the existing input-quality gate (`dbmap_activity_sample_usable`) |
+| `win_seq` | Mic window sequence (when valid) |
+
+**`diag counters` fields (~5 s)** — existing detector / publisher counters (no new MQTT):
+
+| Field | Source |
+| --- | --- |
+| `start` / `periodic` / `end` | `emissions_start` / `emissions_periodic` / `emissions_end` |
+| `invalid` | `windows_invalid` (unusable windows) |
+| `forced_end_invalid` | `forced_ends_invalid` |
+| `mqtt_drop` | `s_dropped_while_mqtt_down` (emission dropped; no seq consumed) |
+| `windows` / `boot_settle` | `windows_seen` / `windows_boot_settle` |
+
+**Capture**
+
+```bash
+idf.py -p /dev/ttyUSB0 flash monitor
+# or: screen /dev/ttyUSB0 115200
+# Filter: grep 'ear_obs: diag'
+```
+
+Expect continuous `diag snap` / `diag counters` lines with Wi-Fi/MQTT disconnected. No credentials are logged; no raw PCM.
+
 ## Build
 
 Prefer the Hub **Firmware → Build reusable firmware** target `ear-esp32-s3` (series `0.5.*`).

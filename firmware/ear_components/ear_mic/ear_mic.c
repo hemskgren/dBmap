@@ -158,6 +158,7 @@ esp_err_t dbmap_ear_mic_get_levels(dbmap_ear_mic_levels_t *out)
     if (s_latest.measured_at_us > 0) {
         out->valid = true;
         out->rms_dbfs = s_latest.rms_dbfs;
+        out->peak_dbfs = s_latest.peak_dbfs;
         out->window_ms = s_latest.window_ms;
         out->measured_at_us = s_latest.measured_at_us;
         out->window_seq = s_latest.window_seq;

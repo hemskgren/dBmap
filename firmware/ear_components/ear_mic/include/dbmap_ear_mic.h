@@ -36,6 +36,7 @@ typedef struct {
 typedef struct {
     bool valid;
     float rms_dbfs;
+    float peak_dbfs; /* same window as rms_dbfs; digital FS, not SPL */
     uint32_t window_ms;
     int64_t measured_at_us; /* esp_timer monotonic microseconds */
     uint32_t window_seq;

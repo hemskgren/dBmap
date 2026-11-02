@@ -1,0 +1,4 @@
+# Overlay for opt-in RMS activity serial diagnostics.
+# Use with sdkconfig.defaults — does not change thresholds or emission policy.
+#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.serial_diag" build
+CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG=y

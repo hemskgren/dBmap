@@ -158,6 +158,7 @@ uv run python scripts/hub_summary.py list          # Hub / component snapshot
 uv run python scripts/hub_admin.py list            # Nodes
 uv run python scripts/hub_event_track.py list      # Read-only observation/site report (not a tracker)
 uv run python scripts/ear_audio_compare.py list    # Ear mic levels (dBFS)
+uv run python scripts/ear_test_runner.py list      # Physical EAR period-test jobs (see docs/ear-test-runner.md)
 uv run python scripts/hub_observations_db.py prune # Drop old observation rows (SQLite; default >4h)
 ```
 
