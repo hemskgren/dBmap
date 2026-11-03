@@ -6,11 +6,15 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "dbmap_acoustic_l0.h"
 #include "dbmap_audio_metrics.h"
+#include "dbmap_background_rms.h"
 #include "dbmap_health.h"
 #include "driver/i2s_std.h"
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -121,6 +125,44 @@ static uint32_t s_slot_buf[EAR_MIC_READ_FRAMES];
 static int64_t s_i2s_enabled_us;
 static uint32_t s_window_seq;
 
+#if CONFIG_DBMAP_EAR_MIC_BACKGROUND
+/* Capacity covers configured window at configured analysis period (+margin). */
+#define EAR_BG_RMS_CAP                                                                 \
+    (((uint32_t)CONFIG_DBMAP_EAR_MIC_BACKGROUND_WINDOW_MS                               \
+      / (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS)                                       \
+     + 8u)
+static dbmap_bg_rms_sample_t s_bg_entries[EAR_BG_RMS_CAP];
+static dbmap_bg_rms_hist_t s_bg_hist;
+#endif
+
+#if CONFIG_DBMAP_EAR_MIC_L0
+/* Double-buffered SPIRAM PCM so L0 analyze never stalls the I2S read loop. */
+static int32_t *s_l0_pcm[2];
+static uint32_t s_l0_pcm_cap;
+static int s_l0_fill_idx;
+static dbmap_l0_filter_bank_t s_l0_bank;
+static dbmap_l0_window_t s_l0_latest;
+static bool s_l0_latest_ready;
+static bool s_l0_pcm_ready;
+
+typedef struct {
+    bool pending;
+    int buf_idx;
+    size_t sample_count;
+    uint32_t window_ms;
+    int64_t window_end_mono_us;
+    int full_scale_bits;
+} ear_l0_pending_t;
+
+static ear_l0_pending_t s_l0_pending;
+static uint32_t s_l0_analyze_count;
+static uint32_t s_l0_analyze_us_last;
+static uint32_t s_l0_analyze_us_max;
+static uint32_t s_l0_pending_overwrite;
+static uint32_t s_l0_free_heap_after_init;
+static uint32_t s_l0_free_spiram_after_init;
+#endif
+
 static int gpio_or_unused(int gpio)
 {
     return gpio < 0 ? I2S_GPIO_UNUSED : gpio;
@@ -176,6 +218,100 @@ esp_err_t dbmap_ear_mic_get_levels(dbmap_ear_mic_levels_t *out)
     }
     portEXIT_CRITICAL(&s_lock);
     return ESP_OK;
+}
+
+esp_err_t dbmap_ear_mic_l0_poll(void)
+{
+#if !CONFIG_DBMAP_EAR_MIC_L0
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (!s_l0_pcm_ready) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ear_l0_pending_t job;
+    portENTER_CRITICAL(&s_lock);
+    job = s_l0_pending;
+    if (!job.pending) {
+        portEXIT_CRITICAL(&s_lock);
+        return ESP_OK;
+    }
+    s_l0_pending.pending = false;
+    portEXIT_CRITICAL(&s_lock);
+
+    if (job.buf_idx < 0 || job.buf_idx > 1 || s_l0_pcm[job.buf_idx] == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    dbmap_l0_window_t win;
+    const int64_t t0 = esp_timer_get_time();
+    dbmap_l0_analyze_window(
+        &s_l0_bank,
+        s_l0_pcm[job.buf_idx],
+        job.sample_count,
+        job.full_scale_bits,
+        job.window_ms,
+        job.window_end_mono_us,
+        &win
+    );
+    const int64_t elapsed = esp_timer_get_time() - t0;
+    const uint32_t us = elapsed > 0 ? (uint32_t)elapsed : 0;
+
+    portENTER_CRITICAL(&s_lock);
+    s_l0_latest = win;
+    s_l0_latest_ready = true;
+    s_l0_analyze_count++;
+    s_l0_analyze_us_last = us;
+    if (us > s_l0_analyze_us_max) {
+        s_l0_analyze_us_max = us;
+    }
+    portEXIT_CRITICAL(&s_lock);
+    return ESP_OK;
+#endif
+}
+
+esp_err_t dbmap_ear_mic_get_l0_window(dbmap_l0_window_t *out)
+{
+    if (out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(out, 0, sizeof(*out));
+#if !CONFIG_DBMAP_EAR_MIC_L0
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    portENTER_CRITICAL(&s_lock);
+    if (s_l0_latest_ready) {
+        *out = s_l0_latest;
+    }
+    portEXIT_CRITICAL(&s_lock);
+    return ESP_OK;
+#endif
+}
+
+esp_err_t dbmap_ear_mic_get_l0_perf(dbmap_ear_mic_l0_perf_t *out)
+{
+    if (out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(out, 0, sizeof(*out));
+#if !CONFIG_DBMAP_EAR_MIC_L0
+    out->enabled = false;
+    return ESP_OK;
+#else
+    out->enabled = true;
+    portENTER_CRITICAL(&s_lock);
+    out->pcm_ready = s_l0_pcm_ready;
+    out->pcm_cap_samples = s_l0_pcm_cap;
+    out->pcm_bytes_total = s_l0_pcm_ready ? (s_l0_pcm_cap * sizeof(int32_t) * 2u) : 0;
+    out->analyze_count = s_l0_analyze_count;
+    out->analyze_us_last = s_l0_analyze_us_last;
+    out->analyze_us_max = s_l0_analyze_us_max;
+    out->pending_overwrite = s_l0_pending_overwrite;
+    out->free_heap_after_init = s_l0_free_heap_after_init;
+    out->free_spiram_after_init = s_l0_free_spiram_after_init;
+    portEXIT_CRITICAL(&s_lock);
+    return ESP_OK;
+#endif
 }
 
 static void set_status(ear_audio_snapshot_t *snap, uint32_t expected_samples)
@@ -310,6 +446,27 @@ static void enrich_health(cJSON *state, const dbmap_effective_t *cfg, bool inclu
     if (snap.measured_at_us > 0) {
         cJSON_AddNumberToObject(mic, "measured_at_uptime_s", (double)(snap.measured_at_us / 1000000LL));
     }
+#if CONFIG_DBMAP_EAR_MIC_BACKGROUND
+    {
+        /* Read-only profile: time-filters in-window samples; does not mutate ring. */
+        dbmap_bg_rms_profile_t bg;
+        portENTER_CRITICAL(&s_lock);
+        dbmap_bg_rms_profile(&s_bg_hist, esp_timer_get_time(), &bg);
+        portEXIT_CRITICAL(&s_lock);
+        if (bg.present) {
+            cJSON *background = cJSON_CreateObject();
+            if (background != NULL) {
+                cJSON_AddNumberToObject(background, "window_ms", (double)bg.window_ms);
+                cJSON_AddNumberToObject(background, "sample_count", (double)bg.sample_count);
+                cJSON_AddStringToObject(background, "status", bg.status);
+                cJSON_AddNumberToObject(background, "rms_min_dbfs", (double)bg.rms_min_dbfs);
+                cJSON_AddNumberToObject(background, "rms_max_dbfs", (double)bg.rms_max_dbfs);
+                cJSON_AddNumberToObject(background, "rms_mean_dbfs", (double)bg.rms_mean_dbfs);
+                cJSON_AddItemToObject(mic, "background", background);
+            }
+        }
+    }
+#endif
     cJSON_AddItemToArray(mics, mic);
     cJSON_AddItemToObject(audio, "microphones", mics);
     cJSON_AddItemToObject(state, "audio", audio);
@@ -504,6 +661,12 @@ static void measure_window(ear_audio_snapshot_t *out)
             if (cur_identical_run > max_identical_run) {
                 max_identical_run = cur_identical_run;
             }
+#if CONFIG_DBMAP_EAR_MIC_L0
+            /* Store for offline L0; never allocate here. Cap at expected window. */
+            if (s_l0_pcm_ready && s_l0_pcm[s_l0_fill_idx] != NULL && pcm_count < s_l0_pcm_cap) {
+                s_l0_pcm[s_l0_fill_idx][pcm_count] = sample;
+            }
+#endif
             pcm_count++;
         }
 
@@ -564,6 +727,26 @@ static void measure_window(ear_audio_snapshot_t *out)
     out->peak_dbfs = dbmap_audio_peak_dbfs(&peak_abs, 1, useful_bits);
     set_status(out, expected);
 
+#if CONFIG_DBMAP_EAR_MIC_L0
+    /* Hand filled buffer to L0 poller; flip fill index so next window is independent.
+     * Detector path above is unchanged — L0 is not consulted for activity. */
+    if (s_l0_pcm_ready && pcm_count > 0) {
+        const size_t stored = pcm_count < s_l0_pcm_cap ? pcm_count : s_l0_pcm_cap;
+        portENTER_CRITICAL(&s_lock);
+        if (s_l0_pending.pending) {
+            s_l0_pending_overwrite++;
+        }
+        s_l0_pending.pending = true;
+        s_l0_pending.buf_idx = s_l0_fill_idx;
+        s_l0_pending.sample_count = stored;
+        s_l0_pending.window_ms = window_ms;
+        s_l0_pending.window_end_mono_us = out->measured_at_us;
+        s_l0_pending.full_scale_bits = useful_bits;
+        s_l0_fill_idx ^= 1;
+        portEXIT_CRITICAL(&s_lock);
+    }
+#endif
+
     /* Bounded startup log: first 30 windows only (≈30 s at 1 s windows). */
     if (out->window_seq <= 30u) {
         ESP_LOGI(
@@ -595,8 +778,29 @@ static void ear_mic_task(void *arg)
         ear_audio_snapshot_t snap;
         measure_window(&snap);
 
+#if CONFIG_DBMAP_EAR_MIC_BACKGROUND
+        dbmap_bg_rms_candidate_t cand = {
+            .levels_valid = (snap.missing_data == 0 && snap.sample_count > 0),
+            .rms_dbfs = snap.rms_dbfs,
+            .peak_dbfs = snap.peak_dbfs,
+            .clipped_samples = snap.clipped_samples,
+            .window_seq = snap.window_seq,
+            .ms_since_i2s_enable = snap.ms_since_i2s_enable,
+            .transport_status = snap.transport_status,
+            .microphone_status = snap.microphone_status,
+        };
+        const bool include = dbmap_bg_rms_should_include(
+            &cand, (uint32_t)CONFIG_DBMAP_EAR_MIC_BACKGROUND_BOOT_SETTLE_MS
+        );
+#endif
+
         portENTER_CRITICAL(&s_lock);
         s_latest = snap;
+#if CONFIG_DBMAP_EAR_MIC_BACKGROUND
+        if (include) {
+            dbmap_bg_rms_push(&s_bg_hist, snap.rms_dbfs, snap.measured_at_us);
+        }
+#endif
         portEXIT_CRITICAL(&s_lock);
 
         /* Yield so MQTT / OTA / health stay responsive. Latest levels ride on hello/health. */
@@ -630,6 +834,67 @@ esp_err_t dbmap_ear_mic_start(const dbmap_effective_t *cfg, const dbmap_ear_mic_
     memset(&s_latest, 0, sizeof(s_latest));
     strncpy(s_latest.transport_status, "unavailable", sizeof(s_latest.transport_status) - 1);
     strncpy(s_latest.microphone_status, "unavailable", sizeof(s_latest.microphone_status) - 1);
+
+#if CONFIG_DBMAP_EAR_MIC_BACKGROUND
+    dbmap_bg_rms_hist_init(
+        &s_bg_hist,
+        s_bg_entries,
+        EAR_BG_RMS_CAP,
+        (uint32_t)CONFIG_DBMAP_EAR_MIC_BACKGROUND_WINDOW_MS
+    );
+    ESP_LOGI(
+        TAG,
+        "background RMS hist window_ms=%lu cap=%lu boot_settle_ms=%lu",
+        (unsigned long)CONFIG_DBMAP_EAR_MIC_BACKGROUND_WINDOW_MS,
+        (unsigned long)EAR_BG_RMS_CAP,
+        (unsigned long)CONFIG_DBMAP_EAR_MIC_BACKGROUND_BOOT_SETTLE_MS
+    );
+#endif
+
+#if CONFIG_DBMAP_EAR_MIC_L0
+    {
+        const uint32_t window_ms = (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS;
+        const uint32_t expected = dbmap_audio_expected_samples(
+            (uint32_t)s_mic_cfg.sample_rate_hz,
+            window_ms
+        );
+        /* +1% slack for slight over-fill vs nominal window length. */
+        s_l0_pcm_cap = expected + (expected / 100u) + 16u;
+        s_l0_pcm[0] = (int32_t *)heap_caps_malloc(
+            (size_t)s_l0_pcm_cap * sizeof(int32_t),
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+        );
+        s_l0_pcm[1] = (int32_t *)heap_caps_malloc(
+            (size_t)s_l0_pcm_cap * sizeof(int32_t),
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+        );
+        if (s_l0_pcm[0] == NULL || s_l0_pcm[1] == NULL) {
+            ESP_LOGE(TAG, "L0 SPIRAM PCM alloc failed cap=%lu", (unsigned long)s_l0_pcm_cap);
+            heap_caps_free(s_l0_pcm[0]);
+            heap_caps_free(s_l0_pcm[1]);
+            s_l0_pcm[0] = NULL;
+            s_l0_pcm[1] = NULL;
+            s_l0_pcm_ready = false;
+        } else {
+            s_l0_pcm_ready = true;
+            s_l0_fill_idx = 0;
+            memset(&s_l0_pending, 0, sizeof(s_l0_pending));
+            memset(&s_l0_latest, 0, sizeof(s_l0_latest));
+            s_l0_latest_ready = false;
+            dbmap_l0_filter_bank_init(&s_l0_bank, (uint32_t)s_mic_cfg.sample_rate_hz);
+            s_l0_free_heap_after_init = (uint32_t)esp_get_free_heap_size();
+            s_l0_free_spiram_after_init = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+            ESP_LOGI(
+                TAG,
+                "L0 ready pcm_cap=%lu bytes=%lu free_heap=%lu free_spiram=%lu",
+                (unsigned long)s_l0_pcm_cap,
+                (unsigned long)(s_l0_pcm_cap * sizeof(int32_t) * 2u),
+                (unsigned long)s_l0_free_heap_after_init,
+                (unsigned long)s_l0_free_spiram_after_init
+            );
+        }
+    }
+#endif
 
     esp_err_t err = init_i2s_rx();
     if (err != ESP_OK) {

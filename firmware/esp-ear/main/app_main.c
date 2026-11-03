@@ -22,6 +22,41 @@
 
 static const char *TAG = "esp-ear";
 static dbmap_effective_t s_cfg;
+/** One-shot gate: Acoustic Monitor starts only after boot OTA handling. */
+static bool s_acoustic_started;
+
+static void start_acoustic_monitor_once(void)
+{
+    if (s_acoustic_started) {
+        return;
+    }
+    s_acoustic_started = true;
+
+    dbmap_ear_mic_config_t mic_cfg = {
+        .model = DBMAP_EAR_MIC_MODEL_INMP441,
+        .bclk_gpio = CONFIG_DBMAP_EAR_MIC_I2S_BCLK_GPIO,
+        .ws_gpio = CONFIG_DBMAP_EAR_MIC_I2S_WS_GPIO,
+        .din_gpio = CONFIG_DBMAP_EAR_MIC_I2S_DIN_GPIO,
+        .mclk_gpio = CONFIG_DBMAP_EAR_MIC_I2S_MCLK_GPIO,
+        .sample_rate_hz = CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ,
+    };
+    esp_err_t mic_err = dbmap_ear_mic_start(&s_cfg, &mic_cfg);
+    if (mic_err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "microphone init failed (%s); continuing without audio capture",
+            esp_err_to_name(mic_err)
+        );
+    }
+
+    /* Observation publisher after mic so health enrichers chain (mic then observation). */
+    esp_err_t obs_err = dbmap_ear_observation_start(&s_cfg);
+    if (obs_err != ESP_OK) {
+        ESP_LOGW(TAG, "observation publisher init failed (%s)", esp_err_to_name(obs_err));
+    } else {
+        ESP_LOGI(TAG, "Acoustic Monitor started (I2S + RMS + L0); independent of later MQTT/Wi-Fi drops");
+    }
+}
 
 void app_main(void)
 {
@@ -99,28 +134,19 @@ void app_main(void)
         }
     }
 
-    dbmap_ear_mic_config_t mic_cfg = {
-        .model = DBMAP_EAR_MIC_MODEL_INMP441,
-        .bclk_gpio = CONFIG_DBMAP_EAR_MIC_I2S_BCLK_GPIO,
-        .ws_gpio = CONFIG_DBMAP_EAR_MIC_I2S_WS_GPIO,
-        .din_gpio = CONFIG_DBMAP_EAR_MIC_I2S_DIN_GPIO,
-        .mclk_gpio = CONFIG_DBMAP_EAR_MIC_I2S_MCLK_GPIO,
-        .sample_rate_hz = CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ,
-    };
-    esp_err_t mic_err = dbmap_ear_mic_start(&s_cfg, &mic_cfg);
-    if (mic_err != ESP_OK) {
-        ESP_LOGW(TAG, "microphone init failed (%s); continuing without audio capture", esp_err_to_name(mic_err));
-    }
-
-    /* Observation publisher after mic so health enrichers chain (mic then observation). */
-    esp_err_t obs_err = dbmap_ear_observation_start(&s_cfg);
-    if (obs_err != ESP_OK) {
-        ESP_LOGW(TAG, "observation publisher init failed (%s)", esp_err_to_name(obs_err));
-    }
-
-    /* No Output command handler in this milestone. */
+    /* Network + OTA path first; Acoustic Monitor waits until boot Desired is done. */
     ESP_ERROR_CHECK(dbmap_mqtt_start(&s_cfg, NULL, NULL));
+    /*
+     * Register OTA acoustic-close before any OTA-capable Desired path (including
+     * synchronous boot Desired). Failure must not continue as if registered.
+     */
+    ESP_ERROR_CHECK(dbmap_ear_observation_register_ota_close());
     dbmap_ota_mark_valid_after_mqtt(&s_cfg);
+    dbmap_desired_boot_check(&s_cfg);
+
+    start_acoustic_monitor_once();
+
+    /* Periodic Desired only — must not restart Acoustic Monitor on later polls. */
     dbmap_desired_poll_start(&s_cfg);
 
     int backoff_ms = 1000;

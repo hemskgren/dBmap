@@ -34,6 +34,13 @@ typedef enum {
     DBMAP_ACTIVITY_EMIT_END,
 } dbmap_activity_emit_kind_t;
 
+/** Meaningful on END emissions only (OTA reason is applied by the Observation layer). */
+typedef enum {
+    DBMAP_ACTIVITY_TERM_NONE = 0,
+    DBMAP_ACTIVITY_TERM_NATURAL,
+    DBMAP_ACTIVITY_TERM_INVALID_HOLD,
+} dbmap_activity_termination_t;
+
 typedef struct {
     /** Enter when rms_dbfs >= enter_threshold_dbfs (provisional, not calibrated). */
     float enter_threshold_dbfs;
@@ -69,6 +76,7 @@ typedef struct {
 
 typedef struct {
     dbmap_activity_emit_kind_t kind;
+    dbmap_activity_termination_t termination;
     float signal_level_dbfs;
     double duration_ms;
     int64_t interval_start_mono_us;
@@ -125,6 +133,16 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
 );
 
 dbmap_activity_state_t dbmap_activity_detector_state(const dbmap_activity_detector_t *det);
+
+/**
+ * Force an END for an open episode (ACTIVE / PENDING_EXIT), ending at the last
+ * usable sample when available. Returns NONE and leaves state unchanged for
+ * IDLE / PENDING_ENTER. Does not count as invalid_hold.
+ */
+dbmap_activity_emission_t dbmap_activity_detector_force_end(dbmap_activity_detector_t *det);
+
+/** Reset detector to IDLE without emitting (silent abort / OTA no-END paths). */
+void dbmap_activity_detector_reset_idle(dbmap_activity_detector_t *det);
 
 #ifdef __cplusplus
 }

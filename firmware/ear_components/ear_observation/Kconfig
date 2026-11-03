@@ -100,6 +100,37 @@ menu "dBmap Ear Observation"
         default 1000
         depends on DBMAP_EAR_OBS_TEST_PUBLISH_ONCE
 
+    config DBMAP_EAR_OBS_L0
+        bool "Step 2: accumulate L0 over Observation intervals"
+        default y
+        depends on DBMAP_EAR_OBS_RMS_ACTIVITY && DBMAP_EAR_MIC_L0
+        help
+            Associate usable L0 analysis windows with START/PERIODIC/END
+            Observation boundaries and finalize interval aggregates.
+            Required when publishing L0 measurements on MQTT.
+
+    config DBMAP_EAR_OBS_L0_MAX_WINDOWS
+        int "Max usable L0 analysis windows per Observation interval"
+        range 8 128
+        default 64
+        depends on DBMAP_EAR_OBS_L0
+        help
+            Static ring/history capacity. Supported observation_interval_ms is
+            at most (this value - 2) * analysis window_ms under exclusive-start
+            inclusive-end membership. Default 64 → ~62 s at 1 s windows.
+            If configured INTERVAL_MS needs more windows, observation start
+            fails clearly (no silent truncation of T1/T2/T3/T6).
+
+    config DBMAP_EAR_OBS_PUBLISH_L0
+        bool "Publish emission_kind + L0 measurements on Observations (protocol v1)"
+        default n
+        depends on DBMAP_EAR_OBS_RMS_ACTIVITY && DBMAP_EAR_OBS_L0 && DBMAP_EAR_MIC_L0
+        help
+            When enabled, MQTT Observations remain protocol_version 1 but include
+            emission_kind and a required nested measurements (L0) object.
+            Keep disabled until Hub accepts the extension. Incomplete L0 runtime
+            state refuses publish (no silent omission of measurements).
+
     config DBMAP_EAR_OBS_SERIAL_DIAG
         bool "Opt-in serial diagnostics for RMS activity (rate-limited)"
         default n
@@ -107,8 +138,10 @@ menu "dBmap Ear Observation"
         help
             When enabled, the activity task prints ~1 Hz measurement/state
             snapshots and ~5 s emission/invalid/MQTT-drop counters on the
-            console UART. Independent of MQTT/HTTPS. Default off. Does not
-            change thresholds, hysteresis, timing, or Observation emission.
-            Do not enable in production fleet images.
+            console UART. When DBMAP_EAR_OBS_L0 is also enabled, prints
+            per-window L0 and per-emission interval L0 summaries. Independent
+            of MQTT/HTTPS. Default off. Does not change thresholds, hysteresis,
+            timing, or Observation emission. Do not enable in production fleet
+            images.
 
 endmenu

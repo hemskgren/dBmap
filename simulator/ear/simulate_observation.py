@@ -134,9 +134,18 @@ def make_observation(
     node_id: str,
     sequence_number: int = 1,
     vehicle_id: str = "SIM-VEHICLE-001",
+    *,
+    include_l0: bool = False,
+    l0_scenario: str = "quiet_ambient",
+    emission_kind: str | None = None,
 ) -> dict[str, Any]:
+    """Build a protocol-v1 Observation.
+
+    Default is legacy-compatible (no emission_kind / measurements).
+    With include_l0=True, attach the Ear-compatible L0 extension.
+    """
     now = datetime.now(timezone.utc)
-    return {
+    observation: dict[str, Any] = {
         "protocol_version": 1,
         "message_type": "observation",
         "observation_id": str(uuid4()),
@@ -160,6 +169,15 @@ def make_observation(
         "signal_level_dbfs": -34.0,
         "duration_ms": 850.0,
     }
+    if include_l0:
+        from l0_measurements import attach_l0_extension
+
+        observation = attach_l0_extension(
+            observation,
+            scenario=l0_scenario,
+            emission_kind=emission_kind,  # type: ignore[arg-type]
+        )
+    return observation
 
 
 def finish_provisioning(
@@ -192,7 +210,13 @@ def finish_provisioning(
         raise RuntimeError(
             "hub changed the node ID while provisioning the simulated Ear"
         )
-    observation = make_observation(provisioned["node_id"])
+    include_l0 = bool(getattr(args, "include_l0", False))
+    l0_scenario = getattr(args, "l0_scenario", "quiet_ambient")
+    observation = make_observation(
+        provisioned["node_id"],
+        include_l0=include_l0,
+        l0_scenario=l0_scenario,
+    )
     _observation_body().model_validate(observation)
     result = {
         "state": "provisioned",
@@ -295,6 +319,8 @@ def publish_observation_batch(
     vehicle_id: str,
     *,
     ear: str = DEFAULT_EAR,
+    include_l0: bool = False,
+    l0_scenario: str = "quiet_ambient",
 ) -> list[str]:
     published_ids = []
     for index in range(count):
@@ -303,7 +329,13 @@ def publish_observation_batch(
             if index > 0:
                 time.sleep(interval_seconds)
             sequence = credentials["next_sequence_number"]
-            pending = make_observation(credentials["node_id"], sequence, vehicle_id)
+            pending = make_observation(
+                credentials["node_id"],
+                sequence,
+                vehicle_id,
+                include_l0=include_l0,
+                l0_scenario=l0_scenario,
+            )
         pending["classification"]["hints"]["simulated_source_id"] = vehicle_id
         credentials["pending_observation"] = pending
         save_credentials(credentials_path, credentials)
@@ -355,6 +387,27 @@ def _add_publish_options(parser: argparse.ArgumentParser) -> None:
         "--vehicle-id",
         default="SIM-VEHICLE-001",
         help="Stable synthetic source ID shared by a simulated vehicle's observations",
+    )
+    parser.add_argument(
+        "--include-l0",
+        action="store_true",
+        help=(
+            "Publish protocol v1 with emission_kind + measurements (L0). "
+            "Default remains legacy v1 without those fields."
+        ),
+    )
+    parser.add_argument(
+        "--l0-scenario",
+        default="quiet_ambient",
+        choices=(
+            "quiet_ambient",
+            "stable_tonal",
+            "varying_level",
+            "high_crest_transient",
+            "clipped_windows",
+            "insufficient_data_nulls",
+        ),
+        help="Deterministic L0 fixture when --include-l0 is set (default: quiet_ambient)",
     )
 
 
@@ -415,7 +468,19 @@ def main() -> int:
         publish_ear_keepalive(credentials, args.ca, uptime_s=0)
         print(f"  keepalive  {args.ear}  {node_id}", flush=True)
         if args.count == 1:
-            observation_id = publish_observation(credentials, args.ca)
+            if args.include_l0:
+                from l0_measurements import attach_l0_extension
+
+                pending = credentials.get("pending_observation") or credentials[
+                    "observation"
+                ]
+                pending = attach_l0_extension(pending, scenario=args.l0_scenario)
+                credentials["pending_observation"] = pending
+                credentials["observation"] = pending
+                save_credentials(credentials_path, credentials)
+                observation_id = publish_payload(credentials, pending, args.ca)
+            else:
+                observation_id = publish_observation(credentials, args.ca)
             credentials["next_sequence_number"] = max(
                 credentials.get("next_sequence_number", 1),
                 credentials["observation"]["sequence_number"] + 1,
@@ -436,6 +501,8 @@ def main() -> int:
                 args.interval_seconds,
                 args.vehicle_id,
                 ear=args.ear,
+                include_l0=args.include_l0,
+                l0_scenario=args.l0_scenario,
             )
     except UnsupportedSimulatorIdentity as exc:
         print(f"Simulator setup failed: {exc}", file=sys.stderr)

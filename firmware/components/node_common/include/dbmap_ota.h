@@ -6,6 +6,21 @@
 #include "dbmap_types.h"
 #include "esp_err.h"
 
+/**
+ * Optional Ear acoustic-close hook invoked from persist_pending_and_reboot
+ * before the install status publish / reboot prep.
+ *
+ * Output never registers; NULL means intentional no-op.
+ * Ear must register a non-NULL callback before any OTA-capable Desired path.
+ */
+typedef esp_err_t (*dbmap_ota_acoustic_close_fn)(void);
+
+/**
+ * Install the Ear acoustic-close callback. fn must be non-NULL.
+ * Returns ESP_OK on success. Does not use weak symbols.
+ */
+esp_err_t dbmap_ota_register_acoustic_close(dbmap_ota_acoustic_close_fn fn);
+
 /* Download Desired esp-output.bin into the inactive OTA slot. Fail closed: abort keeps running image. */
 esp_err_t dbmap_ota_apply(
     const dbmap_effective_t *cfg,

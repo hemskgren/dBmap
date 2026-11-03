@@ -25,6 +25,18 @@ static const char *TAG = "dbmap_ota";
 static const uint32_t kOtaStatusAckTimeoutMs = 5000;
 static const uint32_t kOtaRebootCleanupMs = 500;
 static volatile bool s_in_flight;
+static dbmap_ota_acoustic_close_fn s_acoustic_close;
+/* Keep download chunk off the main task stack (TLS + Desired already use most of 8–16 KiB). */
+static uint8_t s_ota_read_buf[4096];
+
+esp_err_t dbmap_ota_register_acoustic_close(dbmap_ota_acoustic_close_fn fn)
+{
+    if (fn == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    s_acoustic_close = fn;
+    return ESP_OK;
+}
 
 static esp_err_t publish_ota_status(
     const dbmap_effective_t *cfg,
@@ -101,6 +113,20 @@ static void persist_pending_and_reboot(
     esp_err_t nvs_err = dbmap_nvs_ota_pending_save(&pending);
     if (nvs_err != ESP_OK) {
         ESP_LOGW(TAG, "could not persist pending OTA record (%s); rebooting anyway", esp_err_to_name(nvs_err));
+    }
+
+    /* Ear may close an open Observation episode (bounded PUBACK). Output: NULL no-op. */
+    if (s_acoustic_close != NULL) {
+        esp_err_t close_err = s_acoustic_close();
+        if (close_err == ESP_OK) {
+            ESP_LOGI(TAG, "acoustic close before OTA reboot completed");
+        } else {
+            ESP_LOGW(
+                TAG,
+                "acoustic close before OTA reboot finished with %s; continuing reboot",
+                esp_err_to_name(close_err)
+            );
+        }
     }
 
     if (dbmap_mqtt_is_connected()) {
@@ -293,14 +319,13 @@ esp_err_t dbmap_ota_apply(
     mbedtls_sha256_init(&sha_ctx);
     mbedtls_sha256_starts(&sha_ctx, 0);
 
-    uint8_t buf[4096];
     uint32_t written = 0;
     while (written < app_size_bytes) {
-        int to_read = (int)sizeof(buf);
+        int to_read = (int)sizeof(s_ota_read_buf);
         if (written + (uint32_t)to_read > app_size_bytes) {
             to_read = (int)(app_size_bytes - written);
         }
-        int n = esp_http_client_read(client, (char *)buf, to_read);
+        int n = esp_http_client_read(client, (char *)s_ota_read_buf, to_read);
         if (n < 0) {
             err = ESP_FAIL;
             ESP_LOGW(TAG, "OTA failed; read error after %lu bytes", (unsigned long)written);
@@ -311,12 +336,12 @@ esp_err_t dbmap_ota_apply(
             ESP_LOGW(TAG, "OTA failed; short download at %lu/%lu", (unsigned long)written, (unsigned long)app_size_bytes);
             break;
         }
-        err = esp_ota_write(ota, buf, (size_t)n);
+        err = esp_ota_write(ota, s_ota_read_buf, (size_t)n);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "OTA failed; write (%s)", esp_err_to_name(err));
             break;
         }
-        mbedtls_sha256_update(&sha_ctx, buf, (size_t)n);
+        mbedtls_sha256_update(&sha_ctx, s_ota_read_buf, (size_t)n);
         written += (uint32_t)n;
     }
 

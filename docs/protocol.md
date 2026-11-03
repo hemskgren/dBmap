@@ -96,6 +96,67 @@ and registration as an Ear before persistence.
 }
 ```
 
+Optional L0 extension (still `protocol_version: 1`). Both fields are required
+together when either is present; legacy senders may omit both:
+
+```json
+{
+  "protocol_version": 1,
+  "message_type": "observation",
+  "observation_id": "00000000-0000-0000-0000-000000000002",
+  "node_id": "EAR-001",
+  "sequence_number": 42,
+  "event_time_utc": "2026-11-03T12:00:00Z",
+  "capture_timestamp_monotonic_us": 15100000,
+  "timing_quality": "estimated",
+  "clock_offset_ms": null,
+  "timestamp_uncertainty_ms": 25.0,
+  "classification": null,
+  "bearing": null,
+  "signal_level_dbfs": -46.0,
+  "duration_ms": 5100.0,
+  "emission_kind": "periodic",
+  "measurements": {
+    "schema": "l0",
+    "version": 1,
+    "band_plan_version": 1,
+    "crest_threshold_version": 1,
+    "crest_threshold_db": 12.0,
+    "mic_index": 0,
+    "sample_rate_hz": 16000,
+    "analysis_window_ms": 1000,
+    "window_count": 5,
+    "clipped_window_count": 1,
+    "n_crest": 4,
+    "rms": { "mean_dbfs": -42.5, "min_dbfs": -50.0, "max_dbfs": -35.0 },
+    "bands": {
+      "mean_dbfs": [-43.9794, -45.228787, -46.9897, -50.0],
+      "fraction": [0.4, 0.3, 0.2, 0.1]
+    },
+    "hl": { "mean_db": -3.679768 },
+    "t1": { "rms_stdev_db": 2.0, "rms_range_db": 15.0 },
+    "t2": { "rms_slope_db_per_s": 0.25 },
+    "t3": {
+      "crest_max_db": 14.0,
+      "high_crest_count": 1,
+      "high_crest_rate": 0.25
+    },
+    "t6": { "hl_slope_db_per_s": -0.1 }
+  }
+}
+```
+
+`emission_kind` is `start`, `periodic`, or `end`. Nested `measurements` uses
+schema `l0` (combined mic scene). Unknown keys inside `measurements` are
+rejected. Malformed measurements are rejected (never silently dropped). Full
+field validity and null rules:
+[L0 measurement contract](./ear-l0-measurement-contract.md).
+
+Optional `termination_reason` may appear **only** when `emission_kind` is
+`end`. Allowed values: `natural`, `invalid_hold`, `ota_reboot`. Legacy END
+messages may omit the field. The hub rejects unknown values and rejects the
+field on non-END emissions (including when `emission_kind` is absent).
+
 `event_time_utc` must include a timezone and marks the beginning of the
 observation interval; the hub normalizes it to UTC. `duration_ms` is the
 interval length, so the observation covers
@@ -128,11 +189,34 @@ non-negative. The hub adds `received_time_utc` to the observation returned by
 its API.
 
 Retained observations are rejected. Duplicate deliveries are safe when the
-same observation ID is used. The simulator uses the same envelope and topic
+same observation ID is used. The opaque stored `payload_json` preserves the
+validated envelope (including optional L0 fields and JSON nulls). The API
+returns that full payload plus `received_time_utc`.
+
+### Sequence reconciliation (Ear ↔ Hub)
+
+Distinguish three layers when debugging:
+
+1. **Detector emissions** — START / PERIODIC / END on the Ear (serial diag /
+   counters). May occur while MQTT is down.
+2. **MQTT publish attempts** — Ear increments `sequence_number` only when it
+   builds and publishes a payload. Refused L0 / missing measurements do **not**
+   create a Hub row; watch Ear logs for refuse / drop counters.
+3. **Hub-accepted records** — one row per unique `observation_id`. Dedup returns
+   success without a second row. Stored `sequence_number` must match the Ear
+   payload for that ID.
+
+Reconciliation procedure: for a time window, list Ear serial/MQTT sequence
+values for published IDs, then `GET /api/v1/observations?node_id=…` and match
+`observation_id` → `sequence_number` / `emission_kind`. Gaps mean publish
+refuse or broker loss, not Hub rewriting sequences.
+
+The simulator uses the same envelope and topic
 as a registered Ear. Scenario simulator observations may carry
 `classification.hints.simulated_source_id` as test-only ground truth, not as a
 real-world identity or an event/track identifier. Tracker analysis must not
-consume that hint for association.
+consume that hint for association. Legacy simulator payloads (no L0) remain
+valid; `--include-l0` publishes the optional extension.
 Previously stored observations using the earlier flat `confidence`,
 `bearing_deg`, and `classification_hints` fields must be cleared before
 deploying this schema revision. See the database wipe steps in

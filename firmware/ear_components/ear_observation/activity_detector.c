@@ -72,6 +72,7 @@ bool dbmap_activity_sample_usable(const dbmap_activity_sample_t *sample)
 
 static dbmap_activity_emission_t make_emission(
     dbmap_activity_emit_kind_t kind,
+    dbmap_activity_termination_t termination,
     float level,
     int64_t start_us,
     int64_t end_us
@@ -80,6 +81,7 @@ static dbmap_activity_emission_t make_emission(
     dbmap_activity_emission_t out;
     memset(&out, 0, sizeof(out));
     out.kind = kind;
+    out.termination = termination;
     out.signal_level_dbfs = level > 0.0f ? 0.0f : level;
     out.interval_start_mono_us = start_us;
     out.interval_end_mono_us = end_us;
@@ -111,7 +113,9 @@ static dbmap_activity_emission_t force_end_after_invalid(dbmap_activity_detector
     det->last_emit_us = end_us;
     det->emissions_end += 1;
     det->forced_ends_invalid += 1;
-    return make_emission(DBMAP_ACTIVITY_EMIT_END, level, start_us, end_us);
+    return make_emission(
+        DBMAP_ACTIVITY_EMIT_END, DBMAP_ACTIVITY_TERM_INVALID_HOLD, level, start_us, end_us
+    );
 }
 
 dbmap_activity_state_t dbmap_activity_detector_state(const dbmap_activity_detector_t *det)
@@ -207,6 +211,7 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
                 det->emissions_start += 1;
                 return make_emission(
                     DBMAP_ACTIVITY_EMIT_START,
+                    DBMAP_ACTIVITY_TERM_NONE,
                     rms,
                     det->episode_start_us,
                     t
@@ -229,6 +234,7 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
             det->emissions_start += 1;
             return make_emission(
                 DBMAP_ACTIVITY_EMIT_START,
+                DBMAP_ACTIVITY_TERM_NONE,
                 rms,
                 det->episode_start_us,
                 t
@@ -246,7 +252,9 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
                 int64_t start = det->last_emit_us;
                 det->last_emit_us = t;
                 det->emissions_periodic += 1;
-                return make_emission(DBMAP_ACTIVITY_EMIT_PERIODIC, rms, start, t);
+                return make_emission(
+                    DBMAP_ACTIVITY_EMIT_PERIODIC, DBMAP_ACTIVITY_TERM_NONE, rms, start, t
+                );
             }
             return none;
         }
@@ -256,7 +264,9 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
                 int64_t start = det->last_emit_us;
                 det->last_emit_us = t;
                 det->emissions_periodic += 1;
-                return make_emission(DBMAP_ACTIVITY_EMIT_PERIODIC, rms, start, t);
+                return make_emission(
+                    DBMAP_ACTIVITY_EMIT_PERIODIC, DBMAP_ACTIVITY_TERM_NONE, rms, start, t
+                );
             }
         }
         return none;
@@ -271,7 +281,9 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
                     int64_t start = det->last_emit_us;
                     det->last_emit_us = t;
                     det->emissions_periodic += 1;
-                    return make_emission(DBMAP_ACTIVITY_EMIT_PERIODIC, rms, start, t);
+                    return make_emission(
+                        DBMAP_ACTIVITY_EMIT_PERIODIC, DBMAP_ACTIVITY_TERM_NONE, rms, start, t
+                    );
                 }
             }
             return none;
@@ -282,7 +294,9 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
             det->pending_since_us = 0;
             det->last_emit_us = t;
             det->emissions_end += 1;
-            return make_emission(DBMAP_ACTIVITY_EMIT_END, rms, start, t);
+            return make_emission(
+                DBMAP_ACTIVITY_EMIT_END, DBMAP_ACTIVITY_TERM_NATURAL, rms, start, t
+            );
         }
         return none;
 
@@ -290,4 +304,40 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
         det->state = DBMAP_ACTIVITY_IDLE;
         return none;
     }
+}
+
+dbmap_activity_emission_t dbmap_activity_detector_force_end(dbmap_activity_detector_t *det)
+{
+    dbmap_activity_emission_t none;
+    memset(&none, 0, sizeof(none));
+    none.kind = DBMAP_ACTIVITY_EMIT_NONE;
+    none.termination = DBMAP_ACTIVITY_TERM_NONE;
+
+    if (det == NULL) {
+        return none;
+    }
+    if (det->state != DBMAP_ACTIVITY_ACTIVE && det->state != DBMAP_ACTIVITY_PENDING_EXIT) {
+        return none;
+    }
+
+    int64_t end_us = det->has_last_valid ? det->last_valid_us : det->last_emit_us;
+    int64_t start_us = det->last_emit_us;
+    float level = det->last_level_dbfs;
+    det->state = DBMAP_ACTIVITY_IDLE;
+    det->pending_since_us = 0;
+    det->last_emit_us = end_us;
+    det->emissions_end += 1;
+    /* Termination reason for OTA is applied by the Observation layer. */
+    return make_emission(
+        DBMAP_ACTIVITY_EMIT_END, DBMAP_ACTIVITY_TERM_NONE, level, start_us, end_us
+    );
+}
+
+void dbmap_activity_detector_reset_idle(dbmap_activity_detector_t *det)
+{
+    if (det == NULL) {
+        return;
+    }
+    det->state = DBMAP_ACTIVITY_IDLE;
+    det->pending_since_us = 0;
 }

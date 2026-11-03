@@ -64,4 +64,41 @@ menu "dBmap Ear microphone"
         range -1 48
         default -1
 
+    config DBMAP_EAR_MIC_L0
+        bool "Compute L0 features per analysis window"
+        default y
+        help
+            Run the Phase A L0 acoustic measurement library on each completed
+            1 s analysis window. PCM for L0 is double-buffered in SPIRAM so
+            I2S capture is not blocked by analysis. L0 is not used by the RMS
+            activity detector. Results are exposed via get_l0_window for
+            Observation-side interval aggregation and optional serial diag.
+            Disable to reclaim SPIRAM (~2 × window PCM) when L0 is unused.
+
+    config DBMAP_EAR_MIC_BACKGROUND
+        bool "Iteration 1: rolling background RMS on Reported State"
+        default y
+        help
+            Maintain a rolling RMS history and attach audio.microphones[i].background
+            on hello/health/keepalive. Independent of Observation/MQTT. Read-only
+            on publish. Disable to reclaim a few KB of static RAM.
+
+    config DBMAP_EAR_MIC_BACKGROUND_WINDOW_MS
+        int "Background RMS rolling window (ms)"
+        depends on DBMAP_EAR_MIC_BACKGROUND
+        range 10000 600000
+        default 180000
+        help
+            Samples older than this duration are outside the Reported State
+            profile (snapshot time-filters; ring may also drop on insert).
+
+    config DBMAP_EAR_MIC_BACKGROUND_BOOT_SETTLE_MS
+        int "Exclude background samples this long after I2S enable (ms)"
+        depends on DBMAP_EAR_MIC_BACKGROUND
+        range 0 120000
+        default 5000
+        help
+            Reuses the same startup-settle idea as the activity detector
+            (ms_since_i2s_enable). Also excludes window_seq == 1.
+
 endmenu

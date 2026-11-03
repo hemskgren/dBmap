@@ -100,6 +100,24 @@ Reuse:
 ./scripts/sim-ear-observation publish --count 4 --interval-seconds 15
 ```
 
+## Optional L0 extension (protocol v1)
+
+Default publishes remain **legacy** Observations (no `emission_kind` /
+`measurements`). To exercise Hub ingest of the Ear-compatible L0 extension:
+
+```bash
+./scripts/sim-ear-observation publish --include-l0 --l0-scenario quiet_ambient
+./scripts/sim-ear-observation publish --include-l0 --l0-scenario stable_tonal
+./scripts/sim-ear-observation publish --include-l0 --l0-scenario varying_level
+./scripts/sim-ear-observation publish --include-l0 --l0-scenario high_crest_transient
+./scripts/sim-ear-observation publish --include-l0 --l0-scenario clipped_windows
+./scripts/sim-ear-observation publish --include-l0 --l0-scenario insufficient_data_nulls
+```
+
+Fixtures live in `simulator/ear/l0_measurements.py` and match
+[L0 measurement contract](./ear-l0-measurement-contract.md).
+`protocol_version` stays `1`. Combined-scene only — no per-source measurements.
+
 ---
 
 ## Scenarios (optional)

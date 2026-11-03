@@ -226,6 +226,7 @@ static void test_forced_end_after_max_invalid_hold(void)
     /* 1s valid + 3s invalid ≥ max_invalid_hold → forced END at last valid (1s). */
     e = feed(&det, 4, 4000000, 4000, -120.0f, "ok", "disconnected_suspected");
     EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_END);
+    EXPECT(e.termination == DBMAP_ACTIVITY_TERM_INVALID_HOLD);
     EXPECT(det.state == DBMAP_ACTIVITY_IDLE);
     EXPECT(det.forced_ends_invalid == 1);
     EXPECT(e.interval_end_mono_us == 1000000);
@@ -266,11 +267,41 @@ static void test_mqtt_independence_contract(void)
     EXPECT(det.state == DBMAP_ACTIVITY_PENDING_EXIT);
     e = feed(&det, 4, 4000000, 4000, -60.0f, "ok", "signal_present");
     EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_END);
+    EXPECT(e.termination == DBMAP_ACTIVITY_TERM_NATURAL);
+    EXPECT(det.state == DBMAP_ACTIVITY_IDLE);
+}
+
+/** NEW: force_end / reset_idle for OTA close paths. */
+static void test_force_end_and_reset_idle(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = test_cfg();
+    cfg.boot_settle_ms = 0;
+    cfg.min_activity_ms = 1000;
+    dbmap_activity_detector_init(&det, &cfg);
+
+    dbmap_activity_emission_t e =
+        feed(&det, 1, 1000000, 1000, -40.0f, "ok", "signal_present");
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_START);
+    EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
+
+    e = dbmap_activity_detector_force_end(&det);
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_END);
+    EXPECT(det.state == DBMAP_ACTIVITY_IDLE);
+    EXPECT(e.interval_end_mono_us == 1000000);
+
+    e = dbmap_activity_detector_force_end(&det);
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_NONE);
+
+    feed(&det, 2, 2000000, 2000, -40.0f, "ok", "signal_present");
+    EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
+    dbmap_activity_detector_reset_idle(&det);
     EXPECT(det.state == DBMAP_ACTIVITY_IDLE);
 }
 
 int main(void)
 {
+    /* Existing */
     test_config_rejects_bad_hysteresis();
     test_usable_allows_unknown_rejects_faults();
     test_weak_unknown_can_enter_via_rms();
@@ -280,6 +311,8 @@ int main(void)
     test_forced_end_after_max_invalid_hold();
     test_duplicate_window_ignored();
     test_mqtt_independence_contract();
+    /* Newly added */
+    test_force_end_and_reset_idle();
 
     if (g_failures != 0) {
         fprintf(stderr, "%d failure(s)\n", g_failures);
