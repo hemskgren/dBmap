@@ -22,7 +22,7 @@ menu "dBmap node"
 
     config DBMAP_FIRMWARE_VERSION
         string "Firmware version"
-        default "0.5.0"
+        default "0.7.0"
 
     config DBMAP_NTP_SERVER
         string "Network time server"

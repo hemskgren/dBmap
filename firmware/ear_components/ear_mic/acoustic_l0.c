@@ -1,13 +1,53 @@
+#if !defined(ESP_PLATFORM) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "dbmap_acoustic_l0.h"
 
+#include <limits.h>
 #include <math.h>
 #include <string.h>
+
+#if defined(ESP_PLATFORM)
+#include "esp_timer.h"
+#else
+#include <time.h>
+#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
-static double full_scale_magnitude(int full_scale_bits)
+static dbmap_l0_analyze_stages_t s_last_stages;
+
+static int64_t l0_now_us(void)
+{
+#if defined(ESP_PLATFORM)
+    return esp_timer_get_time();
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return (int64_t)ts.tv_sec * 1000000LL + (int64_t)(ts.tv_nsec / 1000L);
+#endif
+}
+
+static uint32_t l0_elapsed_us(int64_t t0)
+{
+    const int64_t dt = l0_now_us() - t0;
+    return dt > 0 ? (uint32_t)dt : 0u;
+}
+
+void dbmap_l0_get_last_analyze_stages(dbmap_l0_analyze_stages_t *out)
+{
+    if (out == NULL) {
+        return;
+    }
+    *out = s_last_stages;
+}
+
+static float full_scale_magnitude_f(int full_scale_bits)
 {
     if (full_scale_bits < 2) {
         full_scale_bits = 2;
@@ -15,9 +55,25 @@ static double full_scale_magnitude(int full_scale_bits)
     if (full_scale_bits > 31) {
         full_scale_bits = 31;
     }
-    return (double)(1LL << (full_scale_bits - 1));
+    return (float)(1LL << (full_scale_bits - 1));
 }
 
+static float power_to_dbfs_f(float power_rel)
+{
+    if (!(power_rel > 0.0f)) {
+        return DBMAP_L0_SILENCE_DBFS;
+    }
+    float dbfs = 10.0f * log10f(power_rel);
+    if (dbfs < DBMAP_L0_SILENCE_DBFS) {
+        return DBMAP_L0_SILENCE_DBFS;
+    }
+    if (dbfs > 0.0f) {
+        return 0.0f;
+    }
+    return dbfs;
+}
+
+/* Interval finalize keeps double energy means for aggregation stability. */
 static float power_to_dbfs(double power_rel)
 {
     if (!(power_rel > 0.0)) {
@@ -33,23 +89,23 @@ static float power_to_dbfs(double power_rel)
     return (float)dbfs;
 }
 
-static float amp_to_dbfs(double magnitude, double full_scale)
+static float amp_to_dbfs_f(float magnitude, float full_scale)
 {
-    if (!(magnitude > 0.0) || !(full_scale > 0.0)) {
+    if (!(magnitude > 0.0f) || !(full_scale > 0.0f)) {
         return DBMAP_L0_SILENCE_DBFS;
     }
-    double ratio = magnitude / full_scale;
-    if (ratio <= 0.0) {
+    float ratio = magnitude / full_scale;
+    if (!(ratio > 0.0f)) {
         return DBMAP_L0_SILENCE_DBFS;
     }
-    double dbfs = 20.0 * log10(ratio);
+    float dbfs = 20.0f * log10f(ratio);
     if (dbfs < DBMAP_L0_SILENCE_DBFS) {
         return DBMAP_L0_SILENCE_DBFS;
     }
-    if (dbfs > 0.0) {
+    if (dbfs > 0.0f) {
         return 0.0f;
     }
-    return (float)dbfs;
+    return dbfs;
 }
 
 float dbmap_l0_band_low_hz(dbmap_l0_band_id_t band)
@@ -183,7 +239,11 @@ void dbmap_l0_analyze_window(
     dbmap_l0_window_t *out
 )
 {
+    dbmap_l0_analyze_stages_t stages;
+    memset(&stages, 0, sizeof(stages));
+
     if (out == NULL) {
+        s_last_stages = stages;
         return;
     }
     memset(out, 0, sizeof(*out));
@@ -198,73 +258,89 @@ void dbmap_l0_analyze_window(
 
     if (bank == NULL || samples == NULL || count == 0) {
         out->valid = false;
+        s_last_stages = stages;
         return;
     }
 
-    dbmap_l0_filter_bank_reset(bank);
+    {
+        const int64_t t0 = l0_now_us();
+        dbmap_l0_filter_bank_reset(bank);
+        stages.reset_us = l0_elapsed_us(t0);
+    }
 
-    const double fs_mag = full_scale_magnitude(full_scale_bits);
-    const double inv_fs = 1.0 / fs_mag;
-    double sum_sq = 0.0;
+    const float fs_mag = full_scale_magnitude_f(full_scale_bits);
+    const float inv_fs = (fs_mag > 0.0f) ? (1.0f / fs_mag) : 0.0f;
+    float sum_sq = 0.0f;
     int32_t peak_abs = 0;
     uint32_t clipped = 0;
-    const int32_t clip_level = (int32_t)(fs_mag - 1.0);
-    double band_sum_sq[DBMAP_L0_BAND_COUNT];
+    const int32_t clip_level = (int32_t)(fs_mag - 1.0f);
+    float band_sum_sq[DBMAP_L0_BAND_COUNT];
     memset(band_sum_sq, 0, sizeof(band_sum_sq));
 
-    for (size_t n = 0; n < count; ++n) {
-        int32_t s = samples[n];
-        int32_t a = s;
-        if (a < 0) {
-            a = (a == INT32_MIN) ? INT32_MAX : -a;
+    {
+        const int64_t t0 = l0_now_us();
+        for (size_t n = 0; n < count; ++n) {
+            int32_t s = samples[n];
+            int32_t a = s;
+            if (a < 0) {
+                a = (a == INT32_MIN) ? INT32_MAX : -a;
+            }
+            if (a > peak_abs) {
+                peak_abs = a;
+            }
+            if (a >= clip_level) {
+                clipped++;
+            }
+            /* Float FS-normalize (S3 has SP FPU only; avoid soft-double). */
+            const float xn = (float)s * inv_fs;
+            sum_sq += xn * xn;
+            const float xf = xn;
+            for (int b = 0; b < DBMAP_L0_BAND_COUNT; ++b) {
+                float y = biquad_process(&bank->bands[b].hp, xf);
+                y = biquad_process(&bank->bands[b].lp, y);
+                band_sum_sq[b] += y * y;
+            }
         }
-        if (a > peak_abs) {
-            peak_abs = a;
-        }
-        if (a >= clip_level) {
-            clipped++;
-        }
-        double xn = (double)s * inv_fs;
-        sum_sq += xn * xn;
-        float xf = (float)xn;
+        stages.sample_loop_us = l0_elapsed_us(t0);
+    }
+
+    {
+        const int64_t t0 = l0_now_us();
+        out->sample_count = (uint32_t)count;
+        out->clipped_sample_count = clipped;
+        out->valid = true;
+        out->rms_dbfs = amp_to_dbfs_f(sqrtf(sum_sq / (float)count), 1.0f);
+        out->peak_dbfs = amp_to_dbfs_f((float)peak_abs * inv_fs, 1.0f);
+        out->crest_db = out->peak_dbfs - out->rms_dbfs;
+        out->clipped = (clipped > 0) || (out->peak_dbfs >= DBMAP_L0_CLIP_PEAK_DBFS);
+
+        float e_low = 0.0f;
+        float e_high = 0.0f;
         for (int b = 0; b < DBMAP_L0_BAND_COUNT; ++b) {
-            float y = biquad_process(&bank->bands[b].hp, xf);
-            y = biquad_process(&bank->bands[b].lp, y);
-            band_sum_sq[b] += (double)y * (double)y;
+            const float e = band_sum_sq[b] / (float)count; /* mean-square vs FS^2 */
+            out->band_energy_linear[b] = (double)e;
+            out->band_dbfs[b] = power_to_dbfs_f(e);
+            if (b <= DBMAP_L0_BAND_B1) {
+                e_low += e;
+            } else {
+                e_high += e;
+            }
         }
-    }
 
-    out->sample_count = (uint32_t)count;
-    out->clipped_sample_count = clipped;
-    out->valid = true;
-    out->rms_dbfs = amp_to_dbfs(sqrt(sum_sq / (double)count), 1.0);
-    out->peak_dbfs = amp_to_dbfs((double)peak_abs * inv_fs, 1.0);
-    out->crest_db = out->peak_dbfs - out->rms_dbfs;
-    out->clipped = (clipped > 0) || (out->peak_dbfs >= DBMAP_L0_CLIP_PEAK_DBFS);
-
-    double e_low = 0.0;
-    double e_high = 0.0;
-    for (int b = 0; b < DBMAP_L0_BAND_COUNT; ++b) {
-        double e = band_sum_sq[b] / (double)count; /* mean-square vs FS^2 */
-        out->band_energy_linear[b] = e;
-        out->band_dbfs[b] = power_to_dbfs(e);
-        if (b <= DBMAP_L0_BAND_B1) {
-            e_low += e;
+        if (e_low > (float)DBMAP_L0_VALID_ENERGY_FLOOR && e_high > 0.0f) {
+            out->hl_valid = true;
+            out->hl_db = 10.0f * log10f(e_high / e_low);
+        } else if (e_high > (float)DBMAP_L0_VALID_ENERGY_FLOOR && e_low > 0.0f) {
+            out->hl_valid = true;
+            out->hl_db = 10.0f * log10f(e_high / e_low);
         } else {
-            e_high += e;
+            out->hl_valid = false;
+            out->hl_db = 0.0f;
         }
+        stages.post_us = l0_elapsed_us(t0);
     }
 
-    if (e_low > DBMAP_L0_VALID_ENERGY_FLOOR && e_high > 0.0) {
-        out->hl_valid = true;
-        out->hl_db = (float)(10.0 * log10(e_high / e_low));
-    } else if (e_high > DBMAP_L0_VALID_ENERGY_FLOOR && e_low > 0.0) {
-        out->hl_valid = true;
-        out->hl_db = (float)(10.0 * log10(e_high / e_low));
-    } else {
-        out->hl_valid = false;
-        out->hl_db = 0.0f;
-    }
+    s_last_stages = stages;
 }
 
 void dbmap_l0_interval_accum_init(

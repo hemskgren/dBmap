@@ -13,7 +13,7 @@ import math
 from copy import deepcopy
 from typing import Any, Literal, Sequence
 
-EmissionKind = Literal["start", "periodic", "end"]
+EmissionKind = Literal["start", "periodic", "end", "complete"]
 
 SCENARIO_IDS = (
     "quiet_ambient",
@@ -92,7 +92,8 @@ def _base_meta(**overrides: Any) -> dict[str, Any]:
     return base
 
 
-def _null_metrics_measurements() -> dict[str, Any]:
+def empty_l0_measurements() -> dict[str, Any]:
+    """Minimal valid L0 object (all metric slots null, window_count=0)."""
     return {
         **_base_meta(),
         "window_count": 0,
@@ -230,7 +231,7 @@ def make_l0_measurements(scenario: str) -> dict[str, Any]:
         bands, hl = bands_and_hl_from_linear_energies(
             [4.0e-5, 3.0e-5, 2.0e-5, 1.0e-5]
         )
-        m = _null_metrics_measurements()
+        m = empty_l0_measurements()
         m.update(
             {
                 "window_count": 1,
@@ -259,15 +260,84 @@ def default_emission_kind(scenario: str) -> EmissionKind:
     return "periodic"
 
 
+def default_termination_reason(kind: EmissionKind) -> str | None:
+    if kind in ("end", "complete"):
+        return "natural"
+    return None
+
+
 def attach_l0_extension(
     observation: dict[str, Any],
     *,
     scenario: str = "quiet_ambient",
     emission_kind: EmissionKind | None = None,
+    termination_reason: str | None = None,
 ) -> dict[str, Any]:
-    """Return a copy of observation with emission_kind + measurements attached."""
+    """Return a copy of a hierarchical observation with L0 scene + emission context."""
     out = deepcopy(observation)
     kind = emission_kind or default_emission_kind(scenario)
-    out["emission_kind"] = kind
-    out["measurements"] = make_l0_measurements(scenario)
+    out["context"]["emission_kind"] = kind
+    term = termination_reason if termination_reason is not None else default_termination_reason(kind)
+    if term is not None:
+        out["context"]["termination_reason"] = term
+    else:
+        out["context"].pop("termination_reason", None)
+    out["acoustic"]["measurements"] = make_l0_measurements(scenario)
+    return out
+
+
+def empty_l1_signature() -> dict[str, Any]:
+    """Valid empty L1 object (window_count=0, all feature means/stdevs null)."""
+    null_stats = {"mean": None, "stdev": None}
+    return {
+        "schema": "l1",
+        "version": 1,
+        "sample_rate_hz": 16000,
+        "analysis_window_ms": 1000,
+        "fft_size": 1024,
+        "freq_min_hz": 80.0,
+        "freq_max_hz": 7600.0,
+        "window_count": 0,
+        "invalid_window_count": 0,
+        "centroid_hz": dict(null_stats),
+        "bandwidth_hz": dict(null_stats),
+        "dominant_hz": dict(null_stats),
+        "flatness": dict(null_stats),
+    }
+
+
+def example_l1_signature() -> dict[str, Any]:
+    """Deterministic populated L1 fixture (1 kHz-ish tonal scene)."""
+    return {
+        "schema": "l1",
+        "version": 1,
+        "sample_rate_hz": 16000,
+        "analysis_window_ms": 1000,
+        "fft_size": 1024,
+        "freq_min_hz": 80.0,
+        "freq_max_hz": 7600.0,
+        "window_count": 5,
+        "invalid_window_count": 0,
+        "centroid_hz": {"mean": 1002.3, "stdev": 12.5},
+        "bandwidth_hz": {"mean": 48.0, "stdev": 6.2},
+        "dominant_hz": {"mean": 1000.0, "stdev": 0.0},
+        "flatness": {"mean": 0.082, "stdev": 0.011},
+    }
+
+
+def attach_l1_signature(
+    observation: dict[str, Any],
+    *,
+    mode: str = "populated",
+) -> dict[str, Any]:
+    """Attach L1 signature: populated | empty | null."""
+    out = deepcopy(observation)
+    if mode == "null":
+        out["acoustic"]["signature"] = None
+    elif mode == "empty":
+        out["acoustic"]["signature"] = empty_l1_signature()
+    elif mode == "populated":
+        out["acoustic"]["signature"] = example_l1_signature()
+    else:
+        raise ValueError(f"unknown L1 mode {mode!r}; use populated|empty|null")
     return out

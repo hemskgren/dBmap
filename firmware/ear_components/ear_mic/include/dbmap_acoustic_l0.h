@@ -184,6 +184,18 @@ void dbmap_l0_filter_bank_init(dbmap_l0_filter_bank_t *bank, uint32_t sample_rat
 void dbmap_l0_filter_bank_reset(dbmap_l0_filter_bank_t *bank);
 
 /**
+ * Last analyze_window stage wall times (µs). Updated each successful call.
+ * Sum of stages should approximately match ear_mic analyze_us_* on device.
+ */
+typedef struct {
+    uint32_t reset_us;
+    uint32_t sample_loop_us;
+    uint32_t post_us;
+} dbmap_l0_analyze_stages_t;
+
+void dbmap_l0_get_last_analyze_stages(dbmap_l0_analyze_stages_t *out);
+
+/**
  * Analyze one PCM window (int32 samples at full_scale_bits, e.g. 24).
  * Resets filter state at the start of the window for deterministic window power.
  * Fills out; sets valid=false on empty input.

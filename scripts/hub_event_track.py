@@ -184,8 +184,38 @@ def format_environmental_context_lines(weather: dict[str, Any] | None) -> list[s
     return lines
 
 
+def observation_fields(observation: dict[str, Any]) -> dict[str, Any]:
+    """Flatten hierarchical v1 Observation fields for display helpers."""
+    identity = observation.get("identity")
+    context = observation.get("context")
+    acoustic = observation.get("acoustic")
+    spatial = observation.get("spatial")
+    if isinstance(identity, dict) and isinstance(context, dict):
+        classification = None
+        bearing = None
+        signal = None
+        if isinstance(acoustic, dict):
+            classification = acoustic.get("classification")
+            signal = acoustic.get("signal_level_dbfs")
+        if isinstance(spatial, dict):
+            bearing = spatial.get("bearing")
+        return {
+            "observation_id": identity.get("observation_id"),
+            "node_id": identity.get("node_id"),
+            "sequence_number": identity.get("sequence_number"),
+            "event_time_utc": context.get("event_time_utc"),
+            "duration_ms": context.get("interval_duration_ms"),
+            "emission_kind": context.get("emission_kind"),
+            "classification": classification,
+            "bearing": bearing,
+            "signal_level_dbfs": signal,
+        }
+    return observation
+
+
 def observation_time(observation: dict[str, Any]) -> datetime | None:
-    value = observation.get("event_time_utc")
+    fields = observation_fields(observation)
+    value = fields.get("event_time_utc")
     if not isinstance(value, str):
         return None
     try:
@@ -304,9 +334,10 @@ def report_site_distances(
 ) -> list[str]:
     node_ids = sorted(
         {
-            item["node_id"]
+            nid
             for item in observations
-            if isinstance(item.get("node_id"), str)
+            for nid in [observation_fields(item).get("node_id")]
+            if isinstance(nid, str)
         }
     )
     if len(node_ids) < 2:
@@ -390,7 +421,7 @@ def proposed_event_groups(
             reason = "first observation in candidate group"
 
         current.append(observation)
-        duration_ms = observation.get("duration_ms", 0)
+        duration_ms = observation_fields(observation).get("duration_ms", 0)
         if (
             not isinstance(duration_ms, (int, float))
             or isinstance(duration_ms, bool)
@@ -405,16 +436,17 @@ def proposed_event_groups(
 
 
 def format_observation(observation: dict[str, Any]) -> str:
-    observation_id = observation.get("observation_id", "unknown-id")
-    node_id = observation.get("node_id", "unknown-node")
+    fields = observation_fields(observation)
+    observation_id = fields.get("observation_id", "unknown-id")
+    node_id = fields.get("node_id", "unknown-node")
     parsed_event_time = observation_time(observation)
     event_time = (
         format_local_datetime(parsed_event_time)
         if parsed_event_time is not None
-        else observation.get("event_time_utc", "unknown-time")
+        else fields.get("event_time_utc", "unknown-time")
     )
     details = []
-    classification = observation.get("classification")
+    classification = fields.get("classification")
     if isinstance(classification, dict):
         source_family = classification.get("source_family")
         confidence = classification.get("confidence")
@@ -426,7 +458,7 @@ def format_observation(observation: dict[str, Any]) -> str:
                 classification_detail += f" (confidence={confidence:g})"
             details.append(classification_detail)
 
-    bearing = observation.get("bearing")
+    bearing = fields.get("bearing")
     if isinstance(bearing, dict) and isinstance(bearing.get("deg"), (int, float)):
         bearing_detail = f"node-relative bearing={bearing['deg']} deg"
         confidence = bearing.get("confidence")
@@ -434,11 +466,113 @@ def format_observation(observation: dict[str, Any]) -> str:
             bearing_detail += f" (confidence={confidence:g})"
         details.append(bearing_detail)
 
-    signal = observation.get("signal_level_dbfs")
+    signal = fields.get("signal_level_dbfs")
     if isinstance(signal, (int, float)):
         details.append(f"level={signal} dBFS")
     suffix = f"; {', '.join(details)}" if details else ""
     return f"{event_time}: {observation_id} from {node_id}{suffix}"
+
+
+def _valid_sequence_number(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def sequence_gap_count(sequences: list[int]) -> int:
+    """Count missing integers between distinct sorted sequence numbers."""
+    if len(sequences) < 2:
+        return 0
+    uniq = sorted(set(sequences))
+    missing = 0
+    for earlier, later in zip(uniq, uniq[1:]):
+        missing += later - earlier - 1
+    return missing
+
+
+def summarize_episode_observation_groups(
+    episode: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Group episode reports by observation_id in first-seen order."""
+    groups: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for item in episode:
+        fields = observation_fields(item)
+        raw_id = fields.get("observation_id")
+        observation_id = (
+            str(raw_id) if raw_id is not None and raw_id != "" else "unknown-id"
+        )
+        group = groups.get(observation_id)
+        if group is None:
+            group = {
+                "observation_id": observation_id,
+                "reports": [],
+                "emission_counts": {
+                    "start": 0,
+                    "periodic": 0,
+                    "end": 0,
+                    "complete": 0,
+                    "unknown": 0,
+                },
+                "sequences": [],
+            }
+            groups[observation_id] = group
+            order.append(observation_id)
+        group["reports"].append(item)
+        kind = fields.get("emission_kind")
+        if isinstance(kind, str) and kind.lower() in group["emission_counts"]:
+            group["emission_counts"][kind.lower()] += 1
+        else:
+            group["emission_counts"]["unknown"] += 1
+        sequence = _valid_sequence_number(fields.get("sequence_number"))
+        if sequence is not None:
+            group["sequences"].append(sequence)
+    return [groups[observation_id] for observation_id in order]
+
+
+def format_episode_observation_summaries(
+    episode: list[dict[str, Any]],
+) -> list[str]:
+    """Presentation lines summarizing unique observation_ids inside an episode."""
+    groups = summarize_episode_observation_groups(episode)
+    unique_label = "observation" if len(groups) == 1 else "observations"
+    lines = [f"    observations: {len(groups)} unique {unique_label}"]
+    for group in groups:
+        counts = group["emission_counts"]
+        sequences = group["sequences"]
+        lines.append(f"    Observation {group['observation_id']}")
+        lines.append(f"      reports: {len(group['reports'])}")
+        emission_line = (
+            "      emissions: "
+            f"START={counts['start']} "
+            f"PERIODIC={counts['periodic']} "
+            f"END={counts['end']} "
+            f"COMPLETE={counts['complete']}"
+        )
+        if counts["unknown"]:
+            emission_line += f" unknown={counts['unknown']}"
+        lines.append(emission_line)
+        if sequences:
+            first_seq = min(sequences)
+            last_seq = max(sequences)
+            lines.append(f"      sequence: {first_seq}–{last_seq}")
+            lines.append(f"      sequence gaps: {sequence_gap_count(sequences)}")
+        else:
+            lines.append("      sequence: n/a")
+            lines.append("      sequence gaps: n/a")
+        known_times = [
+            stamp
+            for item in group["reports"]
+            for stamp in [observation_time(item)]
+            if stamp is not None
+        ]
+        if known_times:
+            lines.append(
+                "      time: "
+                f"{format_local_datetime(min(known_times))} to "
+                f"{format_local_datetime(max(known_times))}"
+            )
+    return lines
 
 
 def report(
@@ -468,7 +602,10 @@ def report(
     if candidates:
         for index, (_, items) in enumerate(candidates, start=1):
             candidate_node_ids = sorted(
-                {str(item.get("node_id", "unknown-node")) for item in items}
+                {
+                    str(observation_fields(item).get("node_id", "unknown-node"))
+                    for item in items
+                }
             )
             lines.append(
                 f"  Candidate C{index}: {len(items)} independent observation(s), "
@@ -482,9 +619,10 @@ def report(
     if include_site_context:
         observed_node_ids = sorted(
             {
-                item["node_id"]
+                nid
                 for item in observations
-                if isinstance(item.get("node_id"), str)
+                for nid in [observation_fields(item).get("node_id")]
+                if isinstance(nid, str)
             }
         )
         if observed_node_ids:
@@ -530,7 +668,7 @@ def report(
     )
     observations_by_ear: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in observations:
-        node_id = item.get("node_id")
+        node_id = observation_fields(item).get("node_id")
         if isinstance(node_id, str):
             observations_by_ear[node_id].append(item)
     episode_number = 0
@@ -554,7 +692,7 @@ def report(
                     ),
                 )
                 last_time = observation_time(last_observation)
-                duration_ms = last_observation.get("duration_ms", 0)
+                duration_ms = observation_fields(last_observation).get("duration_ms", 0)
                 if (
                     not isinstance(duration_ms, (int, float))
                     or isinstance(duration_ms, bool)
@@ -565,15 +703,12 @@ def report(
                     end_text = format_local_datetime(
                         last_time + timedelta(milliseconds=max(duration_ms, 0))
                     )
-            observation_ids = [
-                str(item.get("observation_id", "unknown-id")) for item in episode
-            ]
             lines.append(
                 f"  Ear activity episode A{episode_number} for {node_id}: "
-                f"{len(episode)} observation(s), "
+                f"{len(episode)} report(s), "
                 f"interval {start_text} to {end_text}; {reason}"
             )
-            lines.append(f"    observations: {', '.join(observation_ids)}")
+            lines.extend(format_episode_observation_summaries(episode))
     lines.append(
         "No Event or Track association is attempted yet. Classification, bearing, "
         "time, site distances, and cross-Ear bearing geometry are analysis inputs; "
@@ -582,20 +717,31 @@ def report(
     return lines
 
 
+def observation_report_key(observation: dict[str, Any]) -> str | None:
+    fields = observation_fields(observation)
+    node_id = fields.get("node_id")
+    sequence = fields.get("sequence_number")
+    if isinstance(node_id, str) and isinstance(sequence, int):
+        return f"{node_id}:{sequence}"
+    oid = fields.get("observation_id")
+    return oid if isinstance(oid, str) else None
+
+
 def observation_diff(
     previous_ids: set[str],
     observations: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], set[str]]:
     known_ids = {
-        observation["observation_id"]
+        key
         for observation in observations
-        if isinstance(observation.get("observation_id"), str)
+        for key in [observation_report_key(observation)]
+        if isinstance(key, str)
     }
     new_observations = [
         observation
         for observation in observations
-        if isinstance(observation.get("observation_id"), str)
-        and observation["observation_id"] not in previous_ids
+        if (key := observation_report_key(observation)) is not None
+        and key not in previous_ids
     ]
     return new_observations, known_ids
 
@@ -718,9 +864,10 @@ def main() -> int:
         ):
             print(line)
         known_ids = {
-            observation["observation_id"]
+            key
             for observation in observations
-            if isinstance(observation.get("observation_id"), str)
+            for key in [observation_report_key(observation)]
+            if isinstance(key, str)
         }
         if not watching:
             return 0

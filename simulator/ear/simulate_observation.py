@@ -139,39 +139,51 @@ def make_observation(
     l0_scenario: str = "quiet_ambient",
     emission_kind: str | None = None,
 ) -> dict[str, Any]:
-    """Build a protocol-v1 Observation.
+    """Build a hierarchical protocol-v1 Observation."""
+    from l0_measurements import attach_l0_extension, empty_l0_measurements
 
-    Default is legacy-compatible (no emission_kind / measurements).
-    With include_l0=True, attach the Ear-compatible L0 extension.
-    """
     now = datetime.now(timezone.utc)
     observation: dict[str, Any] = {
         "protocol_version": 1,
         "message_type": "observation",
-        "observation_id": str(uuid4()),
-        "node_id": node_id,
-        "sequence_number": sequence_number,
-        "event_time_utc": now.isoformat(),
-        "capture_timestamp_monotonic_us": time.monotonic_ns() // 1000,
-        "timing_quality": "estimated",
-        "clock_offset_ms": None,
-        "timestamp_uncertainty_ms": 10.0,
-        "classification": {
-            "source_family": "vehicle",
-            "confidence": 0.72,
-            "hints": {"simulated_source_id": vehicle_id},
+        "identity": {
+            "observation_id": str(uuid4()),
+            "node_id": node_id,
+            "hub_id": "",
+            "sequence_number": sequence_number,
         },
-        "bearing": {
-            "deg": 180.0,
-            "reference": "node",
-            "confidence": 0.61,
+        "context": {
+            "event_time_utc": now.isoformat(),
+            "capture_timestamp_monotonic_us": time.monotonic_ns() // 1000,
+            "timing_quality": "estimated",
+            "clock_offset_ms": None,
+            "timestamp_uncertainty_ms": 10.0,
+            "interval_duration_ms": 850.0,
+            "episode_duration_ms": 850.0,
+            "emission_kind": "periodic",
         },
-        "signal_level_dbfs": -34.0,
-        "duration_ms": 850.0,
+        "acoustic": {
+            "signal_level_dbfs": -34.0,
+            "measurements": empty_l0_measurements(),
+            "signature": None,
+            "classification": {
+                "schema": "l2",
+                "version": 1,
+                "source_family": "vehicle",
+                "confidence": 0.72,
+                "hints": {"simulated_source_id": vehicle_id},
+            },
+        },
+        "spatial": {
+            "bearing": {
+                "deg": 180.0,
+                "reference": "node",
+                "confidence": 0.61,
+            },
+            "position": None,
+        },
     }
     if include_l0:
-        from l0_measurements import attach_l0_extension
-
         observation = attach_l0_extension(
             observation,
             scenario=l0_scenario,
@@ -245,7 +257,7 @@ def load_or_provision(args: argparse.Namespace, admin_token: str) -> dict:
         if record.get("state") == "provisioned":
             record.setdefault(
                 "next_sequence_number",
-                record["observation"]["sequence_number"] + 1,
+                record["observation"]["identity"]["sequence_number"] + 1,
             )
             return record
         raise ValueError(
@@ -307,7 +319,7 @@ def publish_payload(credentials: dict, payload: dict, ca_file: str) -> str:
         if client.is_connected():
             client.disconnect()
         client.loop_stop()
-    return payload["observation_id"]
+    return payload["identity"]["observation_id"]
 
 
 def publish_observation_batch(
@@ -336,7 +348,9 @@ def publish_observation_batch(
                 include_l0=include_l0,
                 l0_scenario=l0_scenario,
             )
-        pending["classification"]["hints"]["simulated_source_id"] = vehicle_id
+        pending["acoustic"]["classification"]["hints"]["simulated_source_id"] = (
+            vehicle_id
+        )
         credentials["pending_observation"] = pending
         save_credentials(credentials_path, credentials)
 
@@ -344,7 +358,7 @@ def publish_observation_batch(
         published_ids.append(observation_id)
         credentials["next_sequence_number"] = max(
             credentials["next_sequence_number"],
-            pending["sequence_number"] + 1,
+            pending["identity"]["sequence_number"] + 1,
         )
         credentials.pop("pending_observation", None)
         save_credentials(credentials_path, credentials)
@@ -392,8 +406,8 @@ def _add_publish_options(parser: argparse.ArgumentParser) -> None:
         "--include-l0",
         action="store_true",
         help=(
-            "Publish protocol v1 with emission_kind + measurements (L0). "
-            "Default remains legacy v1 without those fields."
+            "Attach deterministic L0 scene fixtures and matching emission_kind "
+            "(default baseline uses empty L0 measurements with periodic emission)."
         ),
     )
     parser.add_argument(
@@ -483,7 +497,7 @@ def main() -> int:
                 observation_id = publish_observation(credentials, args.ca)
             credentials["next_sequence_number"] = max(
                 credentials.get("next_sequence_number", 1),
-                credentials["observation"]["sequence_number"] + 1,
+                credentials["observation"]["identity"]["sequence_number"] + 1,
             )
             credentials.pop("pending_observation", None)
             save_credentials(credentials_path, credentials)

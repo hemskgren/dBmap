@@ -8,14 +8,18 @@
 #include "cJSON.h"
 #include "dbmap_activity_detector.h"
 #include "dbmap_acoustic_l0.h"
+#include "dbmap_diag.h"
 #include "dbmap_ear_mic.h"
+#include "dbmap_episode_registry.h"
 #include "dbmap_health.h"
 #include "dbmap_mqtt.h"
 #include "dbmap_observation_lifecycle.h"
 #include "dbmap_observation_seq.h"
 #include "dbmap_ota.h"
 #include "dbmap_time.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_private/esp_clk.h"
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -48,26 +52,35 @@ static bool s_logged_wait_mqtt;
 static bool s_ota_close_registered;
 static SemaphoreHandle_t s_lifecycle_mu;
 static dbmap_obs_emit_gate_t s_emit_gate = DBMAP_OBS_GATE_RUN;
-/** Set only when START publish_json returns ESP_OK (MQTT client accept, not PUBACK/Hub). */
-static bool s_start_publish_accepted;
 
 #if CONFIG_DBMAP_EAR_OBS_RMS_ACTIVITY
 static bool s_logged_mqtt_drop;
 static uint32_t s_dropped_while_mqtt_down;
 static dbmap_activity_detector_t s_detector;
+static dbmap_episode_registry_t s_registry;
+static dbmap_ep_handle_t s_rms_handle;
+static bool s_rms_bound;
+static bool s_mqtt_episode_rearm_required;
+#define EAR_OBS_PRODUCER_RMS 1u
 
 typedef struct {
     bool should_publish;
+    char observation_id[DBMAP_OBS_EPISODE_ID_LEN];
     char node_id[DBMAP_NODE_ID_MAX];
+    char hub_id[DBMAP_HUB_ID_MAX];
     char topic[DBMAP_TOPIC_MAX];
-    char emission_kind[8];
+    char emission_kind[16];
     char termination_reason[16];
+    bool has_signal_level_dbfs;
     double signal_level_dbfs;
-    double duration_ms;
+    double interval_duration_ms;
+    double episode_duration_ms;
     int64_t interval_start_mono_us;
     int64_t interval_end_mono_us;
     bool has_measurements;
     dbmap_l0_interval_t measurements;
+    bool has_signature;
+    dbmap_l1_interval_t signature;
 } ear_obs_end_snapshot_t;
 #if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
 static int64_t s_diag_last_snap_us;
@@ -93,6 +106,16 @@ static dbmap_l0_interval_t s_l0_last_interval;
 static bool s_l0_last_interval_valid;
 static bool s_l0_capacity_ok;
 static uint32_t s_l0_hist_overflow;
+#if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
+typedef struct {
+    dbmap_l1_window_t window;
+    uint8_t usable;
+} ear_obs_l1_ring_entry_t;
+
+static ear_obs_l1_ring_entry_t s_l1_ring[EAR_OBS_L0_HIST_CAP];
+static uint32_t s_l1_ring_head;
+static uint32_t s_l1_ring_count;
+#endif
 #endif
 #endif
 
@@ -333,19 +356,28 @@ uint32_t dbmap_ear_observation_seq_limit(void)
 
 esp_err_t dbmap_ear_observation_publish(
     const dbmap_effective_t *cfg,
+    const char *observation_id,
+    bool has_signal_level_dbfs,
     double signal_level_dbfs,
-    double duration_ms,
+    double interval_duration_ms,
+    double episode_duration_ms,
     int64_t capture_timestamp_monotonic_us,
     int64_t interval_start_monotonic_us,
     const char *emission_kind,
     const char *termination_reason,
-    const dbmap_l0_interval_t *measurements
+    const dbmap_l0_interval_t *measurements,
+    const dbmap_l1_interval_t *signature
 )
 {
     if (cfg == NULL || cfg->identity.node_id[0] == '\0' || cfg->topics.observation[0] == '\0') {
         return ESP_ERR_INVALID_ARG;
     }
-    if (signal_level_dbfs > 0.0 || duration_ms < 0.0 || capture_timestamp_monotonic_us < 0 ||
+    if (observation_id == NULL || observation_id[0] == '\0' || emission_kind == NULL ||
+        measurements == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if ((has_signal_level_dbfs && signal_level_dbfs > 0.0) || interval_duration_ms < 0.0 ||
+        episode_duration_ms < 0.0 || capture_timestamp_monotonic_us < 0 ||
         interval_start_monotonic_us < 0) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -353,44 +385,38 @@ esp_err_t dbmap_ear_observation_publish(
         return ESP_ERR_INVALID_STATE;
     }
 
-#if CONFIG_DBMAP_EAR_OBS_PUBLISH_L0
-    /* Extended v1: never publish without emission_kind + L0 measurements. */
-    if (emission_kind == NULL || measurements == NULL) {
-        ESP_LOGE(TAG, "L0 publish refuse: missing emission_kind or measurements");
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (measurements->history_overflow) {
-        ESP_LOGE(TAG, "L0 publish refuse: history overflow (incomplete T1–T6)");
-        return ESP_ERR_INVALID_STATE;
-    }
-#if CONFIG_DBMAP_EAR_OBS_L0
-    if (!s_l0_capacity_ok) {
-        ESP_LOGE(TAG, "L0 publish refuse: interval exceeds L0 history capacity");
-        return ESP_ERR_INVALID_STATE;
-    }
-#endif
-    {
-        dbmap_ear_mic_l0_perf_t perf;
-        if (dbmap_ear_mic_get_l0_perf(&perf) != ESP_OK || !perf.enabled || !perf.pcm_ready) {
-            ESP_LOGE(TAG, "L0 publish refuse: L0 analysis unavailable");
-            return ESP_ERR_INVALID_STATE;
+    const bool is_final =
+        (strcmp(emission_kind, "end") == 0 || strcmp(emission_kind, "complete") == 0);
+    if (is_final) {
+        if (termination_reason == NULL) {
+            ESP_LOGE(TAG, "termination_reason required for %s", emission_kind);
+            return ESP_ERR_INVALID_ARG;
         }
-    }
-#else
-    (void)emission_kind;
-    (void)measurements;
-    (void)termination_reason;
-#endif
-
-#if CONFIG_DBMAP_EAR_OBS_PUBLISH_L0
-    if (termination_reason != NULL
-        && (emission_kind == NULL || strcmp(emission_kind, "end") != 0)) {
-        ESP_LOGE(TAG, "termination_reason refuse: only valid on end");
+    } else if (termination_reason != NULL) {
+        ESP_LOGE(TAG, "termination_reason refuse: only valid on end/complete");
         return ESP_ERR_INVALID_ARG;
     }
-#else
-    termination_reason = NULL;
+
+    /* Non-final reports refuse incomplete L0 when publishing L0 is required. */
+    if (!is_final) {
+        if (measurements->history_overflow) {
+            ESP_LOGE(TAG, "L0 publish refuse: history overflow (incomplete T1–T6)");
+            return ESP_ERR_INVALID_STATE;
+        }
+#if CONFIG_DBMAP_EAR_OBS_L0
+        if (!s_l0_capacity_ok) {
+            ESP_LOGE(TAG, "L0 publish refuse: interval exceeds L0 history capacity");
+            return ESP_ERR_INVALID_STATE;
+        }
 #endif
+        {
+            dbmap_ear_mic_l0_perf_t perf;
+            if (dbmap_ear_mic_get_l0_perf(&perf) != ESP_OK || !perf.enabled || !perf.pcm_ready) {
+                ESP_LOGE(TAG, "L0 publish refuse: L0 analysis unavailable");
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
+    }
 
     char event_time[40];
     const char *timing_quality = "unsynchronized";
@@ -406,9 +432,6 @@ esp_err_t dbmap_ear_observation_publish(
         return time_err == ESP_ERR_INVALID_STATE ? ESP_ERR_INVALID_STATE : time_err;
     }
 
-    char observation_id[37];
-    format_uuid_v4(observation_id);
-
     uint32_t sequence = 0;
     esp_err_t seq_err = seq_allocate_consumed(&sequence);
     if (seq_err != ESP_OK) {
@@ -417,24 +440,24 @@ esp_err_t dbmap_ear_observation_publish(
     }
 
     dbmap_observation_fields_t fields = {
-#if CONFIG_DBMAP_EAR_OBS_PUBLISH_L0
-        .emission_kind = emission_kind,
-        .termination_reason = termination_reason,
-        .measurements = measurements,
-#else
-        .emission_kind = NULL,
-        .termination_reason = NULL,
-        .measurements = NULL,
-#endif
         .observation_id = observation_id,
         .node_id = cfg->identity.node_id,
+        .hub_id = cfg->identity.hub_id,
         .sequence_number = sequence,
         .event_time_utc = event_time,
         .capture_timestamp_monotonic_us = capture_timestamp_monotonic_us,
         .timing_quality = timing_quality,
+        .has_clock_offset_ms = false,
+        .clock_offset_ms = 0.0,
         .timestamp_uncertainty_ms = uncertainty_ms,
+        .interval_duration_ms = interval_duration_ms,
+        .episode_duration_ms = episode_duration_ms,
+        .emission_kind = emission_kind,
+        .termination_reason = termination_reason,
+        .has_signal_level_dbfs = has_signal_level_dbfs,
         .signal_level_dbfs = signal_level_dbfs,
-        .duration_ms = duration_ms,
+        .measurements = measurements,
+        .signature = signature,
     };
 
     char *json = dbmap_observation_build_json(&fields);
@@ -447,13 +470,12 @@ esp_err_t dbmap_ear_observation_publish(
     if (pub_err == ESP_OK) {
         ESP_LOGI(
             TAG,
-            "published observation_id=%s sequence=%lu level=%.2f duration_ms=%.0f kind=%s l0=%d",
+            "published observation_id=%s sequence=%lu interval_ms=%.0f episode_ms=%.0f kind=%s",
             observation_id,
             (unsigned long)sequence,
-            signal_level_dbfs,
-            duration_ms,
-            emission_kind != NULL ? emission_kind : "-",
-            fields.measurements != NULL ? 1 : 0
+            interval_duration_ms,
+            episode_duration_ms,
+            emission_kind
         );
     } else {
         ESP_LOGW(
@@ -499,11 +521,17 @@ static void l0_ring_push(const dbmap_l0_window_t *window, bool usable)
     }
 }
 
-static void l0_finalize_for_emission(const dbmap_activity_emission_t *emission)
+static void l0_finalize_interval(
+    int64_t interval_start_mono_us,
+    int64_t interval_end_mono_us,
+    const char *kind_name,
+    dbmap_l0_interval_t *out_iv
+)
 {
-    if (emission == NULL || emission->kind == DBMAP_ACTIVITY_EMIT_NONE) {
+    if (out_iv == NULL) {
         return;
     }
+    memset(out_iv, 0, sizeof(*out_iv));
 
     dbmap_l0_interval_accum_t acc;
     dbmap_l0_interval_accum_init(
@@ -511,8 +539,8 @@ static void l0_finalize_for_emission(const dbmap_activity_emission_t *emission)
         (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ,
         (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS,
         0,
-        emission->interval_start_mono_us,
-        emission->interval_end_mono_us,
+        interval_start_mono_us,
+        interval_end_mono_us,
         s_l0_hist_rms,
         s_l0_hist_hl,
         s_l0_hist_hl_valid,
@@ -522,7 +550,6 @@ static void l0_finalize_for_emission(const dbmap_activity_emission_t *emission)
         EAR_OBS_L0_HIST_CAP
     );
 
-    /* Walk oldest→newest in the ring. */
     const uint32_t n = s_l0_ring_count;
     const uint32_t start = (s_l0_ring_head + EAR_OBS_L0_HIST_CAP - n) % EAR_OBS_L0_HIST_CAP;
     for (uint32_t i = 0; i < n; ++i) {
@@ -533,62 +560,70 @@ static void l0_finalize_for_emission(const dbmap_activity_emission_t *emission)
         dbmap_l0_interval_accum_add(&acc, &e->window);
     }
 
-    dbmap_l0_interval_t iv;
-    dbmap_l0_interval_accum_finalize(&acc, &iv);
-    if (iv.history_overflow) {
+    dbmap_l0_interval_accum_finalize(&acc, out_iv);
+    if (out_iv->history_overflow) {
         s_l0_hist_overflow += 1;
         ESP_LOGW(
             TAG,
             "L0 history overflow kind=%s win=%lu cap=%lu (T1–T6 cleared)",
-            emit_kind_name(emission->kind),
-            (unsigned long)iv.window_count,
+            kind_name != NULL ? kind_name : "?",
+            (unsigned long)out_iv->window_count,
             (unsigned long)EAR_OBS_L0_HIST_CAP
         );
     }
-    s_l0_last_interval = iv;
+    s_l0_last_interval = *out_iv;
     s_l0_last_interval_valid = true;
-
-#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
-    ESP_LOGI(
-        TAG,
-        "L0 interval kind=%s win=%lu clipped_win=%lu "
-        "rms_mean=%.2f rms_min=%.2f rms_max=%.2f "
-        "B0=%.2f B1=%.2f B2=%.2f B3=%.2f "
-        "f0=%.3f f1=%.3f f2=%.3f f3=%.3f "
-        "hl_mean=%s%.2f "
-        "T1_stdev=%.3f T1_range=%.3f T2=%.4f "
-        "T3_crest_max=%.2f T3_hi_rate=%.3f n_crest=%lu "
-        "T6=%.4f t=(%lld,%lld] us",
-        emit_kind_name(emission->kind),
-        (unsigned long)iv.window_count,
-        (unsigned long)iv.clipped_window_count,
-        iv.has_rms_stats ? (double)iv.rms_mean_dbfs : -120.0,
-        iv.has_rms_stats ? (double)iv.rms_min_dbfs : -120.0,
-        iv.has_rms_stats ? (double)iv.rms_max_dbfs : -120.0,
-        iv.has_band_means ? (double)iv.band_mean_dbfs[0] : -120.0,
-        iv.has_band_means ? (double)iv.band_mean_dbfs[1] : -120.0,
-        iv.has_band_means ? (double)iv.band_mean_dbfs[2] : -120.0,
-        iv.has_band_means ? (double)iv.band_mean_dbfs[3] : -120.0,
-        iv.has_band_fractions ? (double)iv.band_fraction[0] : 0.0,
-        iv.has_band_fractions ? (double)iv.band_fraction[1] : 0.0,
-        iv.has_band_fractions ? (double)iv.band_fraction[2] : 0.0,
-        iv.has_band_fractions ? (double)iv.band_fraction[3] : 0.0,
-        iv.has_hl_mean ? "" : "n/a ",
-        iv.has_hl_mean ? (double)iv.hl_mean_db : 0.0,
-        iv.has_t1 ? (double)iv.rms_stdev_db : 0.0,
-        iv.has_t1 ? (double)iv.rms_range_db : 0.0,
-        iv.has_t2 ? (double)iv.rms_slope_db_per_s : 0.0,
-        iv.has_t3 ? (double)iv.crest_max_db : 0.0,
-        iv.has_t3 ? (double)iv.high_crest_rate : 0.0,
-        (unsigned long)iv.n_crest,
-        iv.has_t6 ? (double)iv.hl_slope_db_per_s : 0.0,
-        (long long)iv.interval_start_mono_us,
-        (long long)iv.interval_end_mono_us
-    );
-#else
-    (void)iv;
-#endif
 }
+
+#if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
+static void l1_ring_push(const dbmap_l1_window_t *window, bool usable)
+{
+    if (window == NULL) {
+        return;
+    }
+    ear_obs_l1_ring_entry_t *slot = &s_l1_ring[s_l1_ring_head];
+    slot->window = *window;
+    slot->usable = usable ? 1u : 0u;
+    s_l1_ring_head = (s_l1_ring_head + 1u) % EAR_OBS_L0_HIST_CAP;
+    if (s_l1_ring_count < EAR_OBS_L0_HIST_CAP) {
+        s_l1_ring_count++;
+    }
+}
+
+static void l1_finalize_interval(
+    int64_t interval_start_mono_us,
+    int64_t interval_end_mono_us,
+    dbmap_l1_interval_t *out_iv
+)
+{
+    if (out_iv == NULL) {
+        return;
+    }
+    dbmap_l1_interval_accum_t acc;
+    dbmap_l1_interval_accum_init(
+        &acc,
+        (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ,
+        (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS,
+        interval_start_mono_us,
+        interval_end_mono_us
+    );
+    const uint32_t n = s_l1_ring_count;
+    const uint32_t start = (s_l1_ring_head + EAR_OBS_L0_HIST_CAP - n) % EAR_OBS_L0_HIST_CAP;
+    for (uint32_t i = 0; i < n; ++i) {
+        const ear_obs_l1_ring_entry_t *e = &s_l1_ring[(start + i) % EAR_OBS_L0_HIST_CAP];
+        if (e->usable == 0) {
+            /* Still associate for invalid count when timestamp matches. */
+            if (interval_start_mono_us < e->window.window_end_mono_us &&
+                e->window.window_end_mono_us <= interval_end_mono_us) {
+                acc.invalid_window_count++;
+            }
+            continue;
+        }
+        dbmap_l1_interval_accum_add(&acc, &e->window);
+    }
+    dbmap_l1_interval_accum_finalize(&acc, out_iv);
+}
+#endif /* L1 */
 
 static void l0_on_new_window(const dbmap_ear_mic_levels_t *levels, bool levels_ok)
 {
@@ -623,6 +658,15 @@ static void l0_on_new_window(const dbmap_ear_mic_levels_t *levels, bool levels_o
     };
     const bool usable = dbmap_activity_sample_usable(&gate);
     l0_ring_push(&l0w, usable);
+
+#if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
+    /* L1 may be invalid while L0 is valid; still store for association/invalid counts. */
+    dbmap_l1_window_t l1w;
+    if (dbmap_ear_mic_get_l1_window(&l1w) == ESP_OK &&
+        l1w.window_end_mono_us == levels->measured_at_us) {
+        l1_ring_push(&l1w, usable);
+    }
+#endif
 }
 #endif /* CONFIG_DBMAP_EAR_OBS_L0 */
 
@@ -641,62 +685,250 @@ static const char *termination_reason_for_emission(const dbmap_activity_emission
     }
 }
 
+static void rms_release_only(void)
+{
+    if (s_rms_bound) {
+        dbmap_episode_registry_release(&s_registry, s_rms_handle);
+        s_rms_bound = false;
+    }
+}
+
+static void rms_release_and_rearm(void)
+{
+    rms_release_only();
+    s_mqtt_episode_rearm_required = true;
+}
+
+static void note_reject_for_kind(const char *kind)
+{
+    if (kind == NULL) {
+        return;
+    }
+    if (strcmp(kind, "start") == 0) {
+        dbmap_diag_note_obs_start_rejected();
+    } else if (strcmp(kind, "periodic") == 0) {
+        dbmap_diag_note_obs_periodic_rejected();
+    } else if (strcmp(kind, "end") == 0) {
+        dbmap_diag_note_obs_end_rejected();
+    } else if (strcmp(kind, "complete") == 0) {
+        dbmap_diag_note_obs_complete_rejected();
+    }
+}
+
 static void handle_emission(const dbmap_activity_emission_t *emission)
 {
     if (s_cfg == NULL || emission == NULL || emission->kind == DBMAP_ACTIVITY_EMIT_NONE) {
         return;
     }
 
-    /* Episode closed in detector RAM even if MQTT drops the END. */
-    if (emission->kind == DBMAP_ACTIVITY_EMIT_END) {
-        s_start_publish_accepted = false;
-    }
+    const char *kind = emit_kind_name(emission->kind);
+    const bool mqtt_ok = dbmap_mqtt_is_connected();
+    const double interval_ms = emission->duration_ms;
 
-    if (!dbmap_mqtt_is_connected()) {
-        s_dropped_while_mqtt_down += 1;
-        if (!s_logged_mqtt_drop) {
-            s_logged_mqtt_drop = true;
-            ESP_LOGW(
-                TAG,
-                "MQTT down: dropping %s emission (detection continues; no sequence consumed)",
-                emit_kind_name(emission->kind)
+    if (emission->kind == DBMAP_ACTIVITY_EMIT_START) {
+        if (s_mqtt_episode_rearm_required) {
+            ESP_LOGD(TAG, "START suppressed: rearm latch set (need IDLE first)");
+            return;
+        }
+        if (s_rms_bound) {
+            ESP_LOGW(TAG, "START while RMS still bound; ignoring");
+            return;
+        }
+        if (!dbmap_episode_registry_allocate(
+                &s_registry,
+                &s_rms_handle,
+                emission->interval_start_mono_us,
+                (uint32_t)CONFIG_DBMAP_EAR_OBS_INTERVAL_MS,
+                EAR_OBS_PRODUCER_RMS,
+                format_uuid_v4,
+                false
+            )) {
+            ESP_LOGW(TAG, "START refused: episode registry full");
+            return;
+        }
+        s_rms_bound = true;
+        dbmap_episode_slot_t *slot = dbmap_episode_registry_get(&s_registry, s_rms_handle);
+        if (slot == NULL) {
+            s_rms_bound = false;
+            return;
+        }
+
+        dbmap_l0_interval_t local_iv;
+#if CONFIG_DBMAP_EAR_OBS_L0
+        l0_finalize_interval(
+            emission->interval_start_mono_us,
+            emission->interval_end_mono_us,
+            kind,
+            &local_iv
+        );
+#else
+        memset(&local_iv, 0, sizeof(local_iv));
+        local_iv.sample_rate_hz = (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ;
+        local_iv.analysis_window_ms = (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS;
+#endif
+#if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
+        dbmap_l1_interval_t local_l1;
+        l1_finalize_interval(
+            emission->interval_start_mono_us, emission->interval_end_mono_us, &local_l1
+        );
+        const dbmap_l1_interval_t *sig_ptr = &local_l1;
+#else
+        const dbmap_l1_interval_t *sig_ptr = NULL;
+#endif
+        if (!mqtt_ok) {
+            s_dropped_while_mqtt_down += 1;
+            dbmap_diag_note_obs_skipped_disconnected();
+            rms_release_and_rearm();
+            return;
+        }
+        s_logged_mqtt_drop = false;
+        const bool has_lvl = true;
+        const double lvl = (double)emission->signal_level_dbfs;
+        esp_err_t err = dbmap_ear_observation_publish(
+            s_cfg,
+            slot->observation_id,
+            has_lvl,
+            lvl,
+            interval_ms,
+            interval_ms, /* START: episode duration == first interval */
+            emission->interval_end_mono_us,
+            emission->interval_start_mono_us,
+            "start",
+            NULL,
+            &local_iv,
+            sig_ptr
+        );
+        if (err == ESP_OK) {
+            dbmap_episode_registry_mark_start_accepted(
+                &s_registry, s_rms_handle, emission->interval_end_mono_us
             );
+        } else {
+            note_reject_for_kind("start");
+            rms_release_and_rearm();
         }
         return;
     }
-    s_logged_mqtt_drop = false;
 
-    const dbmap_l0_interval_t *meas = NULL;
+    if (!s_rms_bound) {
+        return;
+    }
+    dbmap_episode_slot_t *slot = dbmap_episode_registry_get(&s_registry, s_rms_handle);
+    if (slot == NULL || !slot->start_publish_accepted) {
+        /* No accepted START → never PERIODIC/END for this binding. */
+        rms_release_and_rearm();
+        return;
+    }
+
+    const double ep_ms =
+        (double)(emission->interval_end_mono_us - slot->episode_start_mono_us) / 1000.0;
+
+    if (emission->kind == DBMAP_ACTIVITY_EMIT_PERIODIC) {
+        if (!mqtt_ok) {
+            s_dropped_while_mqtt_down += 1;
+            dbmap_diag_note_obs_skipped_disconnected();
+            /* Keep OPEN; do not advance last_report_end. */
+            return;
+        }
+        dbmap_l0_interval_t local_iv;
 #if CONFIG_DBMAP_EAR_OBS_L0
-    if (s_l0_last_interval_valid) {
-        meas = &s_l0_last_interval;
-    }
-#endif
-    const char *term = NULL;
-#if CONFIG_DBMAP_EAR_OBS_PUBLISH_L0
-    term = termination_reason_for_emission(emission);
-#endif
-    esp_err_t err = dbmap_ear_observation_publish(
-        s_cfg,
-        (double)emission->signal_level_dbfs,
-        emission->duration_ms,
-        emission->interval_end_mono_us,
-        emission->interval_start_mono_us,
-        emit_kind_name(emission->kind),
-        term,
-        meas
-    );
-    if (emission->kind == DBMAP_ACTIVITY_EMIT_START && err == ESP_OK) {
-        /* MQTT client accepted publish — not broker PUBACK or Hub ingest. */
-        s_start_publish_accepted = true;
-    }
-    if (err != ESP_OK) {
-        ESP_LOGW(
-            TAG,
-            "%s emission publish result: %s",
-            emit_kind_name(emission->kind),
-            esp_err_to_name(err)
+        l0_finalize_interval(
+            emission->interval_start_mono_us,
+            emission->interval_end_mono_us,
+            kind,
+            &local_iv
         );
+        if (local_iv.history_overflow || local_iv.window_count == 0) {
+            ESP_LOGW(TAG, "PERIODIC skipped: invalid L0 (episode stays OPEN)");
+            return;
+        }
+#else
+        memset(&local_iv, 0, sizeof(local_iv));
+#endif
+#if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
+        dbmap_l1_interval_t local_l1;
+        l1_finalize_interval(
+            emission->interval_start_mono_us, emission->interval_end_mono_us, &local_l1
+        );
+        const dbmap_l1_interval_t *sig_ptr = &local_l1;
+#else
+        const dbmap_l1_interval_t *sig_ptr = NULL;
+#endif
+        esp_err_t err = dbmap_ear_observation_publish(
+            s_cfg,
+            slot->observation_id,
+            true,
+            (double)emission->signal_level_dbfs,
+            interval_ms,
+            ep_ms,
+            emission->interval_end_mono_us,
+            emission->interval_start_mono_us,
+            "periodic",
+            NULL,
+            &local_iv,
+            sig_ptr
+        );
+        if (err == ESP_OK) {
+            dbmap_episode_registry_note_periodic_published(
+                &s_registry, s_rms_handle, emission->interval_end_mono_us
+            );
+        } else {
+            note_reject_for_kind("periodic");
+            /* Keep OPEN; do not advance last_report_end. */
+        }
+        return;
+    }
+
+    if (emission->kind == DBMAP_ACTIVITY_EMIT_END) {
+        const char *term = termination_reason_for_emission(emission);
+        dbmap_l0_interval_t local_iv;
+#if CONFIG_DBMAP_EAR_OBS_L0
+        l0_finalize_interval(
+            emission->interval_start_mono_us,
+            emission->interval_end_mono_us,
+            kind,
+            &local_iv
+        );
+#else
+        memset(&local_iv, 0, sizeof(local_iv));
+        local_iv.sample_rate_hz = (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ;
+        local_iv.analysis_window_ms = (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS;
+#endif
+#if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
+        dbmap_l1_interval_t local_l1;
+        l1_finalize_interval(
+            emission->interval_start_mono_us, emission->interval_end_mono_us, &local_l1
+        );
+        const dbmap_l1_interval_t *sig_ptr = &local_l1;
+#else
+        const dbmap_l1_interval_t *sig_ptr = NULL;
+#endif
+        if (!mqtt_ok) {
+            s_dropped_while_mqtt_down += 1;
+            dbmap_diag_note_obs_skipped_disconnected();
+            rms_release_and_rearm();
+            return;
+        }
+        esp_err_t err = dbmap_ear_observation_publish(
+            s_cfg,
+            slot->observation_id,
+            true,
+            (double)emission->signal_level_dbfs,
+            interval_ms,
+            ep_ms,
+            emission->interval_end_mono_us,
+            emission->interval_start_mono_us,
+            "end",
+            term != NULL ? term : "natural",
+            &local_iv,
+            sig_ptr
+        );
+        if (err != ESP_OK) {
+            note_reject_for_kind("end");
+            rms_release_and_rearm();
+        } else {
+            rms_release_only();
+        }
+        return;
     }
 }
 
@@ -821,12 +1053,16 @@ static void activity_serial_diag(const dbmap_ear_mic_levels_t *levels, bool leve
                 ESP_LOGI(
                     TAG,
                     "L0 perf analyze_n=%lu us_last=%lu us_max=%lu overwrite=%lu "
+                    "stage_reset=%lu stage_loop=%lu stage_post=%lu "
                     "pcm_cap=%lu pcm_bytes=%lu free_heap_init=%lu free_spiram_init=%lu "
                     "ring=%lu/%lu",
                     (unsigned long)perf.analyze_count,
                     (unsigned long)perf.analyze_us_last,
                     (unsigned long)perf.analyze_us_max,
                     (unsigned long)perf.pending_overwrite,
+                    (unsigned long)perf.stage_reset_us,
+                    (unsigned long)perf.stage_sample_loop_us,
+                    (unsigned long)perf.stage_post_us,
                     (unsigned long)perf.pcm_cap_samples,
                     (unsigned long)perf.pcm_bytes_total,
                     (unsigned long)perf.free_heap_after_init,
@@ -835,6 +1071,39 @@ static void activity_serial_diag(const dbmap_ear_mic_levels_t *levels, bool leve
                     (unsigned long)EAR_OBS_L0_HIST_CAP
                 );
             }
+        }
+#if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
+        {
+            dbmap_ear_mic_l1_perf_t l1perf;
+            if (dbmap_ear_mic_get_l1_perf(&l1perf) == ESP_OK && l1perf.enabled) {
+                ESP_LOGI(
+                    TAG,
+                    "L1 perf analyze_n=%lu us_last=%lu us_max=%lu",
+                    (unsigned long)l1perf.analyze_count,
+                    (unsigned long)l1perf.analyze_us_last,
+                    (unsigned long)l1perf.analyze_us_max
+                );
+            }
+        }
+#endif
+        {
+            const int cpu_hz = esp_clk_cpu_freq();
+            const unsigned long cpu_mhz =
+                cpu_hz > 0 ? (unsigned long)(cpu_hz / 1000000) : 0ul;
+#if defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
+            const char *pm = "enabled";
+#else
+            const char *pm = "disabled";
+#endif
+            ESP_LOGI(
+                TAG,
+                "cpu freq_mhz=%lu configured_mhz=%d pm=%s free_heap=%lu free_spiram=%lu",
+                cpu_mhz,
+                CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+                pm,
+                (unsigned long)esp_get_free_heap_size(),
+                (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM)
+            );
         }
 #endif
     }
@@ -899,11 +1168,11 @@ static void activity_task(void *arg)
          * with this emission (not the next). Still after feed — L0 is not on
          * the detector decision path. */
         l0_on_new_window(&levels, levels_ok);
-        if (emission.kind != DBMAP_ACTIVITY_EMIT_NONE) {
-            l0_finalize_for_emission(&emission);
-        }
 #endif
         handle_emission(&emission);
+        if (dbmap_activity_detector_state(&s_detector) == DBMAP_ACTIVITY_IDLE) {
+            s_mqtt_episode_rearm_required = false;
+        }
         if (s_lifecycle_mu != NULL) {
             xSemaphoreGive(s_lifecycle_mu);
         }
@@ -920,27 +1189,28 @@ static void activity_task(void *arg)
 }
 
 /**
- * Publish a detached OTA END snapshot. Must not read detector/L0/gate/cfg globals.
- * Uses wall-clock, UUID, sequence allocate, and MQTT wait only.
+ * Publish a detached OTA END snapshot (stable observation_id from prepare).
  */
 static esp_err_t publish_ota_end_snapshot(const ear_obs_end_snapshot_t *snap)
 {
     if (snap == NULL || !snap->should_publish) {
         return ESP_OK;
     }
-    if (snap->node_id[0] == '\0' || snap->topic[0] == '\0') {
+    if (snap->node_id[0] == '\0' || snap->topic[0] == '\0' || snap->observation_id[0] == '\0') {
         return ESP_ERR_INVALID_STATE;
     }
     if (!dbmap_mqtt_is_connected()) {
         return ESP_ERR_INVALID_STATE;
     }
 
-#if CONFIG_DBMAP_EAR_OBS_PUBLISH_L0
-    if (!snap->has_measurements || snap->measurements.history_overflow) {
-        ESP_LOGE(TAG, "OTA END refuse: L0 measurements missing or overflow (snapshot)");
-        return ESP_ERR_INVALID_STATE;
+    dbmap_l0_interval_t empty_iv;
+    const dbmap_l0_interval_t *meas = &snap->measurements;
+    if (!snap->has_measurements) {
+        memset(&empty_iv, 0, sizeof(empty_iv));
+        empty_iv.sample_rate_hz = (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ;
+        empty_iv.analysis_window_ms = (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS;
+        meas = &empty_iv;
     }
-#endif
 
     char event_time[40];
     const char *timing_quality = "unsynchronized";
@@ -955,9 +1225,6 @@ static esp_err_t publish_ota_end_snapshot(const ear_obs_end_snapshot_t *snap)
         return time_err == ESP_ERR_INVALID_STATE ? ESP_ERR_INVALID_STATE : time_err;
     }
 
-    char observation_id[37];
-    format_uuid_v4(observation_id);
-
     uint32_t sequence = 0;
     esp_err_t seq_err = seq_allocate_consumed(&sequence);
     if (seq_err != ESP_OK) {
@@ -965,24 +1232,23 @@ static esp_err_t publish_ota_end_snapshot(const ear_obs_end_snapshot_t *snap)
     }
 
     dbmap_observation_fields_t fields = {
-#if CONFIG_DBMAP_EAR_OBS_PUBLISH_L0
-        .emission_kind = snap->emission_kind,
-        .termination_reason = snap->termination_reason,
-        .measurements = &snap->measurements,
-#else
-        .emission_kind = NULL,
-        .termination_reason = NULL,
-        .measurements = NULL,
-#endif
-        .observation_id = observation_id,
+        .observation_id = snap->observation_id,
         .node_id = snap->node_id,
+        .hub_id = snap->hub_id,
         .sequence_number = sequence,
         .event_time_utc = event_time,
         .capture_timestamp_monotonic_us = snap->interval_end_mono_us,
         .timing_quality = timing_quality,
+        .has_clock_offset_ms = false,
         .timestamp_uncertainty_ms = uncertainty_ms,
+        .interval_duration_ms = snap->interval_duration_ms,
+        .episode_duration_ms = snap->episode_duration_ms,
+        .emission_kind = snap->emission_kind,
+        .termination_reason = snap->termination_reason,
+        .has_signal_level_dbfs = snap->has_signal_level_dbfs,
         .signal_level_dbfs = snap->signal_level_dbfs,
-        .duration_ms = snap->duration_ms,
+        .measurements = meas,
+        .signature = snap->has_signature ? &snap->signature : NULL,
     };
 
     char *json = dbmap_observation_build_json(&fields);
@@ -999,9 +1265,9 @@ static esp_err_t publish_ota_end_snapshot(const ear_obs_end_snapshot_t *snap)
 
 static esp_err_t ear_observation_close_for_ota(void)
 {
-    /* Static: L0-bearing snapshot is too large for the main/OTA call stack. */
-    static ear_obs_end_snapshot_t snap;
-    memset(&snap, 0, sizeof(snap));
+    /* Static: snapshots too large for the main/OTA call stack. */
+    static ear_obs_end_snapshot_t snaps[DBMAP_OBS_EPISODE_SLOTS];
+    memset(snaps, 0, sizeof(snaps));
     bool attempted_end = false;
 
     if (!s_started || s_lifecycle_mu == NULL) {
@@ -1012,68 +1278,95 @@ static esp_err_t ear_observation_close_for_ota(void)
     xSemaphoreTake(s_lifecycle_mu, portMAX_DELAY);
     s_emit_gate = DBMAP_OBS_GATE_CLOSING;
 
-    const dbmap_activity_state_t state = dbmap_activity_detector_state(&s_detector);
-    const dbmap_obs_ota_action_t action =
-        dbmap_obs_ota_action_for_state(state, s_start_publish_accepted);
+    /* Force detector idle; registry owns MQTT episode closure. */
+    (void)dbmap_activity_detector_force_end(&s_detector);
+    dbmap_activity_detector_reset_idle(&s_detector);
 
-    if (action == DBMAP_OBS_OTA_ACTION_FORCE_END) {
-        dbmap_activity_emission_t emission = dbmap_activity_detector_force_end(&s_detector);
-        if (emission.kind == DBMAP_ACTIVITY_EMIT_END) {
-#if CONFIG_DBMAP_EAR_OBS_L0
-            l0_finalize_for_emission(&emission);
-#endif
-            snap.should_publish = true;
-            attempted_end = true;
-            strncpy(snap.emission_kind, "end", sizeof(snap.emission_kind) - 1);
-            strncpy(snap.termination_reason, "ota_reboot", sizeof(snap.termination_reason) - 1);
-            snap.signal_level_dbfs = (double)emission.signal_level_dbfs;
-            snap.duration_ms = emission.duration_ms;
-            snap.interval_start_mono_us = emission.interval_start_mono_us;
-            snap.interval_end_mono_us = emission.interval_end_mono_us;
-#if CONFIG_DBMAP_EAR_OBS_L0
-            if (s_l0_last_interval_valid) {
-                snap.measurements = s_l0_last_interval;
-                snap.has_measurements = true;
-            }
-#endif
-            if (s_cfg != NULL) {
-                strncpy(snap.node_id, s_cfg->identity.node_id, sizeof(snap.node_id) - 1);
-                strncpy(snap.topic, s_cfg->topics.observation, sizeof(snap.topic) - 1);
-            }
-        } else {
-            dbmap_activity_detector_reset_idle(&s_detector);
+    const int64_t now_us = esp_timer_get_time();
+    for (uint8_t i = 0; i < DBMAP_OBS_EPISODE_SLOTS; ++i) {
+        dbmap_episode_slot_t *slot = &s_registry.slots[i];
+        if (!slot->in_use) {
+            continue;
         }
-        s_start_publish_accepted = false;
-    } else if (action == DBMAP_OBS_OTA_ACTION_SILENT_ABORT) {
-        dbmap_activity_detector_reset_idle(&s_detector);
-        s_start_publish_accepted = false;
-        ESP_LOGI(
-            TAG,
-            "OTA acoustic close: silent abort (state had no MQTT-accepted START)"
+        dbmap_ep_handle_t h = {.index = i, .generation = slot->generation};
+        if (!slot->start_publish_accepted) {
+            ESP_LOGI(TAG, "OTA close: silent abort slot %u (no accepted START)", (unsigned)i);
+            dbmap_episode_registry_release(&s_registry, h);
+            continue;
+        }
+
+        ear_obs_end_snapshot_t *snap = &snaps[i];
+        snap->should_publish = true;
+        attempted_end = true;
+        strncpy(snap->observation_id, slot->observation_id, sizeof(snap->observation_id) - 1);
+        strncpy(snap->emission_kind, "end", sizeof(snap->emission_kind) - 1);
+        strncpy(snap->termination_reason, "ota_reboot", sizeof(snap->termination_reason) - 1);
+        snap->interval_start_mono_us = slot->last_report_end_mono_us;
+        snap->interval_end_mono_us = now_us;
+        snap->interval_duration_ms =
+            (double)(now_us - slot->last_report_end_mono_us) / 1000.0;
+        snap->episode_duration_ms =
+            (double)(now_us - slot->episode_start_mono_us) / 1000.0;
+        snap->has_signal_level_dbfs = false;
+#if CONFIG_DBMAP_EAR_OBS_L0
+        l0_finalize_interval(
+            snap->interval_start_mono_us, snap->interval_end_mono_us, "end", &snap->measurements
         );
-    } else {
-        ESP_LOGI(TAG, "OTA acoustic close: idle; no episode");
+        snap->has_measurements = true;
+        if (snap->measurements.has_rms_stats) {
+            snap->has_signal_level_dbfs = true;
+            snap->signal_level_dbfs = (double)snap->measurements.rms_mean_dbfs;
+        }
+#endif
+#if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
+        l1_finalize_interval(
+            snap->interval_start_mono_us, snap->interval_end_mono_us, &snap->signature
+        );
+        snap->has_signature = true;
+#endif
+        if (s_cfg != NULL) {
+            strncpy(snap->node_id, s_cfg->identity.node_id, sizeof(snap->node_id) - 1);
+            strncpy(snap->hub_id, s_cfg->identity.hub_id, sizeof(snap->hub_id) - 1);
+            strncpy(snap->topic, s_cfg->topics.observation, sizeof(snap->topic) - 1);
+        }
+        slot->phase = DBMAP_EP_CLOSING;
     }
 
+    s_rms_bound = false;
+    s_mqtt_episode_rearm_required = false;
     s_emit_gate = DBMAP_OBS_GATE_CLOSED;
     xSemaphoreGive(s_lifecycle_mu);
 
-    /* PUBACK wait outside the lifecycle mutex. */
     const bool mqtt_was_connected = dbmap_mqtt_is_connected();
-    esp_err_t pub_err = ESP_OK;
     dbmap_obs_mqtt_wait_result_t wait_result = DBMAP_OBS_MQTT_WAIT_FAILED;
-    if (snap.should_publish) {
+    esp_err_t last_err = ESP_OK;
+
+    for (uint8_t i = 0; i < DBMAP_OBS_EPISODE_SLOTS; ++i) {
+        ear_obs_end_snapshot_t *snap = &snaps[i];
+        if (!snap->should_publish) {
+            continue;
+        }
         if (!mqtt_was_connected) {
-            ESP_LOGW(TAG, "OTA END not published: MQTT disconnected");
+            ESP_LOGW(TAG, "OTA END slot %u skipped: MQTT disconnected", (unsigned)i);
+            dbmap_diag_note_obs_skipped_disconnected();
+            wait_result = DBMAP_OBS_MQTT_WAIT_FAILED;
         } else {
-            pub_err = publish_ota_end_snapshot(&snap);
-            if (pub_err == ESP_OK) {
+            last_err = publish_ota_end_snapshot(snap);
+            if (last_err == ESP_OK) {
                 wait_result = DBMAP_OBS_MQTT_WAIT_OK;
-            } else if (pub_err == ESP_ERR_TIMEOUT) {
+            } else if (last_err == ESP_ERR_TIMEOUT) {
                 wait_result = DBMAP_OBS_MQTT_WAIT_TIMEOUT;
+                dbmap_diag_note_obs_end_rejected();
             } else {
                 wait_result = DBMAP_OBS_MQTT_WAIT_FAILED;
+                dbmap_diag_note_obs_end_rejected();
             }
+        }
+        /* Release corresponding slot after attempt (success or fail). */
+        dbmap_episode_slot_t *slot = &s_registry.slots[i];
+        if (slot->in_use && strcmp(slot->observation_id, snap->observation_id) == 0) {
+            dbmap_ep_handle_t h = {.index = i, .generation = slot->generation};
+            dbmap_episode_registry_release(&s_registry, h);
         }
     }
 
@@ -1085,8 +1378,7 @@ static esp_err_t ear_observation_close_for_ota(void)
         "OTA acoustic close done outcome=%s (PUBACK != Hub ingest)",
         dbmap_obs_ota_pub_outcome_name(outcome)
     );
-    /* OTA reboot proceeds regardless of END publish result. */
-    (void)pub_err;
+    (void)last_err;
     return ESP_OK;
 }
 #endif /* CONFIG_DBMAP_EAR_OBS_RMS_ACTIVITY — activity_task + close helpers */
@@ -1135,8 +1427,9 @@ esp_err_t dbmap_ear_observation_start(const dbmap_effective_t *cfg)
     uint32_t durable_limit = 0;
     esp_err_t err = seq_limit_load(&durable_limit, block_size);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "sequence limit load failed (%s); using 0", esp_err_to_name(err));
-        durable_limit = 0;
+        /* Never treat unexpected NVS failure as a fresh device (seq=0). */
+        ESP_LOGE(TAG, "sequence limit load failed (%s); refusing start", esp_err_to_name(err));
+        return err;
     }
 
     dbmap_obs_seq_init(&s_seq, durable_limit, block_size);
@@ -1164,6 +1457,9 @@ esp_err_t dbmap_ear_observation_start(const dbmap_effective_t *cfg)
         return ESP_ERR_INVALID_ARG;
     }
     dbmap_activity_detector_init(&s_detector, &act_cfg);
+    dbmap_episode_registry_init(&s_registry);
+    s_rms_bound = false;
+    s_mqtt_episode_rearm_required = false;
 #if CONFIG_DBMAP_EAR_OBS_L0
     s_l0_ring_head = 0;
     s_l0_ring_count = 0;
@@ -1211,11 +1507,7 @@ esp_err_t dbmap_ear_observation_start(const dbmap_effective_t *cfg)
 #endif
 
     s_started = true;
-#if CONFIG_DBMAP_EAR_OBS_PUBLISH_L0
-    ESP_LOGI(TAG, "observation protocol v1 + L0 measurements (emission_kind required)");
-#else
-    ESP_LOGI(TAG, "observation protocol v1 legacy (enable DBMAP_EAR_OBS_PUBLISH_L0 after Hub ready)");
-#endif
+    ESP_LOGI(TAG, "observation protocol v1 hierarchical (episode registry capacity=%d)", DBMAP_OBS_EPISODE_SLOTS);
     ESP_LOGI(
         TAG,
         "observation publisher ready next_seq=%lu seq_limit=%lu block=%lu",
@@ -1264,21 +1556,38 @@ void dbmap_ear_observation_poll_test_trigger(const dbmap_effective_t *cfg)
         }
     }
 
-#if CONFIG_DBMAP_EAR_OBS_PUBLISH_L0
-    /* One-shot test path has no L0 aggregate; incompatible with L0 MQTT publish. */
-    ESP_LOGW(TAG, "Phase 1 test Observation disabled when PUBLISH_L0 is enabled");
-    s_test_published = true;
-    return;
+    char oid[37];
+    format_uuid_v4(oid);
+    dbmap_l0_interval_t empty_iv;
+    memset(&empty_iv, 0, sizeof(empty_iv));
+    empty_iv.sample_rate_hz = (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ;
+    empty_iv.analysis_window_ms = (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS;
+#if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
+    dbmap_l1_interval_t empty_l1;
+    dbmap_l1_interval_set_empty(
+        &empty_l1,
+        (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ,
+        (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS,
+        start_us,
+        capture_us
+    );
+    const dbmap_l1_interval_t *sig_ptr = &empty_l1;
 #else
+    const dbmap_l1_interval_t *sig_ptr = NULL;
+#endif
     esp_err_t err = dbmap_ear_observation_publish(
         cfg,
+        oid,
+        true,
         signal_level_dbfs,
+        duration_ms,
         duration_ms,
         capture_us,
         start_us,
-        NULL,
-        NULL,
-        NULL
+        "complete",
+        "natural",
+        &empty_iv,
+        sig_ptr
     );
     if (err == ESP_OK) {
         s_test_published = true;
@@ -1287,6 +1596,5 @@ void dbmap_ear_observation_poll_test_trigger(const dbmap_effective_t *cfg)
         s_logged_wait_mqtt = true;
         ESP_LOGW(TAG, "Phase 1 test Observation publish deferred: %s", esp_err_to_name(err));
     }
-#endif
 #endif
 }

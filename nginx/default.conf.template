@@ -190,5 +190,7 @@ server {
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Real-IP $remote_addr;
+        # HTML shell embeds Observation UI logic; avoid sticky browser caches after cutovers.
+        add_header Cache-Control "no-store" always;
     }
 }

@@ -3,6 +3,7 @@ idf_component_register(
         "observation_payload.c"
         "observation_seq.c"
         "observation_lifecycle.c"
+        "episode_registry.c"
         "activity_detector.c"
         "ear_observation.c"
     INCLUDE_DIRS "include"
@@ -14,5 +15,7 @@ idf_component_register(
         esp_timer
         log
         esp_system
+        esp_hw_support
+        heap
         freertos
 )

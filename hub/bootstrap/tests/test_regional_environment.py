@@ -1,8 +1,8 @@
 import json
 import threading
 from datetime import datetime, timedelta, timezone
-from io import BytesIO
 from pathlib import Path
+from queue import Empty
 from uuid import uuid4
 
 import pytest
@@ -25,15 +25,11 @@ settings.weather_forecast_base_url = "https://forecast.test/v1/forecast"
 settings.weather_archive_base_url = "https://archive.test/v1/archive"
 settings.hub_monitor_enabled = False
 
+from app import policy, regional_environment
 from app.db import SessionLocal, engine, init_db
 from app.main import create_app
 from app.models import Base, Node, RegionalEnvironmentalContext
-from app import policy, regional_environment
-from app.schemas import (
-    ObservationBearing,
-    ObservationBody,
-    ObservationClassification,
-)
+from app.schemas import ObservationBody
 from app.service import ingest_observation
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
@@ -53,7 +49,7 @@ def _reset_weather_state(monkeypatch):
         try:
             regional_environment._queue.get_nowait()
             regional_environment._queue.task_done()
-        except Exception:
+        except (Empty, ValueError):
             break
     db = SessionLocal()
     try:
@@ -115,26 +111,83 @@ def _make_ear(db, node_id: str) -> None:
     db.commit()
 
 
-def _observation(node_id: str, event_time: datetime) -> ObservationBody:
-    return ObservationBody(
-        protocol_version=1,
-        message_type="observation",
-        observation_id=uuid4(),
-        node_id=node_id,
-        sequence_number=1,
-        event_time_utc=event_time,
-        capture_timestamp_monotonic_us=1,
-        timing_quality="estimated",
-        clock_offset_ms=None,
-        timestamp_uncertainty_ms=10.0,
-        classification=ObservationClassification(
-            source_family="helicopter",
-            confidence=0.7,
-            hints={},
-        ),
-        bearing=ObservationBearing(deg=90.0, reference="node", confidence=0.5),
-        duration_ms=800.0,
-        signal_level_dbfs=-30.0,
+def _empty_l0() -> dict:
+    return {
+        "schema": "l0",
+        "version": 1,
+        "band_plan_version": 1,
+        "crest_threshold_version": 1,
+        "crest_threshold_db": 12.0,
+        "mic_index": 0,
+        "sample_rate_hz": 16000,
+        "analysis_window_ms": 1000,
+        "window_count": 0,
+        "clipped_window_count": 0,
+        "n_crest": 0,
+        "rms": {"mean_dbfs": None, "min_dbfs": None, "max_dbfs": None},
+        "bands": {
+            "mean_dbfs": [None, None, None, None],
+            "fraction": [None, None, None, None],
+        },
+        "hl": {"mean_db": None},
+        "t1": {"rms_stdev_db": None, "rms_range_db": None},
+        "t2": {"rms_slope_db_per_s": None},
+        "t3": {
+            "crest_max_db": None,
+            "high_crest_count": None,
+            "high_crest_rate": None,
+        },
+        "t6": {"hl_slope_db_per_s": None},
+    }
+
+
+_obs_seq = 0
+
+
+def _observation(
+    node_id: str, event_time: datetime, *, sequence_number: int | None = None
+) -> ObservationBody:
+    global _obs_seq
+    if sequence_number is None:
+        _obs_seq += 1
+        sequence_number = _obs_seq
+    return ObservationBody.model_validate(
+        {
+            "protocol_version": 1,
+            "message_type": "observation",
+            "identity": {
+                "observation_id": str(uuid4()),
+                "node_id": node_id,
+                "hub_id": "",
+                "sequence_number": sequence_number,
+            },
+            "context": {
+                "event_time_utc": event_time.isoformat(),
+                "capture_timestamp_monotonic_us": 1,
+                "timing_quality": "estimated",
+                "clock_offset_ms": None,
+                "timestamp_uncertainty_ms": 10.0,
+                "interval_duration_ms": 800.0,
+                "episode_duration_ms": 800.0,
+                "emission_kind": "periodic",
+            },
+            "acoustic": {
+                "signal_level_dbfs": -30.0,
+                "measurements": _empty_l0(),
+                "signature": None,
+                "classification": {
+                    "schema": "l2",
+                    "version": 1,
+                    "source_family": "helicopter",
+                    "confidence": 0.7,
+                    "hints": {},
+                },
+            },
+            "spatial": {
+                "bearing": {"deg": 90.0, "reference": "node", "confidence": 0.5},
+                "position": None,
+            },
+        }
     )
 
 
@@ -358,10 +411,10 @@ def test_weather_context_does_not_alter_detection_fields(monkeypatch) -> None:
 
         views = list_observations(db, "SIM-EAR-020", limit=10)
         assert len(views) == 1
-        assert views[0].classification is not None
-        assert views[0].classification.confidence == 0.7
-        assert views[0].bearing is not None
-        assert views[0].bearing.confidence == 0.5
+        assert views[0].acoustic.classification is not None
+        assert views[0].acoustic.classification.confidence == 0.7
+        assert views[0].spatial.bearing is not None
+        assert views[0].spatial.bearing.confidence == 0.5
         assert not hasattr(views[0], "regional_environmental_context")
     finally:
         db.close()

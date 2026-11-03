@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "acoustic_l0.c"
+        "acoustic_l1.c"
         "audio_metrics.c"
         "background_rms.c"
         "mic_model.c"

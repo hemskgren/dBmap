@@ -173,9 +173,10 @@ def _parse_hour_value(times: list[Any], values: list[Any] | None, hour: datetime
     for index, stamp in enumerate(times):
         if not isinstance(stamp, str):
             continue
-        if stamp.startswith(target) or stamp == hour.isoformat():
-            if index < len(values):
-                return values[index]
+        if (stamp.startswith(target) or stamp == hour.isoformat()) and index < len(
+            values
+        ):
+            return values[index]
     return None
 
 
@@ -346,7 +347,7 @@ def schedule_weather_ensure(event_time: datetime) -> None:
         return
     try:
         _queue.put_nowait(_aware_utc(event_time))
-    except Exception:  # noqa: BLE001 - never break ingest
+    except Exception:
         log.debug("weather schedule dropped", exc_info=True)
 
 

@@ -393,11 +393,22 @@ class ReportedState(Base):
 
 
 class Observation(Base):
-    __tablename__ = "observations"
+    """One MQTT Observation report. Dedup key: (node_id, sequence_number)."""
 
-    observation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    node_id: Mapped[str] = mapped_column(String(64), index=True)
-    sequence_number: Mapped[int] = mapped_column(Integer)
+    __tablename__ = "observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "node_id",
+            "sequence_number",
+            name="uq_observations_node_sequence",
+        ),
+        Index("ix_observations_observation_id", "observation_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    observation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    node_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
     event_time_utc: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), index=True
     )

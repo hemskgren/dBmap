@@ -252,7 +252,7 @@ Expect continuous `diag snap` / `diag counters` lines with Wi-Fi/MQTT disconnect
 
 ## Build
 
-Prefer the Hub **Firmware → Build reusable firmware** target `ear-esp32-s3` (series `0.5.*`).
+Prefer the Hub **Firmware → Build reusable firmware** target `ear-esp32-s3` (series `0.7.*`).
 
 The builder container has **no internet**. Ear vendors `espressif/mdns` **1.14.1** at `esp-ear/components/mdns` (local IDF component) so the registry is never contacted. Ear components live under `firmware/ear_components/` (not shared with Output’s Helix/LittleFS tree under `firmware/output_components/`).
 

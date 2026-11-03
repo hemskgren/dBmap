@@ -15,7 +15,8 @@ static bool timing_quality_ok(const char *q)
 static bool emission_kind_ok(const char *k)
 {
     return k != NULL
-        && (strcmp(k, "start") == 0 || strcmp(k, "periodic") == 0 || strcmp(k, "end") == 0);
+        && (strcmp(k, "start") == 0 || strcmp(k, "periodic") == 0
+            || strcmp(k, "end") == 0 || strcmp(k, "complete") == 0);
 }
 
 static bool termination_reason_ok(const char *r)
@@ -25,9 +26,78 @@ static bool termination_reason_ok(const char *r)
             || strcmp(r, "ota_reboot") == 0);
 }
 
+static bool kind_requires_termination(const char *k)
+{
+    return k != NULL && (strcmp(k, "end") == 0 || strcmp(k, "complete") == 0);
+}
+
 static cJSON *json_float_or_null(bool has, double value)
 {
     return has ? cJSON_CreateNumber(value) : cJSON_CreateNull();
+}
+
+static cJSON *build_mean_stdev_object(bool has_mean, double mean, bool has_stdev, double stdev)
+{
+    cJSON *o = cJSON_CreateObject();
+    if (o == NULL) {
+        return NULL;
+    }
+    if (!cJSON_AddItemToObject(o, "mean", json_float_or_null(has_mean, mean))) {
+        cJSON_Delete(o);
+        return NULL;
+    }
+    if (!cJSON_AddItemToObject(o, "stdev", json_float_or_null(has_stdev, stdev))) {
+        cJSON_Delete(o);
+        return NULL;
+    }
+    return o;
+}
+
+static cJSON *build_signature_object(const dbmap_l1_interval_t *iv)
+{
+    if (iv == NULL) {
+        return NULL;
+    }
+    cJSON *s = cJSON_CreateObject();
+    if (s == NULL) {
+        return NULL;
+    }
+    cJSON_AddStringToObject(s, "schema", "l1");
+    cJSON_AddNumberToObject(s, "version", DBMAP_L1_MEASUREMENT_VERSION);
+    cJSON_AddNumberToObject(s, "sample_rate_hz", (double)iv->sample_rate_hz);
+    cJSON_AddNumberToObject(s, "analysis_window_ms", (double)iv->analysis_window_ms);
+    cJSON_AddNumberToObject(s, "fft_size", (double)iv->fft_size);
+    cJSON_AddNumberToObject(s, "freq_min_hz", (double)iv->freq_min_hz);
+    cJSON_AddNumberToObject(s, "freq_max_hz", (double)iv->freq_max_hz);
+    cJSON_AddNumberToObject(s, "window_count", (double)iv->window_count);
+    cJSON_AddNumberToObject(s, "invalid_window_count", (double)iv->invalid_window_count);
+
+    const bool has_stdev = iv->has_stdev;
+    cJSON *centroid = build_mean_stdev_object(
+        iv->has_centroid, iv->centroid_mean_hz, has_stdev && iv->has_centroid, iv->centroid_stdev_hz
+    );
+    cJSON *bandwidth = build_mean_stdev_object(
+        iv->has_bandwidth, iv->bandwidth_mean_hz, has_stdev && iv->has_bandwidth, iv->bandwidth_stdev_hz
+    );
+    cJSON *dominant = build_mean_stdev_object(
+        iv->has_dominant, iv->dominant_mean_hz, has_stdev && iv->has_dominant, iv->dominant_stdev_hz
+    );
+    cJSON *flatness = build_mean_stdev_object(
+        iv->has_flatness, iv->flatness_mean, has_stdev && iv->has_flatness, iv->flatness_stdev
+    );
+    if (centroid == NULL || bandwidth == NULL || dominant == NULL || flatness == NULL) {
+        cJSON_Delete(centroid);
+        cJSON_Delete(bandwidth);
+        cJSON_Delete(dominant);
+        cJSON_Delete(flatness);
+        cJSON_Delete(s);
+        return NULL;
+    }
+    cJSON_AddItemToObject(s, "centroid_hz", centroid);
+    cJSON_AddItemToObject(s, "bandwidth_hz", bandwidth);
+    cJSON_AddItemToObject(s, "dominant_hz", dominant);
+    cJSON_AddItemToObject(s, "flatness", flatness);
+    return s;
 }
 
 static cJSON *build_measurements_object(const dbmap_l0_interval_t *iv)
@@ -159,30 +229,32 @@ static cJSON *build_measurements_object(const dbmap_l0_interval_t *iv)
 char *dbmap_observation_build_json(const dbmap_observation_fields_t *fields)
 {
     if (fields == NULL || fields->observation_id == NULL || fields->node_id == NULL ||
-        fields->event_time_utc == NULL || fields->timing_quality == NULL) {
+        fields->event_time_utc == NULL || fields->timing_quality == NULL ||
+        fields->emission_kind == NULL) {
         return NULL;
     }
     if (fields->observation_id[0] == '\0' || fields->node_id[0] == '\0' ||
-        fields->event_time_utc[0] == '\0' || !timing_quality_ok(fields->timing_quality)) {
+        fields->event_time_utc[0] == '\0' || !timing_quality_ok(fields->timing_quality) ||
+        !emission_kind_ok(fields->emission_kind)) {
         return NULL;
     }
     if (fields->capture_timestamp_monotonic_us < 0 || fields->timestamp_uncertainty_ms < 0.0 ||
-        fields->duration_ms < 0.0 || fields->signal_level_dbfs > 0.0) {
+        fields->interval_duration_ms < 0.0 || fields->episode_duration_ms < 0.0) {
+        return NULL;
+    }
+    if (fields->has_signal_level_dbfs && fields->signal_level_dbfs > 0.0) {
+        return NULL;
+    }
+    if (fields->measurements == NULL) {
         return NULL;
     }
 
-    const bool want_ext = (fields->emission_kind != NULL) || (fields->measurements != NULL);
-    if (want_ext) {
-        if (!emission_kind_ok(fields->emission_kind) || fields->measurements == NULL) {
+    if (kind_requires_termination(fields->emission_kind)) {
+        if (!termination_reason_ok(fields->termination_reason)) {
             return NULL;
         }
-    }
-
-    if (fields->termination_reason != NULL) {
-        if (!want_ext || strcmp(fields->emission_kind, "end") != 0
-            || !termination_reason_ok(fields->termination_reason)) {
-            return NULL;
-        }
+    } else if (fields->termination_reason != NULL) {
+        return NULL;
     }
 
     cJSON *root = cJSON_CreateObject();
@@ -192,37 +264,85 @@ char *dbmap_observation_build_json(const dbmap_observation_fields_t *fields)
 
     cJSON_AddNumberToObject(root, "protocol_version", 1);
     cJSON_AddStringToObject(root, "message_type", "observation");
-    cJSON_AddStringToObject(root, "observation_id", fields->observation_id);
-    cJSON_AddStringToObject(root, "node_id", fields->node_id);
-    cJSON_AddNumberToObject(root, "sequence_number", (double)fields->sequence_number);
-    cJSON_AddStringToObject(root, "event_time_utc", fields->event_time_utc);
+
+    cJSON *identity = cJSON_CreateObject();
+    if (identity == NULL) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON_AddStringToObject(identity, "observation_id", fields->observation_id);
+    cJSON_AddStringToObject(identity, "node_id", fields->node_id);
+    cJSON_AddStringToObject(
+        identity, "hub_id", (fields->hub_id != NULL) ? fields->hub_id : ""
+    );
+    cJSON_AddNumberToObject(identity, "sequence_number", (double)fields->sequence_number);
+    cJSON_AddItemToObject(root, "identity", identity);
+
+    cJSON *context = cJSON_CreateObject();
+    if (context == NULL) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON_AddStringToObject(context, "event_time_utc", fields->event_time_utc);
     cJSON_AddNumberToObject(
-        root,
+        context,
         "capture_timestamp_monotonic_us",
         (double)fields->capture_timestamp_monotonic_us
     );
-    cJSON_AddStringToObject(root, "timing_quality", fields->timing_quality);
-    cJSON_AddNullToObject(root, "clock_offset_ms");
-    cJSON_AddNumberToObject(root, "timestamp_uncertainty_ms", fields->timestamp_uncertainty_ms);
-    cJSON_AddNullToObject(root, "classification");
-    cJSON_AddNullToObject(root, "bearing");
-    cJSON_AddNumberToObject(root, "signal_level_dbfs", fields->signal_level_dbfs);
-    cJSON_AddNumberToObject(root, "duration_ms", fields->duration_ms);
+    cJSON_AddStringToObject(context, "timing_quality", fields->timing_quality);
+    if (fields->has_clock_offset_ms) {
+        cJSON_AddNumberToObject(context, "clock_offset_ms", fields->clock_offset_ms);
+    } else {
+        cJSON_AddNullToObject(context, "clock_offset_ms");
+    }
+    cJSON_AddNumberToObject(context, "timestamp_uncertainty_ms", fields->timestamp_uncertainty_ms);
+    cJSON_AddNumberToObject(context, "interval_duration_ms", fields->interval_duration_ms);
+    cJSON_AddNumberToObject(context, "episode_duration_ms", fields->episode_duration_ms);
+    cJSON_AddStringToObject(context, "emission_kind", fields->emission_kind);
+    if (fields->termination_reason != NULL) {
+        cJSON_AddStringToObject(context, "termination_reason", fields->termination_reason);
+    }
+    cJSON_AddItemToObject(root, "context", context);
 
-    if (want_ext) {
-        cJSON_AddStringToObject(root, "emission_kind", fields->emission_kind);
-        if (fields->termination_reason != NULL) {
-            cJSON_AddStringToObject(root, "termination_reason", fields->termination_reason);
-        }
-        cJSON *meas = build_measurements_object(fields->measurements);
-        if (meas == NULL) {
+    cJSON *acoustic = cJSON_CreateObject();
+    if (acoustic == NULL) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    if (fields->has_signal_level_dbfs) {
+        cJSON_AddNumberToObject(acoustic, "signal_level_dbfs", fields->signal_level_dbfs);
+    } else {
+        cJSON_AddNullToObject(acoustic, "signal_level_dbfs");
+    }
+    cJSON *meas = build_measurements_object(fields->measurements);
+    if (meas == NULL) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON_AddItemToObject(acoustic, "measurements", meas);
+    if (fields->signature == NULL) {
+        cJSON_AddNullToObject(acoustic, "signature");
+    } else {
+        cJSON *sig = build_signature_object(fields->signature);
+        if (sig == NULL) {
             cJSON_Delete(root);
             return NULL;
         }
-        cJSON_AddItemToObject(root, "measurements", meas);
+        cJSON_AddItemToObject(acoustic, "signature", sig);
     }
+    cJSON_AddNullToObject(acoustic, "classification");
+    cJSON_AddItemToObject(root, "acoustic", acoustic);
 
-    char *json = cJSON_PrintUnformatted(root);
+    cJSON *spatial = cJSON_CreateObject();
+    if (spatial == NULL) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON_AddNullToObject(spatial, "bearing");
+    cJSON_AddNullToObject(spatial, "position");
+    cJSON_AddItemToObject(root, "spatial", spatial);
+
+    char *out = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
-    return json;
+    return out;
 }

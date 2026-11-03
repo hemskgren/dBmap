@@ -131,6 +131,20 @@ menu "dBmap Ear Observation"
             Keep disabled until Hub accepts the extension. Incomplete L0 runtime
             state refuses publish (no silent omission of measurements).
 
+    config DBMAP_EAR_OBS_L1
+        bool "Step 3: L1 Acoustic Signature (FFT features on Observation intervals)"
+        default y
+        depends on DBMAP_EAR_OBS_RMS_ACTIVITY && DBMAP_EAR_MIC_L0 && DBMAP_EAR_OBS_L0
+        help
+            Compute interval-scoped L1 spectral signature (centroid, bandwidth,
+            dominant frequency, flatness) from the existing SPIRAM PCM buffer
+            using 1024-pt Hann FFTs. Uses the same window association rule and
+            history capacity as L0, but aggregation state is independent.
+            When enabled, acoustic.signature is a schema=l1 object (or a valid
+            empty L1 object). When disabled, acoustic.signature is JSON null.
+            Does not change L0 formulas, detector thresholds, or Observation
+            lifecycle. Analysis runs in the observation task only.
+
     config DBMAP_EAR_OBS_SERIAL_DIAG
         bool "Opt-in serial diagnostics for RMS activity (rate-limited)"
         default n
@@ -139,7 +153,8 @@ menu "dBmap Ear Observation"
             When enabled, the activity task prints ~1 Hz measurement/state
             snapshots and ~5 s emission/invalid/MQTT-drop counters on the
             console UART. When DBMAP_EAR_OBS_L0 is also enabled, prints
-            per-window L0 and per-emission interval L0 summaries. Independent
+            per-window L0 and per-emission interval L0 summaries, L1 analyze
+            counters (when L1 on), and runtime CPU MHz / heap. Independent
             of MQTT/HTTPS. Default off. Does not change thresholds, hysteresis,
             timing, or Observation emission. Do not enable in production fleet
             images.

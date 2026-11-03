@@ -40,6 +40,11 @@ class StaticHandler(SimpleHTTPRequestHandler):
     def address_string(self) -> str:
         return _logged_client_ip(getattr(self, "headers", None), self.client_address[0])
 
+    def end_headers(self) -> None:
+        # UI is rebuilt often during cutovers; never let browsers keep a stale shell.
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def handle(self) -> None:
         try:
             super().handle()
@@ -55,7 +60,6 @@ class StaticHandler(SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 

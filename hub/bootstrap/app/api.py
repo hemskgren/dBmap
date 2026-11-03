@@ -1344,7 +1344,10 @@ def count_observations(
     node_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> ObservationCountView:
-    return ObservationCountView(total=service.count_observations(db, node_id))
+    return ObservationCountView(
+        total=service.count_observations(db, node_id),
+        unique_observations=service.count_unique_observations(db, node_id),
+    )
 
 
 @router.get(

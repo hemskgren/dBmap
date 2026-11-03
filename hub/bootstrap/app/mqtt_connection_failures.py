@@ -97,8 +97,10 @@ def read_recent_failures(
             "count": 0,
             "notices": notices
             + [
-                f"Mosquitto log file is not readable at {path}. "
-                "Ensure the Hub mounts shared/mosquitto/logs and Mosquitto is writing it."
+                (
+                    f"Mosquitto log file is not readable at {path}. "
+                    "Ensure the Hub mounts shared/mosquitto/logs and Mosquitto is writing it."
+                )
             ],
         }
 

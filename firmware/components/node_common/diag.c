@@ -23,6 +23,11 @@ typedef struct {
     uint16_t mqtt_connect_attempts;
     uint16_t mqtt_connect_failures;
     uint16_t desired_failures;
+    uint16_t mqtt_observation_start_rejected_count;
+    uint16_t mqtt_observation_periodic_rejected_count;
+    uint16_t mqtt_observation_end_rejected_count;
+    uint16_t mqtt_observation_complete_rejected_count;
+    uint16_t mqtt_observation_skipped_disconnected_count;
     char last_reset_reason[24];
     bool reset_reason_pending;
     bool mqtt_was_connected;
@@ -182,6 +187,31 @@ void dbmap_diag_note_desired_failure(void)
     saturate_inc(&s_state.desired_failures);
 }
 
+void dbmap_diag_note_obs_start_rejected(void)
+{
+    saturate_inc(&s_state.mqtt_observation_start_rejected_count);
+}
+
+void dbmap_diag_note_obs_periodic_rejected(void)
+{
+    saturate_inc(&s_state.mqtt_observation_periodic_rejected_count);
+}
+
+void dbmap_diag_note_obs_end_rejected(void)
+{
+    saturate_inc(&s_state.mqtt_observation_end_rejected_count);
+}
+
+void dbmap_diag_note_obs_complete_rejected(void)
+{
+    saturate_inc(&s_state.mqtt_observation_complete_rejected_count);
+}
+
+void dbmap_diag_note_obs_skipped_disconnected(void)
+{
+    saturate_inc(&s_state.mqtt_observation_skipped_disconnected_count);
+}
+
 void dbmap_diag_attach_json(cJSON *state_object)
 {
     if (state_object == NULL || !s_cfg.enabled) {
@@ -191,7 +221,12 @@ void dbmap_diag_attach_json(cJSON *state_object)
     const bool has_counters =
         s_state.wifi_disconnects > 0 || s_state.mqtt_disconnects > 0 ||
         s_state.mqtt_reconnects > 0 || s_state.mqtt_connect_attempts > 0 ||
-        s_state.mqtt_connect_failures > 0 || s_state.desired_failures > 0;
+        s_state.mqtt_connect_failures > 0 || s_state.desired_failures > 0 ||
+        s_state.mqtt_observation_start_rejected_count > 0 ||
+        s_state.mqtt_observation_periodic_rejected_count > 0 ||
+        s_state.mqtt_observation_end_rejected_count > 0 ||
+        s_state.mqtt_observation_complete_rejected_count > 0 ||
+        s_state.mqtt_observation_skipped_disconnected_count > 0;
     const bool has_reset = s_state.reset_reason_pending && s_state.last_reset_reason[0] != '\0';
     if (!has_counters && !has_reset) {
         return;
@@ -218,6 +253,41 @@ void dbmap_diag_attach_json(cJSON *state_object)
     }
     if (s_state.desired_failures > 0) {
         cJSON_AddNumberToObject(diag, "desired_failures", s_state.desired_failures);
+    }
+    if (s_state.mqtt_observation_start_rejected_count > 0) {
+        cJSON_AddNumberToObject(
+            diag,
+            "mqtt_observation_start_rejected_count",
+            s_state.mqtt_observation_start_rejected_count
+        );
+    }
+    if (s_state.mqtt_observation_periodic_rejected_count > 0) {
+        cJSON_AddNumberToObject(
+            diag,
+            "mqtt_observation_periodic_rejected_count",
+            s_state.mqtt_observation_periodic_rejected_count
+        );
+    }
+    if (s_state.mqtt_observation_end_rejected_count > 0) {
+        cJSON_AddNumberToObject(
+            diag,
+            "mqtt_observation_end_rejected_count",
+            s_state.mqtt_observation_end_rejected_count
+        );
+    }
+    if (s_state.mqtt_observation_complete_rejected_count > 0) {
+        cJSON_AddNumberToObject(
+            diag,
+            "mqtt_observation_complete_rejected_count",
+            s_state.mqtt_observation_complete_rejected_count
+        );
+    }
+    if (s_state.mqtt_observation_skipped_disconnected_count > 0) {
+        cJSON_AddNumberToObject(
+            diag,
+            "mqtt_observation_skipped_disconnected_count",
+            s_state.mqtt_observation_skipped_disconnected_count
+        );
     }
     if (has_reset) {
         cJSON_AddStringToObject(diag, "last_reset_reason", s_state.last_reset_reason);

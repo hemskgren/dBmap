@@ -177,7 +177,7 @@ def test_scenario_builds_protocol_observations_with_per_ear_sequences_and_timeli
     def publish(current_credentials, payload, ca_file):
         assert ca_file == "ca.crt"
         published.append(payload)
-        return payload["observation_id"]
+        return payload["identity"]["observation_id"]
 
     ids = simulate_scenario.run_scenario(
         scenario,
@@ -196,45 +196,60 @@ def test_scenario_builds_protocol_observations_with_per_ear_sequences_and_timeli
         announce=False,
     )
 
-    assert ids == [item["observation_id"] for item in published]
-    assert len(set(ids)) == 3
-    assert [item["node_id"] for item in published] == [
+    assert ids == [item["identity"]["observation_id"] for item in published]
+    # ear_a has two points (shared id); ear_b has one (COMPLETE).
+    assert len(set(ids)) == 2
+    assert ids[0] == ids[2]
+    assert ids[0] != ids[1]
+    assert [item["identity"]["node_id"] for item in published] == [
         "SIM-EAR-001",
         "SIM-EAR-002",
         "SIM-EAR-001",
     ]
-    assert [item["classification"]["confidence"] for item in published] == [
+    assert [
+        item["acoustic"]["classification"]["confidence"] for item in published
+    ] == [
         0.7,
         0.9,
         0.55,
     ]
-    assert [item["classification"]["source_family"] for item in published] == [
+    assert [
+        item["acoustic"]["classification"]["source_family"] for item in published
+    ] == [
         "vehicle",
         "vehicle",
         "vehicle",
     ]
-    assert [item["bearing"]["confidence"] for item in published] == [0.6, 0.8, 0.4]
-    assert published[0]["bearing"]["deg"] != published[2]["bearing"]["deg"]
-    assert all(0 <= item["bearing"]["deg"] < 360 for item in published)
-    assert published[0]["bearing"]["deg"] == pytest.approx(90, abs=0.01)
+    assert [item["spatial"]["bearing"]["confidence"] for item in published] == [
+        0.6,
+        0.8,
+        0.4,
+    ]
+    assert (
+        published[0]["spatial"]["bearing"]["deg"]
+        != published[2]["spatial"]["bearing"]["deg"]
+    )
+    assert all(0 <= item["spatial"]["bearing"]["deg"] < 360 for item in published)
+    assert published[0]["spatial"]["bearing"]["deg"] == pytest.approx(90, abs=0.01)
     assert scenario["observations"][0]["source_distance_m"] == pytest.approx(
         111.2, abs=1
     )
     assert scenario["movement"]["speed_m_s"] == 12
-    assert [item["sequence_number"] for item in published] == [3, 8, 4]
-    assert [item["event_time_utc"] for item in published] == [
+    assert [item["identity"]["sequence_number"] for item in published] == [3, 8, 4]
+    assert [item["context"]["event_time_utc"] for item in published] == [
         "2026-10-05T18:00:00+00:00",
         "2026-10-05T18:00:02+00:00",
         "2026-10-05T18:00:05+00:00",
     ]
-    assert [item["capture_timestamp_monotonic_us"] for item in published] == [
+    assert [item["context"]["capture_timestamp_monotonic_us"] for item in published] == [
         1_000_000,
         3_000_000,
         6_000_000,
     ]
     assert sleeps == [0.5, 0.75]
     assert [
-        item["classification"]["hints"]["simulated_source_id"] for item in published
+        item["acoustic"]["classification"]["hints"]["simulated_source_id"]
+        for item in published
     ] == [
         "SIM-VEHICLE-TEST",
         "SIM-VEHICLE-TEST",
@@ -242,6 +257,14 @@ def test_scenario_builds_protocol_observations_with_per_ear_sequences_and_timeli
     ]
     assert credentials["ear_a"]["next_sequence_number"] == 5
     assert credentials["ear_b"]["next_sequence_number"] == 9
+    assert [item["context"]["emission_kind"] for item in published] == [
+        "start",
+        "complete",
+        "end",
+    ]
+    assert "termination_reason" not in published[0]["context"]
+    assert published[1]["context"]["termination_reason"] == "natural"
+    assert published[2]["context"]["termination_reason"] == "natural"
 
 
 def test_retry_pending_reuses_same_observation_id_and_advances_sequence(
@@ -273,7 +296,7 @@ def test_retry_pending_reuses_same_observation_id_and_advances_sequence(
         {"ear_a": Path("ear-a.json")},
         "ca.crt",
         publish=lambda current, payload, ca: (
-            published.append(payload) or payload["observation_id"]
+            published.append(payload) or payload["identity"]["observation_id"]
         ),
         save=lambda path, value: saved.append((path, dict(value))),
         publish_keepalive=lambda *args, **kwargs: None,
@@ -281,8 +304,11 @@ def test_retry_pending_reuses_same_observation_id_and_advances_sequence(
         announce=False,
     )
 
-    assert ids == [pending["observation_id"]]
-    assert published[0]["observation_id"] == pending["observation_id"]
+    assert ids == [pending["identity"]["observation_id"]]
+    assert (
+        published[0]["identity"]["observation_id"]
+        == pending["identity"]["observation_id"]
+    )
     assert credentials["ear_a"]["next_sequence_number"] == 5
     assert "pending_observation" not in credentials["ear_a"]
     assert saved[0][0] == Path("ear-a.json")
@@ -441,13 +467,153 @@ def test_independent_detection_omits_bearing_confidence_in_payload(tmp_path) -> 
         datetime(2026, 10, 5, 18, 0, tzinfo=timezone.utc),
         1_000_000,
     )
-    assert "confidence" not in payload["bearing"]
-    assert payload["signal_level_dbfs"] <= 0
-    assert payload["classification"]["confidence"] == 0.5
+    assert "confidence" not in payload["spatial"]["bearing"]
+    assert payload["acoustic"]["signal_level_dbfs"] <= 0
+    assert payload["acoustic"]["classification"]["confidence"] == 0.5
     # Distance-dependent: nearer observation is louder (or equal if clamped).
     nearer = min(prepared["observations"], key=lambda item: item["source_distance_m"])
     farther = max(prepared["observations"], key=lambda item: item["source_distance_m"])
     assert nearer["signal_level_dbfs"] >= farther["signal_level_dbfs"]
+
+
+def test_scripted_detection_defaults_to_complete_lifecycle() -> None:
+    payload = simulate_scenario.make_scenario_observation(
+        "SIM-EAR-001",
+        7,
+        "SIM-SRC",
+        {
+            "at_seconds": 12,
+            "ear": "ear_a",
+            "bearing_deg": 90.0,
+            "bearing_confidence": 0.5,
+            "classification_confidence": 0.6,
+            "signal_level_dbfs": -34.0,
+            "duration_ms": 700,
+        },
+        datetime(2026, 11, 3, 18, 0, tzinfo=timezone.utc),
+        1_000_000,
+    )
+    assert payload["protocol_version"] == 1
+    assert payload["message_type"] == "observation"
+    assert set(payload) >= {"identity", "context", "acoustic", "spatial"}
+    assert payload["context"]["emission_kind"] == "complete"
+    assert payload["context"]["termination_reason"] == "natural"
+    assert payload["identity"]["sequence_number"] == 7
+    # Hub protocol v1 schema accepts the payload.
+    simulate_scenario._observation_body().model_validate(payload)
+
+
+def test_assign_scripted_ear_lifecycles_groups_per_ear() -> None:
+    events = [
+        {"at_seconds": 1, "ear": "ear_b"},
+        {"at_seconds": 2, "ear": "ear_b"},
+        {"at_seconds": 3, "ear": "ear_a"},
+        {"at_seconds": 4, "ear": "ear_b"},
+    ]
+    assigned = simulate_scenario.assign_scripted_ear_observation_lifecycles(events)
+    assert [item["emission_kind"] for item in assigned] == [
+        "start",
+        "periodic",
+        "complete",
+        "end",
+    ]
+    assert assigned[0]["observation_id"] == assigned[1]["observation_id"] == assigned[3]["observation_id"]
+    assert assigned[2]["observation_id"] != assigned[0]["observation_id"]
+    assert assigned[2]["termination_reason"] == "natural"
+    assert assigned[3]["termination_reason"] == "natural"
+    assert "termination_reason" not in assigned[0]
+    # Original list unchanged.
+    assert "emission_kind" not in events[0]
+
+
+def test_helicopter_scripted_run_emits_full_lifecycle_per_ear() -> None:
+    path = (
+        Path(__file__).parents[3]
+        / "simulator"
+        / "ear"
+        / "scenarios"
+        / "helicopter_east_west.json"
+    )
+    scenario = simulate_scenario.load_scenario(path)
+    assert len(scenario["observations"]) == 18
+    authored = [
+        (item["at_seconds"], item["ear"], item["signal_level_dbfs"])
+        for item in scenario["observations"]
+    ]
+    trajectory = (
+        scenario["movement"]["start"],
+        scenario["movement"]["end"],
+        scenario["movement"]["speed_m_s"],
+    )
+
+    credentials = {
+        "ear_a": {"node_id": "SIM-EAR-001", "next_sequence_number": 1},
+        "ear_b": {"node_id": "SIM-EAR-002", "next_sequence_number": 10},
+        "ear_c": {"node_id": "SIM-EAR-003", "next_sequence_number": 100},
+    }
+    published: list[dict] = []
+
+    ids = simulate_scenario.run_scenario(
+        scenario,
+        credentials,
+        {
+            "ear_a": Path("a.json"),
+            "ear_b": Path("b.json"),
+            "ear_c": Path("c.json"),
+        },
+        "ca.crt",
+        1.0,
+        publish=lambda _credentials, payload, _ca: (
+            published.append(payload) or payload["identity"]["observation_id"]
+        ),
+        sleep=lambda _seconds: None,
+        monotonic=lambda: 10**12,
+        started_at_utc=datetime(2026, 11, 3, 18, 0, tzinfo=timezone.utc),
+        started_at_monotonic_us=0,
+        save=lambda *_args, **_kwargs: None,
+        publish_keepalive=lambda *_args, **_kwargs: None,
+        make_keepalive=lambda credentials, uptime_s: {"uptime_s": uptime_s},
+        announce=False,
+    )
+
+    assert len(published) == 18
+    assert len(ids) == 18
+    assert len(set(ids)) == 3
+    assert [
+        (item["at_seconds"], item["ear"], item["signal_level_dbfs"])
+        for item in scenario["observations"]
+    ] == authored
+    assert (
+        scenario["movement"]["start"],
+        scenario["movement"]["end"],
+        scenario["movement"]["speed_m_s"],
+    ) == trajectory
+
+    ObservationBody = simulate_scenario._observation_body()
+    by_node: dict[str, list[dict]] = {
+        "SIM-EAR-001": [],
+        "SIM-EAR-002": [],
+        "SIM-EAR-003": [],
+    }
+    for payload in published:
+        ObservationBody.model_validate(payload)
+        by_node[payload["identity"]["node_id"]].append(payload)
+
+    for node_id, reports in by_node.items():
+        assert len(reports) == 6
+        kinds = [item["context"]["emission_kind"] for item in reports]
+        assert kinds == ["start", "periodic", "periodic", "periodic", "periodic", "end"]
+        assert len({item["identity"]["observation_id"] for item in reports}) == 1
+        assert "termination_reason" not in reports[0]["context"]
+        assert all("termination_reason" not in item["context"] for item in reports[1:5])
+        assert reports[-1]["context"]["termination_reason"] == "natural"
+        sequences = [item["identity"]["sequence_number"] for item in reports]
+        assert sequences == sorted(sequences)
+        assert len(sequences) == len(set(sequences))
+
+    assert credentials["ear_a"]["next_sequence_number"] == 7
+    assert credentials["ear_b"]["next_sequence_number"] == 16
+    assert credentials["ear_c"]["next_sequence_number"] == 106
 
 
 def test_helicopter_independent_range_sweep_counts() -> None:
