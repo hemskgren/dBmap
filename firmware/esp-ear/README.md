@@ -45,11 +45,9 @@ On boot, `next` starts at the durable `seq_lim`, so any unused remainder of the 
 | Acoustic activity | RMS enter/exit thresholds only (not `signal_present` alone) |
 | Invalid / boot windows | Boot-settle ignored; invalid windows **hold** state (not silence); after `max_invalid_hold_ms` force END at last usable sample |
 
-How `microphone_status` is determined: `dbmap_audio_classify_microphone()` uses structure diagnostics (zero ratio, unique values, rail hits)—see `docs/ear-i2s-read-path-verification.md`. It is **not** an activity detector and **not** `source_family`.
+How `microphone_status` is determined: `dbmap_audio_classify_microphone()` uses structure diagnostics (zero ratio, unique values, rail hits)—see [`docs/diagnostics/ear-i2s-read-path-verification.md`](../../docs/diagnostics/ear-i2s-read-path-verification.md). It is **not** an activity detector and **not** `source_family`.
 
 Thresholds are **provisional and uncalibrated**. One activity stream per Ear: overlapping sources are not separated.
-
-Field validation checklist: [`docs/ear-observation-phase3-validation.md`](../../docs/ear-observation-phase3-validation.md).
 
 ### Emission timing (`duration_ms`)
 
@@ -63,11 +61,59 @@ Each Observation describes an already measured interval `[event_time_utc, event_
 
 `signal_level_dbfs` is the RMS of the window that closed that interval (digital FS, not SPL). Not the simulator’s synthetic 850 ms duration.
 
+### Boot vs Acoustic Monitor
+
+Startup runs networking and the boot Desired/OTA check **before** starting the
+Acoustic Monitor (I2S capture, RMS detector, L0). The monitor starts **once**
+per boot after that gate. Later MQTT/Wi‑Fi disconnects and Desired polls do
+**not** stop, restart, or reinitialize capture/detector/L0 state.
+
+### Background RMS (Reported State, Iteration 1)
+
+When `CONFIG_DBMAP_EAR_MIC_BACKGROUND` is enabled (default), each mic object on
+hello/health/keepalive may include a nested `background` object: rolling RMS
+over `CONFIG_DBMAP_EAR_MIC_BACKGROUND_WINDOW_MS` (default 180 s). Stats use
+linear-mean energy → dBFS. `status` is `partial` or `full` from **elapsed
+collection time**, not from sample count alone. Clipped windows and the first
+post-I2S window (`window_seq == 1`, plus boot settle via
+`ms_since_i2s_enable`) are excluded using existing fields. If no in-window
+valid samples remain, `background` is omitted. History is independent of
+Observation/MQTT; publish only reads a time-filtered snapshot and does not
+clear the ring. RAM-only (no reboot persistence).
+
 ### MQTT unavailable
 
 - Mic capture and the RMS detector task keep running.
 - Emissions while MQTT is down are dropped (no offline queue); sequence numbers are not consumed for those drops.
 - Network loss is not interpreted as absence of acoustic activity.
+
+### OTA pre-reboot Observation closure
+
+Before `persist_pending_and_reboot` continues, Ear runs a registered acoustic-close
+callback (explicit registration from `app_main` after MQTT start and **before**
+`dbmap_desired_boot_check`; Output never registers — NULL is an intentional no-op).
+
+| Detector state at OTA close | `s_start_publish_accepted` | Action |
+| --- | --- | --- |
+| IDLE | — | No-op |
+| PENDING_ENTER | (START never produced) | Silent → IDLE; no END |
+| ACTIVE / PENDING_EXIT | true (START `publish_json` returned `ESP_OK`) | Forced END, `termination_reason: ota_reboot`, then IDLE |
+| ACTIVE / PENDING_EXIT | false | Silent → IDLE; no orphan END |
+
+`s_start_publish_accepted` means MQTT **client** acceptance only — not broker PUBACK and not Hub ingest. It is preserved across MQTT disconnect/reconnect and cleared on episode close or silent abort.
+
+OTA END uses a detached snapshot (identity, topic, interval, full L0) taken under the lifecycle mutex; PUBACK wait (≤5000 ms) runs **outside** the mutex. OTA reboot proceeds even if END publish fails, MQTT is down, or PUBACK times out.
+
+### Observation lifecycle scenarios
+
+| Scenario | Detector / L0 | Emissions | `s_start_publish_accepted` | Sequence | Reconnect effect |
+| --- | --- | --- | --- | --- | --- |
+| MQTT down mid-episode | Continues | Dropped while down | Unchanged by disconnect | Not consumed on drops | No synthetic START; no acoustic reset |
+| MQTT up → START accepted → down → OTA | Continues until OTA close | OTA attempts END | Stays true across disconnect | END allocates if publish path runs | — |
+| START only while MQTT down, then OTA | Continues | No START accepted | false → OTA silent abort | No END seq | — |
+| Natural END vs OTA race | Gate `CLOSING`/`CLOSED` stops further feed | At most one closer wins under mutex | Cleared on close | Per winner | — |
+| OTA END PUBACK timeout / fail | Closed in RAM | Logged; reboot continues | Cleared | Consumed if allocate succeeded | — |
+| Boot Desired OTA before Acoustic start | Not started | Close no-op | — | — | Hook already registered |
 
 ## Reported audio shape (excerpt)
 
@@ -123,13 +169,13 @@ Levels are digital full-scale (**dBFS**), not calibrated dB SPL.
 | `unknown` | Transport usable but ambiguous |
 | `unavailable` | Transport unusable / no samples |
 
-Each mic also reports `classification_reason` plus diagnostics (no raw PCM): `raw_min`, `raw_max`, `zero_sample_count`, `full_scale_sample_count`, `unique_sample_count`, `unique_capped`, `consecutive_identical_samples`. See [`docs/ear-i2s-read-path-verification.md`](../../docs/ear-i2s-read-path-verification.md).
+Each mic also reports `classification_reason` plus diagnostics (no raw PCM): `raw_min`, `raw_max`, `zero_sample_count`, `full_scale_sample_count`, `unique_sample_count`, `unique_capped`, `consecutive_identical_samples`. See [`docs/diagnostics/ear-i2s-read-path-verification.md`](../../docs/diagnostics/ear-i2s-read-path-verification.md).
 
 INMP441 extract remains `(int32_t)slot >> 8` (24-bit left-justified assumption); do not change without datasheet + scope confirmation.
 
 `expected_sample_count` is published beside `sample_count`. Per-window read results stay **separate**: `timeout_reads`, `empty_reads`, `read_errors` (capped at 10 000 with `counters_capped`). `sample_count` counts only frames actually extracted from read buffers.
 
-I2S stall / zero-sample investigation evidence (source vs telemetry vs inference vs hardware): [`docs/ear-i2s-read-path-verification.md`](../../docs/ear-i2s-read-path-verification.md). Do not fleet-OTA until EAR-003 passes that targeted test; removing an experimental `vTaskDelay(5)` on the stall path is **not** a proven root-cause fix.
+I2S stall / zero-sample investigation evidence (source vs telemetry vs inference vs hardware): [`docs/diagnostics/ear-i2s-read-path-verification.md`](../../docs/diagnostics/ear-i2s-read-path-verification.md). Do not fleet-OTA until EAR-003 passes that targeted test; removing an experimental `vTaskDelay(5)` on the stall path is **not** a proven root-cause fix.
 
 ## Hardware
 
@@ -144,13 +190,19 @@ Full wiring (Output + Ear, reserved 4-mic map): [`docs/device-wiring-and-pinout.
 | Slot alignment | 32-bit Philips, left slot, 24-bit left-justified `>> 8` | Unverified — confirm on scope/logic analyzer |
 | L/R strap (mic 0) | Left (GND) | Unverified on board |
 
-## Opt-in serial diagnostics (RMS activity)
+## L0 analysis (optional Observation extension)
 
-Default builds do **not** print continuous detector telemetry — ordinary logs mainly follow MQTT/HTTPS events. For field work (e.g. quiet-room vs fans RMS comparisons) enable a rate-limited console mode that runs in the activity task **even when MQTT/HTTPS are down**.
+With `CONFIG_DBMAP_EAR_MIC_L0` / `CONFIG_DBMAP_EAR_OBS_L0` (default y), each 1 s window runs the L0 library; intervals finalize on START/PERIODIC/END (`start < window_end ≤ end`).
+
+MQTT stays **`protocol_version: 1`**. Default images omit L0 fields. Enable `CONFIG_DBMAP_EAR_OBS_PUBLISH_L0` only after Hub accepts the extension — then every Observation includes required `emission_kind` + `measurements` (L0). Missing L0 / history overflow refuses publish. Contract: [`docs/ear-l0-measurement-contract.md`](../../docs/ear-l0-measurement-contract.md). Ring capacity: `CONFIG_DBMAP_EAR_OBS_L0_MAX_WINDOWS` (default 64 → ~62 s at 1 s windows).
+
+## Opt-in serial diagnostics (RMS activity + L0)
+
+`sdkconfig.defaults` currently enables rate-limited console diagnostics for local/field work (quiet-room vs fans, L0 inspection). The activity task prints even when MQTT/HTTPS are down. Disable `CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG` for production fleet images.
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG` | `n` | When `y`: ~1 Hz `diag snap` + ~5 s `diag counters` on UART |
+| `CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG` | `y` (local defaults) | ~1 Hz `diag snap` + ~5 s `diag counters` on UART; with L0 also `L0 win` / `L0 interval` / `L0 perf`. Turn off for fleet images. |
 
 **Enable (local IDF):**
 

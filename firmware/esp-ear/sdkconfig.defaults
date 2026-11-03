@@ -1,5 +1,7 @@
 CONFIG_IDF_TARGET="esp32s3"
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+# Desired → HTTPS OTA (mbedTLS) runs on main; 8 KiB overflowed with a 4 KiB on-stack
+# download buffer. Buffer is now static; keep 16 KiB headroom for TLS + OTA close.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 # Hardware profile esp32-s3-n16r8 verified via ESPConnect on the physical board:
 # ESP32-S3 QFN56 rev v0.2, 16 MB flash (ID 0x184068), 8 MB embedded PSRAM (AP Memory 3.3 V).
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
@@ -26,5 +28,10 @@ CONFIG_DBMAP_EAR_MIC_MODEL_INMP441=y
 CONFIG_DBMAP_EAR_OBS_RMS_ACTIVITY=y
 CONFIG_DBMAP_EAR_OBS_TEST_PUBLISH_ONCE=n
 CONFIG_DBMAP_EAR_OBS_SEQ_BLOCK_SIZE=64
-# Serial diagnostics default off (see sdkconfig.defaults.serial_diag to opt in).
-CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG=n
+# L0 analysis on-device; MQTT protocol v1 with emission_kind + measurements.
+CONFIG_DBMAP_EAR_MIC_L0=y
+CONFIG_DBMAP_EAR_OBS_L0=y
+CONFIG_DBMAP_EAR_OBS_L0_MAX_WINDOWS=64
+CONFIG_DBMAP_EAR_OBS_PUBLISH_L0=y
+# Serial diagnostics (RMS activity + L0).
+CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG=y

@@ -107,7 +107,9 @@ Left unchanged: `(int32_t)slot_word >> 8`. EAR-001 `raw_min = -8388608` (−2²�
 1. `dbmap_ear_mic_start` → `init_i2s_rx`: `i2s_new_channel` → `i2s_channel_init_std_mode` → **`i2s_channel_enable`** (DMA RX starts).
 2. IDF allocates RX DMA bufs with **`heap_caps_aligned_calloc`** (zeroed); then hardware overwrites them with DIN samples.
 3. `xTaskCreate(ear_mic_task)` → first `measure_window` runs **immediately** (no warmup / no discard).
-4. I2S is not stopped/restarted later; Wi‑Fi/USB recovery runs **before** mic start in `app_main`.
+4. I2S is not stopped/restarted later. Boot order: Wi‑Fi → MQTT → OTA mark-valid /
+   boot Desired check → **then** mic + observation start once. Later MQTT/Wi‑Fi
+   reconnects do not stop or reinit I2S / RMS / L0.
 
 ### What RMS/Peak use
 

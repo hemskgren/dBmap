@@ -35,6 +35,8 @@ static int s_logged = kLogNone;
 static char s_logged_id[64];
 static char s_logged_version[32];
 static dbmap_backoff_t s_https_backoff;
+/** Set by dbmap_desired_boot_check so poll_task skips one immediate duplicate. */
+static bool s_skip_next_poll_check;
 
 static int64_t now_ms(void)
 {
@@ -286,10 +288,29 @@ static void poll_task(void *arg)
     dbmap_backoff_config_t bo_cfg;
     dbmap_backoff_config_https(&bo_cfg);
     dbmap_backoff_init(&s_https_backoff, &bo_cfg);
+    /* Immediate check when poll_start is used alone (Output). Ear boot_check
+     * sets s_skip_next_poll_check to avoid a duplicate right after audio start. */
     while (1) {
-        check_desired(cfg);
+        if (s_skip_next_poll_check) {
+            s_skip_next_poll_check = false;
+        } else {
+            check_desired(cfg);
+        }
         vTaskDelay(pdMS_TO_TICKS(kPollMs));
     }
+}
+
+void dbmap_desired_boot_check(dbmap_effective_t *cfg)
+{
+    if (cfg == NULL || !cfg->provisioned) {
+        return;
+    }
+    dbmap_backoff_config_t bo_cfg;
+    dbmap_backoff_config_https(&bo_cfg);
+    dbmap_backoff_init(&s_https_backoff, &bo_cfg);
+    ESP_LOGI(TAG, "boot Desired-firmware check");
+    check_desired(cfg);
+    s_skip_next_poll_check = true;
 }
 
 void dbmap_desired_poll_start(dbmap_effective_t *cfg)

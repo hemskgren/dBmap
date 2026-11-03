@@ -613,7 +613,7 @@ def ingest_observation(db: Session, topic_node_id: str, body: ObservationBody) -
             node_id=node_id,
             sequence_number=body.sequence_number,
             event_time_utc=body.event_time_utc,
-            payload_json=body.model_dump_json(),
+            payload_json=body.model_dump_json(by_alias=True),
         )
     )
     db.commit()

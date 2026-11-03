@@ -384,6 +384,79 @@ class ObservationBearing(BaseModel):
     confidence: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
 
 
+class ObservationL0Rms(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mean_dbfs: float | None = Field(default=None, le=0, allow_inf_nan=False)
+    min_dbfs: float | None = Field(default=None, le=0, allow_inf_nan=False)
+    max_dbfs: float | None = Field(default=None, le=0, allow_inf_nan=False)
+
+
+class ObservationL0Bands(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mean_dbfs: list[float | None] = Field(min_length=4, max_length=4)
+    fraction: list[float | None] = Field(min_length=4, max_length=4)
+
+
+class ObservationL0Hl(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mean_db: float | None = Field(default=None, allow_inf_nan=False)
+
+
+class ObservationL0T1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rms_stdev_db: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    rms_range_db: float | None = Field(default=None, allow_inf_nan=False)
+
+
+class ObservationL0T2(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rms_slope_db_per_s: float | None = Field(default=None, allow_inf_nan=False)
+
+
+class ObservationL0T3(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    crest_max_db: float | None = Field(default=None, allow_inf_nan=False)
+    high_crest_count: int | None = Field(default=None, ge=0)
+    high_crest_rate: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+
+
+class ObservationL0T6(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hl_slope_db_per_s: float | None = Field(default=None, allow_inf_nan=False)
+
+
+class ObservationL0Measurements(BaseModel):
+    """Combined-scene L0 aggregate (not per-source). Strict nested schema."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    measurement_schema: Literal["l0"] = Field(alias="schema")
+    version: int = Field(ge=1)
+    band_plan_version: int = Field(ge=1)
+    crest_threshold_version: int = Field(ge=1)
+    crest_threshold_db: float = Field(allow_inf_nan=False)
+    mic_index: int = Field(ge=0)
+    sample_rate_hz: int = Field(gt=0)
+    analysis_window_ms: int = Field(gt=0)
+    window_count: int = Field(ge=0)
+    clipped_window_count: int = Field(ge=0)
+    n_crest: int = Field(ge=0)
+    rms: ObservationL0Rms
+    bands: ObservationL0Bands
+    hl: ObservationL0Hl
+    t1: ObservationL0T1
+    t2: ObservationL0T2
+    t3: ObservationL0T3
+    t6: ObservationL0T6
+
+
 class ObservationBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -401,6 +474,11 @@ class ObservationBody(BaseModel):
     bearing: ObservationBearing | None = None
     signal_level_dbfs: float | None = Field(default=None, le=0, allow_inf_nan=False)
     duration_ms: float = Field(ge=0, allow_inf_nan=False)
+    # Optional L0 extension (both required together when either is present).
+    emission_kind: Literal["start", "periodic", "end"] | None = None
+    measurements: ObservationL0Measurements | None = None
+    # Optional on END only; omit on legacy END. Unknown values rejected by Literal.
+    termination_reason: Literal["natural", "invalid_hold", "ota_reboot"] | None = None
 
     @field_validator("event_time_utc")
     @classmethod
@@ -408,6 +486,18 @@ class ObservationBody(BaseModel):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("event_time_utc must include a timezone")
         return value.astimezone(timezone.utc)
+
+    @model_validator(mode="after")
+    def emission_kind_and_measurements_together(self) -> "ObservationBody":
+        has_kind = self.emission_kind is not None
+        has_meas = self.measurements is not None
+        if has_kind != has_meas:
+            raise ValueError(
+                "emission_kind and measurements must both be present or both absent"
+            )
+        if self.termination_reason is not None and self.emission_kind != "end":
+            raise ValueError("termination_reason is only allowed when emission_kind is end")
+        return self
 
 
 class ObservationView(ObservationBody):

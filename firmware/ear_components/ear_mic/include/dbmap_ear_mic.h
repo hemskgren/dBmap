@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "cJSON.h"
+#include "dbmap_acoustic_l0.h"
 #include "dbmap_types.h"
 #include "esp_err.h"
 
@@ -63,6 +64,39 @@ const char *dbmap_ear_mic_subsystem_status(void);
  * Returns ESP_OK with valid=false when no window has been measured yet.
  */
 esp_err_t dbmap_ear_mic_get_levels(dbmap_ear_mic_levels_t *out);
+
+/**
+ * L0 analysis CPU/memory counters (Phase B local validation).
+ * analyze_* are wall times for dbmap_l0_analyze_window on-device.
+ */
+typedef struct {
+    bool enabled;
+    bool pcm_ready;
+    uint32_t pcm_cap_samples;
+    uint32_t pcm_bytes_total; /* both double-buffers */
+    uint32_t analyze_count;
+    uint32_t analyze_us_last;
+    uint32_t analyze_us_max;
+    uint32_t pending_overwrite; /* capture produced a window before prior was analyzed */
+    uint32_t free_heap_after_init;
+    uint32_t free_spiram_after_init;
+} dbmap_ear_mic_l0_perf_t;
+
+/**
+ * Run pending L0 analysis for the most recently captured PCM window.
+ * Safe to call from the observation task; does not block I2S capture
+ * (double-buffered SPIRAM PCM). No-op / ESP_ERR_NOT_SUPPORTED when L0 off.
+ */
+esp_err_t dbmap_ear_mic_l0_poll(void);
+
+/**
+ * Copy the latest completed L0 analysis window (after l0_poll).
+ * valid=false until the first successful analysis.
+ */
+esp_err_t dbmap_ear_mic_get_l0_window(dbmap_l0_window_t *out);
+
+/** Copy L0 performance counters (zeros / enabled=false when L0 off). */
+esp_err_t dbmap_ear_mic_get_l0_perf(dbmap_ear_mic_l0_perf_t *out);
 
 #ifdef __cplusplus
 }
