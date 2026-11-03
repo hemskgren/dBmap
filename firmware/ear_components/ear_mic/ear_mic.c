@@ -161,6 +161,15 @@ static uint32_t s_l0_analyze_us_max;
 static uint32_t s_l0_pending_overwrite;
 static uint32_t s_l0_free_heap_after_init;
 static uint32_t s_l0_free_spiram_after_init;
+#if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
+static dbmap_l1_workspace_t s_l1_ws;
+static dbmap_l1_window_t s_l1_latest;
+static bool s_l1_latest_ready;
+static bool s_l1_ws_ready;
+static uint32_t s_l1_analyze_count;
+static uint32_t s_l1_analyze_us_last;
+static uint32_t s_l1_analyze_us_max;
+#endif
 #endif
 
 static int gpio_or_unused(int gpio)
@@ -257,6 +266,28 @@ esp_err_t dbmap_ear_mic_l0_poll(void)
     const int64_t elapsed = esp_timer_get_time() - t0;
     const uint32_t us = elapsed > 0 ? (uint32_t)elapsed : 0;
 
+#if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
+    /* L1 is independent of L0 results; failure must not affect L0 publication. */
+    dbmap_l1_window_t l1_win;
+    memset(&l1_win, 0, sizeof(l1_win));
+    uint32_t l1_us = 0;
+    if (s_l1_ws_ready) {
+        const int64_t l1_t0 = esp_timer_get_time();
+        dbmap_l1_analyze_window(
+            &s_l1_ws,
+            s_l0_pcm[job.buf_idx],
+            job.sample_count,
+            job.full_scale_bits,
+            (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ,
+            job.window_ms,
+            job.window_end_mono_us,
+            &l1_win
+        );
+        const int64_t l1_elapsed = esp_timer_get_time() - l1_t0;
+        l1_us = l1_elapsed > 0 ? (uint32_t)l1_elapsed : 0;
+    }
+#endif
+
     portENTER_CRITICAL(&s_lock);
     s_l0_latest = win;
     s_l0_latest_ready = true;
@@ -265,6 +296,17 @@ esp_err_t dbmap_ear_mic_l0_poll(void)
     if (us > s_l0_analyze_us_max) {
         s_l0_analyze_us_max = us;
     }
+#if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
+    if (s_l1_ws_ready) {
+        s_l1_latest = l1_win;
+        s_l1_latest_ready = true;
+        s_l1_analyze_count++;
+        s_l1_analyze_us_last = l1_us;
+        if (l1_us > s_l1_analyze_us_max) {
+            s_l1_analyze_us_max = l1_us;
+        }
+    }
+#endif
     portEXIT_CRITICAL(&s_lock);
     return ESP_OK;
 #endif
@@ -309,6 +351,51 @@ esp_err_t dbmap_ear_mic_get_l0_perf(dbmap_ear_mic_l0_perf_t *out)
     out->pending_overwrite = s_l0_pending_overwrite;
     out->free_heap_after_init = s_l0_free_heap_after_init;
     out->free_spiram_after_init = s_l0_free_spiram_after_init;
+    portEXIT_CRITICAL(&s_lock);
+    {
+        dbmap_l0_analyze_stages_t st;
+        dbmap_l0_get_last_analyze_stages(&st);
+        out->stage_reset_us = st.reset_us;
+        out->stage_sample_loop_us = st.sample_loop_us;
+        out->stage_post_us = st.post_us;
+    }
+    return ESP_OK;
+#endif
+}
+
+esp_err_t dbmap_ear_mic_get_l1_window(dbmap_l1_window_t *out)
+{
+    if (out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(out, 0, sizeof(*out));
+#if !defined(CONFIG_DBMAP_EAR_OBS_L1) || !CONFIG_DBMAP_EAR_OBS_L1 || !CONFIG_DBMAP_EAR_MIC_L0
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    portENTER_CRITICAL(&s_lock);
+    if (s_l1_latest_ready) {
+        *out = s_l1_latest;
+    }
+    portEXIT_CRITICAL(&s_lock);
+    return ESP_OK;
+#endif
+}
+
+esp_err_t dbmap_ear_mic_get_l1_perf(dbmap_ear_mic_l1_perf_t *out)
+{
+    if (out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(out, 0, sizeof(*out));
+#if !defined(CONFIG_DBMAP_EAR_OBS_L1) || !CONFIG_DBMAP_EAR_OBS_L1 || !CONFIG_DBMAP_EAR_MIC_L0
+    out->enabled = false;
+    return ESP_OK;
+#else
+    out->enabled = true;
+    portENTER_CRITICAL(&s_lock);
+    out->analyze_count = s_l1_analyze_count;
+    out->analyze_us_last = s_l1_analyze_us_last;
+    out->analyze_us_max = s_l1_analyze_us_max;
     portEXIT_CRITICAL(&s_lock);
     return ESP_OK;
 #endif
@@ -892,6 +979,22 @@ esp_err_t dbmap_ear_mic_start(const dbmap_effective_t *cfg, const dbmap_ear_mic_
                 (unsigned long)s_l0_free_heap_after_init,
                 (unsigned long)s_l0_free_spiram_after_init
             );
+#if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
+            dbmap_l1_workspace_init(&s_l1_ws);
+            memset(&s_l1_latest, 0, sizeof(s_l1_latest));
+            s_l1_latest_ready = false;
+            s_l1_ws_ready = true;
+            s_l1_analyze_count = 0;
+            s_l1_analyze_us_last = 0;
+            s_l1_analyze_us_max = 0;
+            ESP_LOGI(
+                TAG,
+                "L1 ready fft=%u band=%.0f-%.0f Hz (static workspace float+twiddle LUT)",
+                (unsigned)DBMAP_L1_FFT_SIZE,
+                (double)DBMAP_L1_FREQ_MIN_HZ,
+                (double)DBMAP_L1_FREQ_MAX_HZ
+            );
+#endif
         }
     }
 #endif

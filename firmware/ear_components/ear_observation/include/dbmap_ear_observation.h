@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "dbmap_acoustic_l0.h"
+#include "dbmap_acoustic_l1.h"
 #include "dbmap_observation_payload.h"
 #include "dbmap_types.h"
 #include "esp_err.h"
@@ -13,13 +14,11 @@ extern "C" {
 #endif
 
 /**
- * Ear Observation publisher + Phase 2 RMS activity detection.
+ * Ear Observation publisher + RMS activity detection + Stage 1 episode registry.
  *
- * MQTT Observations always use protocol_version 1.
- * With CONFIG_DBMAP_EAR_OBS_PUBLISH_L0, payloads include emission_kind + measurements
- * (L0 required — no silent omit). Without it, legacy v1 fields only.
- * classification=null and bearing=null on physical Ear.
- * Sequence numbers use NVS block reservation (see observation_seq / README).
+ * MQTT Observations use protocol_version 1 hierarchical envelope only
+ * (identity/context/acoustic/spatial). L0 measurements are required.
+ * Stable observation_id per episode; global sequence_number per report.
  */
 
 /**
@@ -42,28 +41,32 @@ esp_err_t dbmap_ear_observation_register_ota_close(void);
 esp_err_t dbmap_ear_observation_start(const dbmap_effective_t *cfg);
 
 /**
- * Publish one Observation on cfg->topics.observation (QoS 1, not retained).
+ * Publish one hierarchical Observation report (QoS 1, not retained).
  *
- * Allocates a sequence number only when MQTT is connected (block-reserve as
- * needed). Once allocate() returns a number it is consumed — even if the MQTT
- * publish fails afterward. No offline queue: if MQTT is down, returns
- * ESP_ERR_INVALID_STATE without allocating.
+ * observation_id must be the stable episode UUID (caller-owned).
+ * Allocates a global sequence number only when MQTT is connected.
+ * Once allocate() returns, the number is consumed even if publish fails.
  *
- * emission_kind: "start" | "periodic" | "end" (required when PUBLISH_L0).
- * termination_reason: optional on END only ("natural"|"invalid_hold"|"ota_reboot").
- * measurements: finalized L0 aggregate (required when PUBLISH_L0).
- * When PUBLISH_L0 and measurements is NULL / L0 unavailable / capacity exceeded /
- * history overflow, returns ESP_ERR_INVALID_STATE without allocating a sequence.
+ * emission_kind: "start" | "periodic" | "end" | "complete"
+ * termination_reason: required for end/complete; NULL for start/periodic.
+ * measurements: required (may be empty-interval with null metrics).
+ * signature: NULL → acoustic.signature JSON null (L1 disabled); non-NULL →
+ *   schema=l1 object (may be empty).
+ * has_signal_level_dbfs: false → JSON null signal level.
  */
 esp_err_t dbmap_ear_observation_publish(
     const dbmap_effective_t *cfg,
+    const char *observation_id,
+    bool has_signal_level_dbfs,
     double signal_level_dbfs,
-    double duration_ms,
+    double interval_duration_ms,
+    double episode_duration_ms,
     int64_t capture_timestamp_monotonic_us,
     int64_t interval_start_monotonic_us,
     const char *emission_kind,
     const char *termination_reason,
-    const dbmap_l0_interval_t *measurements
+    const dbmap_l0_interval_t *measurements,
+    const dbmap_l1_interval_t *signature
 );
 
 /**

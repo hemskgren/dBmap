@@ -25,7 +25,8 @@ unknown versions rather than silently interpreting them as version 1.
 | Identifier | Current contract |
 | --- | --- |
 | Node ID | Assigned by the hub. Physical Outputs use `OUT-<sequence>`, physical Ears use `EAR-<sequence>`, and simulated Ears use `SIM-EAR-<sequence>` (for example `SIM-EAR-001`). The sequence is at least three digits and may grow. IDs are case-insensitive for API lookup; MQTT topic node slugs are lowercase. |
-| Observation ID | UUID. It identifies one observation and is the hub's deduplication key. Re-publishing the same observation ID from the same Ear does not create another record. Reusing it from a different node is rejected. |
+| Observation ID | UUID in `identity.observation_id`. It labels one observation episode on the Ear; the same ID may appear on multiple MQTT payloads when emissions share an episode (different `sequence_number` values). |
+| Sequence number | Monotonic per Ear in `identity.sequence_number`. Together with `identity.node_id` it is the hub deduplication key: re-publishing the same pair does not create another row. A conflicting `observation_id` for an already stored sequence is rejected. |
 | Event ID | Reserved for a future hub-correlated event. No event message, allocation rule, or API is currently implemented. |
 | Track ID | Reserved for a future source track. No track message, allocation rule, or API is currently implemented. |
 
@@ -62,136 +63,110 @@ broker identity with broader access. Broker ACLs default to deny.
 
 ## Message formats
 
-### Observation — protocol version 1
+### Observation — protocol version 1 (hierarchical)
 
-An observation is UTF-8 JSON. The hub validates its fields, the node identity,
-and registration as an Ear before persistence.
+An observation is UTF-8 JSON with a **hierarchical** envelope only. Flat
+v1 payloads (top-level `observation_id`, `duration_ms`, and similar) are
+**rejected**. Clear stored development observations before cutover; see
+[Ear simulator — clear observations](./simulator.md#clear-observations-keep-sim-ears).
+
+Required top-level keys: `protocol_version`, `message_type`, `identity`,
+`context`, `acoustic`, `spatial`. The hub validates the envelope, the node
+identity, and Ear registration before persistence.
 
 ```json
 {
   "protocol_version": 1,
   "message_type": "observation",
-  "observation_id": "00000000-0000-0000-0000-000000000001",
-  "node_id": "SIM-EAR-001",
-  "sequence_number": 1,
-  "event_time_utc": "2026-10-05T15:00:00Z",
-  "capture_timestamp_monotonic_us": 123456789,
-  "timing_quality": "estimated",
-  "clock_offset_ms": null,
-  "timestamp_uncertainty_ms": 10.0,
-  "classification": {
-    "source_family": "vehicle",
-    "confidence": 0.72,
-    "hints": {
-      "simulated_source_id": "SIM-VEHICLE-001"
+  "identity": {
+    "observation_id": "00000000-0000-0000-0000-000000000001",
+    "node_id": "SIM-EAR-001",
+    "hub_id": "",
+    "sequence_number": 1
+  },
+  "context": {
+    "event_time_utc": "2026-10-05T15:00:00Z",
+    "capture_timestamp_monotonic_us": 123456789,
+    "timing_quality": "estimated",
+    "clock_offset_ms": null,
+    "timestamp_uncertainty_ms": 10.0,
+    "interval_duration_ms": 850.0,
+    "episode_duration_ms": 850.0,
+    "emission_kind": "periodic"
+  },
+  "acoustic": {
+    "signal_level_dbfs": -34.0,
+    "measurements": {
+      "schema": "l0",
+      "version": 1,
+      "band_plan_version": 1,
+      "crest_threshold_version": 1,
+      "crest_threshold_db": 12.0,
+      "mic_index": 0,
+      "sample_rate_hz": 16000,
+      "analysis_window_ms": 1000,
+      "window_count": 0,
+      "clipped_window_count": 0,
+      "n_crest": 0,
+      "rms": { "mean_dbfs": null, "min_dbfs": null, "max_dbfs": null },
+      "bands": {
+        "mean_dbfs": [null, null, null, null],
+        "fraction": [null, null, null, null]
+      },
+      "hl": { "mean_db": null },
+      "t1": { "rms_stdev_db": null, "rms_range_db": null },
+      "t2": { "rms_slope_db_per_s": null },
+      "t3": {
+        "crest_max_db": null,
+        "high_crest_count": null,
+        "high_crest_rate": null
+      },
+      "t6": { "hl_slope_db_per_s": null }
+    },
+    "signature": null,
+    "classification": {
+      "schema": "l2",
+      "version": 1,
+      "source_family": "vehicle",
+      "confidence": 0.72,
+      "hints": { "simulated_source_id": "SIM-VEHICLE-001" }
     }
   },
-  "bearing": {
-    "deg": 180.0,
-    "reference": "node",
-    "confidence": 0.61
-  },
-  "signal_level_dbfs": -34.0,
-  "duration_ms": 850.0
-}
-```
-
-Optional L0 extension (still `protocol_version: 1`). Both fields are required
-together when either is present; legacy senders may omit both:
-
-```json
-{
-  "protocol_version": 1,
-  "message_type": "observation",
-  "observation_id": "00000000-0000-0000-0000-000000000002",
-  "node_id": "EAR-001",
-  "sequence_number": 42,
-  "event_time_utc": "2026-11-03T12:00:00Z",
-  "capture_timestamp_monotonic_us": 15100000,
-  "timing_quality": "estimated",
-  "clock_offset_ms": null,
-  "timestamp_uncertainty_ms": 25.0,
-  "classification": null,
-  "bearing": null,
-  "signal_level_dbfs": -46.0,
-  "duration_ms": 5100.0,
-  "emission_kind": "periodic",
-  "measurements": {
-    "schema": "l0",
-    "version": 1,
-    "band_plan_version": 1,
-    "crest_threshold_version": 1,
-    "crest_threshold_db": 12.0,
-    "mic_index": 0,
-    "sample_rate_hz": 16000,
-    "analysis_window_ms": 1000,
-    "window_count": 5,
-    "clipped_window_count": 1,
-    "n_crest": 4,
-    "rms": { "mean_dbfs": -42.5, "min_dbfs": -50.0, "max_dbfs": -35.0 },
-    "bands": {
-      "mean_dbfs": [-43.9794, -45.228787, -46.9897, -50.0],
-      "fraction": [0.4, 0.3, 0.2, 0.1]
+  "spatial": {
+    "bearing": {
+      "deg": 180.0,
+      "reference": "node",
+      "confidence": 0.61
     },
-    "hl": { "mean_db": -3.679768 },
-    "t1": { "rms_stdev_db": 2.0, "rms_range_db": 15.0 },
-    "t2": { "rms_slope_db_per_s": 0.25 },
-    "t3": {
-      "crest_max_db": 14.0,
-      "high_crest_count": 1,
-      "high_crest_rate": 0.25
-    },
-    "t6": { "hl_slope_db_per_s": -0.1 }
+    "position": null
   }
 }
 ```
 
-`emission_kind` is `start`, `periodic`, or `end`. Nested `measurements` uses
-schema `l0` (combined mic scene). Unknown keys inside `measurements` are
-rejected. Malformed measurements are rejected (never silently dropped). Full
-field validity and null rules:
+`context.emission_kind` is `start`, `periodic`, `end`, or `complete`.
+`acoustic.measurements` (schema `l0`, combined mic scene) is **required**; metric
+slots may be JSON null when insufficient data. Unknown keys inside
+`measurements` are rejected. Full field rules:
 [L0 measurement contract](./ear-l0-measurement-contract.md).
+`acoustic.signature` is JSON null when L1 is disabled; otherwise a
+`schema: "l1"` object (may be empty). See
+[L1 signature contract](./ear-l1-signature-contract.md).
 
-Optional `termination_reason` may appear **only** when `emission_kind` is
-`end`. Allowed values: `natural`, `invalid_hold`, `ota_reboot`. Legacy END
-messages may omit the field. The hub rejects unknown values and rejects the
-field on non-END emissions (including when `emission_kind` is absent).
+`context.termination_reason` is required when `emission_kind` is `end` or
+`complete`. Allowed values: `natural`, `invalid_hold`, `ota_reboot`. The hub
+rejects the field on other emission kinds.
 
-`event_time_utc` must include a timezone and marks the beginning of the
-observation interval; the hub normalizes it to UTC. `duration_ms` is the
-interval length, so the observation covers
-`[event_time_utc, event_time_utc + duration_ms)`. Ending that interval means
-only that this Ear no longer observed that signal; it does not mean the
-physical source disappeared. A later detection is a new observation with its
-own ID and sequence number. Ears report observations and do not claim that
-separate observations came from the same physical source.
-`timing_quality` is `synchronized`, `estimated`, or `unsynchronized`.
-`classification` and `bearing` may be `null` when no result is available.
-Classification confidence describes confidence in `source_family`; bearing
-confidence describes confidence in the direction estimate. Both are bounded
-from 0 to 1. A bearing's `deg` is in `[0, 360)`, `reference` is currently
-`node`, and its angle is clockwise from the Ear's configured forward/reference
-axis: `0` is that axis, `90` is clockwise from it, `180` is behind it, and
-`270` is counter-clockwise from it. It is not itself a geographic or magnetic
-compass bearing. Installation `orientation_deg`, when present, is clockwise
-from geographic true north and defines the node's forward/reference axis.
-Combining installation orientation and node-relative bearing yields a
-geographic bearing modulo 360 (`(orientation_deg + bearing.deg) % 360`,
-clockwise from true north). The hub API does not calculate or return that
-conversion; the exploratory `hub_event_track.py` report may compute it for
-diagnostic cross-Ear geometry only.
+`context.event_time_utc` must include a timezone and marks the beginning of
+the observation interval; the hub normalizes it to UTC.
+`interval_duration_ms` is the interval length;
+`episode_duration_ms` spans the Ear episode when emissions share an
+`observation_id`. `timing_quality` is `synchronized`, `estimated`, or
+`unsynchronized`. `acoustic.classification` (schema `l2`) and `spatial.bearing`
+may be `null`. `spatial.position` is reserved (currently `null`).
 
-`signal_level_dbfs` is a digital signal level relative to the audio chain's
-full-scale value. It is not dB SPL and is not comparable as an absolute
-acoustic pressure level without hardware-chain calibration. Optional
-measurements may be `null`; durations and timestamp uncertainties must be
-non-negative. The hub adds `received_time_utc` to the observation returned by
-its API.
-
-Retained observations are rejected. Duplicate deliveries are safe when the
-same observation ID is used. The opaque stored `payload_json` preserves the
-validated envelope (including optional L0 fields and JSON nulls). The API
-returns that full payload plus `received_time_utc`.
+Retained observations are rejected. Duplicate MQTT delivery is safe when the
+same `(node_id, sequence_number)` pair is reused. Stored `payload_json` preserves
+the validated envelope; the API returns it plus `received_time_utc`.
 
 ### Sequence reconciliation (Ear ↔ Hub)
 
@@ -202,29 +177,19 @@ Distinguish three layers when debugging:
 2. **MQTT publish attempts** — Ear increments `sequence_number` only when it
    builds and publishes a payload. Refused L0 / missing measurements do **not**
    create a Hub row; watch Ear logs for refuse / drop counters.
-3. **Hub-accepted records** — one row per unique `observation_id`. Dedup returns
-   success without a second row. Stored `sequence_number` must match the Ear
-   payload for that ID.
+3. **Hub-accepted records** — one row per unique `(node_id, sequence_number)`.
+   Dedup returns success without a second row.
 
 Reconciliation procedure: for a time window, list Ear serial/MQTT sequence
-values for published IDs, then `GET /api/v1/observations?node_id=…` and match
-`observation_id` → `sequence_number` / `emission_kind`. Gaps mean publish
+values, then `GET /api/v1/observations?node_id=…` and match
+`identity.sequence_number` / `context.emission_kind`. Gaps mean publish
 refuse or broker loss, not Hub rewriting sequences.
 
-The simulator uses the same envelope and topic
-as a registered Ear. Scenario simulator observations may carry
-`classification.hints.simulated_source_id` as test-only ground truth, not as a
-real-world identity or an event/track identifier. Tracker analysis must not
-consume that hint for association. Legacy simulator payloads (no L0) remain
-valid; `--include-l0` publishes the optional extension.
-Previously stored observations using the earlier flat `confidence`,
-`bearing_deg`, and `classification_hints` fields must be cleared before
-deploying this schema revision. See the database wipe steps in
-[Ear simulator — clear observations](./simulator.md#clear-observations-keep-sim-ears)
-or the destructive device wipe in
-[Local deployment](./local-deployment.md#wipe-hub-device-data-destructive). New MQTT
-observations must use this structured form; legacy fields are rejected rather
-than silently discarded.
+The simulator uses the same hierarchical envelope and topic as a registered
+Ear. Scenario simulator observations may carry
+`acoustic.classification.hints.simulated_source_id` as test-only ground truth.
+`simulate_observation.py --include-l0` attaches deterministic L0 scene fixtures;
+the baseline simulator still sends required empty L0 measurements.
 
 `scripts/hub_event_track.py` is a read-only exploratory report. It fetches node
 installation metadata, prints each observation independently, and reports

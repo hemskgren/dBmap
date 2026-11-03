@@ -369,8 +369,12 @@ class InstallationMetadataBody(BaseModel):
 
 
 class ObservationClassification(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    """L2 source hypothesis under acoustic.classification (may be null)."""
 
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    classification_schema: Literal["l2"] = Field(default="l2", alias="schema")
+    version: int = Field(default=1, ge=1)
     source_family: str | None = Field(default=None, min_length=1, max_length=64)
     confidence: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
     hints: dict[str, Any] = Field(default_factory=dict)
@@ -382,6 +386,43 @@ class ObservationBearing(BaseModel):
     deg: float = Field(ge=0, lt=360, allow_inf_nan=False)
     reference: Literal["node"] = "node"
     confidence: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+
+
+class ObservationIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    observation_id: UUID
+    node_id: str = Field(min_length=1, max_length=64)
+    hub_id: str = Field(default="", max_length=64)
+    sequence_number: int = Field(ge=0)
+
+
+class ObservationContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_time_utc: datetime
+    capture_timestamp_monotonic_us: int = Field(ge=0)
+    timing_quality: Literal["synchronized", "estimated", "unsynchronized"]
+    clock_offset_ms: float | None = Field(default=None, allow_inf_nan=False)
+    timestamp_uncertainty_ms: float = Field(ge=0, allow_inf_nan=False)
+    interval_duration_ms: float = Field(ge=0, allow_inf_nan=False)
+    episode_duration_ms: float = Field(ge=0, allow_inf_nan=False)
+    emission_kind: Literal["start", "periodic", "end", "complete"]
+    termination_reason: Literal["natural", "invalid_hold", "ota_reboot"] | None = None
+
+    @field_validator("event_time_utc")
+    @classmethod
+    def require_timezone_and_normalize_utc(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("event_time_utc must include a timezone")
+        return value.astimezone(timezone.utc)
+
+
+class ObservationSpatial(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bearing: ObservationBearing | None = None
+    position: Any | None = None
 
 
 class ObservationL0Rms(BaseModel):
@@ -457,46 +498,65 @@ class ObservationL0Measurements(BaseModel):
     t6: ObservationL0T6
 
 
+class ObservationL1FeatureStats(BaseModel):
+    """Mean/stdev pair for one L1 scalar feature."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mean: float | None = Field(default=None, allow_inf_nan=False)
+    stdev: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+class ObservationL1Signature(BaseModel):
+    """Interval-scoped L1 Acoustic Signature (schema l1)."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    signature_schema: Literal["l1"] = Field(alias="schema")
+    version: int = Field(ge=1)
+    sample_rate_hz: int = Field(gt=0)
+    analysis_window_ms: int = Field(gt=0)
+    fft_size: int = Field(gt=0)
+    freq_min_hz: float = Field(ge=0, allow_inf_nan=False)
+    freq_max_hz: float = Field(gt=0, allow_inf_nan=False)
+    window_count: int = Field(ge=0)
+    invalid_window_count: int = Field(ge=0)
+    centroid_hz: ObservationL1FeatureStats
+    bandwidth_hz: ObservationL1FeatureStats
+    dominant_hz: ObservationL1FeatureStats
+    flatness: ObservationL1FeatureStats
+
+
+class ObservationAcoustic(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    signal_level_dbfs: float | None = Field(default=None, le=0, allow_inf_nan=False)
+    measurements: ObservationL0Measurements
+    signature: ObservationL1Signature | None = None
+    classification: ObservationClassification | None = None
+
+
 class ObservationBody(BaseModel):
+    """Hierarchical Observation protocol v1 (breaking; flat payloads rejected)."""
+
     model_config = ConfigDict(extra="forbid")
 
     protocol_version: Literal[1]
     message_type: Literal["observation"]
-    observation_id: UUID
-    node_id: str = Field(min_length=1, max_length=64)
-    sequence_number: int = Field(ge=0)
-    event_time_utc: datetime
-    capture_timestamp_monotonic_us: int = Field(ge=0)
-    timing_quality: Literal["synchronized", "estimated", "unsynchronized"]
-    clock_offset_ms: float | None = Field(default=None, allow_inf_nan=False)
-    timestamp_uncertainty_ms: float = Field(ge=0, allow_inf_nan=False)
-    classification: ObservationClassification | None = None
-    bearing: ObservationBearing | None = None
-    signal_level_dbfs: float | None = Field(default=None, le=0, allow_inf_nan=False)
-    duration_ms: float = Field(ge=0, allow_inf_nan=False)
-    # Optional L0 extension (both required together when either is present).
-    emission_kind: Literal["start", "periodic", "end"] | None = None
-    measurements: ObservationL0Measurements | None = None
-    # Optional on END only; omit on legacy END. Unknown values rejected by Literal.
-    termination_reason: Literal["natural", "invalid_hold", "ota_reboot"] | None = None
-
-    @field_validator("event_time_utc")
-    @classmethod
-    def require_timezone_and_normalize_utc(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("event_time_utc must include a timezone")
-        return value.astimezone(timezone.utc)
+    identity: ObservationIdentity
+    context: ObservationContext
+    acoustic: ObservationAcoustic
+    spatial: ObservationSpatial
 
     @model_validator(mode="after")
-    def emission_kind_and_measurements_together(self) -> "ObservationBody":
-        has_kind = self.emission_kind is not None
-        has_meas = self.measurements is not None
-        if has_kind != has_meas:
-            raise ValueError(
-                "emission_kind and measurements must both be present or both absent"
-            )
-        if self.termination_reason is not None and self.emission_kind != "end":
-            raise ValueError("termination_reason is only allowed when emission_kind is end")
+    def termination_reason_rules(self) -> "ObservationBody":
+        kind = self.context.emission_kind
+        term = self.context.termination_reason
+        if kind in ("end", "complete"):
+            if term is None:
+                raise ValueError("termination_reason is required for end and complete")
+        elif term is not None:
+            raise ValueError("termination_reason is only allowed on end or complete")
         return self
 
 
@@ -505,9 +565,13 @@ class ObservationView(ObservationBody):
 
 
 class ObservationCountView(BaseModel):
-    """Total rows in the observations table (optional node filter)."""
+    """Observation report rows and distinct observation_id values (optional node filter)."""
 
-    total: int = Field(ge=0)
+    total: int = Field(ge=0, description="Observation report rows (MQTT payloads / DB rows).")
+    unique_observations: int = Field(
+        ge=0,
+        description="Distinct identity.observation_id values among those reports.",
+    )
 
 
 class NodeView(BaseModel):

@@ -41,6 +41,25 @@ def init_db() -> None:
     _migrate_device_https_credentials()
     _migrate_device_diag_pending_ota()
     _migrate_node_chip_identity()
+    _migrate_observations_report_identity()
+
+
+def _migrate_observations_report_identity() -> None:
+    """
+    Breaking Stage 1 cutover: report PK becomes (node_id, sequence_number).
+
+    Development databases with the old observation_id primary key are rebuilt
+    empty (payload shape is also hierarchical-only). Clear incompatible rows.
+    """
+    tables = set(inspect(engine).get_table_names())
+    if "observations" not in tables:
+        return
+    columns = {column["name"] for column in inspect(engine).get_columns("observations")}
+    if "id" in columns:
+        return
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE observations"))
+    Base.metadata.create_all(bind=engine, tables=[Base.metadata.tables["observations"]])
 
 
 def _migrate_device_diag_pending_ota() -> None:

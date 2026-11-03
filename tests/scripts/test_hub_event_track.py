@@ -231,10 +231,10 @@ def test_report_keeps_same_hint_observations_separate_and_groups_only_ear_activi
     assert output.count("Candidate C") == 6
     assert "Candidate C1: 1 independent observation(s)" in output
     assert "SIM-VEHICLE-001" not in output
-    assert "Ear activity episode A1 for EAR-001: 1 observation(s)" in output
-    assert "Ear activity episode A2 for SIM-EAR-001: 3 observation(s)" in output
-    assert "Ear activity episode A3 for SIM-EAR-002: 1 observation(s)" in output
-    assert "Ear activity episode A4 for SIM-EAR-002: 1 observation(s)" in output
+    assert "Ear activity episode A1 for EAR-001: 1 report(s)" in output
+    assert "Ear activity episode A2 for SIM-EAR-001: 3 report(s)" in output
+    assert "Ear activity episode A3 for SIM-EAR-002: 1 report(s)" in output
+    assert "Ear activity episode A4 for SIM-EAR-002: 1 report(s)" in output
     assert "gap 10.3s exceeds 5s window" in output
 
 
@@ -258,7 +258,7 @@ def test_event_gap_window_is_configurable_and_requires_finite_positive_value() -
 
     output = "\n".join(hub_event_track.report(observations, event_gap_seconds=20))
 
-    assert "Ear activity episode A1 for EAR-001: 2 observation(s)" in output
+    assert "Ear activity episode A1 for EAR-001: 2 report(s)" in output
     assert "gap 14.2s within 20s window" in output
     for invalid_interval in (0, -1, float("nan"), float("inf")):
         with pytest.raises(ValueError, match="finite and greater than zero"):
@@ -522,10 +522,206 @@ def test_default_inactivity_window_closes_episode_only_after_silence_exceeds_30_
     output = "\n".join(hub_event_track.report(observations))
 
     assert "30s of silence after interval end closes an episode" in output
-    assert "Ear activity episode A1 for EAR-001: 2 observation(s)" in output
-    assert "Ear activity episode A2 for EAR-001: 1 observation(s)" in output
+    assert "Ear activity episode A1 for EAR-001: 2 report(s)" in output
+    assert "Ear activity episode A2 for EAR-001: 1 report(s)" in output
     assert "gap 34.4s exceeds 30s window" in output
     assert "does not mean observations inside an episode share one source" in output
+
+
+def _hierarchical_report(
+    *,
+    observation_id: str,
+    node_id: str,
+    sequence_number: int | None,
+    event_time_utc: str,
+    emission_kind: str | None,
+    interval_duration_ms: float = 1000.0,
+) -> dict:
+    identity = {
+        "observation_id": observation_id,
+        "node_id": node_id,
+        "hub_id": "local-01",
+    }
+    if sequence_number is not None:
+        identity["sequence_number"] = sequence_number
+    context = {
+        "event_time_utc": event_time_utc,
+        "capture_timestamp_monotonic_us": 0,
+        "timing_quality": "estimated",
+        "clock_offset_ms": None,
+        "timestamp_uncertainty_ms": 10.0,
+        "interval_duration_ms": interval_duration_ms,
+        "episode_duration_ms": interval_duration_ms,
+    }
+    if emission_kind is not None:
+        context["emission_kind"] = emission_kind
+    return {
+        "protocol_version": 1,
+        "message_type": "observation",
+        "identity": identity,
+        "context": context,
+        "acoustic": {
+            "signal_level_dbfs": -40.0,
+            "measurements": None,
+            "signature": None,
+            "classification": None,
+        },
+        "spatial": {"bearing": None, "position": None},
+    }
+
+
+def test_episode_summary_one_observation_many_periodics() -> None:
+    oid = "11111111-1111-4111-8111-111111111111"
+    observations = [
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=10 + index,
+            event_time_utc=f"2026-11-03T18:00:{index:02d}Z",
+            emission_kind="periodic",
+        )
+        for index in range(5)
+    ]
+
+    output = "\n".join(hub_event_track.report(observations, event_gap_seconds=30))
+
+    assert "Ear activity episode A1 for EAR-001: 5 report(s)" in output
+    assert "observations: 1 unique observation" in output
+    assert f"Observation {oid}" in output
+    assert "reports: 5" in output
+    assert "emissions: START=0 PERIODIC=5 END=0 COMPLETE=0" in output
+    assert "sequence: 10–14" in output
+    assert "sequence gaps: 0" in output
+    episode_section = output.split("Per-Ear activity episodes", 1)[1]
+    assert episode_section.count(oid) == 1
+
+
+def test_episode_summary_start_periodic_end() -> None:
+    oid = "22222222-2222-4222-8222-222222222222"
+    observations = [
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=100,
+            event_time_utc="2026-11-03T18:00:00Z",
+            emission_kind="start",
+        ),
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=101,
+            event_time_utc="2026-11-03T18:00:05Z",
+            emission_kind="periodic",
+        ),
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=102,
+            event_time_utc="2026-11-03T18:00:10Z",
+            emission_kind="end",
+        ),
+    ]
+
+    output = "\n".join(hub_event_track.report(observations, event_gap_seconds=30))
+
+    assert "Ear activity episode A1 for EAR-001: 3 report(s)" in output
+    assert "emissions: START=1 PERIODIC=1 END=1 COMPLETE=0" in output
+    assert "sequence: 100–102" in output
+    assert "sequence gaps: 0" in output
+
+
+def test_episode_summary_multiple_observation_ids() -> None:
+    first = "33333333-3333-4333-8333-333333333333"
+    second = "44444444-4444-4444-8444-444444444444"
+    observations = [
+        _hierarchical_report(
+            observation_id=first,
+            node_id="EAR-001",
+            sequence_number=1,
+            event_time_utc="2026-11-03T18:00:00Z",
+            emission_kind="start",
+        ),
+        _hierarchical_report(
+            observation_id=first,
+            node_id="EAR-001",
+            sequence_number=2,
+            event_time_utc="2026-11-03T18:00:05Z",
+            emission_kind="end",
+        ),
+        _hierarchical_report(
+            observation_id=second,
+            node_id="EAR-001",
+            sequence_number=3,
+            event_time_utc="2026-11-03T18:00:08Z",
+            emission_kind="complete",
+        ),
+    ]
+
+    output = "\n".join(hub_event_track.report(observations, event_gap_seconds=30))
+
+    assert "observations: 2 unique observations" in output
+    assert f"Observation {first}" in output
+    assert f"Observation {second}" in output
+    assert "emissions: START=1 PERIODIC=0 END=1 COMPLETE=0" in output
+    assert "emissions: START=0 PERIODIC=0 END=0 COMPLETE=1" in output
+
+
+def test_episode_summary_sequence_gaps() -> None:
+    oid = "55555555-5555-4555-8555-555555555555"
+    observations = [
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=20,
+            event_time_utc="2026-11-03T18:00:00Z",
+            emission_kind="start",
+        ),
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=22,
+            event_time_utc="2026-11-03T18:00:05Z",
+            emission_kind="periodic",
+        ),
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=25,
+            event_time_utc="2026-11-03T18:00:10Z",
+            emission_kind="end",
+        ),
+    ]
+
+    assert hub_event_track.sequence_gap_count([20, 22, 25]) == 3
+    output = "\n".join(hub_event_track.report(observations, event_gap_seconds=30))
+    assert "sequence: 20–25" in output
+    assert "sequence gaps: 3" in output
+
+
+def test_episode_summary_missing_emission_kind_and_sequence() -> None:
+    oid = "66666666-6666-4666-8666-666666666666"
+    observations = [
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=None,
+            event_time_utc="2026-11-03T18:00:00Z",
+            emission_kind=None,
+        ),
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=None,
+            event_time_utc="2026-11-03T18:00:05Z",
+            emission_kind="periodic",
+        ),
+    ]
+
+    output = "\n".join(hub_event_track.report(observations, event_gap_seconds=30))
+
+    assert "emissions: START=0 PERIODIC=1 END=0 COMPLETE=0 unknown=1" in output
+    assert "sequence: n/a" in output
+    assert "sequence gaps: n/a" in output
 
 
 def test_observation_diff_reports_only_unseen_ids() -> None:

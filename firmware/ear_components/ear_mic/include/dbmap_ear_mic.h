@@ -5,6 +5,7 @@
 
 #include "cJSON.h"
 #include "dbmap_acoustic_l0.h"
+#include "dbmap_acoustic_l1.h"
 #include "dbmap_types.h"
 #include "esp_err.h"
 
@@ -77,6 +78,10 @@ typedef struct {
     uint32_t analyze_count;
     uint32_t analyze_us_last;
     uint32_t analyze_us_max;
+    /** Stages inside dbmap_l0_analyze_window (last call). */
+    uint32_t stage_reset_us;
+    uint32_t stage_sample_loop_us;
+    uint32_t stage_post_us;
     uint32_t pending_overwrite; /* capture produced a window before prior was analyzed */
     uint32_t free_heap_after_init;
     uint32_t free_spiram_after_init;
@@ -97,6 +102,27 @@ esp_err_t dbmap_ear_mic_get_l0_window(dbmap_l0_window_t *out);
 
 /** Copy L0 performance counters (zeros / enabled=false when L0 off). */
 esp_err_t dbmap_ear_mic_get_l0_perf(dbmap_ear_mic_l0_perf_t *out);
+
+/**
+ * L1 analysis timing counters (Step 3). Times are wall-clock µs for
+ * dbmap_l1_analyze_window only (esp_timer), not task CPU time.
+ * L1 runs in dbmap_ear_mic_l0_poll after L0 when DBMAP_EAR_OBS_L1 is enabled.
+ */
+typedef struct {
+    bool enabled;
+    uint32_t analyze_count;
+    uint32_t analyze_us_last;
+    uint32_t analyze_us_max;
+} dbmap_ear_mic_l1_perf_t;
+
+/**
+ * Copy the latest completed L1 analysis window (after l0_poll with L1 on).
+ * valid=false until the first successful analysis; ESP_ERR_NOT_SUPPORTED if L1 off.
+ */
+esp_err_t dbmap_ear_mic_get_l1_window(dbmap_l1_window_t *out);
+
+/** Copy L1 performance counters (enabled=false when L1 off). */
+esp_err_t dbmap_ear_mic_get_l1_perf(dbmap_ear_mic_l1_perf_t *out);
 
 #ifdef __cplusplus
 }

@@ -320,17 +320,22 @@
         let total = 0;
         for (const item of observations) {
           if (!item || typeof item !== 'object') continue;
-          const stamp = Date.parse(item.received_time_utc || item.event_time_utc || '');
+          const identity = item.identity && typeof item.identity === 'object' ? item.identity : null;
+          const context = item.context && typeof item.context === 'object' ? item.context : null;
+          const acoustic = item.acoustic && typeof item.acoustic === 'object' ? item.acoustic : null;
+          const stamp = Date.parse(
+            item.received_time_utc || context?.event_time_utc || ''
+          );
           if (!Number.isFinite(stamp) || stamp < cutoff) continue;
-          const nodeId = item.node_id;
+          const nodeId = identity?.node_id;
           if (typeof nodeId !== 'string' || !nodeId) continue;
           total += 1;
           const entry = byNode.get(nodeId) || { count: 0, latest_dbfs: null, latest_at: null };
           entry.count += 1;
           if (entry.latest_at === null || stamp > entry.latest_at) {
             entry.latest_at = stamp;
-            entry.latest_dbfs = typeof item.signal_level_dbfs === 'number'
-              ? item.signal_level_dbfs
+            entry.latest_dbfs = typeof acoustic?.signal_level_dbfs === 'number'
+              ? acoustic.signal_level_dbfs
               : null;
           }
           byNode.set(nodeId, entry);

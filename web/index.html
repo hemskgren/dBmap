@@ -132,7 +132,7 @@
       .espconnect-callout { max-width: 780px; }
       .espconnect-callout .actions { flex-wrap: wrap; }
       #tab-observations .obs-stats {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 0.45rem;
         margin-bottom: 0.55rem;
       }
@@ -151,6 +151,36 @@
         margin: 0;
         font-size: 1.05rem;
         text-align: right;
+      }
+      #observation-filters {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: end;
+        gap: 0.55rem 0.75rem;
+        margin: 0.55rem 0 0.15rem;
+      }
+      #observation-filters label {
+        flex: 1 1 14rem;
+        margin: 0;
+        font-size: 0.88rem;
+      }
+      #observation-filters select {
+        display: block;
+        width: 100%;
+        min-height: 5.5rem;
+        margin-top: 0.25rem;
+        padding: 0.35rem 0.45rem;
+        font-size: 0.84rem;
+      }
+      #observation-filters .obs-filter-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        align-items: center;
+      }
+      #observation-filter-status {
+        margin: 0.25rem 0 0;
+        font-size: 0.82rem;
       }
       .obs-slot-chart {
         margin-top: 0.45rem;
@@ -223,6 +253,7 @@
         background: #fff;
         text-align: left;
         font-size: 0.9rem;
+        overflow-wrap: anywhere;
       }
       .timeline-entry[aria-pressed="true"]:not(.in-slot-focus) {
         border-color: #2457a7;
@@ -345,7 +376,7 @@
       [hidden] { display: none !important; }
       @media (max-width: 760px) {
         .detail-grid, #installation-form, .overview-grid:not(.obs-stats), .component-list, .call-home-routes { grid-template-columns: 1fr; }
-        #tab-observations .obs-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        #tab-observations .obs-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         #installation-form .actions { grid-column: auto; }
         .toolbar { align-items: flex-start; }
         #create-panel { grid-template-columns: 1fr; }
@@ -757,20 +788,33 @@
             </div>
           </div>
           <div class="overview-grid obs-stats" aria-live="polite">
-            <article class="overview-card"><span>In database</span><strong id="hub-observation-db-total">—</strong></article>
+            <article class="overview-card"><span>Unique observations</span><strong id="hub-observation-unique-total">—</strong></article>
+            <article class="overview-card"><span>Observation reports</span><strong id="hub-observation-db-total">—</strong></article>
             <article class="overview-card"><span>Recent (max 100)</span><strong id="hub-observation-count">—</strong></article>
             <article class="overview-card"><span>Latest</span><strong id="latest-observation-card">—</strong></article>
           </div>
           <section>
             <h3>Observation timeline</h3>
-            <p class="notice">Bars stack all devices into adaptive time slots (height = count). Amber = selected time slot; darker amber = selected row. Clicking a time slot turns Auto-refresh off; re-check Auto-refresh to return to the live latest view. Expanding the JSON panel alone does not pause refresh.</p>
+            <p class="notice">Each list row is one observation report (MQTT payload). Unique observation_id values may span many reports. Bars stack filtered reports into adaptive time slots (height = report count). Amber = selected time slot; darker amber = selected row. Clicking a time slot turns Auto-refresh off; re-check Auto-refresh to return to the live latest view. Expanding the JSON panel alone does not pause refresh.</p>
+            <div id="observation-filters" aria-label="Filter observation reports">
+              <label for="observation-filter-node">Node ID
+                <select id="observation-filter-node" multiple size="4"></select>
+              </label>
+              <label for="observation-filter-observation">Observation ID
+                <select id="observation-filter-observation" multiple size="4"></select>
+              </label>
+              <div class="obs-filter-actions">
+                <button id="observation-filter-clear" class="secondary" type="button">Clear filters</button>
+              </div>
+            </div>
+            <p id="observation-filter-status" class="notice" aria-live="polite"></p>
             <div id="observation-chart" class="obs-slot-chart" aria-live="polite"></div>
             <div id="observation-list" class="observation-list" aria-live="polite"><p class="notice">Loading observations…</p></div>
           </section>
           <section>
             <details id="latest-observation-details">
-              <summary id="latest-observation-summary">Latest observation JSON</summary>
-              <pre id="latest-observation-json">Loading latest observation…</pre>
+              <summary id="latest-observation-summary">Latest observation report JSON</summary>
+              <pre id="latest-observation-json">Loading latest observation report…</pre>
             </details>
           </section>
         </section>
@@ -883,8 +927,81 @@
         return Number.isNaN(date.getTime()) ? 'Unknown' : EU_DATE_TIME_FORMATTER.format(date);
       }
 
+      function observationIdentity(observation) {
+        return observation?.identity && typeof observation.identity === 'object'
+          ? observation.identity
+          : null;
+      }
+
+      function observationContext(observation) {
+        return observation?.context && typeof observation.context === 'object'
+          ? observation.context
+          : null;
+      }
+
+      function observationAcoustic(observation) {
+        return observation?.acoustic && typeof observation.acoustic === 'object'
+          ? observation.acoustic
+          : null;
+      }
+
+      function observationIdValue(observation) {
+        const identity = observationIdentity(observation);
+        const value = identity?.observation_id;
+        return typeof value === 'string' && value ? value : null;
+      }
+
+      function observationNodeId(observation) {
+        const identity = observationIdentity(observation);
+        const value = identity?.node_id;
+        return typeof value === 'string' && value ? value : null;
+      }
+
+      function observationReportKey(observation) {
+        const identity = observationIdentity(observation);
+        if (!identity) return null;
+        const nodeId = identity.node_id;
+        const sequence = identity.sequence_number;
+        if (typeof nodeId !== 'string' || !nodeId) return null;
+        if (typeof sequence !== 'number' || !Number.isFinite(sequence)) return null;
+        return `${nodeId}:${sequence}`;
+      }
+
+      function countUniqueObservationIds(observations) {
+        const ids = new Set();
+        for (const observation of observations) {
+          const id = observationIdValue(observation);
+          if (id) ids.add(id);
+        }
+        return ids.size;
+      }
+
+      function shortObservationId(observationId) {
+        if (!observationId) return 'unknown';
+        return observationId.length > 13
+          ? `${observationId.slice(0, 8)}…${observationId.slice(-4)}`
+          : observationId;
+      }
+
+      function selectedMultiValues(select) {
+        return [...select.selectedOptions].map((option) => option.value).filter(Boolean);
+      }
+
+      function syncMultiSelect(select, values, selected) {
+        const previous = selected instanceof Set ? selected : new Set(selected || []);
+        select.replaceChildren();
+        for (const { value, label } of values) {
+          const option = document.createElement('option');
+          option.value = value;
+          option.textContent = label;
+          option.selected = previous.has(value);
+          select.append(option);
+        }
+        return new Set(selectedMultiValues(select));
+      }
+
       function observationEventMs(observation) {
-        const start = Date.parse(observation.event_time_utc);
+        const start = Date.parse(observationContext(observation)?.event_time_utc || '');
         return Number.isFinite(start) ? start : null;
       }
 
@@ -958,7 +1075,7 @@
         const maxCount = Math.max(1, ...slots.map((slot) => slot.items.length));
         const filled = slots.filter((slot) => slot.items.length > 0).length;
         const meta = el('p', '', 'obs-slot-meta');
-        meta.textContent = `Slot size ${formatSlotDuration(slotMs)} · ${filled} occupied of ${slots.length} · height = observation count (all Ears)`;
+        meta.textContent = `Slot size ${formatSlotDuration(slotMs)} · ${filled} occupied of ${slots.length} · height = observation report count`;
         chart.append(meta);
 
         const plot = document.createElement('div');
@@ -974,7 +1091,7 @@
           bar.setAttribute('aria-pressed', 'false');
           const heightPx = count ? Math.max(8, Math.round((count / maxCount) * 112)) : 3;
           bar.style.height = `${heightPx}px`;
-          bar.title = `${formatSlotLabel(slot.start, slotMs)} – ${formatSlotLabel(slot.end, slotMs)}\n${count} observation${count === 1 ? '' : 's'}`;
+          bar.title = `${formatSlotLabel(slot.start, slotMs)} – ${formatSlotLabel(slot.end, slotMs)}\n${count} report${count === 1 ? '' : 's'}`;
           if (count >= 2 && heightPx >= 18) bar.textContent = String(count);
           if (!count) {
             bar.disabled = true;
@@ -1005,6 +1122,10 @@
         slotIds: null,
         latestId: null,
         autoRefresh: true,
+        items: [],
+        filterNodeIds: new Set(),
+        filterObservationIds: new Set(),
+        detailsOpen: false,
       };
 
       function syncObservationAutoRefreshCheckbox() {
@@ -1033,9 +1154,79 @@
         }
       }
 
+      function readObservationFiltersFromDom() {
+        const nodeSelect = document.getElementById('observation-filter-node');
+        const observationSelect = document.getElementById('observation-filter-observation');
+        if (nodeSelect) {
+          observationViewState.filterNodeIds = new Set(selectedMultiValues(nodeSelect));
+        }
+        if (observationSelect) {
+          observationViewState.filterObservationIds = new Set(selectedMultiValues(observationSelect));
+        }
+      }
+
+      function clearObservationFilters() {
+        observationViewState.filterNodeIds = new Set();
+        observationViewState.filterObservationIds = new Set();
+        const nodeSelect = document.getElementById('observation-filter-node');
+        const observationSelect = document.getElementById('observation-filter-observation');
+        if (nodeSelect) [...nodeSelect.options].forEach((option) => { option.selected = false; });
+        if (observationSelect) [...observationSelect.options].forEach((option) => { option.selected = false; });
+        renderObservationView({ preserveDetails: true });
+      }
+
+      function filteredObservationReports(observations) {
+        const nodeFilter = observationViewState.filterNodeIds;
+        const observationFilter = observationViewState.filterObservationIds;
+        return observations.filter((observation) => {
+          const nodeId = observationNodeId(observation);
+          const observationId = observationIdValue(observation);
+          if (nodeFilter.size && (!nodeId || !nodeFilter.has(nodeId))) return false;
+          if (observationFilter.size && (!observationId || !observationFilter.has(observationId))) {
+            return false;
+          }
+          return true;
+        });
+      }
+
+      function updateObservationFilterOptions(observations) {
+        const nodeCounts = new Map();
+        const observationCounts = new Map();
+        for (const observation of observations) {
+          const nodeId = observationNodeId(observation);
+          const observationId = observationIdValue(observation);
+          if (nodeId) nodeCounts.set(nodeId, (nodeCounts.get(nodeId) || 0) + 1);
+          if (observationId) {
+            observationCounts.set(observationId, (observationCounts.get(observationId) || 0) + 1);
+          }
+        }
+        const nodeValues = [...nodeCounts.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([value, count]) => ({
+            value,
+            label: `${value} (${count} report${count === 1 ? '' : 's'})`,
+          }));
+        const observationValues = [...observationCounts.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([value, count]) => ({
+            value,
+            label: `${shortObservationId(value)} (${count} report${count === 1 ? '' : 's'})`,
+          }));
+        observationViewState.filterNodeIds = syncMultiSelect(
+          document.getElementById('observation-filter-node'),
+          nodeValues,
+          observationViewState.filterNodeIds
+        );
+        observationViewState.filterObservationIds = syncMultiSelect(
+          document.getElementById('observation-filter-observation'),
+          observationValues,
+          observationViewState.filterObservationIds
+        );
+      }
+
       function applyObservationListSelection(list, selectedId) {
         list.querySelectorAll('.timeline-entry').forEach((entry) => {
-          const id = entry.dataset.observationId;
+          const id = entry.dataset.reportKey;
           entry.setAttribute('aria-pressed', String(id === selectedId));
           const inSlot = Boolean(observationViewState.slotIds?.has(id));
           entry.classList.toggle('in-slot-focus', inSlot);
@@ -1045,24 +1236,37 @@
       function renderObservationList(list, observations, onSelect) {
         list.replaceChildren();
         if (!observations.length) {
-          list.append(el('p', 'No observations have been received yet.', 'notice'));
+          const hasSource = observationViewState.items.length > 0;
+          list.append(el(
+            'p',
+            hasSource
+              ? 'No observation reports match the current filters.'
+              : 'No observation reports have been received yet.',
+            'notice'
+          ));
           return;
         }
         for (const observation of observations) {
-          const duration = Number(observation.duration_ms);
+          const identity = observationIdentity(observation) || {};
+          const context = observationContext(observation) || {};
+          const acoustic = observationAcoustic(observation) || {};
+          const duration = Number(context.interval_duration_ms);
           const durationLabel = Number.isFinite(duration) ? `${Math.round(duration)} ms` : 'n/a';
-          const family = observation.classification?.source_family || 'unclassified';
+          const family = acoustic.classification?.source_family || 'unclassified';
+          const kind = typeof context.emission_kind === 'string' ? context.emission_kind : 'report';
+          const observationId = observationIdValue(observation) || 'unknown-id';
+          const reportKey = observationReportKey(observation);
           const item = el(
             'button',
-            `${observation.node_id} · ${formatSeen(observation.event_time_utc)} (local) · ${durationLabel} · ${family}`,
+            `${identity.node_id || 'unknown'} · ${formatSeen(context.event_time_utc)} (local) · ${durationLabel} · ${kind} · ${family} · ${observationId}`,
             'timeline-entry'
           );
           item.type = 'button';
-          item.dataset.observationId = observation.observation_id;
+          if (reportKey) item.dataset.reportKey = reportKey;
           item.setAttribute('aria-pressed', 'false');
           item.addEventListener('click', () => {
-            const id = observation.observation_id;
-            const stillInFocusedSlot = Boolean(observationViewState.slotIds?.has(id));
+            const id = reportKey;
+            const stillInFocusedSlot = Boolean(id && observationViewState.slotIds?.has(id));
             if (!stillInFocusedSlot) {
               observationViewState.slotStartMs = null;
               observationViewState.slotIds = null;
@@ -1082,32 +1286,162 @@
 
       function focusObservationSlot(list, slot, selectedId) {
         observationViewState.slotStartMs = slot.start;
-        observationViewState.slotIds = new Set(slot.items.map((item) => item.observation_id));
+        observationViewState.slotIds = new Set(
+          slot.items.map((item) => observationReportKey(item)).filter(Boolean)
+        );
         const chooseId = selectedId && observationViewState.slotIds.has(selectedId)
           ? selectedId
-          : (slot.items[0]?.observation_id || null);
+          : (observationReportKey(slot.items[0]) || null);
         observationViewState.selectedId = chooseId;
         applyObservationListSelection(list, chooseId);
         const target = chooseId
-          ? list.querySelector(`.timeline-entry[data-observation-id="${chooseId}"]`)
+          ? list.querySelector(`.timeline-entry[data-report-key="${CSS.escape(chooseId)}"]`)
           : null;
         if (target) {
           target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
           target.focus({ preventScroll: true });
         }
-        return chooseId ? slot.items.find((item) => item.observation_id === chooseId) : null;
+        return chooseId
+          ? slot.items.find((item) => observationReportKey(item) === chooseId) || null
+          : null;
+      }
+
+      function updateObservationCountCards(countBody, observations) {
+        const dbTotal = Number(countBody?.total);
+        const uniqueTotal = Number(countBody?.unique_observations);
+        document.getElementById('hub-observation-db-total').textContent = Number.isFinite(dbTotal)
+          ? String(dbTotal)
+          : '—';
+        document.getElementById('hub-observation-unique-total').textContent = Number.isFinite(uniqueTotal)
+          ? String(uniqueTotal)
+          : '—';
+        const recentUnique = countUniqueObservationIds(observations);
+        document.getElementById('hub-observation-count').textContent =
+          `${recentUnique} unique · ${observations.length} reports`;
+        document.getElementById('latest-observation-card').textContent = observations.length
+          ? formatSeen(observations[0].received_time_utc)
+          : 'None';
+        return { dbTotal, uniqueTotal };
+      }
+
+      function renderObservationView(options = {}) {
+        const preserveDetails = Boolean(options.preserveDetails);
+        const followLive = observationViewState.autoRefresh;
+        const observations = observationViewState.items;
+        const status = document.getElementById('observation-refresh-status');
+        const filterStatus = document.getElementById('observation-filter-status');
+        const chart = document.getElementById('observation-chart');
+        const list = document.getElementById('observation-list');
+        const details = document.getElementById('latest-observation-details');
+        const detailsOpen = preserveDetails ? details.open : observationViewState.detailsOpen;
+        const latestJson = document.getElementById('latest-observation-json');
+        const jsonSummary = document.getElementById('latest-observation-summary');
+        const visible = filteredObservationReports(observations);
+        const sourceUnique = countUniqueObservationIds(observations);
+        const visibleUnique = countUniqueObservationIds(visible);
+        const nodeFilterCount = observationViewState.filterNodeIds.size;
+        const observationFilterCount = observationViewState.filterObservationIds.size;
+        const filtersActive = nodeFilterCount > 0 || observationFilterCount > 0;
+
+        filterStatus.className = 'notice';
+        if (!observations.length) {
+          filterStatus.textContent = '';
+        } else if (!filtersActive) {
+          filterStatus.textContent =
+            `Showing all ${observations.length} recent report${observations.length === 1 ? '' : 's'} `
+            + `(${sourceUnique} unique observation${sourceUnique === 1 ? '' : 's'}). `
+            + 'Hold Ctrl/Cmd to multi-select in either filter.';
+        } else {
+          const parts = [];
+          if (nodeFilterCount) {
+            parts.push(`${nodeFilterCount} node${nodeFilterCount === 1 ? '' : 's'}`);
+          }
+          if (observationFilterCount) {
+            parts.push(
+              `${observationFilterCount} observation id${observationFilterCount === 1 ? '' : 's'}`
+            );
+          }
+          filterStatus.textContent =
+            `Filtered to ${visible.length} report${visible.length === 1 ? '' : 's'} `
+            + `(${visibleUnique} unique) of ${observations.length}. `
+            + `${parts.join(', ')} selected.`;
+        }
+
+        const selectObservation = (observation, selectOptions = {}) => {
+          const openDetails = Boolean(selectOptions.openDetails);
+          const identity = observationIdentity(observation) || {};
+          observationViewState.selectedId = observationReportKey(observation);
+          latestJson.textContent = JSON.stringify(observation, null, 2);
+          jsonSummary.textContent = observationReportKey(observation) === observationViewState.latestId
+            ? 'Latest observation report JSON'
+            : `${identity.node_id || 'unknown'} observation report JSON`;
+          if (openDetails) details.open = true;
+        };
+
+        const { slots, slotMs } = buildObservationSlots(visible);
+        renderObservationSlotChart(chart, slots, slotMs, (slot) => {
+          pauseObservationAutoRefresh();
+          const chosen = focusObservationSlot(list, slot, observationViewState.selectedId);
+          document.querySelectorAll('#observation-chart .obs-slot-bar').forEach((bar) => {
+            bar.setAttribute('aria-pressed', String(Number(bar.dataset.slotIndex) === slot.index));
+          });
+          if (chosen) selectObservation(chosen, { openDetails: true });
+          status.className = 'notice';
+          status.textContent = 'Auto-refresh off while inspecting a time slot. Re-check Auto-refresh to return to the live latest view.';
+        });
+        renderObservationList(list, visible, selectObservation);
+
+        let selected = null;
+        if (!followLive && observationViewState.selectedId) {
+          selected = visible.find(
+            (item) => observationReportKey(item) === observationViewState.selectedId
+          ) || null;
+        }
+        if (!selected && visible.length) {
+          selected = visible[0];
+          observationViewState.selectedId = observationReportKey(selected);
+          if (followLive) {
+            observationViewState.slotStartMs = null;
+            observationViewState.slotIds = null;
+          }
+        }
+        if (!followLive && observationViewState.slotStartMs != null) {
+          const slot = slots.find((item) => item.start === observationViewState.slotStartMs);
+          if (slot && slot.items.length) {
+            const chosen = focusObservationSlot(list, slot, observationViewState.selectedId);
+            document.querySelectorAll('#observation-chart .obs-slot-bar').forEach((bar) => {
+              bar.setAttribute('aria-pressed', String(Number(bar.dataset.slotIndex) === slot.index));
+            });
+            if (chosen) selected = chosen;
+          } else {
+            observationViewState.slotStartMs = null;
+            observationViewState.slotIds = null;
+          }
+        }
+        if (selected) {
+          applyObservationListSelection(list, observationReportKey(selected));
+          selectObservation(selected, { openDetails: !followLive && detailsOpen });
+          if (followLive) details.open = detailsOpen;
+        } else {
+          jsonSummary.textContent = 'Latest observation report JSON';
+          latestJson.textContent = observations.length
+            ? 'No observation reports match the current filters.'
+            : 'No observation reports have been received yet.';
+        }
       }
 
       async function refreshObservationTotalsOnly() {
         try {
           const countBody = await api('/api/v1/observations/count');
+          updateObservationCountCards(countBody, observationViewState.items);
           const dbTotal = Number(countBody?.total);
-          if (Number.isFinite(dbTotal)) {
-            document.getElementById('hub-observation-db-total').textContent = String(dbTotal);
-          }
+          const uniqueTotal = Number(countBody?.unique_observations);
           const status = document.getElementById('observation-refresh-status');
           status.className = 'notice';
-          status.textContent = `Auto-refresh off (dig-down). Totals still update. Re-check Auto-refresh to return to the live latest view. Database total ${Number.isFinite(dbTotal) ? dbTotal : '—'}.`;
+          status.textContent =
+            `Auto-refresh off (dig-down). Totals still update. Re-check Auto-refresh to return to the live latest view. `
+            + `Database: ${Number.isFinite(uniqueTotal) ? uniqueTotal : '—'} unique · `
+            + `${Number.isFinite(dbTotal) ? dbTotal : '—'} reports.`;
         } catch (_error) {
           /* Keep the current inspection view intact. */
         }
@@ -1126,8 +1460,8 @@
         const status = document.getElementById('observation-refresh-status');
         const chart = document.getElementById('observation-chart');
         const list = document.getElementById('observation-list');
-        const detailsOpen = document.getElementById('latest-observation-details').open;
-        status.textContent = 'Loading latest observations…';
+        observationViewState.detailsOpen = document.getElementById('latest-observation-details').open;
+        status.textContent = 'Loading latest observation reports…';
         status.className = 'notice';
         chart.replaceChildren();
         list.replaceChildren();
@@ -1136,87 +1470,27 @@
             api('/api/v1/observations?limit=100'),
             api('/api/v1/observations/count'),
           ]);
-          const dbTotal = Number(countBody?.total);
-          document.getElementById('hub-observation-db-total').textContent = Number.isFinite(dbTotal)
-            ? String(dbTotal)
-            : '—';
-          document.getElementById('hub-observation-count').textContent = `${observations.length} / 100`;
-          document.getElementById('latest-observation-card').textContent = observations.length
-            ? formatSeen(observations[0].received_time_utc)
-            : 'None';
-          const latestJson = document.getElementById('latest-observation-json');
-          const jsonSummary = document.getElementById('latest-observation-summary');
-          observationViewState.latestId = observations[0]?.observation_id || null;
+          observationViewState.items = observations;
+          observationViewState.latestId = observationReportKey(observations[0]) || null;
+          const { dbTotal, uniqueTotal } = updateObservationCountCards(countBody, observations);
+          updateObservationFilterOptions(observations);
+          renderObservationView({ preserveDetails: true });
 
-          const selectObservation = (observation, selectOptions = {}) => {
-            const openDetails = Boolean(selectOptions.openDetails);
-            observationViewState.selectedId = observation.observation_id;
-            latestJson.textContent = JSON.stringify(observation, null, 2);
-            jsonSummary.textContent = observation.observation_id === observationViewState.latestId
-              ? 'Latest observation JSON'
-              : `${observation.node_id} observation JSON`;
-            if (openDetails) {
-              document.getElementById('latest-observation-details').open = true;
-            }
-          };
-
-          const { slots, slotMs } = buildObservationSlots(observations);
-          renderObservationSlotChart(chart, slots, slotMs, (slot) => {
-            pauseObservationAutoRefresh();
-            const chosen = focusObservationSlot(list, slot, observationViewState.selectedId);
-            document.querySelectorAll('#observation-chart .obs-slot-bar').forEach((bar) => {
-              bar.setAttribute('aria-pressed', String(Number(bar.dataset.slotIndex) === slot.index));
-            });
-            if (chosen) selectObservation(chosen, { openDetails: true });
-            status.className = 'notice';
-            status.textContent = 'Auto-refresh off while inspecting a time slot. Re-check Auto-refresh to return to the live latest view.';
-          });
-          renderObservationList(list, observations, selectObservation);
-
-          let selected = null;
-          if (!followLive && observationViewState.selectedId) {
-            selected = observations.find((item) => item.observation_id === observationViewState.selectedId) || null;
-          }
-          if (!selected && observations.length) {
-            selected = observations[0];
-            observationViewState.selectedId = selected.observation_id;
-            if (followLive) {
-              observationViewState.slotStartMs = null;
-              observationViewState.slotIds = null;
-            }
-          }
-          if (!followLive && observationViewState.slotStartMs != null) {
-            const slot = slots.find((item) => item.start === observationViewState.slotStartMs);
-            if (slot && slot.items.length) {
-              const chosen = focusObservationSlot(list, slot, observationViewState.selectedId);
-              document.querySelectorAll('#observation-chart .obs-slot-bar').forEach((bar) => {
-                bar.setAttribute('aria-pressed', String(Number(bar.dataset.slotIndex) === slot.index));
-              });
-              if (chosen) selected = chosen;
-            } else {
-              observationViewState.slotStartMs = null;
-              observationViewState.slotIds = null;
-            }
-          }
-          if (selected) {
-            applyObservationListSelection(list, selected.observation_id);
-            // Keep the JSON panel open/closed as the user left it during live follow.
-            selectObservation(selected, { openDetails: !followLive && detailsOpen });
-            if (followLive) {
-              document.getElementById('latest-observation-details').open = detailsOpen;
-            }
-          } else {
-            jsonSummary.textContent = 'Latest observation JSON';
-            latestJson.textContent = 'No observations have been received yet.';
-          }
-
-          const totalLabel = Number.isFinite(dbTotal) ? `${dbTotal} in database` : 'database total unavailable';
+          const totalLabel = Number.isFinite(dbTotal) && Number.isFinite(uniqueTotal)
+            ? `${uniqueTotal} unique · ${dbTotal} reports in database`
+            : 'database totals unavailable';
           if (followLive) {
-            status.textContent = `Showing ${observations.length} most recent observation${observations.length === 1 ? '' : 's'} (maximum 100); ${totalLabel}. Updated ${formatSeen(new Date())}.`;
+            status.textContent =
+              `Showing ${observations.length} most recent report${observations.length === 1 ? '' : 's'} `
+              + `(maximum 100); ${totalLabel}. Updated ${formatSeen(new Date())}.`;
           } else {
-            status.textContent = `Auto-refresh off (dig-down). Showing ${observations.length} most recent; ${totalLabel}. Re-check Auto-refresh for the live latest view. Updated ${formatSeen(new Date())}.`;
+            status.textContent =
+              `Auto-refresh off (dig-down). Showing ${observations.length} most recent; ${totalLabel}. `
+              + `Re-check Auto-refresh for the live latest view. Updated ${formatSeen(new Date())}.`;
           }
         } catch (error) {
+          observationViewState.items = [];
+          document.getElementById('hub-observation-unique-total').textContent = '—';
           document.getElementById('hub-observation-db-total').textContent = '—';
           document.getElementById('hub-observation-count').textContent = '—';
           document.getElementById('latest-observation-card').textContent = '—';
@@ -4994,6 +5268,19 @@
       document.getElementById('refresh-observations').addEventListener('click', () => {
         if (observationViewState.autoRefresh) clearObservationDigDown();
         refreshObservations({ force: true });
+      });
+      document.getElementById('observation-filter-node').addEventListener('change', () => {
+        readObservationFiltersFromDom();
+        pauseObservationAutoRefresh();
+        renderObservationView({ preserveDetails: true });
+      });
+      document.getElementById('observation-filter-observation').addEventListener('change', () => {
+        readObservationFiltersFromDom();
+        pauseObservationAutoRefresh();
+        renderObservationView({ preserveDetails: true });
+      });
+      document.getElementById('observation-filter-clear').addEventListener('click', () => {
+        clearObservationFilters();
       });
       document.getElementById('refresh-users').addEventListener('click', refreshUsers);
       document.getElementById('refresh-groups').addEventListener('click', refreshGroups);

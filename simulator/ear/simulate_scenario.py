@@ -5,6 +5,7 @@ import math
 import re
 import sys
 import time
+from collections import defaultdict
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from importlib.util import module_from_spec, spec_from_file_location
@@ -578,6 +579,45 @@ def load_ear_credentials(
     return credentials_by_alias
 
 
+def assign_scripted_ear_observation_lifecycles(
+    observations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Group scripted points by Ear into one Observation lifecycle each.
+
+    Points that already set ``emission_kind`` (independent_detection) are unchanged.
+    One unassigned point per Ear -> COMPLETE. Two or more -> START, PERIODIC..., END
+    with one stable ``observation_id`` shared across that Ear's messages.
+    """
+    prepared = [dict(item) for item in observations]
+    by_ear: dict[str, list[int]] = defaultdict(list)
+    for index, item in enumerate(prepared):
+        if item.get("emission_kind") is not None:
+            continue
+        ear = item.get("ear")
+        if isinstance(ear, str):
+            by_ear[ear].append(index)
+
+    for indices in by_ear.values():
+        observation_id = str(uuid4())
+        count = len(indices)
+        episode_start = prepared[indices[0]]["at_seconds"]
+        for position, index in enumerate(indices):
+            if count == 1:
+                kind = "complete"
+            elif position == 0:
+                kind = "start"
+            elif position == count - 1:
+                kind = "end"
+            else:
+                kind = "periodic"
+            prepared[index]["emission_kind"] = kind
+            prepared[index]["observation_id"] = observation_id
+            prepared[index]["episode_start_at_seconds"] = episode_start
+            if kind in ("end", "complete"):
+                prepared[index].setdefault("termination_reason", "natural")
+    return prepared
+
+
 def make_scenario_observation(
     node_id: str,
     sequence_number: int,
@@ -586,36 +626,77 @@ def make_scenario_observation(
     started_at_utc: datetime,
     started_at_monotonic_us: int,
 ) -> dict[str, Any]:
+    from l0_measurements import empty_l0_measurements
+
     at_seconds = event["at_seconds"]
-    payload: dict[str, Any] = {
-        "protocol_version": 1,
-        "message_type": "observation",
-        "observation_id": str(uuid4()),
-        "node_id": node_id,
-        "sequence_number": sequence_number,
+    duration_ms = float(event.get("duration_ms", 850.0))
+    # Default COMPLETE for a standalone scripted point. run_scenario assigns
+    # START/PERIODIC/END (+ shared observation_id) per Ear when multiple points exist.
+    emission_kind = event.get("emission_kind", "complete")
+    if emission_kind not in ("start", "periodic", "end", "complete"):
+        raise ScenarioError(
+            f"unsupported emission_kind {emission_kind!r} in scenario observation"
+        )
+    episode_start = event.get("episode_start_at_seconds", at_seconds)
+    try:
+        episode_elapsed_ms = max(0.0, (float(at_seconds) - float(episode_start)) * 1000.0)
+    except (TypeError, ValueError):
+        episode_elapsed_ms = 0.0
+    context: dict[str, Any] = {
         "event_time_utc": (started_at_utc + timedelta(seconds=at_seconds)).isoformat(),
         "capture_timestamp_monotonic_us": started_at_monotonic_us
         + round(at_seconds * 1_000_000),
         "timing_quality": "estimated",
         "clock_offset_ms": None,
         "timestamp_uncertainty_ms": 10.0,
-        "classification": {
-            "source_family": event.get("source_family", "vehicle"),
-            "confidence": event["classification_confidence"],
-            "hints": {"simulated_source_id": source_id},
-        },
-        "duration_ms": event.get("duration_ms", 850.0),
+        "interval_duration_ms": duration_ms,
+        "episode_duration_ms": episode_elapsed_ms + duration_ms,
+        "emission_kind": emission_kind,
     }
+    if emission_kind in ("end", "complete"):
+        context["termination_reason"] = event.get("termination_reason", "natural")
+
+    bearing = None
     if "bearing_deg" in event:
-        bearing: dict[str, Any] = {
+        bearing = {
             "deg": event["bearing_deg"],
             "reference": "node",
         }
         if "bearing_confidence" in event and event["bearing_confidence"] is not None:
             bearing["confidence"] = event["bearing_confidence"]
-        payload["bearing"] = bearing
-    if "signal_level_dbfs" in event:
-        payload["signal_level_dbfs"] = event["signal_level_dbfs"]
+
+    signal_level = event.get("signal_level_dbfs", -34.0)
+    raw_observation_id = event.get("observation_id")
+    observation_id = (
+        str(raw_observation_id) if raw_observation_id else str(uuid4())
+    )
+    payload: dict[str, Any] = {
+        "protocol_version": 1,
+        "message_type": "observation",
+        "identity": {
+            "observation_id": observation_id,
+            "node_id": node_id,
+            "hub_id": "",
+            "sequence_number": sequence_number,
+        },
+        "context": context,
+        "acoustic": {
+            "signal_level_dbfs": signal_level,
+            "measurements": empty_l0_measurements(),
+            "signature": None,
+            "classification": {
+                "schema": "l2",
+                "version": 1,
+                "source_family": event.get("source_family", "vehicle"),
+                "confidence": event["classification_confidence"],
+                "hints": {"simulated_source_id": source_id},
+            },
+        },
+        "spatial": {
+            "bearing": bearing,
+            "position": None,
+        },
+    }
     _observation_body().model_validate(payload)
     return payload
 
@@ -743,7 +824,8 @@ def run_scenario(
     )
     wall_start = monotonic()
     published_ids = []
-    for index, event in enumerate(scenario["observations"], start=1):
+    timed_events = assign_scripted_ear_observation_lifecycles(scenario["observations"])
+    for index, event in enumerate(timed_events, start=1):
         target_elapsed = event["at_seconds"] * time_scale
         delay = target_elapsed - (monotonic() - wall_start)
         if delay > 0:
@@ -767,7 +849,7 @@ def run_scenario(
         published_ids.append(observation_id)
         credentials["next_sequence_number"] = max(
             credentials["next_sequence_number"],
-            payload["sequence_number"] + 1,
+            payload["identity"]["sequence_number"] + 1,
         )
         credentials.pop("pending_observation", None)
         credentials.pop("pending_scenario_id", None)
@@ -793,7 +875,8 @@ def print_schedule(scenario: dict[str, Any], *, time_scale: float = 1.0) -> None
     started_at = datetime.now(timezone.utc)
     started_at_monotonic_us = time.monotonic_ns() // 1000
     sequences: dict[str, int] = {}
-    for event in scenario["observations"]:
+    timed_events = assign_scripted_ear_observation_lifecycles(scenario["observations"])
+    for event in timed_events:
         alias = event["ear"]
         sequence = sequences.get(alias, 1)
         make_scenario_observation(
@@ -901,11 +984,13 @@ def retry_pending_observations(
             )
         payload = credentials["pending_observation"]
         _observation_body().model_validate(payload)
-        if payload["node_id"] != credentials["node_id"]:
+        identity = payload.get("identity") or {}
+        if identity.get("node_id") != credentials["node_id"]:
             raise ScenarioError(
                 f"pending observation for {alias} belongs to another Ear"
             )
-        hints = (payload.get("classification") or {}).get("hints")
+        classification = (payload.get("acoustic") or {}).get("classification") or {}
+        hints = classification.get("hints") if isinstance(classification, dict) else None
         if (
             not isinstance(hints, dict)
             or hints.get("simulated_source_id") != scenario["source_id"]
@@ -933,12 +1018,12 @@ def retry_pending_observations(
         ids.append(observation_id)
         credentials["next_sequence_number"] = max(
             credentials["next_sequence_number"],
-            payload["sequence_number"] + 1,
+            payload["identity"]["sequence_number"] + 1,
         )
         credentials.pop("pending_observation", None)
         credentials.pop("pending_scenario_id", None)
         save(credentials_paths[alias], credentials)
-        event_time = payload.get("event_time_utc", "?")
+        event_time = (payload.get("context") or {}).get("event_time_utc", "?")
         print(
             f"{index:02d}  {event_time}  "
             f"{ear_shortname(alias)}  {observation_id}",

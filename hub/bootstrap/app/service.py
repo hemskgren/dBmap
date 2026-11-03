@@ -590,7 +590,7 @@ def set_installation(
 
 def ingest_observation(db: Session, topic_node_id: str, body: ObservationBody) -> bool:
     node_id = topic_node_id.upper()
-    if body.node_id.upper() != node_id:
+    if body.identity.node_id.upper() != node_id:
         raise ValueError("observation node_id does not match topic")
 
     node = db.get(Node, node_id)
@@ -598,21 +598,29 @@ def ingest_observation(db: Session, topic_node_id: str, body: ObservationBody) -
         raise ValueError("observation topic does not belong to a registered Ear")
     if node.lifecycle_state != "active":
         raise ValueError("node is deactivated")
-    body.node_id = node_id
+    body.identity.node_id = node_id
 
-    observation_id = str(body.observation_id)
-    existing = db.get(Observation, observation_id)
+    observation_id = str(body.identity.observation_id)
+    sequence_number = body.identity.sequence_number
+    existing = db.scalars(
+        select(Observation).where(
+            Observation.node_id == node_id,
+            Observation.sequence_number == sequence_number,
+        )
+    ).first()
     if existing is not None:
-        if existing.node_id != node_id:
-            raise ValueError("observation ID is already registered to another node")
+        if existing.observation_id != observation_id:
+            raise ValueError(
+                "sequence_number already registered with a different observation_id"
+            )
         return False
 
     db.add(
         Observation(
             observation_id=observation_id,
             node_id=node_id,
-            sequence_number=body.sequence_number,
-            event_time_utc=body.event_time_utc,
+            sequence_number=sequence_number,
+            event_time_utc=body.context.event_time_utc,
             payload_json=body.model_dump_json(by_alias=True),
         )
     )
@@ -641,6 +649,13 @@ def list_observations(
 
 def count_observations(db: Session, node_id: str | None = None) -> int:
     statement = select(func.count()).select_from(Observation)
+    if node_id is not None:
+        statement = statement.where(Observation.node_id == node_id.upper())
+    return int(db.scalar(statement) or 0)
+
+
+def count_unique_observations(db: Session, node_id: str | None = None) -> int:
+    statement = select(func.count(func.distinct(Observation.observation_id)))
     if node_id is not None:
         statement = statement.where(Observation.node_id == node_id.upper())
     return int(db.scalar(statement) or 0)

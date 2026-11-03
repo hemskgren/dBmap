@@ -58,7 +58,7 @@ def test_observation_batch_uses_unique_ids_and_monotonic_sequences(
 
     def record_publish(current_credentials, payload, ca_file):
         published.append(payload.copy())
-        return payload["observation_id"]
+        return payload["identity"]["observation_id"]
 
     monkeypatch.setattr(simulate_observation, "publish_payload", record_publish)
     monkeypatch.setattr(simulate_observation.time, "sleep", sleeps.append)
@@ -73,9 +73,10 @@ def test_observation_batch_uses_unique_ids_and_monotonic_sequences(
 
     assert len(ids) == 3
     assert len(set(ids)) == 3
-    assert [item["sequence_number"] for item in published] == [1, 2, 3]
+    assert [item["identity"]["sequence_number"] for item in published] == [1, 2, 3]
     assert {
-        item["classification"]["hints"]["simulated_source_id"] for item in published
+        item["acoustic"]["classification"]["hints"]["simulated_source_id"]
+        for item in published
     } == {"SIM-VEHICLE-77"}
     assert sleeps == [15, 15]
     assert credentials["next_sequence_number"] == 4

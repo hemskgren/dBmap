@@ -31,11 +31,7 @@ from app.models import (
 )
 from app.mqtt_security import MqttSecurityError
 from app.policy import PolicyUnavailable
-from app.schemas import (
-    ObservationBearing,
-    ObservationBody,
-    ObservationClassification,
-)
+from app.schemas import ObservationBody
 from app.service import ingest_observation, list_observations
 from app.topics import parse_observation_topic
 
@@ -45,26 +41,72 @@ def setup_module() -> None:
     init_db()
 
 
+def _empty_l0_measurements() -> dict:
+    return {
+        "schema": "l0",
+        "version": 1,
+        "band_plan_version": 1,
+        "crest_threshold_version": 1,
+        "crest_threshold_db": 12.0,
+        "mic_index": 0,
+        "sample_rate_hz": 16000,
+        "analysis_window_ms": 1000,
+        "window_count": 0,
+        "clipped_window_count": 0,
+        "n_crest": 0,
+        "rms": {"mean_dbfs": None, "min_dbfs": None, "max_dbfs": None},
+        "bands": {
+            "mean_dbfs": [None, None, None, None],
+            "fraction": [None, None, None, None],
+        },
+        "hl": {"mean_db": None},
+        "t1": {"rms_stdev_db": None, "rms_range_db": None},
+        "t2": {"rms_slope_db_per_s": None},
+        "t3": {
+            "crest_max_db": None,
+            "high_crest_count": None,
+            "high_crest_rate": None,
+        },
+        "t6": {"hl_slope_db_per_s": None},
+    }
+
+
 def valid_observation_payload(node_id: str = "SIM-EAR-001") -> dict:
     return {
         "protocol_version": 1,
         "message_type": "observation",
-        "observation_id": str(uuid4()),
-        "node_id": node_id,
-        "sequence_number": 1,
-        "event_time_utc": datetime.now(timezone.utc).isoformat(),
-        "capture_timestamp_monotonic_us": 123456,
-        "timing_quality": "estimated",
-        "clock_offset_ms": None,
-        "timestamp_uncertainty_ms": 10.0,
-        "classification": {
-            "source_family": "vehicle",
-            "confidence": 0.72,
-            "hints": {"simulated_source_id": "SIM-VEHICLE-001"},
+        "identity": {
+            "observation_id": str(uuid4()),
+            "node_id": node_id,
+            "hub_id": "",
+            "sequence_number": 1,
         },
-        "bearing": {"deg": 180.0, "reference": "node", "confidence": 0.61},
-        "signal_level_dbfs": -34.0,
-        "duration_ms": 850.0,
+        "context": {
+            "event_time_utc": datetime.now(timezone.utc).isoformat(),
+            "capture_timestamp_monotonic_us": 123456,
+            "timing_quality": "estimated",
+            "clock_offset_ms": None,
+            "timestamp_uncertainty_ms": 10.0,
+            "interval_duration_ms": 850.0,
+            "episode_duration_ms": 850.0,
+            "emission_kind": "periodic",
+        },
+        "acoustic": {
+            "signal_level_dbfs": -34.0,
+            "measurements": _empty_l0_measurements(),
+            "signature": None,
+            "classification": {
+                "schema": "l2",
+                "version": 1,
+                "source_family": "vehicle",
+                "confidence": 0.72,
+                "hints": {"simulated_source_id": "SIM-VEHICLE-001"},
+            },
+        },
+        "spatial": {
+            "bearing": {"deg": 180.0, "reference": "node", "confidence": 0.61},
+            "position": None,
+        },
     }
 
 
@@ -429,29 +471,9 @@ def test_installation_requires_geographic_position_and_is_returned_by_node_api()
 
 def test_observations_are_validated_deduplicated_and_listed() -> None:
     observation_id = uuid4()
-    body = ObservationBody(
-        protocol_version=1,
-        message_type="observation",
-        observation_id=observation_id,
-        node_id="EAR-007",
-        sequence_number=1,
-        event_time_utc=datetime.now(timezone.utc),
-        capture_timestamp_monotonic_us=123456,
-        timing_quality="estimated",
-        timestamp_uncertainty_ms=10,
-        classification=ObservationClassification(
-            source_family="vehicle",
-            confidence=0.72,
-            hints={"simulated_source_id": "SIM-VEHICLE-001"},
-        ),
-        bearing=ObservationBearing(
-            deg=180,
-            reference="node",
-            confidence=0.61,
-        ),
-        signal_level_dbfs=-34,
-        duration_ms=850,
-    )
+    payload = valid_observation_payload("EAR-007")
+    payload["identity"]["observation_id"] = str(observation_id)
+    body = ObservationBody.model_validate(payload)
     db = SessionLocal()
     try:
         db.add(
@@ -468,24 +490,30 @@ def test_observations_are_validated_deduplicated_and_listed() -> None:
         assert ingest_observation(db, "EAR-007", body) is False
         observations = list_observations(db, "ear-007", limit=10)
         assert len(observations) == 1
-        assert str(observations[0].observation_id) == str(observation_id)
-        assert observations[0].node_id == "EAR-007"
-        assert observations[0].classification is not None
-        assert observations[0].classification.source_family == "vehicle"
-        assert observations[0].classification.confidence == 0.72
-        assert observations[0].classification.hints == {
+        assert str(observations[0].identity.observation_id) == str(observation_id)
+        assert observations[0].identity.node_id == "EAR-007"
+        assert observations[0].acoustic.classification is not None
+        assert observations[0].acoustic.classification.source_family == "vehicle"
+        assert observations[0].acoustic.classification.confidence == 0.72
+        assert observations[0].acoustic.classification.hints == {
             "simulated_source_id": "SIM-VEHICLE-001"
         }
-        assert observations[0].bearing is not None
-        assert observations[0].bearing.deg == 180
-        assert observations[0].bearing.reference == "node"
-        assert observations[0].bearing.confidence == 0.61
+        assert observations[0].spatial.bearing is not None
+        assert observations[0].spatial.bearing.deg == 180
+        assert observations[0].spatial.bearing.reference == "node"
+        assert observations[0].spatial.bearing.confidence == 0.61
 
         with pytest.raises(ValueError, match="does not match topic"):
             ingest_observation(db, "EAR-008", body)
         with pytest.raises(ValueError, match="registered Ear"):
             ingest_observation(
-                db, "OUT-003", body.model_copy(update={"node_id": "OUT-003"})
+                db,
+                "OUT-003",
+                body.model_copy(
+                    update={
+                        "identity": body.identity.model_copy(update={"node_id": "OUT-003"})
+                    }
+                ),
             )
 
     finally:
@@ -498,37 +526,28 @@ def test_observations_are_validated_deduplicated_and_listed() -> None:
     )
     assert response.status_code == 200
     assert len(response.json()) == 1
-    assert all(item["node_id"] == "EAR-007" for item in response.json())
+    assert all(
+        item["identity"]["node_id"] == "EAR-007" for item in response.json()
+    )
 
     unauthorized = client.get("/api/v1/observations")
     assert unauthorized.status_code == 401
 
 
 def test_observation_requires_timezone_and_valid_bearing() -> None:
-    payload = {
-        "protocol_version": 1,
-        "message_type": "observation",
-        "observation_id": str(uuid4()),
-        "node_id": "EAR-008",
-        "sequence_number": 1,
-        "event_time_utc": "2026-10-04T20:00:00",
-        "capture_timestamp_monotonic_us": 123456,
-        "timing_quality": "estimated",
-        "timestamp_uncertainty_ms": 10,
-        "duration_ms": 100,
-        "bearing": {"deg": 180, "reference": "node", "confidence": 0.5},
-    }
+    payload = valid_observation_payload("EAR-008")
+    payload["context"]["event_time_utc"] = "2026-10-04T20:00:00"
     with pytest.raises(ValueError):
         ObservationBody.model_validate(payload)
 
-    payload["event_time_utc"] = "2026-10-04T20:00:00+02:00"
-    payload["bearing"]["deg"] = 360
+    payload["context"]["event_time_utc"] = "2026-10-04T20:00:00+02:00"
+    payload["spatial"]["bearing"]["deg"] = 360
     with pytest.raises(ValueError):
         ObservationBody.model_validate(payload)
 
-    payload["bearing"]["deg"] = 359.9
+    payload["spatial"]["bearing"]["deg"] = 359.9
     body = ObservationBody.model_validate(payload)
-    assert body.event_time_utc.isoformat() == "2026-10-04T18:00:00+00:00"
+    assert body.context.event_time_utc.isoformat() == "2026-10-04T18:00:00+00:00"
 
 
 def test_observation_count_endpoint_returns_table_total() -> None:
@@ -546,10 +565,13 @@ def test_observation_count_endpoint_returns_table_total() -> None:
         )
         db.commit()
         before = service.count_observations(db)
+        before_unique = service.count_unique_observations(db)
         body = ObservationBody.model_validate(valid_observation_payload(node_id))
         assert ingest_observation(db, node_id, body) is True
         assert service.count_observations(db) == before + 1
         assert service.count_observations(db, node_id) == 1
+        assert service.count_unique_observations(db) == before_unique + 1
+        assert service.count_unique_observations(db, node_id) == 1
     finally:
         db.close()
 
@@ -557,12 +579,16 @@ def test_observation_count_endpoint_returns_table_total() -> None:
     headers = {"Authorization": "Bearer test-admin"}
     response = client.get("/api/v1/observations/count", headers=headers)
     assert response.status_code == 200
-    assert response.json()["total"] >= 1
+    body = response.json()
+    assert body["total"] >= 1
+    assert body["unique_observations"] >= 1
+    assert body["unique_observations"] <= body["total"]
     filtered = client.get(
         f"/api/v1/observations/count?node_id={node_id}", headers=headers
     )
     assert filtered.status_code == 200
     assert filtered.json()["total"] == 1
+    assert filtered.json()["unique_observations"] == 1
     unauthorized = client.get("/api/v1/observations/count")
     assert unauthorized.status_code == 401
 
@@ -570,25 +596,26 @@ def test_observation_count_endpoint_returns_table_total() -> None:
 def test_observation_accepts_null_classification_and_bearing() -> None:
     """Physical Ear Phase 1 publishes unclassified, bearing-less Observations."""
     payload = valid_observation_payload("EAR-PHASE1")
-    payload["classification"] = None
-    payload["bearing"] = None
-    payload["duration_ms"] = 1000.0
-    payload["signal_level_dbfs"] = -42.5
+    payload["acoustic"]["classification"] = None
+    payload["spatial"]["bearing"] = None
+    payload["context"]["interval_duration_ms"] = 1000.0
+    payload["context"]["episode_duration_ms"] = 1000.0
+    payload["acoustic"]["signal_level_dbfs"] = -42.5
     body = ObservationBody.model_validate(payload)
-    assert body.classification is None
-    assert body.bearing is None
-    assert body.signal_level_dbfs == -42.5
-    assert body.duration_ms == 1000.0
+    assert body.acoustic.classification is None
+    assert body.spatial.bearing is None
+    assert body.acoustic.signal_level_dbfs == -42.5
+    assert body.context.interval_duration_ms == 1000.0
 
 
 def test_observation_rejects_out_of_range_confidences_and_legacy_shape() -> None:
     payload = valid_observation_payload()
-    payload["classification"]["confidence"] = 1.1
+    payload["acoustic"]["classification"]["confidence"] = 1.1
     with pytest.raises(ValueError):
         ObservationBody.model_validate(payload)
 
     payload = valid_observation_payload()
-    payload["bearing"]["confidence"] = -0.1
+    payload["spatial"]["bearing"]["confidence"] = -0.1
     with pytest.raises(ValueError):
         ObservationBody.model_validate(payload)
 
@@ -598,7 +625,8 @@ def test_observation_rejects_out_of_range_confidences_and_legacy_shape() -> None
         ObservationBody.model_validate(payload)
 
     payload = valid_observation_payload()
-    payload["bearing_deg"] = payload.pop("bearing")["deg"]
+    payload["bearing_deg"] = payload["spatial"]["bearing"]["deg"]
+    payload["spatial"]["bearing"] = None
     with pytest.raises(ValueError):
         ObservationBody.model_validate(payload)
 
@@ -695,11 +723,11 @@ def test_simulator_observation_round_trips_through_hub_protocol() -> None:
     assert len(listed) == 1
     assert listed[0].protocol_version == 1
     assert listed[0].message_type == "observation"
-    assert listed[0].node_id == "SIM-EAR-001"
-    assert listed[0].classification is not None
-    assert listed[0].classification.confidence == 0.72
-    assert listed[0].bearing is not None
-    assert listed[0].bearing.deg == 180
+    assert listed[0].identity.node_id == "SIM-EAR-001"
+    assert listed[0].acoustic.classification is not None
+    assert listed[0].acoustic.classification.confidence == 0.72
+    assert listed[0].spatial.bearing is not None
+    assert listed[0].spatial.bearing.deg == 180
 
 
 def test_observation_topic_parser_requires_exact_ear_topic_shape() -> None:

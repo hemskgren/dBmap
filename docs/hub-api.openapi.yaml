@@ -2444,7 +2444,7 @@ paths:
         - bearerAuth: []
   /api/v1/observations/count:
     get:
-      summary: Count observations in the database
+      summary: Count observation reports and unique observation IDs
       operationId: countObservations
       parameters:
         - name: node_id
@@ -3538,10 +3538,17 @@ components:
           type: integer
           minimum: 0
           title: Total
+          description: Observation report rows (MQTT payloads / DB rows).
+        unique_observations:
+          type: integer
+          minimum: 0
+          title: Unique Observations
+          description: Distinct identity.observation_id values among those reports.
       additionalProperties: false
       type: object
       required:
         - total
+        - unique_observations
       title: ObservationCountView
     ObservationView:
       properties:
