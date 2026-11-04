@@ -8,6 +8,7 @@
 #include "driver/uart.h"
 #include "driver/uart_vfs.h"
 #include "esp_timer.h"
+#include "dbmap_mic_count.h"
 #include "dbmap_nvs.h"
 #include "dbmap_wifi.h"
 #include "esp_log.h"
@@ -270,6 +271,25 @@ esp_err_t dbmap_serial_config_wait(dbmap_effective_t *cfg, int timeout_seconds)
             } else {
                 candidate.network.mqtt_port = (uint16_t)port;
                 candidate.network.mqtt_use_tls = true;
+            }
+        }
+
+        /* Optional installation mic count. Omitted → keep candidate (loaded NVS / default).
+         * Present but invalid → reject entire configure (no NVS writes). */
+        const cJSON *mic_count_item =
+            cJSON_GetObjectItemCaseSensitive(configuration, "microphone_count");
+        if (mic_count_item != NULL && !cJSON_IsNull(mic_count_item)) {
+            if (!cJSON_IsNumber(mic_count_item) ||
+                mic_count_item->valuedouble != (double)mic_count_item->valueint) {
+                valid = false;
+            } else {
+                uint8_t mic = 0;
+                if (!dbmap_mic_count_from_json_int(mic_count_item->valueint, &mic)) {
+                    valid = false;
+                } else {
+                    candidate.microphone_count = mic;
+                    candidate.microphone_count_status = DBMAP_MIC_COUNT_STATUS_OK;
+                }
             }
         }
 

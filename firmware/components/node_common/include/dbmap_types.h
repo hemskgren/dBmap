@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "dbmap_mic_count.h"
+
 #define DBMAP_NODE_ID_MAX 32
 #define DBMAP_HUB_ID_MAX 64
 #define DBMAP_HOST_MAX 128
@@ -56,6 +58,12 @@ typedef struct {
     char bootstrap_token[DBMAP_TOKEN_MAX];
     char device_api_token[DBMAP_TOKEN_MAX];
     bool provisioned;
+    /**
+     * Installation microphone count from NVS audio/mic_count (1 or 2).
+     * Not part of config_version / calibration / classifier Desired state.
+     */
+    uint8_t microphone_count;
+    dbmap_mic_count_status_t microphone_count_status;
 } dbmap_effective_t;
 
 void dbmap_effective_defaults(dbmap_effective_t *out);

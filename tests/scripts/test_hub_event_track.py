@@ -1,3 +1,4 @@
+import json
 import sys
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
@@ -97,9 +98,11 @@ def test_report_disclaims_event_track_and_geographic_position_inference() -> Non
     )
 
     output = "\n".join(lines)
-    assert "Candidate C1: 1 independent observation(s), 1 Ear(s)" in output
-    assert "classification=vehicle (confidence=0.72)" in output
-    assert "node-relative bearing=180.0 deg (confidence=0.61)" in output
+    assert "Observation reports: 1 (fetched maximum 500)" in output
+    assert "Unique observations: 1" in output
+    assert "Report R1:" not in output
+    assert "Candidate C" not in output
+    assert "classification=vehicle" not in output
     assert (
         "Ground-truth simulator IDs are not used for grouping or correlation" in output
     )
@@ -108,6 +111,33 @@ def test_report_disclaims_event_track_and_geographic_position_inference() -> Non
     assert "No Event or Track association is attempted" in output
     assert "Cross-Ear Bearing Geometry (diagnostic only" in output
     assert "Weather remains informational only" in output
+
+
+def test_report_details_lists_each_report() -> None:
+    output = "\n".join(
+        hub_event_track.report(
+            [
+                {
+                    "observation_id": "obs-1",
+                    "node_id": "SIM-EAR-001",
+                    "event_time_utc": "2026-10-05T18:00:00Z",
+                    "classification": {
+                        "source_family": "vehicle",
+                        "confidence": 0.72,
+                        "hints": {"simulated_source_id": "SIM-VEHICLE-001"},
+                    },
+                    "bearing": {"deg": 180.0, "reference": "node", "confidence": 0.61},
+                }
+            ],
+            include_observation_details=True,
+        )
+    )
+
+    assert "Observation reports (detail): each report listed separately." in output
+    assert "Report R1: 1 independent report(s), 1 Ear(s) (SIM-EAR-001)" in output
+    assert "classification=vehicle (confidence=0.72)" in output
+    assert "node-relative bearing=180.0 deg (confidence=0.61)" in output
+    assert "SIM-VEHICLE-001" not in output
 
 
 def test_report_cross_ear_geometry_detail_and_weather_unchanged() -> None:
@@ -228,14 +258,26 @@ def test_report_keeps_same_hint_observations_separate_and_groups_only_ear_activi
 
     output = "\n".join(hub_event_track.report(observations, event_gap_seconds=5))
 
-    assert output.count("Candidate C") == 6
-    assert "Candidate C1: 1 independent observation(s)" in output
+    assert "Candidate C" not in output
+    assert "Report R" not in output
+    assert "Observation reports: 6 (fetched maximum 500)" in output
+    assert "Unique observations: 6" in output
     assert "SIM-VEHICLE-001" not in output
     assert "Ear activity episode A1 for EAR-001: 1 report(s)" in output
     assert "Ear activity episode A2 for SIM-EAR-001: 3 report(s)" in output
     assert "Ear activity episode A3 for SIM-EAR-002: 1 report(s)" in output
     assert "Ear activity episode A4 for SIM-EAR-002: 1 report(s)" in output
     assert "gap 10.3s exceeds 5s window" in output
+
+    detailed = "\n".join(
+        hub_event_track.report(
+            observations,
+            event_gap_seconds=5,
+            include_observation_details=True,
+        )
+    )
+    assert detailed.count("Report R") == 6
+    assert "Report R1: 1 independent report(s)" in detailed
 
 
 def test_event_gap_window_is_configurable_and_requires_finite_positive_value() -> None:
@@ -321,8 +363,17 @@ def test_report_prints_installations_and_site_distance_without_associating_sourc
         in output
     )
     assert "EAR-001 ↔ EAR-002: 556m (>500m)" in output
-    # Candidates appear before installation metadata.
-    assert output.index("Candidate C1:") < output.index("Node installation metadata")
+    # Default report skips the per-report dump; site metadata still follows the header.
+    assert "Report R" not in output
+    assert output.index("Unique observations:") < output.index(
+        "Node installation metadata"
+    )
+    detailed = "\n".join(
+        hub_event_track.report(
+            observations, nodes=nodes, include_observation_details=True
+        )
+    )
+    assert detailed.index("Report R1:") < detailed.index("Node installation metadata")
 
 
 def test_report_never_uses_airborne_ground_truth_hint_for_grouping() -> None:
@@ -351,7 +402,7 @@ def test_report_never_uses_airborne_ground_truth_hint_for_grouping() -> None:
 
     output = "\n".join(hub_event_track.report(observations, nodes=nodes))
 
-    assert output.count("Candidate C") == 2
+    assert "Report R" not in output
     assert "SIM-DRONE-001" not in output
     assert "EAR-001 ↔ EAR-002: 556m (>500m)" in output
     assert "Ground-truth simulator IDs are not used" in output
@@ -405,7 +456,8 @@ def test_report_can_omit_site_context_for_watch_updates() -> None:
             include_site_context=False,
         )
     )
-    assert "Candidate C1:" in output
+    assert "Observation reports: 2 (fetched maximum 500)" in output
+    assert "Report R" not in output
     assert "Ear activity episode" in output
     assert "Node installation metadata" not in output
     assert "Ear installation distances" not in output
@@ -736,3 +788,108 @@ def test_observation_diff_reports_only_unseen_ids() -> None:
 
     assert new == [{"observation_id": "obs-2"}]
     assert known == {"obs-1", "obs-2"}
+
+
+def test_format_observations_json_sorts_and_pretty_prints_reports() -> None:
+    payload = hub_event_track.format_observations_json(
+        [
+            {
+                "identity": {
+                    "observation_id": "obs-late",
+                    "node_id": "EAR-001",
+                    "sequence_number": 2,
+                },
+                "context": {"event_time_utc": "2026-11-04T12:00:10Z"},
+            },
+            {
+                "identity": {
+                    "observation_id": "obs-early",
+                    "node_id": "EAR-001",
+                    "sequence_number": 1,
+                },
+                "context": {"event_time_utc": "2026-11-04T12:00:00Z"},
+            },
+        ]
+    )
+    parsed = json.loads(payload)
+    assert [item["identity"]["observation_id"] for item in parsed] == [
+        "obs-early",
+        "obs-late",
+    ]
+    assert '"observation_id": "obs-early"' in payload
+    assert payload.startswith("[\n")
+
+
+def test_filter_observations_matches_web_node_and_observation_id_semantics() -> None:
+    observations = [
+        {"observation_id": "obs-a", "node_id": "EAR-001"},
+        {"observation_id": "obs-b", "node_id": "EAR-001"},
+        {"observation_id": "obs-a", "node_id": "EAR-002"},
+        {"observation_id": "obs-c", "node_id": "EAR-002"},
+    ]
+
+    by_node = hub_event_track.filter_observations(
+        observations, node_ids={"EAR-001"}
+    )
+    assert [item["observation_id"] for item in by_node] == ["obs-a", "obs-b"]
+
+    by_obs = hub_event_track.filter_observations(
+        observations, observation_ids={"obs-a"}
+    )
+    assert [(item["node_id"], item["observation_id"]) for item in by_obs] == [
+        ("EAR-001", "obs-a"),
+        ("EAR-002", "obs-a"),
+    ]
+
+    by_both = hub_event_track.filter_observations(
+        observations,
+        node_ids={"EAR-002"},
+        observation_ids={"obs-a", "obs-c"},
+    )
+    assert [item["observation_id"] for item in by_both] == ["obs-a", "obs-c"]
+
+    assert hub_event_track.unique_observation_count(observations) == 3
+    status = hub_event_track.format_filter_status(
+        node_ids={"EAR-001"},
+        observation_ids={"obs-a"},
+        fetched_count=4,
+        filtered_count=1,
+    )
+    assert status[0].startswith("Filters applied (of 4 fetched reports → 1 match)")
+    assert "Node ID: EAR-001" in status[1]
+    assert "Observation ID: obs-a" in status[2]
+
+
+def test_fetch_observation_count_parses_hub_totals(monkeypatch) -> None:
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return b'{"total": 192, "unique_observations": 1}'
+
+    def fake_urlopen(request, context, timeout):
+        requests.append(request)
+        assert timeout == 15
+        return Response()
+
+    monkeypatch.setattr(hub_event_track.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        hub_event_track.ssl,
+        "create_default_context",
+        lambda **kwargs: object(),
+    )
+
+    assert hub_event_track.fetch_observation_count(
+        "https://hub.example",
+        "ca.crt",
+        "test-admin-token",
+        node_id="EAR-001",
+    ) == {"total": 192, "unique_observations": 1}
+    assert "/api/v1/observations/count?node_id=EAR-001" in requests[0].full_url
+    assert requests[0].get_header("Authorization") == "Bearer test-admin-token"

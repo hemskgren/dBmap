@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "identity.c"
+        "mic_count.c"
         "nvs_store.c"
         "serial_config.c"
         "net_wifi.c"

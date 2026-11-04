@@ -527,12 +527,81 @@ class ObservationL1Signature(BaseModel):
     flatness: ObservationL1FeatureStats
 
 
+class ObservationL2FeatureStats(BaseModel):
+    """One L2 dynamics feature: valid_count plus optional mean/stdev."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    valid_count: int = Field(ge=0)
+    mean: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    stdev: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def valid_count_null_rules(self) -> "ObservationL2FeatureStats":
+        if self.valid_count == 0:
+            if self.mean is not None or self.stdev is not None:
+                raise ValueError(
+                    "mean and stdev must be null when valid_count is 0"
+                )
+            return self
+        if self.mean is None:
+            raise ValueError("mean is required when valid_count >= 1")
+        if self.valid_count == 1:
+            if self.stdev is not None:
+                raise ValueError("stdev must be null when valid_count is 1")
+        elif self.stdev is None:
+            raise ValueError("stdev is required when valid_count >= 2")
+        return self
+
+
+class ObservationL2Dynamics(BaseModel):
+    """Interval-scoped L2 Acoustic Dynamics (schema l2, contract version 1 only)."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    dynamics_schema: Literal["l2"] = Field(alias="schema")
+    version: Literal[1]
+    sample_rate_hz: int = Field(gt=0)
+    analysis_window_ms: int = Field(gt=0)
+    fft_size: int = Field(gt=0)
+    freq_min_hz: float = Field(ge=0, allow_inf_nan=False)
+    freq_max_hz: float = Field(gt=0, allow_inf_nan=False)
+    frame_hop_samples: int = Field(gt=0)
+    window_count: int = Field(ge=0)
+    invalid_window_count: int = Field(ge=0)
+    history_overflow: bool
+    spectral_flux: ObservationL2FeatureStats
+    envelope_cv: ObservationL2FeatureStats
+    dominant_delta_hz: ObservationL2FeatureStats
+
+    @model_validator(mode="after")
+    def overflow_option_a(self) -> "ObservationL2Dynamics":
+        if not self.history_overflow:
+            return self
+        if self.window_count != 0 or self.invalid_window_count != 0:
+            raise ValueError(
+                "history_overflow requires window_count and invalid_window_count to be 0"
+            )
+        for name in ("spectral_flux", "envelope_cv", "dominant_delta_hz"):
+            feature = getattr(self, name)
+            if (
+                feature.valid_count != 0
+                or feature.mean is not None
+                or feature.stdev is not None
+            ):
+                raise ValueError(
+                    "history_overflow requires all L2 feature metrics to be cleared"
+                )
+        return self
+
+
 class ObservationAcoustic(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     signal_level_dbfs: float | None = Field(default=None, le=0, allow_inf_nan=False)
     measurements: ObservationL0Measurements
     signature: ObservationL1Signature | None = None
+    dynamics: ObservationL2Dynamics | None = None
     classification: ObservationClassification | None = None
 
 

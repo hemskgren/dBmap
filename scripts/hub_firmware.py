@@ -107,6 +107,8 @@ def create_metadata(bundle_path: Path, build_date_utc: str) -> Path:
         "configuration_version": configuration_version,
         "artifact_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
     }
+    if isinstance(manifest.get("dbmap_config"), dict):
+        metadata["dbmap_config"] = manifest["dbmap_config"]
     metadata_path = bundle_path.with_suffix(".json")
     try:
         with metadata_path.open("x", encoding="utf-8") as output:

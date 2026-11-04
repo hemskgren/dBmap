@@ -35,5 +35,8 @@ CONFIG_DBMAP_EAR_OBS_L0_MAX_WINDOWS=64
 CONFIG_DBMAP_EAR_OBS_PUBLISH_L0=y
 # L1 Acoustic Signature (1024-pt FFT features on Observation intervals).
 CONFIG_DBMAP_EAR_OBS_L1=y
+# L2 Acoustic Dynamics: compute on device; do not publish MQTT dynamics yet.
+CONFIG_DBMAP_EAR_OBS_L2=y
+# CONFIG_DBMAP_EAR_OBS_L2_PUBLISH is not set
 # Serial diagnostics (RMS activity + L0).
 CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG=y

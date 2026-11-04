@@ -130,7 +130,7 @@ server {
     }
 
     # Proxy firmware builder API via HTTPS (firmware-builder terminates TLS with its own cert)
-    location ~ ^(?<build_request_base>/[^/]+(?:/[^/]+)*)?(?<build_api_uri>/api/v1/firmware/(?:targets|builds(?:/.*)?))$ {
+    location ~ ^(?<build_request_base>/[^/]+(?:/[^/]+)*)?(?<build_api_uri>/api/v1/firmware/(?:targets(?:/.*)?|builds(?:/.*)?))$ {
         if ($build_request_base != $dbmap_public_base_path) { return 404; }
         error_page 502 503 504 = @firmware_builder_unavailable;
         proxy_pass https://$firmware_builder_upstream$build_api_uri$is_args$args;

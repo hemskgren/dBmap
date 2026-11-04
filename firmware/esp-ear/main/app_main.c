@@ -6,6 +6,7 @@
 #include "dbmap_ear_mic.h"
 #include "dbmap_ear_observation.h"
 #include "dbmap_health.h"
+#include "dbmap_mic_count.h"
 #include "dbmap_mqtt.h"
 #include "dbmap_nvs.h"
 #include "dbmap_ota.h"
@@ -77,11 +78,13 @@ void app_main(void)
     );
     ESP_LOGI(
         TAG,
-        "boot hardware=%s kind=%s mic=%s provisioned=%d",
+        "boot hardware=%s kind=%s mic=%s provisioned=%d mic_count=%u (%s)",
         s_cfg.identity.hardware_revision,
         dbmap_mqtt_topic_kind(),
         dbmap_ear_mic_model_id(),
-        (int)s_cfg.provisioned
+        (int)s_cfg.provisioned,
+        (unsigned)s_cfg.microphone_count,
+        dbmap_mic_count_status_str(s_cfg.microphone_count_status)
     );
     ESP_LOGI(TAG, "device API credential %s", s_cfg.device_api_token[0] != '\0' ? "present" : "absent");
 

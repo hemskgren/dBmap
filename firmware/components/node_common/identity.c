@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "dbmap_mic_count.h"
 #include "sdkconfig.h"
 
 const char *dbmap_mqtt_topic_kind(void)
@@ -26,6 +27,8 @@ void dbmap_effective_defaults(dbmap_effective_t *out)
     out->network.mqtt_use_tls = true;
     strncpy(out->bootstrap_token, CONFIG_DBMAP_BOOTSTRAP_TOKEN, sizeof(out->bootstrap_token) - 1);
     out->provisioned = false;
+    out->microphone_count = DBMAP_MIC_COUNT_DEFAULT;
+    out->microphone_count_status = DBMAP_MIC_COUNT_STATUS_DEFAULTED;
     dbmap_rebuild_topics(out);
 }
 

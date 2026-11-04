@@ -7,6 +7,7 @@
 
 #include "cJSON.h"
 #include "dbmap_acoustic_l0.h"
+#include "dbmap_acoustic_l2.h"
 #include "dbmap_audio_metrics.h"
 #include "dbmap_background_rms.h"
 #include "dbmap_health.h"
@@ -169,6 +170,17 @@ static bool s_l1_ws_ready;
 static uint32_t s_l1_analyze_count;
 static uint32_t s_l1_analyze_us_last;
 static uint32_t s_l1_analyze_us_max;
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+static dbmap_l2_window_t s_l2_latest;
+static bool s_l2_latest_ready;
+static uint32_t s_l2_analyze_count;
+static uint32_t s_l2_combined_us_last;
+static uint32_t s_l2_combined_us_max;
+static uint32_t s_l2_incr_est_us_last;
+static uint32_t s_l2_incr_est_us_max;
+static uint32_t s_l2_rms_us_last;
+static uint32_t s_l2_rms_us_max;
+#endif
 #endif
 #endif
 
@@ -267,11 +279,46 @@ esp_err_t dbmap_ear_mic_l0_poll(void)
     const uint32_t us = elapsed > 0 ? (uint32_t)elapsed : 0;
 
 #if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
-    /* L1 is independent of L0 results; failure must not affect L0 publication. */
+    /* L1(/L2) is independent of L0 results; failure must not affect L0 publication. */
     dbmap_l1_window_t l1_win;
     memset(&l1_win, 0, sizeof(l1_win));
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+    dbmap_l2_window_t l2_win;
+    memset(&l2_win, 0, sizeof(l2_win));
+    uint32_t l2_combined_us = 0;
+    uint32_t l2_rms_us = 0;
+    uint32_t l2_incr_est_us = 0;
+#else
     uint32_t l1_us = 0;
+#endif
     if (s_l1_ws_ready) {
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+        const int64_t l2_t0 = esp_timer_get_time();
+        dbmap_l2_analyze_window(
+            &s_l1_ws,
+            s_l0_pcm[job.buf_idx],
+            job.sample_count,
+            job.full_scale_bits,
+            (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ,
+            job.window_ms,
+            job.window_end_mono_us,
+            &l1_win,
+            &l2_win
+        );
+        const int64_t l2_elapsed = esp_timer_get_time() - l2_t0;
+        l2_combined_us = l2_elapsed > 0 ? (uint32_t)l2_elapsed : 0;
+        {
+            dbmap_l2_analyze_stages_t st;
+            dbmap_l2_get_last_analyze_stages(&st);
+            l2_rms_us = st.rms_us;
+        }
+        /* Derived estimate vs pre-L2 EAR-001 L1 baseline (not a direct L2 timer). */
+        if (l2_combined_us > DBMAP_L2_L1_BASELINE_US_LAST) {
+            l2_incr_est_us = l2_combined_us - DBMAP_L2_L1_BASELINE_US_LAST;
+        } else {
+            l2_incr_est_us = 0;
+        }
+#else
         const int64_t l1_t0 = esp_timer_get_time();
         dbmap_l1_analyze_window(
             &s_l1_ws,
@@ -285,6 +332,7 @@ esp_err_t dbmap_ear_mic_l0_poll(void)
         );
         const int64_t l1_elapsed = esp_timer_get_time() - l1_t0;
         l1_us = l1_elapsed > 0 ? (uint32_t)l1_elapsed : 0;
+#endif
     }
 #endif
 
@@ -301,10 +349,33 @@ esp_err_t dbmap_ear_mic_l0_poll(void)
         s_l1_latest = l1_win;
         s_l1_latest_ready = true;
         s_l1_analyze_count++;
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+        /* Legacy L1 analyze_us_* stay untouched while L2 reports combined time. */
+        s_l2_latest = l2_win;
+        s_l2_latest_ready = true;
+        s_l2_analyze_count++;
+        s_l2_combined_us_last = l2_combined_us;
+        if (l2_combined_us > s_l2_combined_us_max) {
+            s_l2_combined_us_max = l2_combined_us;
+        }
+        s_l2_rms_us_last = l2_rms_us;
+        if (l2_rms_us > s_l2_rms_us_max) {
+            s_l2_rms_us_max = l2_rms_us;
+        }
+        s_l2_incr_est_us_last = l2_incr_est_us;
+        {
+            uint32_t incr_max_est = 0;
+            if (s_l2_combined_us_max > DBMAP_L2_L1_BASELINE_US_MAX) {
+                incr_max_est = s_l2_combined_us_max - DBMAP_L2_L1_BASELINE_US_MAX;
+            }
+            s_l2_incr_est_us_max = incr_max_est;
+        }
+#else
         s_l1_analyze_us_last = l1_us;
         if (l1_us > s_l1_analyze_us_max) {
             s_l1_analyze_us_max = l1_us;
         }
+#endif
     }
 #endif
     portEXIT_CRITICAL(&s_lock);
@@ -401,6 +472,52 @@ esp_err_t dbmap_ear_mic_get_l1_perf(dbmap_ear_mic_l1_perf_t *out)
 #endif
 }
 
+esp_err_t dbmap_ear_mic_get_l2_window(dbmap_l2_window_t *out)
+{
+    if (out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(out, 0, sizeof(*out));
+#if !defined(CONFIG_DBMAP_EAR_OBS_L2) || !CONFIG_DBMAP_EAR_OBS_L2 || \
+    !defined(CONFIG_DBMAP_EAR_OBS_L1) || !CONFIG_DBMAP_EAR_OBS_L1 || !CONFIG_DBMAP_EAR_MIC_L0
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    portENTER_CRITICAL(&s_lock);
+    if (s_l2_latest_ready) {
+        *out = s_l2_latest;
+    }
+    portEXIT_CRITICAL(&s_lock);
+    return ESP_OK;
+#endif
+}
+
+esp_err_t dbmap_ear_mic_get_l2_perf(dbmap_ear_mic_l2_perf_t *out)
+{
+    if (out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(out, 0, sizeof(*out));
+#if !defined(CONFIG_DBMAP_EAR_OBS_L2) || !CONFIG_DBMAP_EAR_OBS_L2 || \
+    !defined(CONFIG_DBMAP_EAR_OBS_L1) || !CONFIG_DBMAP_EAR_OBS_L1 || !CONFIG_DBMAP_EAR_MIC_L0
+    out->enabled = false;
+    return ESP_OK;
+#else
+    out->enabled = true;
+    out->baseline_l1_us_last = DBMAP_L2_L1_BASELINE_US_LAST;
+    out->baseline_l1_us_max = DBMAP_L2_L1_BASELINE_US_MAX;
+    portENTER_CRITICAL(&s_lock);
+    out->analyze_count = s_l2_analyze_count;
+    out->combined_us_last = s_l2_combined_us_last;
+    out->combined_us_max = s_l2_combined_us_max;
+    out->incremental_estimated_us_last = s_l2_incr_est_us_last;
+    out->incremental_estimated_us_max = s_l2_incr_est_us_max;
+    out->rms_us_last = s_l2_rms_us_last;
+    out->rms_us_max = s_l2_rms_us_max;
+    portEXIT_CRITICAL(&s_lock);
+    return ESP_OK;
+#endif
+}
+
 static void set_status(ear_audio_snapshot_t *snap, uint32_t expected_samples)
 {
     /* Transport uses a combined non-data hint; telemetry keeps counters separate. */
@@ -481,7 +598,25 @@ static void enrich_health(cJSON *state, const dbmap_effective_t *cfg, bool inclu
     cJSON_AddNumberToObject(audio, "sample_rate_hz", s_mic_cfg.sample_rate_hz);
     cJSON_AddStringToObject(audio, "sample_format", "int32_from_i2s32_left_justified_24");
 
+    /* Installation vs live measurement — mono LEFT path only in E2. */
+    uint8_t configured = cfg->microphone_count;
+    if (!dbmap_mic_count_supported(configured)) {
+        configured = DBMAP_MIC_COUNT_DEFAULT;
+    }
+    cJSON_AddNumberToObject(audio, "configured_microphone_count", (double)configured);
+    const bool mic0_window_valid =
+        snap.measured_at_us > 0 && snap.missing_data == 0 && snap.sample_count > 0;
+    const uint8_t available = mic0_window_valid ? 1u : 0u;
+    cJSON_AddNumberToObject(audio, "available_microphone_count", (double)available);
+    cJSON_AddStringToObject(
+        audio,
+        "microphone_count_status",
+        dbmap_mic_count_status_str(cfg->microphone_count_status)
+    );
+
     cJSON *mics = cJSON_CreateArray();
+    /* Mic 0 object preserved for compatibility. Do not add synthetic entries for
+     * configured-but-uninitialized indexes (e.g. mic 1 while capture stays mono). */
     cJSON *mic = cJSON_CreateObject();
     cJSON_AddNumberToObject(mic, "index", 0);
     cJSON_AddStringToObject(mic, "model", s_model->id);
@@ -994,6 +1129,26 @@ esp_err_t dbmap_ear_mic_start(const dbmap_effective_t *cfg, const dbmap_ear_mic_
                 (double)DBMAP_L1_FREQ_MIN_HZ,
                 (double)DBMAP_L1_FREQ_MAX_HZ
             );
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+            memset(&s_l2_latest, 0, sizeof(s_l2_latest));
+            s_l2_latest_ready = false;
+            s_l2_analyze_count = 0;
+            s_l2_combined_us_last = 0;
+            s_l2_combined_us_max = 0;
+            s_l2_incr_est_us_last = 0;
+            s_l2_incr_est_us_max = 0;
+            s_l2_rms_us_last = 0;
+            s_l2_rms_us_max = 0;
+            ESP_LOGI(
+                TAG,
+                "L2 ready compute=1 publish=%d (fused L1+L2; dynamics MQTT off unless PUBLISH)",
+#if defined(CONFIG_DBMAP_EAR_OBS_L2_PUBLISH) && CONFIG_DBMAP_EAR_OBS_L2_PUBLISH
+                1
+#else
+                0
+#endif
+            );
+#endif
 #endif
         }
     }

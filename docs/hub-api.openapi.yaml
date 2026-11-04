@@ -1552,60 +1552,6 @@ paths:
       description: "Includes current Hub health, historical availability windows, last state change, and observation gaps. Recent monitoring events are loaded separately from GET /api/v1/hub/monitoring/events. See docs/health-and-availability.md."
       security:
         - bearerAuth: []
-  /api/v1/hub/environmental-context:
-    get:
-      summary: Regional environmental weather context
-      description: >
-        Hub-owned regional weather snapshot (Open-Meteo) for analysis metadata.
-        Does not alter detection, association, or Track scoring. Optional `at`
-        selects the observation/event time; `ensure=true` refreshes from the
-        provider when the regional cache is missing or stale.
-      operationId: getHubEnvironmentalContext
-      parameters:
-        - name: at
-          in: query
-          required: false
-          schema:
-            type: string
-            format: date-time
-          description: Observation/event time (ISO-8601 with timezone). Defaults to Hub now.
-        - name: ensure
-          in: query
-          required: false
-          schema:
-            type: boolean
-            default: false
-          description: Refresh from Open-Meteo when cache is missing or stale.
-      responses:
-        "200":
-          description: Regional weather snapshot or unavailable marker
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-        "401":
-          description: Missing or invalid local bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorMessage"
-        "403":
-          description: "Authenticated, but OPA denied the action."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorMessage"
-        "422":
-          description: Invalid `at` timestamp
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorMessage"
-      tags:
-        - Hub
-      security:
-        - bearerAuth: []
   /api/v1/hub/monitoring/events:
     get:
       summary: Recent Hub monitoring events
@@ -1628,6 +1574,61 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HubMonitoringEvents"
+        "401":
+          description: Missing or invalid local bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "403":
+          description: "Authenticated, but OPA denied the action."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "503":
+          description: "OPA, MQTT, or the Docker engine is unavailable."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+      tags:
+        - Hub
+      security:
+        - bearerAuth: []
+  /api/v1/hub/environmental-context:
+    get:
+      summary: Regional environmental weather context
+      description: "Hub-owned regional weather snapshot (Open-Meteo) for analysis metadata. Does not alter detection, association, or Track scoring. Optional at selects the observation/event time; ensure=true refreshes from the provider when the regional cache is missing or stale."
+      operationId: getHubEnvironmentalContext
+      parameters:
+        - name: at
+          in: query
+          required: false
+          schema:
+            description: Observation/event time (ISO-8601). Defaults to Hub now.
+            title: At
+            type: string
+            nullable: true
+          description: Observation/event time (ISO-8601). Defaults to Hub now.
+        - name: ensure
+          in: query
+          required: false
+          schema:
+            type: boolean
+            description: "When true, refresh from Open-Meteo if the cache is missing or stale."
+            default: false
+            title: Ensure
+          description: "When true, refresh from Open-Meteo if the cache is missing or stale."
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Hub Environmental Context Api V1 Hub Environmental Context Get
         "401":
           description: Missing or invalid local bearer token.
           content:
@@ -1746,6 +1747,7 @@ paths:
   "/api/v1/hub/components/{component}/connection-failures":
     get:
       summary: Recent MQTT connection failures
+      description: "Mosquitto only. Returns auth, TLS/CA, and protocol/socket failure lines from the host-mounted broker log for the last 3 hours. Fail2ban drops never reach Mosquitto and are omitted. Available to local admin and viewer tokens."
       operationId: getHubComponentConnectionFailures
       parameters:
         - name: component
@@ -1781,7 +1783,6 @@ paths:
                 $ref: "#/components/schemas/ErrorMessage"
       tags:
         - Hub
-      description: Mosquitto only. Returns auth, TLS/CA, and protocol/socket failure lines from the host-mounted broker log for the last 3 hours. Fail2ban drops never reach Mosquitto and are omitted. Available to local admin and viewer tokens.
       security:
         - bearerAuth: []
   /api/v1/nodes:
@@ -1886,6 +1887,58 @@ paths:
         - Nodes
       security:
         - bearerAuth: []
+  "/api/v1/nodes/by-chip-mac/{chip_mac}":
+    get:
+      summary: Get node detail by chip MAC
+      operationId: getNodeByChipMac
+      parameters:
+        - name: chip_mac
+          in: path
+          required: true
+          schema:
+            type: string
+            title: Chip Mac
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeView"
+        "422":
+          description: Request body or query failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "401":
+          description: Missing or invalid local bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "403":
+          description: "Authenticated, but OPA denied the action."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "404":
+          description: The requested resource was not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "503":
+          description: "OPA, MQTT, or the Docker engine is unavailable."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+      tags:
+        - Nodes
+      security:
+        - bearerAuth: []
   "/api/v1/nodes/{node_id}":
     get:
       summary: Get node detail
@@ -1949,8 +2002,8 @@ paths:
           required: false
           schema:
             type: integer
-            minimum: 1
             maximum: 50
+            minimum: 1
             default: 15
             title: Limit
       responses:
@@ -1961,6 +2014,7 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+                title: Response Get Node Monitoring Events Api V1 Nodes  Node Id  Monitoring Events Get
         "401":
           description: Missing or invalid local bearer token.
           content:
@@ -1975,6 +2029,12 @@ paths:
                 $ref: "#/components/schemas/ErrorMessage"
         "404":
           description: The requested resource was not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "503":
+          description: "OPA, MQTT, or the Docker engine is unavailable."
           content:
             application/json:
               schema:
@@ -2866,6 +2926,16 @@ components:
           type: string
           title: Hardware Revision
           default: unknown
+        chip_mac:
+          title: Chip Mac
+          type: string
+          maxLength: 32
+          nullable: true
+        chip_variant:
+          title: Chip Variant
+          type: string
+          maxLength: 128
+          nullable: true
         firmware_id:
           title: Firmware Id
           type: string
@@ -2896,6 +2966,10 @@ components:
           title: Owner Id
           type: string
           nullable: true
+        replace_existing_chip_mac:
+          type: boolean
+          title: Replace Existing Chip Mac
+          default: false
       type: object
       title: CreateNodeRequest
     CreateNodeResponse:
@@ -3122,6 +3196,14 @@ components:
         hardware_revision:
           type: string
           title: Hardware Revision
+        chip_mac:
+          title: Chip Mac
+          type: string
+          nullable: true
+        chip_variant:
+          title: Chip Variant
+          type: string
+          nullable: true
         provisioning_state:
           type: string
           title: Provisioning State
@@ -3415,6 +3497,14 @@ components:
         hardware_revision:
           type: string
           title: Hardware Revision
+        chip_mac:
+          title: Chip Mac
+          type: string
+          nullable: true
+        chip_variant:
+          title: Chip Variant
+          type: string
+          nullable: true
         provisioning_state:
           type: string
           title: Provisioning State
@@ -3468,7 +3558,6 @@ components:
           nullable: true
         monitoring:
           title: Monitoring
-          description: Hub-observed device availability (D0). Present on detail reads only.
           additionalProperties: true
           type: object
           nullable: true
@@ -3486,6 +3575,29 @@ components:
         - reported
         - last_seen_at
       title: NodeView
+    ObservationAcoustic:
+      properties:
+        signal_level_dbfs:
+          title: Signal Level Dbfs
+          type: number
+          maximum: 0.0
+          nullable: true
+        measurements:
+          $ref: "#/components/schemas/ObservationL0Measurements"
+        signature:
+          $ref: "#/components/schemas/ObservationL1Signature"
+          nullable: true
+        dynamics:
+          $ref: "#/components/schemas/ObservationL2Dynamics"
+          nullable: true
+        classification:
+          $ref: "#/components/schemas/ObservationClassification"
+          nullable: true
+      additionalProperties: false
+      type: object
+      required:
+        - measurements
+      title: ObservationAcoustic
     ObservationBearing:
       properties:
         deg:
@@ -3513,6 +3625,17 @@ components:
       title: ObservationBearing
     ObservationClassification:
       properties:
+        schema:
+          type: string
+          enum:
+            - l2
+          title: Schema
+          default: l2
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+          default: 1
         source_family:
           title: Source Family
           type: string
@@ -3532,49 +3655,9 @@ components:
       additionalProperties: false
       type: object
       title: ObservationClassification
-    ObservationCountView:
+      description: L2 source hypothesis under acoustic.classification (may be null).
+    ObservationContext:
       properties:
-        total:
-          type: integer
-          minimum: 0
-          title: Total
-          description: Observation report rows (MQTT payloads / DB rows).
-        unique_observations:
-          type: integer
-          minimum: 0
-          title: Unique Observations
-          description: Distinct identity.observation_id values among those reports.
-      additionalProperties: false
-      type: object
-      required:
-        - total
-        - unique_observations
-      title: ObservationCountView
-    ObservationView:
-      properties:
-        protocol_version:
-          type: integer
-          enum:
-            - 1
-          title: Protocol Version
-        message_type:
-          type: string
-          enum:
-            - observation
-          title: Message Type
-        observation_id:
-          type: string
-          format: uuid
-          title: Observation Id
-        node_id:
-          type: string
-          maxLength: 64
-          minLength: 1
-          title: Node Id
-        sequence_number:
-          type: integer
-          minimum: 0.0
-          title: Sequence Number
         event_time_utc:
           type: string
           format: date-time
@@ -3598,21 +3681,490 @@ components:
           type: number
           minimum: 0.0
           title: Timestamp Uncertainty Ms
-        classification:
-          $ref: "#/components/schemas/ObservationClassification"
+        interval_duration_ms:
+          type: number
+          minimum: 0.0
+          title: Interval Duration Ms
+        episode_duration_ms:
+          type: number
+          minimum: 0.0
+          title: Episode Duration Ms
+        emission_kind:
+          type: string
+          enum:
+            - start
+            - periodic
+            - end
+            - complete
+          title: Emission Kind
+        termination_reason:
+          title: Termination Reason
+          type: string
+          enum:
+            - natural
+            - invalid_hold
+            - ota_reboot
           nullable: true
-        bearing:
-          $ref: "#/components/schemas/ObservationBearing"
+      additionalProperties: false
+      type: object
+      required:
+        - event_time_utc
+        - capture_timestamp_monotonic_us
+        - timing_quality
+        - timestamp_uncertainty_ms
+        - interval_duration_ms
+        - episode_duration_ms
+        - emission_kind
+      title: ObservationContext
+    ObservationCountView:
+      properties:
+        total:
+          type: integer
+          minimum: 0.0
+          title: Total
+          description: Observation report rows (MQTT payloads / DB rows).
+        unique_observations:
+          type: integer
+          minimum: 0.0
+          title: Unique Observations
+          description: Distinct identity.observation_id values among those reports.
+      type: object
+      required:
+        - total
+        - unique_observations
+      title: ObservationCountView
+      description: Observation report rows and distinct observation_id values (optional node filter).
+    ObservationIdentity:
+      properties:
+        observation_id:
+          type: string
+          format: uuid
+          title: Observation Id
+        node_id:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Node Id
+        hub_id:
+          type: string
+          maxLength: 64
+          title: Hub Id
+          default: ""
+        sequence_number:
+          type: integer
+          minimum: 0.0
+          title: Sequence Number
+      additionalProperties: false
+      type: object
+      required:
+        - observation_id
+        - node_id
+        - sequence_number
+      title: ObservationIdentity
+    ObservationL0Bands:
+      properties:
+        mean_dbfs:
+          items:
+            type: number
+            nullable: true
+          type: array
+          maxItems: 4
+          minItems: 4
+          title: Mean Dbfs
+        fraction:
+          items:
+            type: number
+            nullable: true
+          type: array
+          maxItems: 4
+          minItems: 4
+          title: Fraction
+      additionalProperties: false
+      type: object
+      required:
+        - mean_dbfs
+        - fraction
+      title: ObservationL0Bands
+    ObservationL0Hl:
+      properties:
+        mean_db:
+          title: Mean Db
+          type: number
           nullable: true
-        signal_level_dbfs:
-          title: Signal Level Dbfs
+      additionalProperties: false
+      type: object
+      title: ObservationL0Hl
+    ObservationL0Measurements:
+      properties:
+        schema:
+          type: string
+          enum:
+            - l0
+          title: Schema
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+        band_plan_version:
+          type: integer
+          minimum: 1.0
+          title: Band Plan Version
+        crest_threshold_version:
+          type: integer
+          minimum: 1.0
+          title: Crest Threshold Version
+        crest_threshold_db:
+          type: number
+          title: Crest Threshold Db
+        mic_index:
+          type: integer
+          minimum: 0.0
+          title: Mic Index
+        sample_rate_hz:
+          type: integer
+          minimum: 0.0
+          exclusiveMinimum: true
+          title: Sample Rate Hz
+        analysis_window_ms:
+          type: integer
+          minimum: 0.0
+          exclusiveMinimum: true
+          title: Analysis Window Ms
+        window_count:
+          type: integer
+          minimum: 0.0
+          title: Window Count
+        clipped_window_count:
+          type: integer
+          minimum: 0.0
+          title: Clipped Window Count
+        n_crest:
+          type: integer
+          minimum: 0.0
+          title: N Crest
+        rms:
+          $ref: "#/components/schemas/ObservationL0Rms"
+        bands:
+          $ref: "#/components/schemas/ObservationL0Bands"
+        hl:
+          $ref: "#/components/schemas/ObservationL0Hl"
+        t1:
+          $ref: "#/components/schemas/ObservationL0T1"
+        t2:
+          $ref: "#/components/schemas/ObservationL0T2"
+        t3:
+          $ref: "#/components/schemas/ObservationL0T3"
+        t6:
+          $ref: "#/components/schemas/ObservationL0T6"
+      additionalProperties: false
+      type: object
+      required:
+        - schema
+        - version
+        - band_plan_version
+        - crest_threshold_version
+        - crest_threshold_db
+        - mic_index
+        - sample_rate_hz
+        - analysis_window_ms
+        - window_count
+        - clipped_window_count
+        - n_crest
+        - rms
+        - bands
+        - hl
+        - t1
+        - t2
+        - t3
+        - t6
+      title: ObservationL0Measurements
+      description: Combined-scene L0 aggregate (not per-source). Strict nested schema.
+    ObservationL0Rms:
+      properties:
+        mean_dbfs:
+          title: Mean Dbfs
           type: number
           maximum: 0.0
           nullable: true
-        duration_ms:
+        min_dbfs:
+          title: Min Dbfs
+          type: number
+          maximum: 0.0
+          nullable: true
+        max_dbfs:
+          title: Max Dbfs
+          type: number
+          maximum: 0.0
+          nullable: true
+      additionalProperties: false
+      type: object
+      title: ObservationL0Rms
+    ObservationL0T1:
+      properties:
+        rms_stdev_db:
+          title: Rms Stdev Db
           type: number
           minimum: 0.0
-          title: Duration Ms
+          nullable: true
+        rms_range_db:
+          title: Rms Range Db
+          type: number
+          nullable: true
+      additionalProperties: false
+      type: object
+      title: ObservationL0T1
+    ObservationL0T2:
+      properties:
+        rms_slope_db_per_s:
+          title: Rms Slope Db Per S
+          type: number
+          nullable: true
+      additionalProperties: false
+      type: object
+      title: ObservationL0T2
+    ObservationL0T3:
+      properties:
+        crest_max_db:
+          title: Crest Max Db
+          type: number
+          nullable: true
+        high_crest_count:
+          title: High Crest Count
+          type: integer
+          minimum: 0.0
+          nullable: true
+        high_crest_rate:
+          title: High Crest Rate
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          nullable: true
+      additionalProperties: false
+      type: object
+      title: ObservationL0T3
+    ObservationL0T6:
+      properties:
+        hl_slope_db_per_s:
+          title: Hl Slope Db Per S
+          type: number
+          nullable: true
+      additionalProperties: false
+      type: object
+      title: ObservationL0T6
+    ObservationL1FeatureStats:
+      properties:
+        mean:
+          title: Mean
+          type: number
+          nullable: true
+        stdev:
+          title: Stdev
+          type: number
+          minimum: 0.0
+          nullable: true
+      additionalProperties: false
+      type: object
+      title: ObservationL1FeatureStats
+      description: Mean/stdev pair for one L1 scalar feature.
+    ObservationL1Signature:
+      properties:
+        schema:
+          type: string
+          enum:
+            - l1
+          title: Schema
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+        sample_rate_hz:
+          type: integer
+          minimum: 0.0
+          exclusiveMinimum: true
+          title: Sample Rate Hz
+        analysis_window_ms:
+          type: integer
+          minimum: 0.0
+          exclusiveMinimum: true
+          title: Analysis Window Ms
+        fft_size:
+          type: integer
+          minimum: 0.0
+          exclusiveMinimum: true
+          title: Fft Size
+        freq_min_hz:
+          type: number
+          minimum: 0.0
+          title: Freq Min Hz
+        freq_max_hz:
+          type: number
+          minimum: 0.0
+          exclusiveMinimum: true
+          title: Freq Max Hz
+        window_count:
+          type: integer
+          minimum: 0.0
+          title: Window Count
+        invalid_window_count:
+          type: integer
+          minimum: 0.0
+          title: Invalid Window Count
+        centroid_hz:
+          $ref: "#/components/schemas/ObservationL1FeatureStats"
+        bandwidth_hz:
+          $ref: "#/components/schemas/ObservationL1FeatureStats"
+        dominant_hz:
+          $ref: "#/components/schemas/ObservationL1FeatureStats"
+        flatness:
+          $ref: "#/components/schemas/ObservationL1FeatureStats"
+      additionalProperties: false
+      type: object
+      required:
+        - schema
+        - version
+        - sample_rate_hz
+        - analysis_window_ms
+        - fft_size
+        - freq_min_hz
+        - freq_max_hz
+        - window_count
+        - invalid_window_count
+        - centroid_hz
+        - bandwidth_hz
+        - dominant_hz
+        - flatness
+      title: ObservationL1Signature
+      description: Interval-scoped L1 Acoustic Signature (schema l1).
+    ObservationL2Dynamics:
+      properties:
+        schema:
+          type: string
+          enum:
+            - l2
+          title: Schema
+        version:
+          type: integer
+          enum:
+            - 1
+          title: Version
+        sample_rate_hz:
+          type: integer
+          minimum: 0.0
+          exclusiveMinimum: true
+          title: Sample Rate Hz
+        analysis_window_ms:
+          type: integer
+          minimum: 0.0
+          exclusiveMinimum: true
+          title: Analysis Window Ms
+        fft_size:
+          type: integer
+          minimum: 0.0
+          exclusiveMinimum: true
+          title: Fft Size
+        freq_min_hz:
+          type: number
+          minimum: 0.0
+          title: Freq Min Hz
+        freq_max_hz:
+          type: number
+          minimum: 0.0
+          exclusiveMinimum: true
+          title: Freq Max Hz
+        frame_hop_samples:
+          type: integer
+          minimum: 0.0
+          exclusiveMinimum: true
+          title: Frame Hop Samples
+        window_count:
+          type: integer
+          minimum: 0.0
+          title: Window Count
+        invalid_window_count:
+          type: integer
+          minimum: 0.0
+          title: Invalid Window Count
+        history_overflow:
+          type: boolean
+          title: History Overflow
+        spectral_flux:
+          $ref: "#/components/schemas/ObservationL2FeatureStats"
+        envelope_cv:
+          $ref: "#/components/schemas/ObservationL2FeatureStats"
+        dominant_delta_hz:
+          $ref: "#/components/schemas/ObservationL2FeatureStats"
+      additionalProperties: false
+      type: object
+      required:
+        - schema
+        - version
+        - sample_rate_hz
+        - analysis_window_ms
+        - fft_size
+        - freq_min_hz
+        - freq_max_hz
+        - frame_hop_samples
+        - window_count
+        - invalid_window_count
+        - history_overflow
+        - spectral_flux
+        - envelope_cv
+        - dominant_delta_hz
+      title: ObservationL2Dynamics
+      description: "Interval-scoped L2 Acoustic Dynamics (schema l2, contract version 1 only)."
+    ObservationL2FeatureStats:
+      properties:
+        valid_count:
+          type: integer
+          minimum: 0.0
+          title: Valid Count
+        mean:
+          title: Mean
+          type: number
+          minimum: 0.0
+          nullable: true
+        stdev:
+          title: Stdev
+          type: number
+          minimum: 0.0
+          nullable: true
+      additionalProperties: false
+      type: object
+      required:
+        - valid_count
+      title: ObservationL2FeatureStats
+      description: "One L2 dynamics feature: valid_count plus optional mean/stdev."
+    ObservationSpatial:
+      properties:
+        bearing:
+          $ref: "#/components/schemas/ObservationBearing"
+          nullable: true
+        position:
+          title: Position
+          nullable: true
+      additionalProperties: false
+      type: object
+      title: ObservationSpatial
+    ObservationView:
+      properties:
+        protocol_version:
+          type: integer
+          enum:
+            - 1
+          title: Protocol Version
+        message_type:
+          type: string
+          enum:
+            - observation
+          title: Message Type
+        identity:
+          $ref: "#/components/schemas/ObservationIdentity"
+        context:
+          $ref: "#/components/schemas/ObservationContext"
+        acoustic:
+          $ref: "#/components/schemas/ObservationAcoustic"
+        spatial:
+          $ref: "#/components/schemas/ObservationSpatial"
         received_time_utc:
           type: string
           format: date-time
@@ -3622,14 +4174,10 @@ components:
       required:
         - protocol_version
         - message_type
-        - observation_id
-        - node_id
-        - sequence_number
-        - event_time_utc
-        - capture_timestamp_monotonic_us
-        - timing_quality
-        - timestamp_uncertainty_ms
-        - duration_ms
+        - identity
+        - context
+        - acoustic
+        - spatial
         - received_time_utc
       title: ObservationView
     OutputCommandBody:
@@ -3813,7 +4361,6 @@ components:
         hub_id:
           type: string
           title: Hub Id
-          description: Stable Local Hub ID (`DBMAP_HUB_ID`) that issued this provision response. Stored in device NVS for inspect/logs and later multi-Hub association.
         mqtt:
           $ref: "#/components/schemas/MqttEndpoint"
         topics:
@@ -4047,6 +4594,16 @@ components:
           minimum: 0
         artifact_sha256:
           type: string
+        dbmap_config:
+          type: object
+          description: >
+            Optional hierarchical CONFIG_DBMAP_* values explicitly set in the
+            target sdkconfig.defaults (not the full effective Kconfig merge).
+            Groups such as node, mic, observation, or audio appear only when
+            that file sets symbols in them.
+          additionalProperties:
+            type: object
+            additionalProperties: true
         status:
           type: string
           enum:
@@ -4310,6 +4867,9 @@ components:
           type: integer
         unobserved_seconds:
           type: integer
+        not_running_seconds:
+          type: integer
+          description: Seconds the Hub monitor was not running inside this window. A stopped Hub container and a powered-off computer are both recorded this way and are excluded from the percentage.
         sample_count:
           type: integer
         insufficient_data:
@@ -4401,9 +4961,7 @@ components:
               type: string
         availability:
           type: object
-          description: >
-            Core Hub availability plus independent MQTT/API/Web windows.
-            Firmware Builder is excluded. See docs/health-and-availability.md.
+          description: Core Hub availability plus independent MQTT/API/Web windows. Firmware Builder is excluded. See docs/health-and-availability.md.
           properties:
             current_state:
               type: string
@@ -4418,7 +4976,7 @@ components:
                 $ref: "#/components/schemas/HubAvailabilityWindow"
             components:
               type: object
-              description: Independent MQTT, API, and Web availability windows.
+              description: "Independent MQTT, API, and Web availability windows."
               additionalProperties:
                 type: object
                 properties:

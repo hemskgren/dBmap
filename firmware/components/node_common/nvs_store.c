@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "dbmap_mic_count.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -59,6 +60,20 @@ esp_err_t dbmap_nvs_load(dbmap_effective_t *cfg)
         get_str(h, "clf_ver", cfg->config.classifier_version, sizeof(cfg->config.classifier_version));
         nvs_close(h);
     }
+    /* Installation mic count — namespace audio, not Desired config_version. */
+    {
+        uint8_t raw = 0;
+        bool found = false;
+        if (nvs_open("audio", NVS_READONLY, &h) == ESP_OK) {
+            if (nvs_get_u8(h, "mic_count", &raw) == ESP_OK) {
+                found = true;
+            }
+            nvs_close(h);
+        }
+        dbmap_mic_count_from_nvs(
+            found, raw, &cfg->microphone_count, &cfg->microphone_count_status
+        );
+    }
     if (nvs_open("identity", NVS_READONLY, &h) == ESP_OK) {
         get_str(h, "boot_tok", cfg->bootstrap_token, sizeof(cfg->bootstrap_token));
         get_str(h, "api_tok", cfg->device_api_token, sizeof(cfg->device_api_token));
@@ -102,6 +117,26 @@ esp_err_t dbmap_nvs_save_identity_network(const dbmap_effective_t *cfg)
     if (err == ESP_OK) err = nvs_set_str(h, "mqtt_user", cfg->network.mqtt_username);
     if (err == ESP_OK) err = nvs_set_str(h, "mqtt_pw", cfg->network.mqtt_password);
     if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    /* Persist installation mic count after network so a failed audio write does not
+     * leave Wi-Fi half-applied without a prior successful network commit — USB
+     * validation rejects bad mic_count before any persist. */
+    err = nvs_open("audio", NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    uint8_t mic = cfg->microphone_count;
+    if (!dbmap_mic_count_supported(mic)) {
+        mic = DBMAP_MIC_COUNT_DEFAULT;
+    }
+    err = nvs_set_u8(h, "mic_count", mic);
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
     nvs_close(h);
     return err;
 }
