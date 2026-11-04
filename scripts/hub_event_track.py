@@ -79,6 +79,43 @@ def fetch_observations(
     return observations
 
 
+def fetch_observation_count(
+    base_url: str,
+    ca_file: str,
+    admin_token: str,
+    node_id: str | None = None,
+) -> dict[str, int]:
+    query: dict[str, str] = {}
+    if node_id is not None:
+        query["node_id"] = node_id
+    path = "/api/v1/observations/count"
+    if query:
+        path = path + "?" + urllib.parse.urlencode(query)
+    request = admin_request(f"{base_url}{path}", admin_token)
+    context = ssl.create_default_context(cafile=ca_file)
+    try:
+        with urllib.request.urlopen(request, context=context, timeout=15) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise HubApiError(
+            format_hub_http_error(exc.code, exc.read(1024), path=path)
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise HubApiError(f"could not reach the hub API: {exc.reason}") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HubApiError("hub returned invalid observation count JSON") from exc
+
+    if not isinstance(payload, dict):
+        raise HubApiError("hub returned an invalid observation count object")
+    total = payload.get("total")
+    unique = payload.get("unique_observations")
+    if not isinstance(total, int) or isinstance(total, bool):
+        raise HubApiError("hub observation count missing integer total")
+    if not isinstance(unique, int) or isinstance(unique, bool):
+        raise HubApiError("hub observation count missing integer unique_observations")
+    return {"total": total, "unique_observations": unique}
+
+
 def fetch_nodes(
     base_url: str,
     ca_file: str,
@@ -247,6 +284,75 @@ def candidate_groups(
     observations: list[dict[str, Any]],
 ) -> list[tuple[str | None, list[dict[str, Any]]]]:
     return [(None, [item]) for item in sort_observations(observations)]
+
+
+def unique_observation_count(observations: list[dict[str, Any]]) -> int:
+    ids: set[str] = set()
+    for item in observations:
+        observation_id = observation_fields(item).get("observation_id")
+        if isinstance(observation_id, str) and observation_id:
+            ids.add(observation_id)
+    return len(ids)
+
+
+def filter_observations(
+    observations: list[dict[str, Any]],
+    *,
+    node_ids: set[str] | None = None,
+    observation_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Client-side Node ID / Observation ID filters (same semantics as the web UI)."""
+    node_filter = {item for item in (node_ids or set()) if item}
+    observation_filter = {item for item in (observation_ids or set()) if item}
+    if not node_filter and not observation_filter:
+        return observations
+    filtered: list[dict[str, Any]] = []
+    for item in observations:
+        fields = observation_fields(item)
+        if node_filter:
+            node_id = fields.get("node_id")
+            if not isinstance(node_id, str) or node_id not in node_filter:
+                continue
+        if observation_filter:
+            observation_id = fields.get("observation_id")
+            if (
+                not isinstance(observation_id, str)
+                or observation_id not in observation_filter
+            ):
+                continue
+        filtered.append(item)
+    return filtered
+
+
+def format_filter_status(
+    *,
+    node_ids: set[str] | None = None,
+    observation_ids: set[str] | None = None,
+    fetched_count: int,
+    filtered_count: int,
+) -> list[str]:
+    node_filter = sorted(item for item in (node_ids or set()) if item)
+    observation_filter = sorted(item for item in (observation_ids or set()) if item)
+    if not node_filter and not observation_filter:
+        return []
+    lines = [
+        f"Filters applied (of {fetched_count} fetched reports → {filtered_count} match):"
+    ]
+    if node_filter:
+        lines.append(f"  Node ID: {', '.join(node_filter)}")
+    if observation_filter:
+        lines.append(f"  Observation ID: {', '.join(observation_filter)}")
+    return lines
+
+
+def format_observations_json(observations: list[dict[str, Any]]) -> str:
+    """Pretty-print filtered observation reports for AI/report feeds (web JSON panel)."""
+    return json.dumps(
+        sort_observations(observations),
+        indent=2,
+        ensure_ascii=False,
+        default=str,
+    )
 
 
 def installation_distance_m(
@@ -586,35 +692,43 @@ def report(
     include_site_context: bool = True,
     include_cross_ear_geometry: bool = True,
     cross_ear_geometry_detail: bool = False,
+    include_observation_details: bool = False,
+    filter_status_lines: list[str] | None = None,
 ) -> list[str]:
     parse_positive_interval(event_gap_seconds)
     parse_positive_interval(max_association_distance_m)
     nodes = nodes or {}
     lines = [
         f"Observation analysis at {format_local_datetime(datetime.now().astimezone())} (local time)",
-        f"Observations fetched (maximum 500): {len(observations)}",
+        f"Observation reports: {len(observations)} (fetched maximum 500)",
+        f"Unique observations: {unique_observation_count(observations)}",
         (
-            "Detection candidates: each observation stays separate. "
             "Ground-truth simulator IDs are not used for grouping or correlation."
         ),
     ]
-    candidates = candidate_groups(observations)
-    if candidates:
-        for index, (_, items) in enumerate(candidates, start=1):
-            candidate_node_ids = sorted(
-                {
-                    str(observation_fields(item).get("node_id", "unknown-node"))
-                    for item in items
-                }
-            )
-            lines.append(
-                f"  Candidate C{index}: {len(items)} independent observation(s), "
-                f"{len(candidate_node_ids)} Ear(s) ({', '.join(candidate_node_ids)})"
-            )
-            for item in items:
-                lines.append(f"    {format_observation(item)}")
-    else:
-        lines.append("  none")
+    if filter_status_lines:
+        lines.extend(filter_status_lines)
+    if include_observation_details:
+        lines.append(
+            "Observation reports (detail): each report listed separately."
+        )
+        candidates = candidate_groups(observations)
+        if candidates:
+            for index, (_, items) in enumerate(candidates, start=1):
+                candidate_node_ids = sorted(
+                    {
+                        str(observation_fields(item).get("node_id", "unknown-node"))
+                        for item in items
+                    }
+                )
+                lines.append(
+                    f"  Report R{index}: {len(items)} independent report(s), "
+                    f"{len(candidate_node_ids)} Ear(s) ({', '.join(candidate_node_ids)})"
+                )
+                for item in items:
+                    lines.append(f"    {format_observation(item)}")
+        else:
+            lines.append("  none")
 
     if include_site_context:
         observed_node_ids = sorted(
@@ -760,8 +874,9 @@ def main() -> int:
         return 1
     parser = argparse.ArgumentParser(
         description=(
-            "Print independent Ear observations, site metadata, and per-Ear inactivity summaries; "
-            "ground-truth simulator IDs are not used for association."
+            "Summarize Ear observation reports and per-Ear activity episodes; "
+            "use --details for the per-report listing. "
+            "Ground-truth simulator IDs are not used for association."
         )
     )
     add_hub_connection_arguments(parser)
@@ -771,9 +886,6 @@ def main() -> int:
         "watch", help="Re-fetch and report new observations"
     )
     for command in (list_command, watch_command):
-        command.add_argument(
-            "--node-id", help="Optionally restrict observations to one Ear"
-        )
         command.add_argument(
             "--event-gap-seconds",
             type=float,
@@ -802,6 +914,14 @@ def main() -> int:
             ),
         )
         command.add_argument(
+            "--details",
+            action="store_true",
+            help=(
+                "Include the per-report listing (one line per MQTT observation report); "
+                "default shows episode summaries only"
+            ),
+        )
+        command.add_argument(
             "--cross-ear-geometry-detail",
             action="store_true",
             help=(
@@ -814,6 +934,38 @@ def main() -> int:
             action="store_true",
             help="Omit the Cross-Ear Bearing Geometry diagnostic section",
         )
+    list_command.add_argument(
+        "--node-id",
+        action="append",
+        default=[],
+        metavar="NODE_ID",
+        help=(
+            "Filter reports by Node ID (repeatable; same as the web Observations filter). "
+            "A single value is also sent to the hub API."
+        ),
+    )
+    list_command.add_argument(
+        "--observation-id",
+        action="append",
+        default=[],
+        metavar="OBSERVATION_ID",
+        help=(
+            "Filter reports by Observation ID (repeatable; same as the web Observations filter)"
+        ),
+    )
+    list_command.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "Print filtered observation reports as pretty-printed JSON "
+            "(all matching MQTT payloads; for AI/report feeds). "
+            "Skips the human text analysis."
+        ),
+    )
+    watch_command.add_argument(
+        "--node-id",
+        help="Optionally restrict watched observations to one Ear",
+    )
     watch_command.add_argument(
         "--interval-seconds",
         type=float,
@@ -837,7 +989,40 @@ def main() -> int:
         except ValueError as exc:
             parser.error(f"{label} {exc}")
     try:
-        observations = fetch_observations(base_url, args.ca, admin_token, args.node_id)
+        list_node_ids: set[str] = set()
+        list_observation_ids: set[str] = set()
+        watch_node_id: str | None = None
+        if watching:
+            watch_node_id = args.node_id
+            fetch_node_id = watch_node_id
+        else:
+            list_node_ids = {item for item in args.node_id if item}
+            list_observation_ids = {
+                item for item in args.observation_id if item
+            }
+            fetch_node_id = (
+                next(iter(list_node_ids)) if len(list_node_ids) == 1 else None
+            )
+
+        fetched = fetch_observations(base_url, args.ca, admin_token, fetch_node_id)
+        filter_status: list[str] = []
+        if watching:
+            observations = fetched
+        else:
+            observations = filter_observations(
+                fetched,
+                node_ids=list_node_ids,
+                observation_ids=list_observation_ids,
+            )
+            filter_status = format_filter_status(
+                node_ids=list_node_ids,
+                observation_ids=list_observation_ids,
+                fetched_count=len(fetched),
+                filtered_count=len(observations),
+            )
+            if getattr(args, "json", False):
+                print(format_observations_json(observations))
+                return 0
         nodes = fetch_nodes(base_url, args.ca, admin_token)
         reference_times = [
             observation_time(item)
@@ -861,6 +1046,8 @@ def main() -> int:
             environmental_context=weather,
             include_cross_ear_geometry=not args.no_cross_ear_geometry,
             cross_ear_geometry_detail=args.cross_ear_geometry_detail,
+            include_observation_details=args.details,
+            filter_status_lines=filter_status,
         ):
             print(line)
         known_ids = {
@@ -872,12 +1059,25 @@ def main() -> int:
         if not watching:
             return 0
 
+        count = fetch_observation_count(
+            base_url, args.ca, admin_token, watch_node_id
+        )
+        last_total = count["total"]
         print(
-            f"Watching for new observations every {args.interval_seconds:g}s; press Ctrl+C to stop."
+            f"Watching for new observations every {args.interval_seconds:g}s "
+            f"(count probe, then full fetch on change); press Ctrl+C to stop."
         )
         while True:
             time.sleep(args.interval_seconds)
-            current = fetch_observations(base_url, args.ca, admin_token, args.node_id)
+            count = fetch_observation_count(
+                base_url, args.ca, admin_token, watch_node_id
+            )
+            if count["total"] == last_total:
+                continue
+            last_total = count["total"]
+            current = fetch_observations(
+                base_url, args.ca, admin_token, watch_node_id
+            )
             new_observations, known_ids = observation_diff(known_ids, current)
             if not new_observations:
                 continue
@@ -890,6 +1090,7 @@ def main() -> int:
                 current,
                 args.event_gap_seconds,
                 include_site_context=False,
+                include_observation_details=args.details,
             ):
                 print(line, flush=True)
     except KeyboardInterrupt:

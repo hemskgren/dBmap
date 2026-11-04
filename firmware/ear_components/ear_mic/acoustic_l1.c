@@ -1,12 +1,52 @@
+#if !defined(ESP_PLATFORM) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "dbmap_acoustic_l1.h"
+#include "dbmap_acoustic_l2.h"
 
 #include <limits.h>
 #include <math.h>
 #include <string.h>
 
+#if defined(ESP_PLATFORM)
+#include "esp_timer.h"
+#else
+#include <time.h>
+#endif
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+
+static dbmap_l2_analyze_stages_t s_l2_last_stages;
+
+static int64_t l2_now_us(void)
+{
+#if defined(ESP_PLATFORM)
+    return esp_timer_get_time();
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return (int64_t)ts.tv_sec * 1000000LL + (int64_t)(ts.tv_nsec / 1000L);
+#endif
+}
+
+static uint32_t l2_elapsed_us(int64_t t0)
+{
+    const int64_t dt = l2_now_us() - t0;
+    return dt > 0 ? (uint32_t)dt : 0u;
+}
+
+void dbmap_l2_get_last_analyze_stages(dbmap_l2_analyze_stages_t *out)
+{
+    if (out == NULL) {
+        return;
+    }
+    *out = s_l2_last_stages;
+}
 
 static float full_scale_magnitude_f(int full_scale_bits)
 {
@@ -194,6 +234,83 @@ static void features_from_power(
     *ok = true;
 }
 
+/*
+ * Shared peak/clip + tables gate. Returns false if analysis cannot proceed
+ * (caller should leave features invalid). Does not clear *out beyond fields set.
+ */
+static bool analyze_prepare(
+    dbmap_l1_workspace_t *ws,
+    const int32_t *samples,
+    size_t count,
+    int full_scale_bits,
+    uint32_t sample_rate_hz,
+    uint32_t window_ms,
+    int64_t window_end_mono_us,
+    dbmap_l1_window_t *out,
+    float *inv_fs_out
+)
+{
+    memset(out, 0, sizeof(*out));
+    out->window_end_mono_us = window_end_mono_us;
+    out->window_ms = window_ms;
+    out->sample_count = (uint32_t)count;
+
+    if (ws == NULL || samples == NULL || count == 0 || sample_rate_hz == 0) {
+        return false;
+    }
+    if (!ws->tables_ready) {
+        dbmap_l1_workspace_init(ws);
+    }
+
+    const float full_scale = full_scale_magnitude_f(full_scale_bits);
+    const float inv_fs = (full_scale > 0.0f) ? (1.0f / full_scale) : 0.0f;
+    *inv_fs_out = inv_fs;
+
+    int32_t peak_abs = 0;
+    for (size_t i = 0; i < count; i++) {
+        int32_t s = samples[i];
+        int32_t a = s < 0 ? (s == INT32_MIN ? INT32_MAX : -s) : s;
+        if (a > peak_abs) {
+            peak_abs = a;
+        }
+    }
+    const float peak_dbfs = amp_to_dbfs_f((float)peak_abs, full_scale);
+    out->clipped = (peak_dbfs >= DBMAP_L1_CLIP_PEAK_DBFS);
+
+    if (count < DBMAP_L1_FFT_SIZE) {
+        return false;
+    }
+    return true;
+}
+
+static void analyze_finish_from_power(
+    dbmap_l1_workspace_t *ws,
+    uint32_t sample_rate_hz,
+    uint32_t frames,
+    dbmap_l1_window_t *out
+)
+{
+    out->frame_count = frames;
+    if (frames == 0) {
+        return;
+    }
+    const float inv_frames = 1.0f / (float)frames;
+    for (uint32_t k = 0; k < DBMAP_L1_FFT_BINS; k++) {
+        ws->power_acc[k] *= inv_frames;
+    }
+    bool ok = false;
+    features_from_power(
+        ws->power_acc,
+        sample_rate_hz,
+        &out->centroid_hz,
+        &out->bandwidth_hz,
+        &out->dominant_hz,
+        &out->flatness,
+        &ok
+    );
+    out->valid = ok;
+}
+
 void dbmap_l1_analyze_window(
     dbmap_l1_workspace_t *ws,
     const int32_t *samples,
@@ -208,46 +325,31 @@ void dbmap_l1_analyze_window(
     if (out == NULL) {
         return;
     }
-    memset(out, 0, sizeof(*out));
-    out->window_end_mono_us = window_end_mono_us;
-    out->window_ms = window_ms;
-    out->sample_count = (uint32_t)count;
-
-    if (ws == NULL || samples == NULL || count == 0 || sample_rate_hz == 0) {
-        return;
-    }
-    if (!ws->tables_ready) {
-        dbmap_l1_workspace_init(ws);
-    }
-
-    const float full_scale = full_scale_magnitude_f(full_scale_bits);
-    const float inv_fs = (full_scale > 0.0f) ? (1.0f / full_scale) : 0.0f;
-
-    /* Peak/clip via integer abs — avoids soft-double and log in the scan. */
-    int32_t peak_abs = 0;
-    for (size_t i = 0; i < count; i++) {
-        int32_t s = samples[i];
-        int32_t a = s < 0 ? (s == INT32_MIN ? INT32_MAX : -s) : s;
-        if (a > peak_abs) {
-            peak_abs = a;
-        }
-    }
-    const float peak_dbfs = amp_to_dbfs_f((float)peak_abs, full_scale);
-    out->clipped = (peak_dbfs >= DBMAP_L1_CLIP_PEAK_DBFS);
-
-    if (count < DBMAP_L1_FFT_SIZE) {
+    float inv_fs = 0.0f;
+    if (!analyze_prepare(
+            ws,
+            samples,
+            count,
+            full_scale_bits,
+            sample_rate_hz,
+            window_ms,
+            window_end_mono_us,
+            out,
+            &inv_fs
+        )) {
         return;
     }
 
+    /* L1-only: no prev_power / L2 scratch — keeps this function's stack small. */
     memset(ws->power_acc, 0, sizeof(ws->power_acc));
     uint32_t frames = 0;
-    for (size_t offset = 0; offset + DBMAP_L1_FFT_SIZE <= count; offset += DBMAP_L1_FFT_SIZE) {
+    for (size_t offset = 0; offset + DBMAP_L1_FFT_SIZE <= count;
+         offset += DBMAP_L1_FFT_SIZE) {
         const float *hann = ws->hann;
         float *re = ws->time_re;
         float *im = ws->time_im;
         const int32_t *frame = samples + offset;
         for (uint32_t n = 0; n < DBMAP_L1_FFT_SIZE; n++) {
-            /* Normalize to full-scale units before Hann so power is FS-relative. */
             re[n] = ((float)frame[n] * inv_fs) * hann[n];
             im[n] = 0.0f;
         }
@@ -259,28 +361,151 @@ void dbmap_l1_analyze_window(
         }
         frames++;
     }
+    analyze_finish_from_power(ws, sample_rate_hz, frames, out);
+}
 
-    out->frame_count = frames;
-    if (frames == 0) {
+void dbmap_l1_analyze_window_ex(
+    dbmap_l1_workspace_t *ws,
+    const int32_t *samples,
+    size_t count,
+    int full_scale_bits,
+    uint32_t sample_rate_hz,
+    uint32_t window_ms,
+    int64_t window_end_mono_us,
+    dbmap_l1_window_t *out,
+    dbmap_l2_intra_metrics_t *intra_out
+)
+{
+    if (intra_out == NULL) {
+        dbmap_l1_analyze_window(
+            ws,
+            samples,
+            count,
+            full_scale_bits,
+            sample_rate_hz,
+            window_ms,
+            window_end_mono_us,
+            out
+        );
+        return;
+    }
+    if (out == NULL) {
         return;
     }
 
-    const float inv_frames = 1.0f / (float)frames;
-    for (uint32_t k = 0; k < DBMAP_L1_FFT_BINS; k++) {
-        ws->power_acc[k] *= inv_frames;
+    float inv_fs = 0.0f;
+    memset(intra_out, 0, sizeof(*intra_out));
+    if (!analyze_prepare(
+            ws,
+            samples,
+            count,
+            full_scale_bits,
+            sample_rate_hz,
+            window_ms,
+            window_end_mono_us,
+            out,
+            &inv_fs
+        )) {
+        return;
     }
 
-    bool ok = false;
-    features_from_power(
-        ws->power_acc,
-        sample_rate_hz,
-        &out->centroid_hz,
-        &out->bandwidth_hz,
-        &out->dominant_hz,
-        &out->flatness,
-        &ok
-    );
-    out->valid = ok;
+    /*
+     * L2 intra path. Flux scratch lives in ws->prev_power (~2052 B) so it is
+     * not on the caller/task stack. has_prev_power is per-call only — never
+     * reuse a prior window's last frame as the first comparison.
+     */
+    const float bin_hz = (float)sample_rate_hz / (float)DBMAP_L1_FFT_SIZE;
+    float *prev_power = ws->prev_power;
+    bool has_prev_power = false;
+    double flux_sum = 0.0;
+    uint32_t flux_pairs = 0;
+    double rms_sum = 0.0;
+    double rms_sum_sq = 0.0;
+    uint32_t rms_n = 0;
+
+    memset(ws->power_acc, 0, sizeof(ws->power_acc));
+    memset(&s_l2_last_stages, 0, sizeof(s_l2_last_stages));
+    uint32_t frames = 0;
+    uint32_t rms_stage_us = 0;
+    for (size_t offset = 0; offset + DBMAP_L1_FFT_SIZE <= count;
+         offset += DBMAP_L1_FFT_SIZE) {
+        const float *hann = ws->hann;
+        float *re = ws->time_re;
+        float *im = ws->time_im;
+        const int32_t *frame = samples + offset;
+
+        /* Direct L2 RMS stage timing (outside FFT / bin loop). */
+        const int64_t rms_t0 = l2_now_us();
+        double sum_sq = 0.0;
+        for (uint32_t n = 0; n < DBMAP_L1_FFT_SIZE; n++) {
+            const double x = (double)frame[n] * (double)inv_fs;
+            sum_sq += x * x;
+        }
+        const float r = (float)sqrt(sum_sq / (double)DBMAP_L1_FFT_SIZE);
+        if (r > (float)DBMAP_L2_ENV_RMS_EPS) {
+            rms_sum += (double)r;
+            rms_sum_sq += (double)r * (double)r;
+            rms_n++;
+        }
+        rms_stage_us += l2_elapsed_us(rms_t0);
+
+        for (uint32_t n = 0; n < DBMAP_L1_FFT_SIZE; n++) {
+            re[n] = ((float)frame[n] * inv_fs) * hann[n];
+            im[n] = 0.0f;
+        }
+        fft_radix2(ws);
+
+        double num = 0.0;
+        double den = 0.0;
+        double prev_e = 0.0;
+        for (uint32_t k = 0; k < DBMAP_L1_FFT_BINS; k++) {
+            const float rr = re[k];
+            const float ii = im[k];
+            const float p = rr * rr + ii * ii;
+            ws->power_acc[k] += p;
+
+            if (has_prev_power) {
+                const float f = bin_hz * (float)k;
+                if (f >= DBMAP_L1_FREQ_MIN_HZ && f <= DBMAP_L1_FREQ_MAX_HZ) {
+                    const double cur = (double)p;
+                    const double prv = (double)prev_power[k];
+                    num += fabs(cur - prv);
+                    den += cur;
+                    prev_e += prv;
+                }
+            }
+            prev_power[k] = p;
+        }
+        if (has_prev_power && den > (double)DBMAP_L1_VALID_ENERGY_FLOOR &&
+            prev_e > (double)DBMAP_L1_VALID_ENERGY_FLOOR) {
+            flux_sum += num / den;
+            flux_pairs++;
+        }
+        has_prev_power = true;
+        frames++;
+    }
+
+    s_l2_last_stages.rms_us = rms_stage_us;
+
+    if (flux_pairs > 0) {
+        intra_out->has_spectral_flux = true;
+        intra_out->spectral_flux = (float)(flux_sum / (double)flux_pairs);
+        intra_out->flux_pair_count = flux_pairs;
+    }
+    if (rms_n >= 2u) {
+        const double mu = rms_sum / (double)rms_n;
+        if (mu > (double)DBMAP_L2_ENV_RMS_EPS) {
+            double var = (rms_sum_sq / (double)rms_n) - mu * mu;
+            if (var < 0.0) {
+                var = 0.0;
+            }
+            intra_out->has_envelope_cv = true;
+            intra_out->envelope_cv = (float)(sqrt(var) / mu);
+            intra_out->envelope_rms_count = rms_n;
+        }
+    }
+
+    analyze_finish_from_power(ws, sample_rate_hz, frames, out);
 }
 
 void dbmap_l1_interval_accum_init(

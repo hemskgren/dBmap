@@ -72,6 +72,10 @@ METADATA_FIELDS = {
     "configuration_version",
     "artifact_sha256",
 }
+# Optional nested CONFIG_DBMAP_* snapshot from the builder (hierarchical groups).
+OPTIONAL_METADATA_FIELDS = {
+    "dbmap_config",
+}
 
 
 class InvalidFirmwareBundle(ValueError):
@@ -129,12 +133,28 @@ def validate_upload(
         raise InvalidFirmwareBundle(
             "Metadata sidecar must contain valid UTF-8 JSON."
         ) from exc
-    if not isinstance(metadata, dict) or set(metadata) != METADATA_FIELDS:
+    if not isinstance(metadata, dict):
         raise InvalidFirmwareBundle(
             "Metadata must contain exactly firmware_id, build_date_utc, target, platform, "
             "node_type, hardware_revision, firmware_version, esp_idf_version, configuration_version, "
             "and artifact_sha256."
         )
+    metadata_keys = set(metadata)
+    if not METADATA_FIELDS.issubset(metadata_keys):
+        raise InvalidFirmwareBundle(
+            "Metadata must contain exactly firmware_id, build_date_utc, target, platform, "
+            "node_type, hardware_revision, firmware_version, esp_idf_version, configuration_version, "
+            "and artifact_sha256."
+        )
+    unexpected = metadata_keys - METADATA_FIELDS - OPTIONAL_METADATA_FIELDS
+    if unexpected:
+        raise InvalidFirmwareBundle(
+            "Metadata contains unsupported fields: "
+            + ", ".join(sorted(unexpected))
+            + "."
+        )
+    if "dbmap_config" in metadata and not isinstance(metadata["dbmap_config"], dict):
+        raise InvalidFirmwareBundle("dbmap_config must be a JSON object when present.")
     if metadata["firmware_id"] != firmware_id:
         raise InvalidFirmwareBundle("Filename ID must match metadata firmware_id.")
     for field in (

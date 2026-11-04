@@ -120,6 +120,32 @@ def test_builder_requires_admin_token(builder):
     assert targets[1]["hardware_revision"] == "esp32-s3-n16r8"
 
 
+def test_dbmap_config_endpoint_returns_effective_hierarchy(builder, monkeypatch):
+    repo_firmware = Path(__file__).resolve().parents[2] / "firmware"
+    monkeypatch.setattr(server, "FIRMWARE_ROOT", repo_firmware)
+    monkeypatch.setattr(server, "NTP_SERVER", "se.pool.ntp.org")
+    monkeypatch.setitem(
+        server.TARGETS,
+        "ear-esp32-s3",
+        {
+            **server.TARGETS["ear-esp32-s3"],
+            "project": repo_firmware / "esp-ear",
+            "components": repo_firmware / "components",
+            "extra_component_trees": [repo_firmware / "ear_components"],
+        },
+    )
+    status, payload = request(
+        builder,
+        "GET",
+        "/api/v1/firmware/targets/ear-esp32-s3/dbmap-config",
+        token="test-admin-token",
+    )
+    assert status == 200
+    assert payload["source"] == "effective"
+    assert payload["dbmap_config"]["observation"]["EAR_OBS_L2"] is True
+    assert payload["dbmap_config"]["node"]["WIFI_SSID"] == ""
+
+
 @pytest.mark.parametrize("body", [None, {}, {"target": "unlisted"}, {"target": []}])
 def test_builder_rejects_invalid_build_requests(builder, body):
     status, response = request(

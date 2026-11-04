@@ -6,6 +6,7 @@
 #include "cJSON.h"
 #include "dbmap_acoustic_l0.h"
 #include "dbmap_acoustic_l1.h"
+#include "dbmap_acoustic_l2.h"
 #include "dbmap_types.h"
 #include "esp_err.h"
 
@@ -106,7 +107,9 @@ esp_err_t dbmap_ear_mic_get_l0_perf(dbmap_ear_mic_l0_perf_t *out);
 /**
  * L1 analysis timing counters (Step 3). Times are wall-clock µs for
  * dbmap_l1_analyze_window only (esp_timer), not task CPU time.
- * L1 runs in dbmap_ear_mic_l0_poll after L0 when DBMAP_EAR_OBS_L1 is enabled.
+ * L1 runs in dbmap_ear_mic_l0_poll after L0 when DBMAP_EAR_OBS_L1 is enabled
+ * and L2 is off. When L2 is on, these analyze_us_* fields are not updated
+ * (combined fused time is reported via dbmap_ear_mic_l2_perf_t instead).
  */
 typedef struct {
     bool enabled;
@@ -123,6 +126,39 @@ esp_err_t dbmap_ear_mic_get_l1_window(dbmap_l1_window_t *out);
 
 /** Copy L1 performance counters (enabled=false when L1 off). */
 esp_err_t dbmap_ear_mic_get_l1_perf(dbmap_ear_mic_l1_perf_t *out);
+
+/**
+ * Pre-L2 EAR-001 L1 baseline (µs) for derived L2 incremental estimates.
+ * Not a direct measurement of the fused path.
+ */
+#ifndef DBMAP_L2_L1_BASELINE_US_LAST
+#define DBMAP_L2_L1_BASELINE_US_LAST 40000u
+#endif
+#ifndef DBMAP_L2_L1_BASELINE_US_MAX
+#define DBMAP_L2_L1_BASELINE_US_MAX 45000u
+#endif
+
+/**
+ * L2 / fused spectral timing (when DBMAP_EAR_OBS_L2).
+ * combined_* is direct wall time of dbmap_l2_analyze_window.
+ * incremental_estimated_* = combined − EAR-001 L1 baseline (derived).
+ * rms_* is optional direct stage time for raw-frame RMS only.
+ */
+typedef struct {
+    bool enabled;
+    uint32_t analyze_count;
+    uint32_t combined_us_last;
+    uint32_t combined_us_max;
+    uint32_t incremental_estimated_us_last;
+    uint32_t incremental_estimated_us_max;
+    uint32_t rms_us_last;
+    uint32_t rms_us_max;
+    uint32_t baseline_l1_us_last;
+    uint32_t baseline_l1_us_max;
+} dbmap_ear_mic_l2_perf_t;
+
+esp_err_t dbmap_ear_mic_get_l2_window(dbmap_l2_window_t *out);
+esp_err_t dbmap_ear_mic_get_l2_perf(dbmap_ear_mic_l2_perf_t *out);
 
 #ifdef __cplusplus
 }

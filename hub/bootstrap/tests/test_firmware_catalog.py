@@ -672,6 +672,31 @@ def test_upload_rejects_invalid_or_mismatched_metadata(catalog_client, mutate, m
     assert not (catalog_dir / f"{firmware_id}.zip").exists()
 
 
+def test_upload_accepts_optional_dbmap_config_and_rejects_unknown_fields(
+    catalog_client,
+):
+    client, _ = catalog_client
+    firmware_id, bundle, metadata_bytes = make_firmware_pair()
+    metadata = json.loads(metadata_bytes)
+    metadata["dbmap_config"] = {
+        "node": {"FIRMWARE_VERSION": "1.2.3", "NODE_TYPE_OUTPUT": True},
+        "audio": {"AUDIO_I2S_BCLK_GPIO": 26},
+    }
+
+    accepted = upload_pair(client, firmware_id, bundle, json.dumps(metadata).encode())
+    assert accepted.status_code == 201, accepted.text
+    assert accepted.json()["dbmap_config"]["audio"]["AUDIO_I2S_BCLK_GPIO"] == 26
+
+    other_id, other_bundle, other_metadata_bytes = make_firmware_pair()
+    other_metadata = json.loads(other_metadata_bytes)
+    other_metadata["unexpected_field"] = True
+    rejected = upload_pair(
+        client, other_id, other_bundle, json.dumps(other_metadata).encode()
+    )
+    assert rejected.status_code == 422
+    assert "unsupported fields" in rejected.json()["detail"]
+
+
 def test_upload_rejects_duplicate_firmware_id(catalog_client):
     client, _ = catalog_client
     firmware_id, bundle, metadata = make_firmware_pair()

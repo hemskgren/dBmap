@@ -83,7 +83,9 @@ typedef struct {
 /**
  * Static workspace for one analyze call (no heap).
  * Caller owns lifetime; may reuse across windows.
- * Includes precomputed Hann, bit-reversal, and twiddle tables (~22 KiB).
+ * Includes precomputed Hann, bit-reversal, twiddle tables, and L2
+ * intra-window spectral-flux scratch (sizeof ≈ 22540 bytes on typical ABI).
+ * prev_power is owned by this workspace instance (not shared globally).
  */
 typedef struct {
     float time_re[DBMAP_L1_FFT_SIZE];
@@ -93,10 +95,15 @@ typedef struct {
     uint16_t bitrev[DBMAP_L1_FFT_SIZE];
     float tw_re[DBMAP_L1_FFT_SIZE / 2];
     float tw_im[DBMAP_L1_FFT_SIZE / 2];
+    /** L2 flux only: previous-frame band power inside one analyze_window_ex call. */
+    float prev_power[DBMAP_L1_FFT_BINS];
     bool tables_ready;
 } dbmap_l1_workspace_t;
 
 void dbmap_l1_workspace_init(dbmap_l1_workspace_t *ws);
+
+/** Optional L2 intra-window metrics (defined in dbmap_acoustic_l2.h). */
+typedef struct dbmap_l2_intra_metrics dbmap_l2_intra_metrics_t;
 
 /**
  * Analyze one PCM window (int32 samples at full_scale_bits, e.g. 24).
@@ -112,6 +119,25 @@ void dbmap_l1_analyze_window(
     uint32_t window_ms,
     int64_t window_end_mono_us,
     dbmap_l1_window_t *out
+);
+
+/**
+ * Same L1 analysis as dbmap_l1_analyze_window; when intra_out != NULL also
+ * computes spectral_flux / envelope_cv inside the FFT frame loop (no second FFT).
+ * L1 outputs are unchanged vs dbmap_l1_analyze_window for the same PCM.
+ * When intra_out == NULL, delegates to dbmap_l1_analyze_window (no L2 path).
+ * Flux scratch uses ws->prev_power (workspace-owned, not task-stack locals).
+ */
+void dbmap_l1_analyze_window_ex(
+    dbmap_l1_workspace_t *ws,
+    const int32_t *samples,
+    size_t count,
+    int full_scale_bits,
+    uint32_t sample_rate_hz,
+    uint32_t window_ms,
+    int64_t window_end_mono_us,
+    dbmap_l1_window_t *out,
+    dbmap_l2_intra_metrics_t *intra_out
 );
 
 typedef struct {

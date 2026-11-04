@@ -145,6 +145,25 @@ menu "dBmap Ear Observation"
             Does not change L0 formulas, detector thresholds, or Observation
             lifecycle. Analysis runs in the observation task only.
 
+    config DBMAP_EAR_OBS_L2
+        bool "L2 Acoustic Dynamics computation"
+        default n
+        depends on DBMAP_EAR_OBS_L1 && DBMAP_EAR_OBS_L0 && DBMAP_EAR_MIC_L0
+        help
+            Compute spectral_flux, envelope_cv, and dominant_delta_hz using the
+            fused L1 FFT path (no second PCM/FFT pass). Continuity cache and
+            interval aggregates are maintained for diagnostics. Does not publish
+            acoustic.dynamics unless DBMAP_EAR_OBS_L2_PUBLISH is also enabled.
+
+    config DBMAP_EAR_OBS_L2_PUBLISH
+        bool "Publish acoustic.dynamics on Observations"
+        default n
+        depends on DBMAP_EAR_OBS_L2
+        help
+            Emit a non-null acoustic.dynamics object on MQTT Observations.
+            Requires Hub acceptance of the L2 schema. Keep disabled for
+            compute-only EAR-001 validation.
+
     config DBMAP_EAR_OBS_SERIAL_DIAG
         bool "Opt-in serial diagnostics for RMS activity (rate-limited)"
         default n

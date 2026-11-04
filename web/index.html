@@ -296,6 +296,9 @@
       .firmware-build-job [data-build-error] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .firmware-build-log > summary { cursor: pointer; }
       .firmware-build-log pre { max-height: 26rem; overflow: auto; padding: 0.75rem; background: #f4f6f8; white-space: pre-wrap; overflow-wrap: anywhere; }
+      #firmware-dbmap-config-panel { margin-top: 0.65rem; }
+      #firmware-dbmap-config-panel > summary { cursor: pointer; font-weight: 650; }
+      #firmware-dbmap-config-output { max-height: 28rem; overflow: auto; padding: 0.75rem; background: #f4f6f8; white-space: pre-wrap; overflow-wrap: anywhere; }
       .firmware-entry { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem 0.7rem; padding: 0.55rem; border: 1px solid #e3e9f1; border-radius: 7px; }
       .firmware-entry-metadata { flex: 1 0 100%; min-width: 0; }
       .firmware-entry-metadata > summary { cursor: pointer; font-weight: 650; }
@@ -656,9 +659,14 @@
               <label for="firmware-build-target">Supported build target
                 <select id="firmware-build-target"><option value="">Loading supported targets…</option></select>
               </label>
+              <button id="list-firmware-dbmap-config" class="secondary" type="button" disabled>List CONFIG_DBMAP_*</button>
               <button id="start-firmware-build" type="button" disabled>Build firmware</button>
               <span id="firmware-build-status" class="notice" role="status">Checking the optional builder…</span>
             </div>
+            <details id="firmware-dbmap-config-panel" hidden>
+              <summary>Effective CONFIG_DBMAP_* for selected target</summary>
+              <pre id="firmware-dbmap-config-output">Select a target and click List CONFIG_DBMAP_*.</pre>
+            </details>
             <div id="firmware-build-toolbar" class="firmware-build-toolbar" hidden>
               <label id="firmware-builds-show-deleted-label">
                 <input id="firmware-builds-show-deleted" type="checkbox">
@@ -723,6 +731,13 @@
                   </select>
                 </label>
                 <label for="provision-bootstrap-token">Bootstrap token (optional)<input id="provision-bootstrap-token" type="password" maxlength="127" autocomplete="off"></label>
+                <label for="provision-microphone-count">Microphone count (Ear)
+                  <select id="provision-microphone-count">
+                    <option value="">Keep existing / default (1)</option>
+                    <option value="1">1 microphone</option>
+                    <option value="2">2 microphones</option>
+                  </select>
+                </label>
               </div>
               <h5>NVS write preview</h5>
               <p class="notice">Review every field that will be sent. Secrets are masked here; empty Wi-Fi password is sent as empty.</p>
@@ -3817,12 +3832,23 @@
         return result;
       }
 
+      function syncFirmwareBuildActionButtons() {
+        const targetSelect = document.getElementById('firmware-build-target');
+        const buildButton = document.getElementById('start-firmware-build');
+        const listButton = document.getElementById('list-firmware-dbmap-config');
+        const disabled = firmwareBuildInProgress || !targetSelect.value;
+        buildButton.disabled = disabled;
+        listButton.disabled = disabled;
+      }
+
       async function refreshFirmwareBuildTargets() {
         const targetSelect = document.getElementById('firmware-build-target');
         const status = document.getElementById('firmware-build-status');
         const button = document.getElementById('start-firmware-build');
+        const listButton = document.getElementById('list-firmware-dbmap-config');
         targetSelect.replaceChildren(new Option('Loading supported targets…', ''));
         button.disabled = true;
+        listButton.disabled = true;
         try {
           const targets = await firmwareBuilderApi('/api/v1/firmware/targets');
           targetSelect.replaceChildren(new Option('Select a build target', ''));
@@ -3836,19 +3862,54 @@
           if (pendingTarget && targets.some((target) => target.id === pendingTarget)) {
             targetSelect.value = pendingTarget;
           }
-          button.disabled = firmwareBuildInProgress || !targetSelect.value;
+          syncFirmwareBuildActionButtons();
           status.textContent = targets.length
             ? 'Optional local builder is available. Builds contain no device-specific credentials.'
             : 'The builder reports no supported firmware targets.';
           status.className = targets.length ? 'notice' : 'notice error';
-          button.disabled = firmwareBuildInProgress || !targetSelect.value;
         } catch (error) {
           targetSelect.replaceChildren(new Option('Builder unavailable', ''));
+          button.disabled = true;
+          listButton.disabled = true;
           const builderStopped = error.message.includes('Optional firmware builder is not running');
           status.textContent = builderStopped
             ? error.message
             : `Optional builder unavailable. ${error.message}`;
           status.className = builderStopped ? 'notice' : 'notice error';
+        }
+      }
+
+      async function listFirmwareDbmapConfig() {
+        const targetSelect = document.getElementById('firmware-build-target');
+        const status = document.getElementById('firmware-build-status');
+        const panel = document.getElementById('firmware-dbmap-config-panel');
+        const output = document.getElementById('firmware-dbmap-config-output');
+        const listButton = document.getElementById('list-firmware-dbmap-config');
+        if (!targetSelect.value) {
+          status.textContent = 'Select a supported build target first.';
+          status.className = 'notice error';
+          return;
+        }
+        listButton.disabled = true;
+        status.textContent = `Resolving effective CONFIG_DBMAP_* for ${targetSelect.value}…`;
+        status.className = 'notice';
+        try {
+          const config = await firmwareBuilderApi(
+            `/api/v1/firmware/targets/${encodeURIComponent(targetSelect.value)}/dbmap-config`,
+          );
+          output.textContent = JSON.stringify(config, null, 2);
+          panel.hidden = false;
+          panel.open = true;
+          const highlightCount = Array.isArray(config.highlights) ? config.highlights.length : 0;
+          status.textContent = highlightCount
+            ? `Listed CONFIG_DBMAP_* for ${targetSelect.value} (${highlightCount} value(s) differ from Kconfig defaults). Review before building.`
+            : `Listed CONFIG_DBMAP_* for ${targetSelect.value}. Review before building.`;
+          status.className = 'notice';
+        } catch (error) {
+          status.textContent = `Could not list CONFIG_DBMAP_*: ${error.message}`;
+          status.className = 'notice error';
+        } finally {
+          syncFirmwareBuildActionButtons();
         }
       }
 
@@ -3890,10 +3951,8 @@
       function renderFirmwareBuilds(loadedJobs = firmwareBuildJobs) {
         firmwareBuildJobs = Array.isArray(loadedJobs) ? loadedJobs : [];
         const list = document.getElementById('firmware-build-jobs');
-        const buildButton = document.getElementById('start-firmware-build');
-        const buildTarget = document.getElementById('firmware-build-target');
         firmwareBuildInProgress = firmwareBuildJobs.some((job) => ['queued', 'running'].includes(job.status));
-        buildButton.disabled = firmwareBuildInProgress || !buildTarget.value;
+        syncFirmwareBuildActionButtons();
         const deletedCount = firmwareBuildJobs.filter((job) => job.status === 'deleted').length;
         const visible = firmwareBuildsShowDeleted
           ? firmwareBuildJobs
@@ -4087,6 +4146,7 @@
         }
         if (!window.confirm(`Build a generic ${target} image? The build does not flash or change a device.`)) return;
         button.disabled = true;
+        document.getElementById('list-firmware-dbmap-config').disabled = true;
         status.textContent = 'Submitting validated firmware build…';
         status.className = 'notice';
         const idempotencyKey = sessionStorage.getItem('dbmap-pending-build-key') || crypto.randomUUID();
@@ -4107,7 +4167,7 @@
           status.textContent = `Build request failed or its result is uncertain. Retry the same request safely: ${error.message}`;
           status.className = 'notice error';
         } finally {
-          button.disabled = false;
+          syncFirmwareBuildActionButtons();
         }
       }
 
@@ -4390,6 +4450,11 @@
           configuration.mqtt_host = route.mqtt.host;
           configuration.mqtt_port = Number(route.mqtt.port) || 8883;
         }
+        const micSelect = document.getElementById('provision-microphone-count');
+        const micRaw = options.microphoneCount ?? (micSelect ? micSelect.value : '');
+        if (micRaw === '1' || micRaw === '2') {
+          configuration.microphone_count = Number(micRaw);
+        }
         return {
           device,
           route,
@@ -4429,6 +4494,12 @@
             cfg.bootstrap_token
               ? maskSecret(cfg.bootstrap_token)
               : '(omitted; keep existing NVS value)',
+          ],
+          [
+            'Microphone count',
+            cfg.microphone_count != null
+              ? String(cfg.microphone_count)
+              : '(omitted; keep existing NVS value or default 1)',
           ],
           [
             'Identity / MQTT credentials',
@@ -4888,8 +4959,13 @@
       document.getElementById('firmware-build-target').addEventListener('change', (event) => {
         const pendingTarget = sessionStorage.getItem('dbmap-pending-build-target');
         if (pendingTarget) event.currentTarget.value = pendingTarget;
-        document.getElementById('start-firmware-build').disabled = firmwareBuildInProgress || !event.currentTarget.value;
+        syncFirmwareBuildActionButtons();
+        document.getElementById('firmware-dbmap-config-panel').hidden = true;
+        document.getElementById('firmware-dbmap-config-panel').open = false;
+        document.getElementById('firmware-dbmap-config-output').textContent =
+          'Select a target and click List CONFIG_DBMAP_*.';
       });
+      document.getElementById('list-firmware-dbmap-config').addEventListener('click', listFirmwareDbmapConfig);
       document.getElementById('start-firmware-build').addEventListener('click', startFirmwareBuild);
       document.getElementById('firmware-builds-show-deleted').addEventListener('change', (event) => {
         firmwareBuildsShowDeleted = event.currentTarget.checked;
@@ -4914,6 +4990,7 @@
       document.getElementById('provision-wifi-password').addEventListener('input', updateProvisionHubUrl);
       document.getElementById('provision-bootstrap-token').addEventListener('input', updateProvisionHubUrl);
       document.getElementById('provision-route').addEventListener('change', updateProvisionHubUrl);
+      document.getElementById('provision-microphone-count').addEventListener('change', updateProvisionHubUrl);
       document.getElementById('send-usb-provisioning').addEventListener('click', provisionDeviceOverUsb);
       document.getElementById('registration-provision-button').addEventListener('click', () => {
         if (!pendingRegistrationProvisioning) return;

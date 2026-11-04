@@ -189,9 +189,23 @@ OPERATIONS = {
         "description": "Creates a pending node and one-time bootstrap token. Send `Idempotency-Key` to retry a registration attempt safely.",
         "errors": ["401", "403", "404", "409", "422", "503"],
     },
+    ("GET", "/api/v1/nodes/by-chip-mac/{chip_mac}"): {
+        "operationId": "getNodeByChipMac",
+        "summary": "Get node detail by chip MAC",
+        "errors": ["401", "403", "404", "422", "503"],
+    },
     ("GET", "/api/v1/nodes/{node_id}"): {
         "operationId": "getNode",
         "summary": "Get node detail",
+        "errors": ["401", "403", "404", "503"],
+    },
+    ("GET", "/api/v1/nodes/{node_id}/monitoring/events"): {
+        "operationId": "getNodeMonitoringEvents",
+        "summary": "List recent device monitoring events",
+        "description": (
+            "Hub-observed connectivity events for one node. "
+            "See docs/health-and-availability.md."
+        ),
         "errors": ["401", "403", "404", "503"],
     },
     ("POST", "/api/v1/nodes/{node_id}/bootstrap-token"): {
@@ -279,6 +293,12 @@ OPERATIONS = {
         "summary": "List recent observations",
         "errors": ["401", "403", "503"],
     },
+    ("GET", "/api/v1/observations/count"): {
+        "operationId": "countObservations",
+        "summary": "Count observation reports and unique observation IDs",
+        "response": "ObservationCountView",
+        "errors": ["401", "403", "503"],
+    },
     ("GET", "/api/v1/hub/status"): {
         "operationId": "getHubStatus",
         "summary": "Hub mode, addresses, summary, and monitoring",
@@ -298,6 +318,17 @@ OPERATIONS = {
             "default limit is 15."
         ),
         "response": "HubMonitoringEvents",
+        "errors": ["401", "403", "503"],
+    },
+    ("GET", "/api/v1/hub/environmental-context"): {
+        "operationId": "getHubEnvironmentalContext",
+        "summary": "Regional environmental weather context",
+        "description": (
+            "Hub-owned regional weather snapshot (Open-Meteo) for analysis metadata. "
+            "Does not alter detection, association, or Track scoring. Optional at "
+            "selects the observation/event time; ensure=true refreshes from the "
+            "provider when the regional cache is missing or stale."
+        ),
         "errors": ["401", "403", "503"],
     },
     ("GET", "/api/v1/hub/components/{component}/details"): {
@@ -480,6 +511,17 @@ EXTRA_SCHEMAS = {
             "esp_idf_version": {"type": "string"},
             "configuration_version": {"type": "integer", "minimum": 0},
             "artifact_sha256": {"type": "string"},
+            "dbmap_config": {
+                "type": "object",
+                "description": (
+                    "Optional hierarchical CONFIG_DBMAP_* values explicitly set in the "
+                    "target sdkconfig.defaults (not the full effective Kconfig merge)."
+                ),
+                "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": True,
+                },
+            },
             "status": {"type": "string", "enum": ["candidate", "registered"]},
             "uploaded_at": {"type": "string", "format": "date-time"},
             "registered_at": {

@@ -20,6 +20,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import dbmap_config
+
 ARTIFACTS = Path(os.environ.get("DBMAP_FIRMWARE_ARTIFACTS", "/artifacts"))
 JOBS = ARTIFACTS / ".jobs"
 FIRMWARE_ROOT = Path(os.environ.get("DBMAP_FIRMWARE_ROOT", "/firmware"))
@@ -34,6 +36,7 @@ FIRMWARE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 FIRMWARE_VERSION_PATTERN = re.compile(
     r"(?P<major>0|[1-9][0-9]*)\.(?P<minor>0|[1-9][0-9]*)\.(?P<patch>0|[1-9][0-9]*)(?:[-+][0-9A-Za-z.-]+)?\Z"
 )
+TARGET_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 TARGETS = {
     "output-esp32": {
         "project": FIRMWARE_SOURCE,
@@ -336,6 +339,28 @@ def _check_toolchain(target: str, work_dir: Path, log_path: Path) -> None:
         raise RuntimeError("The pinned ESP-IDF toolchain check failed.")
 
 
+def _target_dbmap_config(target: str) -> dict:
+    target_config = TARGETS.get(target)
+    if target_config is None:
+        raise KeyError(target)
+    resolved = dbmap_config.resolve_effective_dbmap_config(
+        node_type=target_config["node_type"],
+        chip=target_config["chip"],
+        project=target_config["project"],
+        components=target_config["components"],
+        extra_component_trees=list(target_config.get("extra_component_trees", [])),
+        ntp_server=NTP_SERVER,
+    )
+    return {
+        "target": target,
+        "chip": target_config["chip"],
+        "node_type": target_config["node_type"],
+        "hardware_revision": target_config["hardware_revision"],
+        "esp_idf_version": target_config["idf_version"],
+        **resolved,
+    }
+
+
 def _build(job_id: str, target: str) -> None:
     global active_build
     job_path = JOBS / f"{job_id}.json"
@@ -379,6 +404,9 @@ def _build(job_id: str, target: str) -> None:
         _persist(job)
         _check_toolchain(target, work_dir, log_path)
 
+        pre_build_config = _target_dbmap_config(target)
+        _append_log(log_path, dbmap_config.format_log_block(pre_build_config).rstrip())
+
         job.update(stage="configuring")
         _persist(job)
         code, _output = _run_stage(
@@ -419,6 +447,12 @@ def _build(job_id: str, target: str) -> None:
             raise RuntimeError(
                 "Generated firmware configuration includes device-specific credentials."
             )
+        # Metadata sidecar keeps defaults-file CONFIG_DBMAP_* only (list/log keep effective).
+        dbmap_config_tree = dbmap_config.resolve_defaults_file_dbmap_config(
+            node_type=target_config["node_type"],
+            chip=target_config["chip"],
+            project=target_config["project"],
+        )
         job.update(stage="finalizing")
         _persist(job)
         build_dir = work_dir / "build"
@@ -448,6 +482,7 @@ def _build(job_id: str, target: str) -> None:
                 "configuration_version": 0,
                 "nvs_preserved": True,
                 "flash_components": manifest_entries,
+                "dbmap_config": dbmap_config_tree,
             }
             archive.writestr("manifest.json", json.dumps(manifest, indent=2))
         bundle_path.chmod(0o600)
@@ -457,6 +492,7 @@ def _build(job_id: str, target: str) -> None:
             stage="complete",
             firmware_version=manifest["firmware_version"],
             artifact={"sha256": digest, "size_bytes": bundle_path.stat().st_size},
+            dbmap_config=dbmap_config_tree,
             finished_at=time.time(),
         )
         _persist(job)
@@ -562,10 +598,26 @@ class Handler(BaseHTTPRequestHandler):
                 ],
             )
             return
+        parts = path.strip("/").split("/")
+        if (
+            len(parts) == 6
+            and parts[:4] == ["api", "v1", "firmware", "targets"]
+            and parts[5] == "dbmap-config"
+        ):
+            target_id = parts[4]
+            if not TARGET_ID_PATTERN.fullmatch(target_id) or target_id not in TARGETS:
+                self.send_error(404, "Firmware target not found.")
+                return
+            try:
+                self._json(200, _target_dbmap_config(target_id))
+            except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+                self.send_error(
+                    500, f"Could not resolve CONFIG_DBMAP_* for target: {_short_error(error)}"
+                )
+            return
         if path == "/api/v1/firmware/builds":
             self._json(200, [_public_job(job) for job in _load_jobs()])
             return
-        parts = path.strip("/").split("/")
         if (
             len(parts) == 6
             and parts[:4] == ["api", "v1", "firmware", "builds"]
@@ -673,6 +725,10 @@ class Handler(BaseHTTPRequestHandler):
                     "configuration_version": manifest["configuration_version"],
                     "artifact_sha256": digest,
                 }
+                if isinstance(manifest.get("dbmap_config"), dict):
+                    metadata["dbmap_config"] = manifest["dbmap_config"]
+                elif isinstance(job.get("dbmap_config"), dict):
+                    metadata["dbmap_config"] = job["dbmap_config"]
                 metadata_bytes = (json.dumps(metadata, indent=2) + "\n").encode()
             except (
                 KeyError,

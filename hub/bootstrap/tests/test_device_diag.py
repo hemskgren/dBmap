@@ -321,3 +321,52 @@ def test_apply_reported_ingests_diag_and_node_detail() -> None:
     assert events.status_code == 200
     sources = {item.get("source") for item in events.json()["events"]}
     assert "device_reported" in sources or "hub_assessed" in sources
+
+
+def test_apply_reported_accepts_additive_microphone_count_fields() -> None:
+    """E2.2: Hub stores hello/health audio mic-count fields without rejecting payload."""
+    _reset_db()
+    db = SessionLocal()
+    try:
+        _add_node(db, "EARMIC001")
+        db.commit()
+        service.apply_reported(
+            db,
+            "EARMIC001",
+            {
+                "protocol_version": 1,
+                "node_id": "EARMIC001",
+                "firmware_version": "0.7.9",
+                "hardware_revision": "esp32-s3-n16r8",
+                "config_version": 1,
+                "calibration_version": 0,
+                "classifier_version": "",
+                "uptime_s": 12,
+                "audio": {
+                    "units": "dBFS",
+                    "configured_microphone_count": 2,
+                    "available_microphone_count": 1,
+                    "microphone_count_status": "ok",
+                    "audio_transport_status": "ok",
+                    "microphone_status": "signal_present",
+                    "microphones": [
+                        {
+                            "index": 0,
+                            "model": "INMP441",
+                            "channels": 1,
+                            "rms_dbfs": -50.0,
+                            "peak_dbfs": -40.0,
+                        }
+                    ],
+                },
+            },
+        )
+        reported = db.get(ReportedState, "EARMIC001")
+        assert reported is not None
+        payload = json.loads(reported.payload_json)
+        assert payload["audio"]["configured_microphone_count"] == 2
+        assert payload["audio"]["available_microphone_count"] == 1
+        assert len(payload["audio"]["microphones"]) == 1
+        assert payload["audio"]["microphones"][0]["index"] == 0
+    finally:
+        db.close()

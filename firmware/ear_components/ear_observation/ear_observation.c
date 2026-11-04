@@ -8,6 +8,7 @@
 #include "cJSON.h"
 #include "dbmap_activity_detector.h"
 #include "dbmap_acoustic_l0.h"
+#include "dbmap_acoustic_l2.h"
 #include "dbmap_diag.h"
 #include "dbmap_ear_mic.h"
 #include "dbmap_episode_registry.h"
@@ -39,6 +40,17 @@ static const uint32_t kOtaEndAckTimeoutMs = 5000;
 #endif
 
 static const char *TAG = "ear_obs";
+
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+/* Defined with L0 ring code; L2 Kconfig depends on L0. */
+static void l2_continuity_break(void);
+static void l2_finalize_interval(
+    int64_t interval_start_mono_us,
+    int64_t interval_end_mono_us,
+    bool force_overflow,
+    dbmap_l2_interval_t *out_iv
+);
+#endif
 
 static const char *NVS_NS = "ear_obs";
 static const char *NVS_KEY_SEQ_LIMIT = "seq_lim";
@@ -85,6 +97,78 @@ typedef struct {
 #if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
 static int64_t s_diag_last_snap_us;
 static int64_t s_diag_last_counters_us;
+/* Lifetime-min free stack (bytes) sampled at phase checkpoints — not instant usage. */
+static uint32_t s_stack_hwm_bytes_pre_analyze;
+static uint32_t s_stack_hwm_bytes_post_analyze;
+static uint32_t s_stack_hwm_bytes_post_publish;
+static uint32_t s_stack_hwm_bytes_post_diag;
+static bool s_stack_hwm_have_pre_analyze;
+static bool s_stack_hwm_have_post_analyze;
+static bool s_stack_hwm_have_post_publish;
+static bool s_stack_hwm_have_post_diag;
+/** Running lifetime minimum observed by ear_obs checkpoints (bytes). */
+static uint32_t s_stack_hwm_bytes_min;
+static bool s_stack_hwm_min_init;
+
+/**
+ * Sample lifetime-min free stack at a phase boundary.
+ * On a new minimum, log once (integer-only) then re-sample so any stack used by
+ * that log line is attributed to phase "hwm_attrib_log", not the next checkpoint.
+ * Observation: decrease is detected after the phase returns — not mid-call.
+ */
+static void ear_obs_stack_hwm_checkpoint(
+    const char *phase,
+    const char *emit_kind,
+    uint32_t *slot,
+    bool *have
+)
+{
+    /* ESP-IDF Xtensa: uxTaskGetStackHighWaterMark returns bytes. */
+    const uint32_t hwm = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+    if (slot != NULL && have != NULL) {
+        *slot = hwm;
+        *have = true;
+    }
+
+    if (!s_stack_hwm_min_init) {
+        s_stack_hwm_bytes_min = hwm;
+        s_stack_hwm_min_init = true;
+        return;
+    }
+    if (hwm >= s_stack_hwm_bytes_min) {
+        return;
+    }
+
+    const uint32_t prev = s_stack_hwm_bytes_min;
+    s_stack_hwm_bytes_min = hwm;
+    const int64_t now_us = esp_timer_get_time();
+    ESP_LOGI(
+        TAG,
+        "ear_obs stack_hwm_new_min bytes=%lu prev=%lu phase=%s emit=%s "
+        "mono_us=%lld (observed after phase; lifetime min)",
+        (unsigned long)hwm,
+        (unsigned long)prev,
+        phase != NULL ? phase : "?",
+        emit_kind != NULL ? emit_kind : "none",
+        (long long)now_us
+    );
+
+    /* Logger may deepen the stack; capture that under an explicit phase name. */
+    const uint32_t after_log = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+    if (after_log < s_stack_hwm_bytes_min) {
+        const uint32_t prev_log = s_stack_hwm_bytes_min;
+        s_stack_hwm_bytes_min = after_log;
+        ESP_LOGI(
+            TAG,
+            "ear_obs stack_hwm_new_min bytes=%lu prev=%lu phase=hwm_attrib_log "
+            "emit=%s mono_us=%lld (attrib log self-cost)",
+            (unsigned long)after_log,
+            (unsigned long)prev_log,
+            emit_kind != NULL ? emit_kind : "none",
+            (long long)esp_timer_get_time()
+        );
+    }
+}
 #endif
 #if CONFIG_DBMAP_EAR_OBS_L0
 typedef struct {
@@ -115,6 +199,19 @@ typedef struct {
 static ear_obs_l1_ring_entry_t s_l1_ring[EAR_OBS_L0_HIST_CAP];
 static uint32_t s_l1_ring_head;
 static uint32_t s_l1_ring_count;
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+typedef struct {
+    dbmap_l2_window_t window;
+    uint8_t usable;
+} ear_obs_l2_ring_entry_t;
+
+static ear_obs_l2_ring_entry_t s_l2_ring[EAR_OBS_L0_HIST_CAP];
+static uint32_t s_l2_ring_head;
+static uint32_t s_l2_ring_count;
+static dbmap_l2_continuity_t s_l2_continuity;
+static dbmap_l2_interval_t s_l2_last_interval;
+static bool s_l2_last_interval_valid;
+#endif
 #endif
 #endif
 #endif
@@ -570,6 +667,10 @@ static void l0_finalize_interval(
             (unsigned long)out_iv->window_count,
             (unsigned long)EAR_OBS_L0_HIST_CAP
         );
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+        /* D3: overflow clears L2 metrics and breaks continuity. */
+        l2_continuity_break();
+#endif
     }
     s_l0_last_interval = *out_iv;
     s_l0_last_interval_valid = true;
@@ -623,6 +724,74 @@ static void l1_finalize_interval(
     }
     dbmap_l1_interval_accum_finalize(&acc, out_iv);
 }
+
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+static void l2_continuity_break(void)
+{
+    dbmap_l2_continuity_reset(&s_l2_continuity);
+}
+
+static void l2_ring_push(const dbmap_l2_window_t *window, bool usable)
+{
+    if (window == NULL) {
+        return;
+    }
+    ear_obs_l2_ring_entry_t *slot = &s_l2_ring[s_l2_ring_head];
+    slot->window = *window;
+    slot->usable = usable ? 1u : 0u;
+    s_l2_ring_head = (s_l2_ring_head + 1u) % EAR_OBS_L0_HIST_CAP;
+    if (s_l2_ring_count < EAR_OBS_L0_HIST_CAP) {
+        s_l2_ring_count++;
+    }
+}
+
+static void l2_finalize_interval(
+    int64_t interval_start_mono_us,
+    int64_t interval_end_mono_us,
+    bool force_overflow,
+    dbmap_l2_interval_t *out_iv
+)
+{
+    if (out_iv == NULL) {
+        return;
+    }
+    dbmap_l2_interval_accum_t acc;
+    dbmap_l2_interval_accum_init(
+        &acc,
+        (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ,
+        (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS,
+        interval_start_mono_us,
+        interval_end_mono_us
+    );
+    if (force_overflow) {
+        dbmap_l2_interval_accum_mark_overflow(&acc);
+        l2_continuity_break();
+        dbmap_l2_interval_accum_finalize(&acc, out_iv);
+        s_l2_last_interval = *out_iv;
+        s_l2_last_interval_valid = true;
+        return;
+    }
+
+    const uint32_t n = s_l2_ring_count;
+    const uint32_t start = (s_l2_ring_head + EAR_OBS_L0_HIST_CAP - n) % EAR_OBS_L0_HIST_CAP;
+    for (uint32_t i = 0; i < n; ++i) {
+        const ear_obs_l2_ring_entry_t *e = &s_l2_ring[(start + i) % EAR_OBS_L0_HIST_CAP];
+        if (!(interval_start_mono_us < e->window.window_end_mono_us &&
+              e->window.window_end_mono_us <= interval_end_mono_us)) {
+            continue;
+        }
+        if (e->usable == 0) {
+            /* Detector-unusable: same association policy as L1 (invalid count). */
+            acc.invalid_window_count++;
+            continue;
+        }
+        dbmap_l2_interval_accum_add(&acc, &e->window);
+    }
+    dbmap_l2_interval_accum_finalize(&acc, out_iv);
+    s_l2_last_interval = *out_iv;
+    s_l2_last_interval_valid = true;
+}
+#endif /* L2 */
 #endif /* L1 */
 
 static void l0_on_new_window(const dbmap_ear_mic_levels_t *levels, bool levels_ok)
@@ -644,6 +813,14 @@ static void l0_on_new_window(const dbmap_ear_mic_levels_t *levels, bool levels_o
     if (l0w.window_end_mono_us != levels->measured_at_us) {
         return;
     }
+
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+    /* Missing analysis window(s): break dominant-frequency continuity. */
+    if (s_l0_last_window_seq != 0 &&
+        levels->window_seq > s_l0_last_window_seq + 1u) {
+        l2_continuity_break();
+    }
+#endif
     s_l0_last_window_seq = levels->window_seq;
 
     dbmap_activity_sample_t gate = {
@@ -666,6 +843,16 @@ static void l0_on_new_window(const dbmap_ear_mic_levels_t *levels, bool levels_o
         l1w.window_end_mono_us == levels->measured_at_us) {
         l1_ring_push(&l1w, usable);
     }
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+    dbmap_l2_window_t l2w;
+    if (dbmap_ear_mic_get_l2_window(&l2w) == ESP_OK &&
+        l2w.window_end_mono_us == levels->measured_at_us) {
+        dbmap_l2_continuity_push(
+            &s_l2_continuity, (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS, &l2w
+        );
+        l2_ring_push(&l2w, usable);
+    }
+#endif
 #endif
 }
 #endif /* CONFIG_DBMAP_EAR_OBS_L0 */
@@ -691,6 +878,10 @@ static void rms_release_only(void)
         dbmap_episode_registry_release(&s_registry, s_rms_handle);
         s_rms_bound = false;
     }
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+    /* Episode / registry release: break dominant-frequency continuity (D2). */
+    l2_continuity_break();
+#endif
 }
 
 static void rms_release_and_rearm(void)
@@ -775,6 +966,22 @@ static void handle_emission(const dbmap_activity_emission_t *emission)
 #else
         const dbmap_l1_interval_t *sig_ptr = NULL;
 #endif
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+        {
+            dbmap_l2_interval_t local_l2;
+            l2_finalize_interval(
+                emission->interval_start_mono_us,
+                emission->interval_end_mono_us,
+#if CONFIG_DBMAP_EAR_OBS_L0
+                local_iv.history_overflow,
+#else
+                false,
+#endif
+                &local_l2
+            );
+            (void)local_l2;
+        }
+#endif
         if (!mqtt_ok) {
             s_dropped_while_mqtt_down += 1;
             dbmap_diag_note_obs_skipped_disconnected();
@@ -798,6 +1005,14 @@ static void handle_emission(const dbmap_activity_emission_t *emission)
             &local_iv,
             sig_ptr
         );
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+        ear_obs_stack_hwm_checkpoint(
+            "post_publish",
+            "start",
+            &s_stack_hwm_bytes_post_publish,
+            &s_stack_hwm_have_post_publish
+        );
+#endif
         if (err == ESP_OK) {
             dbmap_episode_registry_mark_start_accepted(
                 &s_registry, s_rms_handle, emission->interval_end_mono_us
@@ -853,6 +1068,24 @@ static void handle_emission(const dbmap_activity_emission_t *emission)
 #else
         const dbmap_l1_interval_t *sig_ptr = NULL;
 #endif
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+        {
+            dbmap_l2_interval_t local_l2;
+            const bool ov =
+#if CONFIG_DBMAP_EAR_OBS_L0
+                local_iv.history_overflow;
+#else
+                false;
+#endif
+            l2_finalize_interval(
+                emission->interval_start_mono_us,
+                emission->interval_end_mono_us,
+                ov,
+                &local_l2
+            );
+            (void)local_l2; /* diagnostics only; PUBLISH remains off */
+        }
+#endif
         esp_err_t err = dbmap_ear_observation_publish(
             s_cfg,
             slot->observation_id,
@@ -867,6 +1100,14 @@ static void handle_emission(const dbmap_activity_emission_t *emission)
             &local_iv,
             sig_ptr
         );
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+        ear_obs_stack_hwm_checkpoint(
+            "post_publish",
+            "periodic",
+            &s_stack_hwm_bytes_post_publish,
+            &s_stack_hwm_have_post_publish
+        );
+#endif
         if (err == ESP_OK) {
             dbmap_episode_registry_note_periodic_published(
                 &s_registry, s_rms_handle, emission->interval_end_mono_us
@@ -902,6 +1143,23 @@ static void handle_emission(const dbmap_activity_emission_t *emission)
 #else
         const dbmap_l1_interval_t *sig_ptr = NULL;
 #endif
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+        {
+            dbmap_l2_interval_t local_l2;
+            l2_finalize_interval(
+                emission->interval_start_mono_us,
+                emission->interval_end_mono_us,
+#if CONFIG_DBMAP_EAR_OBS_L0
+                local_iv.history_overflow,
+#else
+                false,
+#endif
+                &local_l2
+            );
+            (void)local_l2;
+            l2_continuity_break(); /* episode END */
+        }
+#endif
         if (!mqtt_ok) {
             s_dropped_while_mqtt_down += 1;
             dbmap_diag_note_obs_skipped_disconnected();
@@ -922,6 +1180,14 @@ static void handle_emission(const dbmap_activity_emission_t *emission)
             &local_iv,
             sig_ptr
         );
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+        ear_obs_stack_hwm_checkpoint(
+            "post_publish",
+            "end",
+            &s_stack_hwm_bytes_post_publish,
+            &s_stack_hwm_have_post_publish
+        );
+#endif
         if (err != ESP_OK) {
             note_reject_for_kind("end");
             rms_release_and_rearm();
@@ -1085,6 +1351,49 @@ static void activity_serial_diag(const dbmap_ear_mic_levels_t *levels, bool leve
                 );
             }
         }
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+        {
+            dbmap_ear_mic_l2_perf_t l2perf;
+            if (dbmap_ear_mic_get_l2_perf(&l2perf) == ESP_OK && l2perf.enabled) {
+                ESP_LOGI(
+                    TAG,
+                    "L2 perf analyze_n=%lu l1_l2_combined_us last=%lu max=%lu "
+                    "l2_incremental_estimated_us last=%lu max=%lu "
+                    "(baseline_l1 last=%lu max=%lu) l2_rms_us last=%lu max=%lu "
+                    "publish=%d",
+                    (unsigned long)l2perf.analyze_count,
+                    (unsigned long)l2perf.combined_us_last,
+                    (unsigned long)l2perf.combined_us_max,
+                    (unsigned long)l2perf.incremental_estimated_us_last,
+                    (unsigned long)l2perf.incremental_estimated_us_max,
+                    (unsigned long)l2perf.baseline_l1_us_last,
+                    (unsigned long)l2perf.baseline_l1_us_max,
+                    (unsigned long)l2perf.rms_us_last,
+                    (unsigned long)l2perf.rms_us_max,
+#if defined(CONFIG_DBMAP_EAR_OBS_L2_PUBLISH) && CONFIG_DBMAP_EAR_OBS_L2_PUBLISH
+                    1
+#else
+                    0
+#endif
+                );
+            }
+            if (s_l2_last_interval_valid) {
+                ESP_LOGI(
+                    TAG,
+                    "L2 interval win=%lu invalid=%lu overflow=%d "
+                    "flux_vc=%lu env_vc=%lu delta_vc=%lu ring=%lu/%lu",
+                    (unsigned long)s_l2_last_interval.window_count,
+                    (unsigned long)s_l2_last_interval.invalid_window_count,
+                    s_l2_last_interval.history_overflow ? 1 : 0,
+                    (unsigned long)s_l2_last_interval.spectral_flux_valid_count,
+                    (unsigned long)s_l2_last_interval.envelope_cv_valid_count,
+                    (unsigned long)s_l2_last_interval.dominant_delta_valid_count,
+                    (unsigned long)s_l2_ring_count,
+                    (unsigned long)EAR_OBS_L0_HIST_CAP
+                );
+            }
+        }
+#endif
 #endif
         {
             const int cpu_hz = esp_clk_cpu_freq();
@@ -1095,14 +1404,44 @@ static void activity_serial_diag(const dbmap_ear_mic_levels_t *levels, bool leve
 #else
             const char *pm = "disabled";
 #endif
+            /* Lifetime minimum free stack since task create (bytes on ESP-IDF Xtensa). */
+            const unsigned long hwm_bytes =
+                (unsigned long)uxTaskGetStackHighWaterMark(NULL);
             ESP_LOGI(
                 TAG,
-                "cpu freq_mhz=%lu configured_mhz=%d pm=%s free_heap=%lu free_spiram=%lu",
+                "cpu freq_mhz=%lu configured_mhz=%d pm=%s free_heap=%lu "
+                "min_free_heap=%lu free_spiram=%lu ear_obs stack_hwm_bytes=%lu",
                 cpu_mhz,
                 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
                 pm,
                 (unsigned long)esp_get_free_heap_size(),
-                (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM)
+                (unsigned long)esp_get_minimum_free_heap_size(),
+                (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                hwm_bytes
+            );
+            /* Phase checkpoints: each value is uxTaskGetStackHighWaterMark at that
+             * moment (lifetime min free so far), not instantaneous stack usage. */
+            ESP_LOGI(
+                TAG,
+                "ear_obs stack_hwm_phase_bytes pre_analyze=%lu seen=%d "
+                "post_analyze=%lu seen=%d post_publish=%lu seen=%d "
+                "post_diag=%lu seen=%d (lifetime-min at checkpoint)",
+                s_stack_hwm_have_pre_analyze
+                    ? (unsigned long)s_stack_hwm_bytes_pre_analyze
+                    : 0ul,
+                s_stack_hwm_have_pre_analyze ? 1 : 0,
+                s_stack_hwm_have_post_analyze
+                    ? (unsigned long)s_stack_hwm_bytes_post_analyze
+                    : 0ul,
+                s_stack_hwm_have_post_analyze ? 1 : 0,
+                s_stack_hwm_have_post_publish
+                    ? (unsigned long)s_stack_hwm_bytes_post_publish
+                    : 0ul,
+                s_stack_hwm_have_post_publish ? 1 : 0,
+                s_stack_hwm_have_post_diag
+                    ? (unsigned long)s_stack_hwm_bytes_post_diag
+                    : 0ul,
+                s_stack_hwm_have_post_diag ? 1 : 0
             );
         }
 #endif
@@ -1167,7 +1506,29 @@ static void activity_task(void *arg)
          * is start < window_end <= end, so that closing window is associated
          * with this emission (not the next). Still after feed — L0 is not on
          * the detector decision path. */
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+        {
+            const char *ek = emit_kind_name(emission.kind);
+            ear_obs_stack_hwm_checkpoint(
+                "pre_analyze",
+                ek,
+                &s_stack_hwm_bytes_pre_analyze,
+                &s_stack_hwm_have_pre_analyze
+            );
+        }
+#endif
         l0_on_new_window(&levels, levels_ok);
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+        {
+            const char *ek = emit_kind_name(emission.kind);
+            ear_obs_stack_hwm_checkpoint(
+                "post_analyze",
+                ek,
+                &s_stack_hwm_bytes_post_analyze,
+                &s_stack_hwm_have_post_analyze
+            );
+        }
+#endif
 #endif
         handle_emission(&emission);
         if (dbmap_activity_detector_state(&s_detector) == DBMAP_ACTIVITY_IDLE) {
@@ -1178,6 +1539,15 @@ static void activity_task(void *arg)
         }
 #if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
         activity_serial_diag(&levels, levels_ok);
+        {
+            const char *ek = emit_kind_name(emission.kind);
+            ear_obs_stack_hwm_checkpoint(
+                "post_diag",
+                ek,
+                &s_stack_hwm_bytes_post_diag,
+                &s_stack_hwm_have_post_diag
+            );
+        }
 #endif
 #if CONFIG_DBMAP_EAR_OBS_TEST_PUBLISH_ONCE
         if (s_cfg != NULL) {
@@ -1324,6 +1694,18 @@ static esp_err_t ear_observation_close_for_ota(void)
         );
         snap->has_signature = true;
 #endif
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+        {
+            dbmap_l2_interval_t local_l2;
+            l2_finalize_interval(
+                snap->interval_start_mono_us,
+                snap->interval_end_mono_us,
+                snap->has_measurements && snap->measurements.history_overflow,
+                &local_l2
+            );
+            (void)local_l2;
+        }
+#endif
         if (s_cfg != NULL) {
             strncpy(snap->node_id, s_cfg->identity.node_id, sizeof(snap->node_id) - 1);
             strncpy(snap->hub_id, s_cfg->identity.hub_id, sizeof(snap->hub_id) - 1);
@@ -1334,6 +1716,9 @@ static esp_err_t ear_observation_close_for_ota(void)
 
     s_rms_bound = false;
     s_mqtt_episode_rearm_required = false;
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+    l2_continuity_break(); /* OTA acoustic close */
+#endif
     s_emit_gate = DBMAP_OBS_GATE_CLOSED;
     xSemaphoreGive(s_lifecycle_mu);
 
@@ -1490,6 +1875,27 @@ esp_err_t dbmap_ear_observation_start(const dbmap_effective_t *cfg)
             (unsigned long)(EAR_OBS_L0_HIST_CAP * sizeof(ear_obs_l0_ring_entry_t))
         );
     }
+#if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
+    s_l1_ring_head = 0;
+    s_l1_ring_count = 0;
+#if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
+    s_l2_ring_head = 0;
+    s_l2_ring_count = 0;
+    s_l2_last_interval_valid = false;
+    memset(&s_l2_last_interval, 0, sizeof(s_l2_last_interval));
+    dbmap_l2_continuity_reset(&s_l2_continuity);
+    ESP_LOGI(
+        TAG,
+        "L2 dynamics compute=1 publish=%d hist_cap=%lu",
+#if defined(CONFIG_DBMAP_EAR_OBS_L2_PUBLISH) && CONFIG_DBMAP_EAR_OBS_L2_PUBLISH
+        1,
+#else
+        0,
+#endif
+        (unsigned long)EAR_OBS_L0_HIST_CAP
+    );
+#endif
+#endif
 #endif
     /* Extra stack for L0 interval diag formatting when SERIAL_DIAG is on. */
     BaseType_t ok = xTaskCreate(activity_task, "ear_obs", 6144, NULL, 4, NULL);
