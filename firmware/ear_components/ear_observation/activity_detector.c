@@ -1,7 +1,56 @@
 #include "dbmap_activity_detector.h"
 
 #include <math.h>
+#include <stdio.h>
+#include <stdint.h>
 #include <string.h>
+
+static void clear_exit_hold(dbmap_activity_detector_t *det)
+{
+    det->exit_hold_elapsed_us = 0;
+    det->exit_hold_anchor_us = 0;
+    det->exit_hold_anchor_seq = 0;
+    det->exit_hold_anchor_valid = false;
+}
+
+static void note_exit_hold_peak(dbmap_activity_detector_t *det)
+{
+    if (det->exit_hold_elapsed_us > det->exit_hold_elapsed_us_max) {
+        det->exit_hold_elapsed_us_max = det->exit_hold_elapsed_us;
+    }
+}
+
+static void invalidate_exit_hold_anchor(dbmap_activity_detector_t *det)
+{
+    det->exit_hold_anchor_valid = false;
+}
+
+static void begin_exit_hold(dbmap_activity_detector_t *det, int64_t t, uint32_t seq)
+{
+    det->exit_hold_elapsed_us = 0;
+    det->exit_hold_anchor_us = t;
+    det->exit_hold_anchor_seq = seq;
+    det->exit_hold_anchor_valid = true;
+}
+
+static void add_exit_hold_elapsed(dbmap_activity_detector_t *det, int64_t delta_us)
+{
+    if (delta_us <= 0) {
+        return;
+    }
+    if (det->exit_hold_elapsed_us > INT64_MAX - delta_us) {
+        det->exit_hold_elapsed_us = INT64_MAX;
+    } else {
+        det->exit_hold_elapsed_us += delta_us;
+    }
+    note_exit_hold_peak(det);
+}
+
+/** True when cur is the immediate successor of prev (no uint32 wrap). */
+static bool seq_is_consecutive(uint32_t prev, uint32_t cur)
+{
+    return prev != UINT32_MAX && cur == prev + 1u;
+}
 
 bool dbmap_activity_config_valid(const dbmap_activity_config_t *cfg)
 {
@@ -21,7 +70,42 @@ bool dbmap_activity_config_valid(const dbmap_activity_config_t *cfg)
     if (cfg->min_activity_ms == 0 || cfg->exit_hold_ms == 0 || cfg->observation_interval_ms == 0) {
         return false;
     }
+    if (cfg->relative_end_enabled) {
+        if (!isfinite((double)cfg->return_margin_db) || cfg->return_margin_db < 0.0f) {
+            return false;
+        }
+        if (!isfinite((double)cfg->cancel_hysteresis_db) || cfg->cancel_hysteresis_db < 0.0f) {
+            return false;
+        }
+        if (!isfinite((double)cfg->min_event_contrast_db) || cfg->min_event_contrast_db < 0.0f) {
+            return false;
+        }
+        if (cfg->relative_exit_hold_ms == 0) {
+            return false;
+        }
+    }
     return true;
+}
+
+static void relative_clear_episode(dbmap_activity_detector_t *det)
+{
+    det->baseline_frozen = false;
+    det->baseline_reliable = false;
+    det->frozen_baseline_dbfs = 0.0f;
+    det->frozen_baseline_n = 0;
+    det->relative_armed = false;
+    det->arming_count = 0;
+    det->measured_contrast_db = 0.0f;
+    det->exit_latch = DBMAP_ACTIVITY_EXIT_LATCH_NONE;
+    memset(det->arming_rms, 0, sizeof(det->arming_rms));
+}
+
+static void relative_clear_all(dbmap_activity_detector_t *det)
+{
+    relative_clear_episode(det);
+    det->baseline_head = 0;
+    det->baseline_count = 0;
+    memset(det->baseline_entries, 0, sizeof(det->baseline_entries));
 }
 
 void dbmap_activity_detector_init(dbmap_activity_detector_t *det, const dbmap_activity_config_t *cfg)
@@ -98,9 +182,230 @@ static bool above_enter(const dbmap_activity_detector_t *det, float rms)
     return rms >= det->cfg.enter_threshold_dbfs;
 }
 
-static bool below_exit(const dbmap_activity_detector_t *det, float rms)
+static bool below_exit_abs(const dbmap_activity_detector_t *det, float rms)
 {
     return rms < det->cfg.exit_threshold_dbfs;
+}
+
+static float baseline_median(const float *values, uint32_t n)
+{
+    float tmp[DBMAP_ACTIVITY_BASELINE_CAP];
+    if (values == NULL || n == 0) {
+        return 0.0f;
+    }
+    if (n > DBMAP_ACTIVITY_BASELINE_CAP) {
+        n = DBMAP_ACTIVITY_BASELINE_CAP;
+    }
+    memcpy(tmp, values, sizeof(float) * n);
+    for (uint32_t i = 1; i < n; ++i) {
+        float key = tmp[i];
+        int j = (int)i - 1;
+        while (j >= 0 && tmp[j] > key) {
+            tmp[j + 1] = tmp[j];
+            j--;
+        }
+        tmp[j + 1] = key;
+    }
+    if ((n % 2u) == 1u) {
+        return tmp[n / 2u];
+    }
+    return 0.5f * (tmp[n / 2u - 1u] + tmp[n / 2u]);
+}
+
+static void baseline_drop_stale(dbmap_activity_detector_t *det, int64_t now_us)
+{
+    if (!det->cfg.relative_end_enabled || det->cfg.baseline_stale_ms == 0 || det->baseline_count == 0) {
+        return;
+    }
+    const int64_t cutoff = now_us - ((int64_t)det->cfg.baseline_stale_ms * 1000LL);
+    while (det->baseline_count > 0) {
+        const uint32_t oldest =
+            (det->baseline_head + DBMAP_ACTIVITY_BASELINE_CAP - det->baseline_count)
+            % DBMAP_ACTIVITY_BASELINE_CAP;
+        if (det->baseline_entries[oldest].t_end_mono_us >= cutoff) {
+            break;
+        }
+        det->baseline_entries[oldest].valid = false;
+        det->baseline_count--;
+    }
+}
+
+static void baseline_push(dbmap_activity_detector_t *det, float rms, int64_t t_end_us)
+{
+    if (!det->cfg.relative_end_enabled || det->baseline_frozen) {
+        return;
+    }
+    if (!isfinite((double)rms) || rms > 0.0f || t_end_us < 0) {
+        return;
+    }
+    baseline_drop_stale(det, t_end_us);
+    if (det->baseline_count == DBMAP_ACTIVITY_BASELINE_CAP) {
+        det->baseline_count--;
+    }
+    det->baseline_entries[det->baseline_head].rms_dbfs = rms;
+    det->baseline_entries[det->baseline_head].t_end_mono_us = t_end_us;
+    det->baseline_entries[det->baseline_head].valid = true;
+    det->baseline_head = (det->baseline_head + 1u) % DBMAP_ACTIVITY_BASELINE_CAP;
+    det->baseline_count++;
+}
+
+static void baseline_freeze(dbmap_activity_detector_t *det, int64_t episode_start_us)
+{
+    if (!det->cfg.relative_end_enabled) {
+        return;
+    }
+    baseline_drop_stale(det, episode_start_us);
+
+    float vals[DBMAP_ACTIVITY_BASELINE_CAP];
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < det->baseline_count; ++i) {
+        const uint32_t idx =
+            (det->baseline_head + DBMAP_ACTIVITY_BASELINE_CAP - det->baseline_count + i)
+            % DBMAP_ACTIVITY_BASELINE_CAP;
+        const dbmap_activity_baseline_sample_t *s = &det->baseline_entries[idx];
+        if (!s->valid) {
+            continue;
+        }
+        /* Pre-event only: window ended at or before episode start. */
+        if (s->t_end_mono_us > episode_start_us) {
+            continue;
+        }
+        vals[n++] = s->rms_dbfs;
+    }
+
+    det->baseline_frozen = true;
+    det->frozen_baseline_n = n;
+    if (n >= DBMAP_ACTIVITY_BASELINE_MIN_SAMPLES) {
+        det->baseline_reliable = true;
+        det->frozen_baseline_dbfs = baseline_median(vals, n);
+    } else {
+        det->baseline_reliable = false;
+        det->frozen_baseline_dbfs = 0.0f;
+    }
+}
+
+static void try_arm_relative(dbmap_activity_detector_t *det)
+{
+    if (!det->cfg.relative_end_enabled || !det->baseline_frozen || !det->baseline_reliable) {
+        det->relative_armed = false;
+        return;
+    }
+    if (det->relative_armed || det->arming_count == 0) {
+        return;
+    }
+    float peak = det->arming_rms[0];
+    for (uint32_t i = 1; i < det->arming_count; ++i) {
+        if (det->arming_rms[i] > peak) {
+            peak = det->arming_rms[i];
+        }
+    }
+    det->measured_contrast_db = peak - det->frozen_baseline_dbfs;
+    if (det->measured_contrast_db >= det->cfg.min_event_contrast_db) {
+        det->relative_armed = true;
+    }
+}
+
+/**
+ * ACTIVE only: collect arming RMS then evaluate contrast (call before exit check).
+ * Contrast uses the max over the first two usable episode windows; arming is
+ * decided only once both samples are present (or already armed).
+ */
+static void note_arming_rms(dbmap_activity_detector_t *det, float rms)
+{
+    if (!det->cfg.relative_end_enabled || !det->baseline_frozen || !det->baseline_reliable) {
+        return;
+    }
+    if (det->relative_armed) {
+        return;
+    }
+    if (det->arming_count < DBMAP_ACTIVITY_ARMING_WINDOWS) {
+        det->arming_rms[det->arming_count++] = rms;
+    }
+    if (det->arming_count >= DBMAP_ACTIVITY_ARMING_WINDOWS) {
+        try_arm_relative(det);
+    }
+}
+
+static void on_episode_start(dbmap_activity_detector_t *det, int64_t episode_start_us, float start_rms)
+{
+    if (!det->cfg.relative_end_enabled) {
+        return;
+    }
+    det->relative_armed = false;
+    det->arming_count = 0;
+    det->measured_contrast_db = 0.0f;
+    det->exit_latch = DBMAP_ACTIVITY_EXIT_LATCH_NONE;
+    memset(det->arming_rms, 0, sizeof(det->arming_rms));
+    baseline_freeze(det, episode_start_us);
+    note_arming_rms(det, start_rms);
+}
+
+static void on_episode_end_cleanup(dbmap_activity_detector_t *det)
+{
+    clear_exit_hold(det);
+    if (!det->cfg.relative_end_enabled) {
+        det->exit_latch = DBMAP_ACTIVITY_EXIT_LATCH_NONE;
+        return;
+    }
+    /* Clear freeze and ring so the next episode collects a fresh baseline. */
+    relative_clear_all(det);
+}
+
+static bool below_rel_entry(const dbmap_activity_detector_t *det, float rms)
+{
+    return rms <= det->frozen_baseline_dbfs + det->cfg.return_margin_db;
+}
+
+static bool stay_rel_exit(const dbmap_activity_detector_t *det, float rms)
+{
+    return rms <= det->frozen_baseline_dbfs + det->cfg.return_margin_db
+                      + det->cfg.cancel_hysteresis_db;
+}
+
+static bool should_enter_pending_exit(const dbmap_activity_detector_t *det, float rms)
+{
+    if (det->cfg.relative_end_enabled && det->relative_armed) {
+        return below_exit_abs(det, rms) || below_rel_entry(det, rms);
+    }
+    return below_exit_abs(det, rms);
+}
+
+static bool should_stay_pending_exit(const dbmap_activity_detector_t *det, float rms)
+{
+    if (det->exit_latch == DBMAP_ACTIVITY_EXIT_LATCH_RELATIVE) {
+        return stay_rel_exit(det, rms);
+    }
+    /* Absolute latch (or NONE should not occur in PENDING_EXIT). */
+    return below_exit_abs(det, rms);
+}
+
+static uint32_t latched_exit_hold_ms(const dbmap_activity_detector_t *det)
+{
+    if (det->exit_latch == DBMAP_ACTIVITY_EXIT_LATCH_RELATIVE) {
+        return det->cfg.relative_exit_hold_ms;
+    }
+    return det->cfg.exit_hold_ms;
+}
+
+static dbmap_activity_emission_t maybe_periodic(
+    dbmap_activity_detector_t *det,
+    float rms,
+    int64_t t
+)
+{
+    int64_t due = det->last_emit_us + ((int64_t)det->cfg.observation_interval_ms * 1000LL);
+    if (t >= due) {
+        int64_t start = det->last_emit_us;
+        det->last_emit_us = t;
+        det->emissions_periodic += 1;
+        return make_emission(
+            DBMAP_ACTIVITY_EMIT_PERIODIC, DBMAP_ACTIVITY_TERM_NONE, rms, start, t
+        );
+    }
+    dbmap_activity_emission_t none;
+    memset(&none, 0, sizeof(none));
+    none.kind = DBMAP_ACTIVITY_EMIT_NONE;
+    return none;
 }
 
 static dbmap_activity_emission_t force_end_after_invalid(dbmap_activity_detector_t *det)
@@ -113,6 +418,7 @@ static dbmap_activity_emission_t force_end_after_invalid(dbmap_activity_detector
     det->last_emit_us = end_us;
     det->emissions_end += 1;
     det->forced_ends_invalid += 1;
+    on_episode_end_cleanup(det);
     return make_emission(
         DBMAP_ACTIVITY_EMIT_END, DBMAP_ACTIVITY_TERM_INVALID_HOLD, level, start_us, end_us
     );
@@ -121,6 +427,132 @@ static dbmap_activity_emission_t force_end_after_invalid(dbmap_activity_detector
 dbmap_activity_state_t dbmap_activity_detector_state(const dbmap_activity_detector_t *det)
 {
     return det != NULL ? det->state : DBMAP_ACTIVITY_IDLE;
+}
+
+void dbmap_activity_detector_fill_diag(
+    const dbmap_activity_detector_t *det,
+    dbmap_activity_diag_t *out
+)
+{
+    if (out == NULL) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    if (det == NULL) {
+        return;
+    }
+    out->state = det->state;
+    out->relative_end_enabled = det->cfg.relative_end_enabled;
+    out->relative_armed = det->relative_armed;
+    out->baseline_frozen = det->baseline_frozen;
+    out->baseline_reliable = det->baseline_reliable;
+    out->frozen_baseline_dbfs = det->frozen_baseline_dbfs;
+    out->frozen_baseline_n = det->frozen_baseline_n;
+    out->measured_contrast_db = det->measured_contrast_db;
+    out->abs_enter_dbfs = det->cfg.enter_threshold_dbfs;
+    out->abs_exit_dbfs = det->cfg.exit_threshold_dbfs;
+    out->rel_thresholds_valid =
+        det->cfg.relative_end_enabled && det->baseline_frozen && det->baseline_reliable;
+    if (out->rel_thresholds_valid) {
+        /* Same expressions as below_rel_entry / stay_rel_exit. */
+        out->rel_exit_dbfs =
+            det->frozen_baseline_dbfs + det->cfg.return_margin_db;
+        out->rel_cancel_dbfs =
+            det->frozen_baseline_dbfs + det->cfg.return_margin_db
+            + det->cfg.cancel_hysteresis_db;
+    }
+    out->exit_latch = det->exit_latch;
+    out->exit_hold_elapsed_us = det->exit_hold_elapsed_us;
+    out->exit_hold_elapsed_us_max = det->exit_hold_elapsed_us_max;
+    out->pending_exit_enters = det->pending_exit_enters;
+    out->pending_exit_cancels = det->pending_exit_cancels;
+    out->latched_hold_ms = latched_exit_hold_ms(det);
+}
+
+const char *dbmap_activity_exit_latch_name(dbmap_activity_exit_latch_t latch)
+{
+    switch (latch) {
+    case DBMAP_ACTIVITY_EXIT_LATCH_ABSOLUTE:
+        return "absolute";
+    case DBMAP_ACTIVITY_EXIT_LATCH_RELATIVE:
+        return "relative";
+    case DBMAP_ACTIVITY_EXIT_LATCH_NONE:
+    default:
+        return "none";
+    }
+}
+
+static const char *activity_state_short_name(dbmap_activity_state_t state)
+{
+    switch (state) {
+    case DBMAP_ACTIVITY_PENDING_ENTER:
+        return "PENDING_ENTER";
+    case DBMAP_ACTIVITY_ACTIVE:
+        return "ACTIVE";
+    case DBMAP_ACTIVITY_PENDING_EXIT:
+        return "PENDING_EXIT";
+    case DBMAP_ACTIVITY_IDLE:
+    default:
+        return "IDLE";
+    }
+}
+
+int dbmap_activity_format_rel_diag(const dbmap_activity_diag_t *diag, char *buf, size_t buflen)
+{
+    if (diag == NULL || buf == NULL || buflen == 0) {
+        return -1;
+    }
+    if (!diag->relative_end_enabled) {
+        return snprintf(
+            buf,
+            buflen,
+            "rel_end=0 state=%s",
+            activity_state_short_name(diag->state)
+        );
+    }
+    if (diag->rel_thresholds_valid) {
+        return snprintf(
+            buf,
+            buflen,
+            "rel_end=1 state=%s armed=%d base=%.2f base_n=%lu base_ok=%d "
+            "rel_exit=%.2f rel_cancel=%.2f contrast=%.2f "
+            "latch=%s hold_ms=%lu hold_el_ms=%lld hold_max_ms=%lld "
+            "pend_enter=%lu pend_cancel=%lu",
+            activity_state_short_name(diag->state),
+            diag->relative_armed ? 1 : 0,
+            (double)diag->frozen_baseline_dbfs,
+            (unsigned long)diag->frozen_baseline_n,
+            diag->baseline_reliable ? 1 : 0,
+            (double)diag->rel_exit_dbfs,
+            (double)diag->rel_cancel_dbfs,
+            (double)diag->measured_contrast_db,
+            dbmap_activity_exit_latch_name(diag->exit_latch),
+            (unsigned long)diag->latched_hold_ms,
+            (long long)(diag->exit_hold_elapsed_us / 1000LL),
+            (long long)(diag->exit_hold_elapsed_us_max / 1000LL),
+            (unsigned long)diag->pending_exit_enters,
+            (unsigned long)diag->pending_exit_cancels
+        );
+    }
+    return snprintf(
+        buf,
+        buflen,
+        "rel_end=1 state=%s armed=%d base=n/a base_n=%lu base_ok=%d "
+        "rel_exit=n/a rel_cancel=n/a contrast=%.2f "
+        "latch=%s hold_ms=%lu hold_el_ms=%lld hold_max_ms=%lld "
+        "pend_enter=%lu pend_cancel=%lu",
+        activity_state_short_name(diag->state),
+        diag->relative_armed ? 1 : 0,
+        (unsigned long)diag->frozen_baseline_n,
+        diag->baseline_reliable ? 1 : 0,
+        (double)diag->measured_contrast_db,
+        dbmap_activity_exit_latch_name(diag->exit_latch),
+        (unsigned long)diag->latched_hold_ms,
+        (long long)(diag->exit_hold_elapsed_us / 1000LL),
+        (long long)(diag->exit_hold_elapsed_us_max / 1000LL),
+        (unsigned long)diag->pending_exit_enters,
+        (unsigned long)diag->pending_exit_cancels
+    );
 }
 
 dbmap_activity_emission_t dbmap_activity_detector_feed(
@@ -143,6 +575,22 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
     if (det->has_last_window && sample->window_seq == det->last_window_seq) {
         return none;
     }
+
+    /*
+     * Missing / backward sequence while PENDING_EXIT: pause natural hold
+     * (invalidate anchor only). Detect before updating last_window_seq.
+     * Wrap-safe: producer saturates at UINT32_MAX; never use last+1 when last==MAX.
+     */
+    if (det->has_last_window && det->state == DBMAP_ACTIVITY_PENDING_EXIT) {
+        const uint32_t last = det->last_window_seq;
+        const uint32_t cur = sample->window_seq;
+        if (cur < last) {
+            invalidate_exit_hold_anchor(det);
+        } else if (last != UINT32_MAX && cur > last + 1u) {
+            invalidate_exit_hold_anchor(det);
+        }
+    }
+
     det->has_last_window = true;
     det->last_window_seq = sample->window_seq;
     det->windows_seen += 1;
@@ -159,17 +607,15 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
         det->windows_invalid += 1;
         /*
          * Invalid / missing quality is NOT acoustic silence:
-         * - do not advance exit_hold
+         * - pause natural exit hold (invalidate anchor; keep elapsed)
          * - do not emit periodic
          * - do not drop to IDLE as "quiet"
-         *
-         * Timing: wall/mono clocks still advance; exit and periodic deadlines
-         * are frozen until a usable sample arrives. After max_invalid_hold_ms
-         * without a usable sample while in an episode, force END ending at the
-         * last usable measurement (documented finite-episode policy).
+         * - do not change exit_latch / arming
          */
+        if (det->state == DBMAP_ACTIVITY_PENDING_EXIT) {
+            invalidate_exit_hold_anchor(det);
+        }
         if (det->state == DBMAP_ACTIVITY_PENDING_ENTER) {
-            /* Never emit START without sustained usable activity. */
             if (det->cfg.max_invalid_hold_ms > 0 && det->has_last_valid &&
                 (sample->measured_at_us - det->last_valid_us) >=
                     ((int64_t)det->cfg.max_invalid_hold_ms * 1000LL)) {
@@ -200,6 +646,11 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
     det->last_valid_us = t;
     det->has_last_valid = true;
 
+    /* Baseline: IDLE and below enter only. */
+    if (det->state == DBMAP_ACTIVITY_IDLE && !above_enter(det, rms)) {
+        baseline_push(det, rms, t);
+    }
+
     switch (det->state) {
     case DBMAP_ACTIVITY_IDLE:
         if (above_enter(det, rms)) {
@@ -209,6 +660,7 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
                 det->state = DBMAP_ACTIVITY_ACTIVE;
                 det->last_emit_us = t;
                 det->emissions_start += 1;
+                on_episode_start(det, det->episode_start_us, rms);
                 return make_emission(
                     DBMAP_ACTIVITY_EMIT_START,
                     DBMAP_ACTIVITY_TERM_NONE,
@@ -232,6 +684,7 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
             det->episode_start_us = det->pending_since_us;
             det->last_emit_us = t;
             det->emissions_start += 1;
+            on_episode_start(det, det->episode_start_us, rms);
             return make_emission(
                 DBMAP_ACTIVITY_EMIT_START,
                 DBMAP_ACTIVITY_TERM_NONE,
@@ -243,60 +696,68 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
         return none;
 
     case DBMAP_ACTIVITY_ACTIVE:
-        if (below_exit(det, rms)) {
+        /* Call order: arm before exit-entry evaluation. */
+        note_arming_rms(det, rms);
+        if (should_enter_pending_exit(det, rms)) {
+            det->exit_latch = (det->cfg.relative_end_enabled && det->relative_armed)
+                                  ? DBMAP_ACTIVITY_EXIT_LATCH_RELATIVE
+                                  : DBMAP_ACTIVITY_EXIT_LATCH_ABSOLUTE;
             det->state = DBMAP_ACTIVITY_PENDING_EXIT;
-            det->pending_since_us = t;
-        } else {
-            int64_t due = det->last_emit_us + ((int64_t)det->cfg.observation_interval_ms * 1000LL);
-            if (t >= due) {
-                int64_t start = det->last_emit_us;
-                det->last_emit_us = t;
-                det->emissions_periodic += 1;
-                return make_emission(
-                    DBMAP_ACTIVITY_EMIT_PERIODIC, DBMAP_ACTIVITY_TERM_NONE, rms, start, t
-                );
-            }
-            return none;
+            det->pending_since_us = t; /* diagnostic only; END uses exit_hold_elapsed_us */
+            det->pending_exit_enters += 1;
+            begin_exit_hold(det, t, sample->window_seq);
         }
-        {
-            int64_t due = det->last_emit_us + ((int64_t)det->cfg.observation_interval_ms * 1000LL);
-            if (t >= due) {
-                int64_t start = det->last_emit_us;
-                det->last_emit_us = t;
-                det->emissions_periodic += 1;
-                return make_emission(
-                    DBMAP_ACTIVITY_EMIT_PERIODIC, DBMAP_ACTIVITY_TERM_NONE, rms, start, t
-                );
-            }
-        }
-        return none;
+        return maybe_periodic(det, rms, t);
 
     case DBMAP_ACTIVITY_PENDING_EXIT:
-        if (!below_exit(det, rms)) {
+        /* Do not re-arm or change latch while exiting. */
+        if (!should_stay_pending_exit(det, rms)) {
+            note_exit_hold_peak(det);
             det->state = DBMAP_ACTIVITY_ACTIVE;
             det->pending_since_us = 0;
-            {
-                int64_t due = det->last_emit_us + ((int64_t)det->cfg.observation_interval_ms * 1000LL);
-                if (t >= due) {
-                    int64_t start = det->last_emit_us;
-                    det->last_emit_us = t;
-                    det->emissions_periodic += 1;
-                    return make_emission(
-                        DBMAP_ACTIVITY_EMIT_PERIODIC, DBMAP_ACTIVITY_TERM_NONE, rms, start, t
-                    );
-                }
-            }
-            return none;
+            det->exit_latch = DBMAP_ACTIVITY_EXIT_LATCH_NONE;
+            det->pending_exit_cancels += 1;
+            clear_exit_hold(det);
+            return maybe_periodic(det, rms, t);
         }
-        if ((t - det->pending_since_us) >= ((int64_t)det->cfg.exit_hold_ms * 1000LL)) {
-            int64_t start = det->last_emit_us;
-            det->state = DBMAP_ACTIVITY_IDLE;
-            det->pending_since_us = 0;
-            det->last_emit_us = t;
-            det->emissions_end += 1;
-            return make_emission(
-                DBMAP_ACTIVITY_EMIT_END, DBMAP_ACTIVITY_TERM_NATURAL, rms, start, t
-            );
+
+        {
+            const int64_t contig_max_us = (int64_t)window_ms * 1000 * 3 / 2;
+            const bool seq_ok =
+                det->exit_hold_anchor_valid
+                && seq_is_consecutive(det->exit_hold_anchor_seq, sample->window_seq);
+            const bool time_ok =
+                det->exit_hold_anchor_valid && t >= det->exit_hold_anchor_us;
+            const int64_t delta_us =
+                time_ok ? (t - det->exit_hold_anchor_us) : (int64_t)0;
+            const bool continuous =
+                seq_ok && time_ok && delta_us > 0 && delta_us <= contig_max_us;
+
+            if (continuous) {
+                add_exit_hold_elapsed(det, delta_us);
+                det->exit_hold_anchor_us = t;
+                det->exit_hold_anchor_seq = sample->window_seq;
+                det->exit_hold_anchor_valid = true;
+            } else {
+                /* Gap / discontinuity: pause; re-anchor with zero credit. */
+                det->exit_hold_anchor_us = t;
+                det->exit_hold_anchor_seq = sample->window_seq;
+                det->exit_hold_anchor_valid = true;
+            }
+
+            const int64_t hold_us = (int64_t)latched_exit_hold_ms(det) * 1000LL;
+            if (det->exit_hold_elapsed_us >= hold_us) {
+                note_exit_hold_peak(det);
+                int64_t start = det->last_emit_us;
+                det->state = DBMAP_ACTIVITY_IDLE;
+                det->pending_since_us = 0;
+                det->last_emit_us = t;
+                det->emissions_end += 1;
+                on_episode_end_cleanup(det);
+                return make_emission(
+                    DBMAP_ACTIVITY_EMIT_END, DBMAP_ACTIVITY_TERM_NATURAL, rms, start, t
+                );
+            }
         }
         return none;
 
@@ -327,6 +788,7 @@ dbmap_activity_emission_t dbmap_activity_detector_force_end(dbmap_activity_detec
     det->pending_since_us = 0;
     det->last_emit_us = end_us;
     det->emissions_end += 1;
+    on_episode_end_cleanup(det);
     /* Termination reason for OTA is applied by the Observation layer. */
     return make_emission(
         DBMAP_ACTIVITY_EMIT_END, DBMAP_ACTIVITY_TERM_NONE, level, start_us, end_us
@@ -340,4 +802,5 @@ void dbmap_activity_detector_reset_idle(dbmap_activity_detector_t *det)
     }
     det->state = DBMAP_ACTIVITY_IDLE;
     det->pending_since_us = 0;
+    on_episode_end_cleanup(det);
 }

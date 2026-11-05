@@ -9,6 +9,16 @@ from sqlalchemy.orm import Session
 
 from app import device_diag, device_monitor, firmware_catalog
 from app.config import settings
+from app.pagination import (
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    ListOrder,
+    PageResult,
+    compute_total_pages,
+    page_offset,
+    resolve_snapshot_id,
+    validate_page_params,
+)
 
 log = logging.getLogger("hub-bootstrap.service")
 from app.ids import (
@@ -628,36 +638,156 @@ def ingest_observation(db: Session, topic_node_id: str, body: ObservationBody) -
     return True
 
 
-def list_observations(
-    db: Session,
+ObservationListOrder = ListOrder
+DEFAULT_OBSERVATION_PAGE_SIZE = DEFAULT_PAGE_SIZE
+MAX_OBSERVATION_PAGE_SIZE = MAX_PAGE_SIZE
+ObservationListResult = PageResult[ObservationView]
+
+
+def _observation_filter_clause(
+    *,
     node_id: str | None,
-    limit: int,
-) -> list[ObservationView]:
-    statement = select(Observation).order_by(Observation.received_time_utc.desc())
+    observation_id: str | None,
+    snapshot_id: int | None,
+):
+    clauses = []
     if node_id is not None:
-        statement = statement.where(Observation.node_id == node_id.upper())
-    rows = db.scalars(statement.limit(limit)).all()
-    observations = []
+        clauses.append(Observation.node_id == node_id.upper())
+    if observation_id is not None:
+        clauses.append(Observation.observation_id == observation_id)
+    if snapshot_id is not None:
+        clauses.append(Observation.id <= snapshot_id)
+    return clauses
+
+
+def list_observations_page(
+    db: Session,
+    node_id: str | None = None,
+    *,
+    observation_id: str | None = None,
+    page: int = 1,
+    page_size: int = DEFAULT_OBSERVATION_PAGE_SIZE,
+    order: ObservationListOrder = "newest",
+    snapshot_id: int | None = None,
+) -> ObservationListResult:
+    """
+    Return one page of observation reports.
+
+    Filters are applied before count and pagination. Ordering is deterministic
+    with unique ``id`` as tie-breaker. Snapshot freezes on Observation.id
+    (autoincrement integer).
+    """
+    order = validate_page_params(page, page_size, order)
+
+    base_filters = _observation_filter_clause(
+        node_id=node_id,
+        observation_id=observation_id,
+        snapshot_id=None,
+    )
+    max_id_stmt = select(func.max(Observation.id))
+    for clause in base_filters:
+        max_id_stmt = max_id_stmt.where(clause)
+    current_max_id = db.scalar(max_id_stmt)
+    if current_max_id is not None:
+        current_max_id = int(current_max_id)
+    effective_snapshot = resolve_snapshot_id(snapshot_id, current_max_id)
+
+    filters = _observation_filter_clause(
+        node_id=node_id,
+        observation_id=observation_id,
+        snapshot_id=effective_snapshot,
+    )
+    count_stmt = select(func.count()).select_from(Observation)
+    for clause in filters:
+        count_stmt = count_stmt.where(clause)
+    total = int(db.scalar(count_stmt) or 0)
+    total_pages = compute_total_pages(total, page_size)
+
+    statement = select(Observation)
+    for clause in filters:
+        statement = statement.where(clause)
+    if order == "newest":
+        statement = statement.order_by(
+            Observation.received_time_utc.desc(),
+            Observation.id.desc(),
+        )
+    else:
+        statement = statement.order_by(
+            Observation.received_time_utc.asc(),
+            Observation.id.asc(),
+        )
+    rows = db.scalars(
+        statement.offset(page_offset(page, page_size)).limit(page_size)
+    ).all()
+
+    items: list[ObservationView] = []
     for row in rows:
         payload = json.loads(row.payload_json)
         received_at = row.received_time_utc
         if received_at.tzinfo is None:
             received_at = received_at.replace(tzinfo=timezone.utc)
-        observations.append(ObservationView(**payload, received_time_utc=received_at))
-    return observations
+        items.append(ObservationView(**payload, received_time_utc=received_at))
+
+    return PageResult(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+        order=order,
+        snapshot_id=effective_snapshot,
+    )
 
 
-def count_observations(db: Session, node_id: str | None = None) -> int:
+def list_observations(
+    db: Session,
+    node_id: str | None,
+    limit: int,
+    *,
+    observation_id: str | None = None,
+    order: ObservationListOrder = "newest",
+) -> list[ObservationView]:
+    """Backward-compatible helper: first page with the given limit as page size."""
+    page_size = min(max(limit, 1), MAX_OBSERVATION_PAGE_SIZE)
+    return list_observations_page(
+        db,
+        node_id,
+        observation_id=observation_id,
+        page=1,
+        page_size=page_size,
+        order=order,
+    ).items
+
+
+def count_observations(
+    db: Session,
+    node_id: str | None = None,
+    *,
+    observation_id: str | None = None,
+) -> int:
     statement = select(func.count()).select_from(Observation)
-    if node_id is not None:
-        statement = statement.where(Observation.node_id == node_id.upper())
+    for clause in _observation_filter_clause(
+        node_id=node_id,
+        observation_id=observation_id,
+        snapshot_id=None,
+    ):
+        statement = statement.where(clause)
     return int(db.scalar(statement) or 0)
 
 
-def count_unique_observations(db: Session, node_id: str | None = None) -> int:
+def count_unique_observations(
+    db: Session,
+    node_id: str | None = None,
+    *,
+    observation_id: str | None = None,
+) -> int:
     statement = select(func.count(func.distinct(Observation.observation_id)))
-    if node_id is not None:
-        statement = statement.where(Observation.node_id == node_id.upper())
+    for clause in _observation_filter_clause(
+        node_id=node_id,
+        observation_id=observation_id,
+        snapshot_id=None,
+    ):
+        statement = statement.where(clause)
     return int(db.scalar(statement) or 0)
 
 

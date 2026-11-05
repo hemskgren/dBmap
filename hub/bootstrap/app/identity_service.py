@@ -3,6 +3,19 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import ExternalIdentity, User
+from app.pagination import (
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    SQLITE_ROWID,
+    ListOrder,
+    PageResult,
+    compute_total_pages,
+    count_rows,
+    max_sqlite_rowid,
+    page_offset,
+    resolve_snapshot_id,
+    validate_page_params,
+)
 from app.schemas import UserIdentityView, UserView
 
 
@@ -38,9 +51,52 @@ def _user_view(user: User) -> UserView:
     )
 
 
+def list_users_page(
+    db: Session,
+    *,
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    order: ListOrder = "newest",
+    snapshot_id: int | None = None,
+) -> PageResult[UserView]:
+    """
+    Return one page of users.
+
+    Ordering is ``created_at`` with ``user_id`` as tie-breaker. Snapshot freezes
+    on SQLite ``rowid`` because ``user_id`` is a UUID and is not monotonic.
+    """
+    order = validate_page_params(page, page_size, order)
+    current_max = max_sqlite_rowid(db, User)
+    effective_snapshot = resolve_snapshot_id(snapshot_id, current_max)
+    filters = []
+    if effective_snapshot is not None:
+        filters.append(SQLITE_ROWID <= effective_snapshot)
+
+    total = count_rows(db, User, filters)
+    statement = select(User)
+    for clause in filters:
+        statement = statement.where(clause)
+    if order == "newest":
+        statement = statement.order_by(User.created_at.desc(), User.user_id.desc())
+    else:
+        statement = statement.order_by(User.created_at.asc(), User.user_id.asc())
+    rows = db.scalars(
+        statement.offset(page_offset(page, page_size)).limit(page_size)
+    ).all()
+    return PageResult(
+        items=[_user_view(user) for user in rows],
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=compute_total_pages(total, page_size),
+        order=order,
+        snapshot_id=effective_snapshot,
+    )
+
+
 def list_users(db: Session) -> list[UserView]:
-    users = db.scalars(select(User).order_by(User.created_at, User.user_id)).all()
-    return [_user_view(user) for user in users]
+    """Backward-compatible helper: first page capped at the maximum page size."""
+    return list_users_page(db, page=1, page_size=MAX_PAGE_SIZE).items
 
 
 def get_user(db: Session, user_id: str) -> UserView:

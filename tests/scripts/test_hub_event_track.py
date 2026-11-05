@@ -893,3 +893,110 @@ def test_fetch_observation_count_parses_hub_totals(monkeypatch) -> None:
     ) == {"total": 192, "unique_observations": 1}
     assert "/api/v1/observations/count?node_id=EAR-001" in requests[0].full_url
     assert requests[0].get_header("Authorization") == "Bearer test-admin-token"
+
+
+def test_parse_positive_int_and_pagination_summary() -> None:
+    assert hub_event_track.parse_positive_int(3, label="page") == 3
+    with pytest.raises(ValueError, match="page-size"):
+        hub_event_track.parse_positive_int(0, label="page-size")
+    with pytest.raises(ValueError, match="page"):
+        hub_event_track.parse_positive_int("x", label="page")
+    assert hub_event_track.format_pagination_summary(
+        total_count=8200,
+        page=1,
+        page_size=200,
+        total_pages=41,
+        order="newest",
+    ) == "8200 reports | 41 pages | page 1/41 | newest first"
+    assert hub_event_track.DEFAULT_OBSERVATION_PAGE_SIZE == 200
+    assert hub_event_track.MAX_OBSERVATION_PAGE_SIZE == 500
+
+
+def test_parse_observation_list_envelope_requires_object() -> None:
+    with pytest.raises(hub_event_track.HubApiError, match="envelope"):
+        hub_event_track.parse_observation_list_envelope([])
+
+
+def test_fetch_observations_reads_json_envelope(monkeypatch) -> None:
+    requests = []
+    envelope = {
+        "pagination": {
+            "total_count": 8200,
+            "page": 2,
+            "page_size": 200,
+            "total_pages": 41,
+            "order": "oldest",
+            "snapshot_id": 999,
+        },
+        "reports": [
+            {
+                "identity": {
+                    "observation_id": "o1",
+                    "node_id": "EAR-001",
+                    "sequence_number": 1,
+                }
+            }
+        ],
+    }
+
+    class Response:
+        def __init__(self):
+            self._payload = json.dumps(envelope)
+            self._pos = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self, size: int = -1):
+            if self._pos >= len(self._payload):
+                return ""
+            if size is None or size < 0:
+                chunk = self._payload[self._pos :]
+                self._pos = len(self._payload)
+                return chunk
+            chunk = self._payload[self._pos : self._pos + size]
+            self._pos += len(chunk)
+            return chunk
+
+    def fake_urlopen(request, context, timeout):
+        requests.append(request)
+        return Response()
+
+    monkeypatch.setattr(hub_event_track.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        hub_event_track.ssl,
+        "create_default_context",
+        lambda **kwargs: object(),
+    )
+
+    items, meta, full = hub_event_track.fetch_observations(
+        "https://hub.example",
+        "ca.crt",
+        "tok",
+        observation_id="o1",
+        page=2,
+        page_size=200,
+        order="oldest",
+        snapshot_id=999,
+    )
+    assert len(items) == 1
+    assert meta == envelope["pagination"]
+    assert full == envelope
+    assert "page=2" in requests[0].full_url
+    assert "page_size=200" in requests[0].full_url
+    assert "order=oldest" in requests[0].full_url
+    assert "observation_id=o1" in requests[0].full_url
+    assert "snapshot_id=999" in requests[0].full_url
+
+
+def test_fetch_observations_rejects_invalid_page_size() -> None:
+    with pytest.raises(hub_event_track.HubApiError, match="page_size"):
+        hub_event_track.fetch_observations(
+            "https://hub.example",
+            "ca.crt",
+            "tok",
+            page_size=501,
+        )

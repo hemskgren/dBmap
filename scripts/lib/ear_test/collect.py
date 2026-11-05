@@ -45,9 +45,19 @@ def fetch_observations_http(
     admin_token: str,
     node_id: str,
     *,
-    limit: int = 500,
+    page_size: int = 500,
 ) -> list[dict[str, Any]]:
-    path = f"/api/v1/observations?node_id={urllib.parse.quote(node_id)}&limit={limit}"
+    path = (
+        "/api/v1/observations?"
+        + urllib.parse.urlencode(
+            {
+                "node_id": node_id,
+                "page": 1,
+                "page_size": page_size,
+                "order": "newest",
+            }
+        )
+    )
     request = urllib.request.Request(
         base_url.rstrip("/") + path,
         headers={"Authorization": f"Bearer {admin_token}"},
@@ -60,9 +70,12 @@ def fetch_observations_http(
     except urllib.error.HTTPError as exc:
         detail = exc.read() if hasattr(exc, "read") else b""
         raise RuntimeError(format_hub_http_error(exc.code, detail, path=path)) from exc
-    if not isinstance(body, list):
-        raise RuntimeError("hub observations response was not a list")
-    return body
+    if not isinstance(body, dict):
+        raise RuntimeError("hub observations response was not a JSON envelope")
+    reports = body.get("reports")
+    if not isinstance(reports, list):
+        raise RuntimeError("hub observations envelope missing reports array")
+    return reports
 
 
 def poll_http_once(
@@ -89,7 +102,11 @@ def poll_http_once(
     for node_id in controller.manifest.node_ids:
         rows = fetch(base_url, ca_file, admin_token, node_id)
         for item in rows:
-            if str(item.get("node_id", "")).upper() != node_id:
+            identity = item.get("identity") if isinstance(item.get("identity"), dict) else {}
+            report_node = str(
+                item.get("node_id") or identity.get("node_id") or ""
+            ).upper()
+            if report_node != node_id:
                 continue
             received = item.get("received_time_utc")
             if received is None:

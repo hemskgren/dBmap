@@ -62,7 +62,14 @@ OPERATIONS = {
     ("GET", "/api/v1/users"): {
         "operationId": "listUsers",
         "summary": "List internal users",
-        "errors": ["401", "403", "503"],
+        "description": (
+            "Returns {pagination, items}. pagination includes total_count, page, "
+            "page_size, total_pages, order, snapshot_id (SQLite rowid freeze). "
+            "Query: page (default 1), page_size (default 200, max 500), "
+            "order=newest|oldest, optional snapshot_id."
+        ),
+        "response": "UserListEnvelope",
+        "errors": ["401", "403", "422", "503"],
     },
     ("POST", "/api/v1/users"): {
         "operationId": "createUser",
@@ -93,7 +100,14 @@ OPERATIONS = {
     ("GET", "/api/v1/groups"): {
         "operationId": "listGroups",
         "summary": "List groups",
-        "errors": ["401", "403", "503"],
+        "description": (
+            "Returns {pagination, items}. pagination includes total_count, page, "
+            "page_size, total_pages, order, snapshot_id (SQLite rowid freeze). "
+            "Query: page (default 1), page_size (default 200, max 500), "
+            "order=newest|oldest, optional snapshot_id. Ordered by created_at."
+        ),
+        "response": "GroupListEnvelope",
+        "errors": ["401", "403", "422", "503"],
     },
     ("POST", "/api/v1/groups"): {
         "operationId": "createGroup",
@@ -290,8 +304,15 @@ OPERATIONS = {
     },
     ("GET", "/api/v1/observations"): {
         "operationId": "listObservations",
-        "summary": "List recent observations",
-        "errors": ["401", "403", "503"],
+        "summary": "List observation reports (paginated envelope)",
+        "description": (
+            "Returns {pagination, reports}. pagination includes total_count, page, "
+            "page_size, total_pages, order, snapshot_id. Query: page (default 1), "
+            "page_size (default 200, max 500), order=newest|oldest, node_id, "
+            "observation_id, optional snapshot_id, deprecated limit alias for page_size."
+        ),
+        "response": "ObservationListEnvelope",
+        "errors": ["401", "403", "422", "503"],
     },
     ("GET", "/api/v1/observations/count"): {
         "operationId": "countObservations",
@@ -431,6 +452,60 @@ ERROR_RESPONSES = {
 }
 
 EXTRA_SCHEMAS = {
+    "PaginationMeta": {
+        "type": "object",
+        "required": [
+            "total_count",
+            "page",
+            "page_size",
+            "total_pages",
+            "order",
+        ],
+        "properties": {
+            "total_count": {"type": "integer", "minimum": 0},
+            "page": {"type": "integer", "minimum": 1},
+            "page_size": {"type": "integer", "minimum": 1},
+            "total_pages": {"type": "integer", "minimum": 0},
+            "order": {"type": "string", "enum": ["newest", "oldest"]},
+            "snapshot_id": {"type": "integer", "nullable": True},
+        },
+    },
+    "ObservationPaginationMeta": {
+        "$ref": "#/components/schemas/PaginationMeta"
+    },
+    "ObservationListEnvelope": {
+        "type": "object",
+        "required": ["pagination", "reports"],
+        "properties": {
+            "pagination": {"$ref": "#/components/schemas/PaginationMeta"},
+            "reports": {
+                "type": "array",
+                "items": {"$ref": "#/components/schemas/ObservationView"},
+            },
+        },
+    },
+    "UserListEnvelope": {
+        "type": "object",
+        "required": ["pagination", "items"],
+        "properties": {
+            "pagination": {"$ref": "#/components/schemas/PaginationMeta"},
+            "items": {
+                "type": "array",
+                "items": {"$ref": "#/components/schemas/UserView"},
+            },
+        },
+    },
+    "GroupListEnvelope": {
+        "type": "object",
+        "required": ["pagination", "items"],
+        "properties": {
+            "pagination": {"$ref": "#/components/schemas/PaginationMeta"},
+            "items": {
+                "type": "array",
+                "items": {"$ref": "#/components/schemas/GroupView"},
+            },
+        },
+    },
     "ErrorMessage": {
         "type": "object",
         "required": ["detail"],

@@ -449,7 +449,39 @@ The current relevant HTTPS API endpoints are:
 | `GET /api/v1/nodes/{node_id}` | Read one node's identity and desired/reported state. | Admin or viewer bearer token |
 | `PUT /api/v1/nodes/{node_id}/desired` | Replace desired configuration/version fields. Does not change `firmware_id`. When `firmware_id` is set, rejects a `firmware_version` that does not match that catalog entry. Use `POST /api/v1/nodes/{node_id}/firmware-selection` to change Desired firmware for OTA. | Admin bearer token |
 | `PUT /api/v1/nodes/{node_id}/installation` | Store mandatory WGS84 latitude/longitude and optional placement metadata. | Admin bearer token |
-| `GET /api/v1/observations` | Read persisted observations, optionally filtered by `node_id`. | Admin or viewer bearer token |
+| `GET /api/v1/observations` | Read persisted observation reports as `{pagination, reports}` (shared pagination contract; collection key remains `reports`). | Admin or viewer bearer token |
+| `GET /api/v1/users` | List internal users as `{pagination, items}`. | Admin or viewer bearer token |
+| `GET /api/v1/groups` | List groups as `{pagination, items}`. | Admin or viewer bearer token |
+
+### Hub list pagination
+
+`GET /api/v1/observations`, `GET /api/v1/users`, and `GET /api/v1/groups` share one JSON envelope shape:
+
+```json
+{
+  "pagination": {
+    "total_count": 0,
+    "page": 1,
+    "page_size": 200,
+    "total_pages": 0,
+    "order": "newest",
+    "snapshot_id": null
+  },
+  "items": []
+}
+```
+
+Defaults and limits: `page=1`, `page_size=200`, maximum `page_size=500`, `order` is `newest` or `oldest`. `total_count` / `total_pages` reflect the filtered snapshot. Empty results return `total_count=0`, `total_pages=0`, an empty collection, and `snapshot_id=null`.
+
+Resource-specific differences:
+
+| Resource | Collection key | Order key + tie-breaker | Snapshot boundary |
+| --- | --- | --- | --- |
+| Observations | `reports` (retained) | `received_time_utc`, `id` | Autoincrement `Observation.id` |
+| Users | `items` | `created_at`, `user_id` | SQLite `rowid` (UUID PK is not monotonic) |
+| Groups | `items` | `created_at`, `group_id` | SQLite `rowid` (UUID PK is not monotonic) |
+
+Pass `pagination.snapshot_id` from the first page on later requests so concurrent inserts do not duplicate or omit rows mid-traversal. Observations also accept deprecated `limit` as an alias for `page_size`.
 
 The local web UI accepts an admin or viewer bearer token. Viewer access is
 limited to session, Hub status, device summaries, device details, and

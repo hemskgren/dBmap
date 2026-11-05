@@ -4,6 +4,19 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Group, GroupMembership, User
+from app.pagination import (
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    SQLITE_ROWID,
+    ListOrder,
+    PageResult,
+    compute_total_pages,
+    count_rows,
+    max_sqlite_rowid,
+    page_offset,
+    resolve_snapshot_id,
+    validate_page_params,
+)
 from app.schemas import GroupMemberView, GroupView
 
 
@@ -23,15 +36,71 @@ class GroupCreationLimit(Exception):
     pass
 
 
-def list_groups(db: Session, user_id: str | None = None) -> list[GroupView]:
-    statement = select(Group).order_by(Group.name, Group.group_id)
-    if user_id is not None:
-        member_group_ids = select(GroupMembership.group_id).where(
+def _member_filter(user_id: str | None):
+    if user_id is None:
+        return None
+    return Group.group_id.in_(
+        select(GroupMembership.group_id).where(
             GroupMembership.user_id == user_id,
             GroupMembership.valid_to.is_(None),
         )
-        statement = statement.where(Group.group_id.in_(member_group_ids))
-    return [_group_view(db, group) for group in db.scalars(statement)]
+    )
+
+
+def list_groups_page(
+    db: Session,
+    user_id: str | None = None,
+    *,
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    order: ListOrder = "newest",
+    snapshot_id: int | None = None,
+) -> PageResult[GroupView]:
+    """
+    Return one page of groups.
+
+    Ordering is ``created_at`` with ``group_id`` as tie-breaker. Snapshot freezes
+    on SQLite ``rowid`` because ``group_id`` is a UUID and is not monotonic.
+    """
+    order = validate_page_params(page, page_size, order)
+    base_filters = []
+    member_clause = _member_filter(user_id)
+    if member_clause is not None:
+        base_filters.append(member_clause)
+
+    current_max = max_sqlite_rowid(db, Group, base_filters)
+    effective_snapshot = resolve_snapshot_id(snapshot_id, current_max)
+    filters = list(base_filters)
+    if effective_snapshot is not None:
+        filters.append(SQLITE_ROWID <= effective_snapshot)
+
+    total = count_rows(db, Group, filters)
+    statement = select(Group)
+    for clause in filters:
+        statement = statement.where(clause)
+    if order == "newest":
+        statement = statement.order_by(Group.created_at.desc(), Group.group_id.desc())
+    else:
+        statement = statement.order_by(Group.created_at.asc(), Group.group_id.asc())
+    rows = db.scalars(
+        statement.offset(page_offset(page, page_size)).limit(page_size)
+    ).all()
+    return PageResult(
+        items=[_group_view(db, group) for group in rows],
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=compute_total_pages(total, page_size),
+        order=order,
+        snapshot_id=effective_snapshot,
+    )
+
+
+def list_groups(db: Session, user_id: str | None = None) -> list[GroupView]:
+    """Backward-compatible helper: first page capped at the maximum page size."""
+    return list_groups_page(
+        db, user_id, page=1, page_size=MAX_PAGE_SIZE
+    ).items
 
 
 def get_group(db: Session, group_id: str) -> GroupView:

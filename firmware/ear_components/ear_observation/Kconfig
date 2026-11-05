@@ -77,6 +77,64 @@ menu "dBmap Ear Observation"
             sample. Exit-hold and periodic timers do not advance during invalid
             windows.
 
+    config DBMAP_EAR_OBS_RELATIVE_END
+        bool "Relative END: freeze pre-event RMS baseline for exit"
+        default y
+        depends on DBMAP_EAR_OBS_RMS_ACTIVITY
+        help
+            When enabled, END can trigger when RMS returns near a frozen
+            pre-event baseline (median of up to five IDLE below-enter windows),
+            even if ambient is above the absolute exit threshold. Absolute exit
+            remains the fallback when the baseline is unreliable or Relative END
+            is not armed. Field-test feature — parameters below are provisional,
+            not validated production thresholds. When disabled, detector behavior
+            matches absolute-only END. Default enabled for EAR field validation.
+
+    config DBMAP_EAR_OBS_REL_RETURN_MARGIN_DB_X1000
+        int "Relative END return margin (dB × 1000)"
+        range 0 40000
+        default 4000
+        depends on DBMAP_EAR_OBS_RELATIVE_END
+        help
+            Provisional field-test value (4000 → 4.0 dB). Relative entry when
+            rms <= frozen_baseline + margin. Not a calibrated production default.
+
+    config DBMAP_EAR_OBS_REL_EXIT_HOLD_MS
+        int "Relative END exit hold (ms)"
+        range 100 60000
+        default 2000
+        depends on DBMAP_EAR_OBS_RELATIVE_END
+        help
+            Provisional field-test value. Hold while relative mode is latched
+            before emitting natural END.
+
+    config DBMAP_EAR_OBS_REL_CANCEL_HYST_DB_X1000
+        int "Relative END cancel hysteresis (dB × 1000)"
+        range 0 20000
+        default 1500
+        depends on DBMAP_EAR_OBS_RELATIVE_END
+        help
+            Provisional field-test value (1500 → 1.5 dB). Cancel PENDING_EXIT
+            when rms > baseline + return_margin + hysteresis.
+
+    config DBMAP_EAR_OBS_REL_MIN_CONTRAST_DB_X1000
+        int "Relative END min event contrast (dB × 1000)"
+        range 0 60000
+        default 5000
+        depends on DBMAP_EAR_OBS_RELATIVE_END
+        help
+            Provisional field-test value (5000 → 5.0 dB). Relative END arms only
+            when max(RMS of first two episode windows) - baseline >= contrast.
+
+    config DBMAP_EAR_OBS_REL_BASELINE_STALE_MS
+        int "Pre-event baseline stale window (ms)"
+        range 0 300000
+        default 15000
+        depends on DBMAP_EAR_OBS_RELATIVE_END
+        help
+            Drop IDLE baseline candidates older than this before freeze.
+            0 disables staleness filtering. Provisional field-test value.
+
     config DBMAP_EAR_OBS_TEST_PUBLISH_ONCE
         bool "Phase 1: publish one test Observation after MQTT connects"
         default n

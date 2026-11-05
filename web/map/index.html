@@ -445,9 +445,11 @@
       }
 
       async function fetchObservations() {
-        const body = await fetchJson('/api/v1/observations?limit=500');
-        if (!Array.isArray(body)) throw new Error('Hub returned an invalid observation list.');
-        return body;
+        const body = await fetchJson('/api/v1/observations?page=1&page_size=500&order=newest');
+        if (!body || typeof body !== 'object' || !Array.isArray(body.reports)) {
+          throw new Error('Hub returned an invalid observation list envelope.');
+        }
+        return body.reports;
       }
 
       async function refresh() {

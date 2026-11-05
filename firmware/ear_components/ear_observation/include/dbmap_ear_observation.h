@@ -5,6 +5,7 @@
 
 #include "dbmap_acoustic_l0.h"
 #include "dbmap_acoustic_l1.h"
+#include "dbmap_acoustic_l2.h"
 #include "dbmap_observation_payload.h"
 #include "dbmap_types.h"
 #include "esp_err.h"
@@ -52,6 +53,8 @@ esp_err_t dbmap_ear_observation_start(const dbmap_effective_t *cfg);
  * measurements: required (may be empty-interval with null metrics).
  * signature: NULL → acoustic.signature JSON null (L1 disabled); non-NULL →
  *   schema=l1 object (may be empty).
+ * dynamics: NULL → acoustic.dynamics JSON null (L2 publish off / omitted);
+ *   non-NULL → schema=l2 object (may be empty or Option A overflow).
  * has_signal_level_dbfs: false → JSON null signal level.
  */
 esp_err_t dbmap_ear_observation_publish(
@@ -66,7 +69,8 @@ esp_err_t dbmap_ear_observation_publish(
     const char *emission_kind,
     const char *termination_reason,
     const dbmap_l0_interval_t *measurements,
-    const dbmap_l1_interval_t *signature
+    const dbmap_l1_interval_t *signature,
+    const dbmap_l2_interval_t *dynamics
 );
 
 /**

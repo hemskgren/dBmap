@@ -679,7 +679,7 @@ def test_upload_accepts_optional_dbmap_config_and_rejects_unknown_fields(
     firmware_id, bundle, metadata_bytes = make_firmware_pair()
     metadata = json.loads(metadata_bytes)
     metadata["dbmap_config"] = {
-        "node": {"FIRMWARE_VERSION": "1.2.3", "NODE_TYPE_OUTPUT": True},
+        "node": {"NODE_TYPE_OUTPUT": True},
         "audio": {"AUDIO_I2S_BCLK_GPIO": 26},
     }
 
