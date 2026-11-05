@@ -100,6 +100,85 @@ static cJSON *build_signature_object(const dbmap_l1_interval_t *iv)
     return s;
 }
 
+static cJSON *build_l2_feature_object(
+    uint32_t valid_count,
+    bool has_mean,
+    double mean,
+    bool has_stdev,
+    double stdev
+)
+{
+    cJSON *o = cJSON_CreateObject();
+    if (o == NULL) {
+        return NULL;
+    }
+    cJSON_AddNumberToObject(o, "valid_count", (double)valid_count);
+    if (!cJSON_AddItemToObject(o, "mean", json_float_or_null(has_mean, mean))) {
+        cJSON_Delete(o);
+        return NULL;
+    }
+    if (!cJSON_AddItemToObject(o, "stdev", json_float_or_null(has_stdev, stdev))) {
+        cJSON_Delete(o);
+        return NULL;
+    }
+    return o;
+}
+
+static cJSON *build_dynamics_object(const dbmap_l2_interval_t *iv)
+{
+    if (iv == NULL) {
+        return NULL;
+    }
+    cJSON *d = cJSON_CreateObject();
+    if (d == NULL) {
+        return NULL;
+    }
+    cJSON_AddStringToObject(d, "schema", "l2");
+    cJSON_AddNumberToObject(d, "version", DBMAP_L2_MEASUREMENT_VERSION);
+    cJSON_AddNumberToObject(d, "sample_rate_hz", (double)iv->sample_rate_hz);
+    cJSON_AddNumberToObject(d, "analysis_window_ms", (double)iv->analysis_window_ms);
+    cJSON_AddNumberToObject(d, "fft_size", (double)iv->fft_size);
+    cJSON_AddNumberToObject(d, "freq_min_hz", (double)iv->freq_min_hz);
+    cJSON_AddNumberToObject(d, "freq_max_hz", (double)iv->freq_max_hz);
+    cJSON_AddNumberToObject(d, "frame_hop_samples", (double)iv->frame_hop_samples);
+    cJSON_AddNumberToObject(d, "window_count", (double)iv->window_count);
+    cJSON_AddNumberToObject(d, "invalid_window_count", (double)iv->invalid_window_count);
+    cJSON_AddBoolToObject(d, "history_overflow", iv->history_overflow);
+
+    cJSON *flux = build_l2_feature_object(
+        iv->spectral_flux_valid_count,
+        iv->has_spectral_flux_mean,
+        (double)iv->spectral_flux_mean,
+        iv->has_spectral_flux_stdev,
+        (double)iv->spectral_flux_stdev
+    );
+    cJSON *env = build_l2_feature_object(
+        iv->envelope_cv_valid_count,
+        iv->has_envelope_cv_mean,
+        (double)iv->envelope_cv_mean,
+        iv->has_envelope_cv_stdev,
+        (double)iv->envelope_cv_stdev
+    );
+    cJSON *delta = build_l2_feature_object(
+        iv->dominant_delta_valid_count,
+        iv->has_dominant_delta_mean,
+        (double)iv->dominant_delta_mean_hz,
+        iv->has_dominant_delta_stdev,
+        (double)iv->dominant_delta_stdev_hz
+    );
+    if (flux == NULL || env == NULL || delta == NULL) {
+        cJSON_Delete(flux);
+        cJSON_Delete(env);
+        cJSON_Delete(delta);
+        cJSON_Delete(d);
+        return NULL;
+    }
+    cJSON_AddItemToObject(d, "spectral_flux", flux);
+    cJSON_AddItemToObject(d, "envelope_cv", env);
+    cJSON_AddItemToObject(d, "dominant_delta_hz", delta);
+    return d;
+}
+
 static cJSON *build_measurements_object(const dbmap_l0_interval_t *iv)
 {
     if (iv == NULL) {
@@ -329,6 +408,16 @@ char *dbmap_observation_build_json(const dbmap_observation_fields_t *fields)
             return NULL;
         }
         cJSON_AddItemToObject(acoustic, "signature", sig);
+    }
+    if (fields->dynamics == NULL) {
+        cJSON_AddNullToObject(acoustic, "dynamics");
+    } else {
+        cJSON *dyn = build_dynamics_object(fields->dynamics);
+        if (dyn == NULL) {
+            cJSON_Delete(root);
+            return NULL;
+        }
+        cJSON_AddItemToObject(acoustic, "dynamics", dyn);
     }
     cJSON_AddNullToObject(acoustic, "classification");
     cJSON_AddItemToObject(root, "acoustic", acoustic);

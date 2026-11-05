@@ -28,6 +28,8 @@ CONFIG_DBMAP_EAR_MIC_MODEL_INMP441=y
 CONFIG_DBMAP_EAR_OBS_RMS_ACTIVITY=y
 CONFIG_DBMAP_EAR_OBS_TEST_PUBLISH_ONCE=n
 CONFIG_DBMAP_EAR_OBS_SEQ_BLOCK_SIZE=64
+# Relative END v1: freeze pre-event RMS baseline for exit (provisional params).
+CONFIG_DBMAP_EAR_OBS_RELATIVE_END=y
 # L0 analysis on-device; MQTT protocol v1 with emission_kind + measurements.
 CONFIG_DBMAP_EAR_MIC_L0=y
 CONFIG_DBMAP_EAR_OBS_L0=y
@@ -35,8 +37,8 @@ CONFIG_DBMAP_EAR_OBS_L0_MAX_WINDOWS=64
 CONFIG_DBMAP_EAR_OBS_PUBLISH_L0=y
 # L1 Acoustic Signature (1024-pt FFT features on Observation intervals).
 CONFIG_DBMAP_EAR_OBS_L1=y
-# L2 Acoustic Dynamics: compute on device; do not publish MQTT dynamics yet.
+# L2 Acoustic Dynamics: compute and publish acoustic.dynamics on Observations.
 CONFIG_DBMAP_EAR_OBS_L2=y
-# CONFIG_DBMAP_EAR_OBS_L2_PUBLISH is not set
+CONFIG_DBMAP_EAR_OBS_L2_PUBLISH=y
 # Serial diagnostics (RMS activity + L0).
 CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG=y

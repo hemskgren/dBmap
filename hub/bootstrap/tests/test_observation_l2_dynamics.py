@@ -413,7 +413,7 @@ def test_api_rehydration_response_round_trip() -> None:
         f"/api/v1/observations?node_id={node_id}&limit=10", headers=headers
     )
     assert listed.status_code == 200
-    items = listed.json()
+    items = listed.json()["reports"]
     assert len(items) >= 1
     dynamics = items[0]["acoustic"]["dynamics"]
     assert dynamics["schema"] == "l2"

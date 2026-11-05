@@ -10,7 +10,9 @@ from typing import Any
 # Hierarchy used for list/metadata. Keys are CONFIG_DBMAP_* without the prefix.
 GROUP_KEYS: dict[str, tuple[str, ...]] = {
     "node": (
-        "FIRMWARE_VERSION",
+        # FIRMWARE_VERSION is omitted on purpose: catalog/metadata and List use the
+        # top-level firmware_version (builder-bumped). Nested CONFIG base 0.7.0 was
+        # misleading next to e.g. firmware_version 0.7.10.
         "NODE_TYPE_EAR",
         "NODE_TYPE_OUTPUT",
         "HARDWARE_REVISION",
@@ -58,6 +60,12 @@ GROUP_KEYS: dict[str, tuple[str, ...]] = {
         "EAR_OBS_BOOT_SETTLE_MS",
         "EAR_OBS_INTERVAL_MS",
         "EAR_OBS_MAX_INVALID_HOLD_MS",
+        "EAR_OBS_RELATIVE_END",
+        "EAR_OBS_REL_RETURN_MARGIN_DB_X1000",
+        "EAR_OBS_REL_EXIT_HOLD_MS",
+        "EAR_OBS_REL_CANCEL_HYST_DB_X1000",
+        "EAR_OBS_REL_MIN_CONTRAST_DB_X1000",
+        "EAR_OBS_REL_BASELINE_STALE_MS",
         "EAR_OBS_TEST_PUBLISH_ONCE",
         "EAR_OBS_TEST_SIGNAL_LEVEL_DBFS",
         "EAR_OBS_TEST_DURATION_MS",
@@ -308,7 +316,7 @@ def resolve_effective_dbmap_config(
         "dbmap_config": grouped,
         "highlights": highlights(effective, kconfig_defaults),
         "notes": [
-            "FIRMWARE_VERSION is the sdkconfig.defaults base; the builder bumps the patch from retained build history when the build starts.",
+            "Release firmware_version is assigned at build time (sdkconfig.defaults series base + retained patch history) and is not duplicated under dbmap_config.node.",
             "NTP_SERVER reflects DBMAP_NTP_SERVER from the builder environment.",
             "WIFI_SSID, WIFI_PASSWORD, and BOOTSTRAP_TOKEN are cleared for reusable images.",
         ],

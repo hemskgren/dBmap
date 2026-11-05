@@ -62,16 +62,63 @@ paths:
     get:
       summary: List internal users
       operationId: listUsers
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            description: 1-based page index
+            default: 1
+            title: Page
+          description: 1-based page index
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            description: "Users per page (default 200, max 500)"
+            title: Page Size
+            type: integer
+            maximum: 500
+            minimum: 1
+            nullable: true
+          description: "Users per page (default 200, max 500)"
+        - name: order
+          in: query
+          required: false
+          schema:
+            enum:
+              - newest
+              - oldest
+            type: string
+            description: newest = created_at DESC; oldest = ASC
+            default: newest
+            title: Order
+          description: newest = created_at DESC; oldest = ASC
+        - name: snapshot_id
+          in: query
+          required: false
+          schema:
+            description: Optional freeze boundary (SQLite rowid). Reuse pagination.snapshot_id from a prior page to avoid duplicates when new users are created.
+            title: Snapshot Id
+            type: integer
+            minimum: 1
+            nullable: true
+          description: Optional freeze boundary (SQLite rowid). Reuse pagination.snapshot_id from a prior page to avoid duplicates when new users are created.
       responses:
         "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/UserView"
-                title: Response List Users Api V1 Users Get
+                $ref: "#/components/schemas/UserListEnvelope"
+        "422":
+          description: Request body or query failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
         "401":
           description: Missing or invalid local bearer token.
           content:
@@ -92,6 +139,7 @@ paths:
                 $ref: "#/components/schemas/ErrorMessage"
       tags:
         - Users
+      description: "Returns {pagination, items}. pagination includes total_count, page, page_size, total_pages, order, snapshot_id (SQLite rowid freeze). Query: page (default 1), page_size (default 200, max 500), order=newest|oldest, optional snapshot_id."
       security:
         - bearerAuth: []
     post:
@@ -375,16 +423,63 @@ paths:
     get:
       summary: List groups
       operationId: listGroups
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            description: 1-based page index
+            default: 1
+            title: Page
+          description: 1-based page index
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            description: "Groups per page (default 200, max 500)"
+            title: Page Size
+            type: integer
+            maximum: 500
+            minimum: 1
+            nullable: true
+          description: "Groups per page (default 200, max 500)"
+        - name: order
+          in: query
+          required: false
+          schema:
+            enum:
+              - newest
+              - oldest
+            type: string
+            description: newest = created_at DESC; oldest = ASC
+            default: newest
+            title: Order
+          description: newest = created_at DESC; oldest = ASC
+        - name: snapshot_id
+          in: query
+          required: false
+          schema:
+            description: Optional freeze boundary (SQLite rowid). Reuse pagination.snapshot_id from a prior page to avoid duplicates when new groups are created.
+            title: Snapshot Id
+            type: integer
+            minimum: 1
+            nullable: true
+          description: Optional freeze boundary (SQLite rowid). Reuse pagination.snapshot_id from a prior page to avoid duplicates when new groups are created.
       responses:
         "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/GroupView"
-                title: Response List Groups Api V1 Groups Get
+                $ref: "#/components/schemas/GroupListEnvelope"
+        "422":
+          description: Request body or query failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
         "401":
           description: Missing or invalid local bearer token.
           content:
@@ -405,6 +500,7 @@ paths:
                 $ref: "#/components/schemas/ErrorMessage"
       tags:
         - Groups
+      description: "Returns {pagination, items}. pagination includes total_count, page, page_size, total_pages, order, snapshot_id (SQLite rowid freeze). Query: page (default 1), page_size (default 200, max 500), order=newest|oldest, optional snapshot_id. Ordered by created_at."
       security:
         - bearerAuth: []
     post:
@@ -2514,6 +2610,13 @@ paths:
             title: Node Id
             type: string
             nullable: true
+        - name: observation_id
+          in: query
+          required: false
+          schema:
+            title: Observation Id
+            type: string
+            nullable: true
       responses:
         "200":
           description: Successful Response
@@ -2545,7 +2648,8 @@ paths:
         - bearerAuth: []
   /api/v1/observations:
     get:
-      summary: List recent observations
+      summary: List observation reports (paginated envelope)
+      description: "Returns {pagination, reports}. pagination includes total_count, page, page_size, total_pages, order, snapshot_id. Query: page (default 1), page_size (default 200, max 500), order=newest|oldest, node_id, observation_id, optional snapshot_id, deprecated limit alias for page_size."
       operationId: listObservations
       parameters:
         - name: node_id
@@ -2555,25 +2659,80 @@ paths:
             title: Node Id
             type: string
             nullable: true
-        - name: limit
+        - name: observation_id
+          in: query
+          required: false
+          schema:
+            title: Observation Id
+            type: string
+            nullable: true
+        - name: page
           in: query
           required: false
           schema:
             type: integer
+            minimum: 1
+            description: 1-based page index
+            default: 1
+            title: Page
+          description: 1-based page index
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            description: "Reports per page (default 200, max 500)"
+            title: Page Size
+            type: integer
             maximum: 500
             minimum: 1
-            default: 100
+            nullable: true
+          description: "Reports per page (default 200, max 500)"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            description: Deprecated alias for page_size
             title: Limit
+            type: integer
+            maximum: 500
+            minimum: 1
+            nullable: true
+          description: Deprecated alias for page_size
+        - name: order
+          in: query
+          required: false
+          schema:
+            enum:
+              - newest
+              - oldest
+            type: string
+            description: newest = received_time_utc DESC; oldest = ASC
+            default: newest
+            title: Order
+          description: newest = received_time_utc DESC; oldest = ASC
+        - name: snapshot_id
+          in: query
+          required: false
+          schema:
+            description: Optional freeze boundary (Observation.id). Reuse pagination.snapshot_id from a prior page to avoid duplicates when new reports arrive.
+            title: Snapshot Id
+            type: integer
+            minimum: 1
+            nullable: true
+          description: Optional freeze boundary (Observation.id). Reuse pagination.snapshot_id from a prior page to avoid duplicates when new reports arrive.
       responses:
         "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/ObservationView"
-                title: Response List Observations Api V1 Observations Get
+                $ref: "#/components/schemas/ObservationListEnvelope"
+        "422":
+          description: Request body or query failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
         "401":
           description: Missing or invalid local bearer token.
           content:
@@ -3271,6 +3430,18 @@ components:
       required:
         - firmware_id
       title: FirmwareSelectionBody
+    GroupListEnvelope:
+      type: object
+      required:
+        - pagination
+        - items
+      properties:
+        pagination:
+          $ref: "#/components/schemas/PaginationMeta"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/GroupView"
     GroupMemberBody:
       properties:
         role:
@@ -4134,6 +4305,18 @@ components:
         - valid_count
       title: ObservationL2FeatureStats
       description: "One L2 dynamics feature: valid_count plus optional mean/stdev."
+    ObservationListEnvelope:
+      type: object
+      required:
+        - pagination
+        - reports
+      properties:
+        pagination:
+          $ref: "#/components/schemas/PaginationMeta"
+        reports:
+          type: array
+          items:
+            $ref: "#/components/schemas/ObservationView"
     ObservationSpatial:
       properties:
         bearing:
@@ -4326,6 +4509,35 @@ components:
         - valid_from
         - valid_to
       title: OwnershipAssignmentView
+    PaginationMeta:
+      type: object
+      required:
+        - total_count
+        - page
+        - page_size
+        - total_pages
+        - order
+      properties:
+        total_count:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+        total_pages:
+          type: integer
+          minimum: 0
+        order:
+          type: string
+          enum:
+            - newest
+            - oldest
+        snapshot_id:
+          type: integer
+          nullable: true
     ProvisionRequest:
       properties:
         bootstrap_token:
@@ -4448,6 +4660,18 @@ components:
         - created_at
         - last_authenticated_at
       title: UserIdentityView
+    UserListEnvelope:
+      type: object
+      required:
+        - pagination
+        - items
+      properties:
+        pagination:
+          $ref: "#/components/schemas/PaginationMeta"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/UserView"
     UserStatusBody:
       properties:
         status:
@@ -4522,6 +4746,8 @@ components:
         - msg
         - type
       title: ValidationError
+    ObservationPaginationMeta:
+      $ref: "#/components/schemas/PaginationMeta"
     ErrorMessage:
       type: object
       required:
@@ -4596,11 +4822,7 @@ components:
           type: string
         dbmap_config:
           type: object
-          description: >
-            Optional hierarchical CONFIG_DBMAP_* values explicitly set in the
-            target sdkconfig.defaults (not the full effective Kconfig merge).
-            Groups such as node, mic, observation, or audio appear only when
-            that file sets symbols in them.
+          description: Optional hierarchical CONFIG_DBMAP_* values explicitly set in the target sdkconfig.defaults (not the full effective Kconfig merge).
           additionalProperties:
             type: object
             additionalProperties: true

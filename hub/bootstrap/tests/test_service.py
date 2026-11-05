@@ -525,9 +525,12 @@ def test_observations_are_validated_deduplicated_and_listed() -> None:
         headers={"Authorization": "Bearer test-admin"},
     )
     assert response.status_code == 200
-    assert len(response.json()) == 1
+    envelope = response.json()
+    assert set(envelope.keys()) == {"pagination", "reports"}
+    assert len(envelope["reports"]) == 1
+    assert envelope["pagination"]["total_count"] == 1
     assert all(
-        item["identity"]["node_id"] == "EAR-007" for item in response.json()
+        item["identity"]["node_id"] == "EAR-007" for item in envelope["reports"]
     )
 
     unauthorized = client.get("/api/v1/observations")

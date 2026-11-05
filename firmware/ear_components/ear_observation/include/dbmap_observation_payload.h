@@ -5,6 +5,7 @@
 
 #include "dbmap_acoustic_l0.h"
 #include "dbmap_acoustic_l1.h"
+#include "dbmap_acoustic_l2.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,6 +47,11 @@ typedef struct {
      * Non-NULL → schema=l1 object (may be empty: window_count=0, null features).
      */
     const dbmap_l1_interval_t *signature;
+    /**
+     * L2 dynamics: NULL → JSON null (L2 publish disabled / not provided).
+     * Non-NULL → schema=l2 object (may be empty or Option A overflow).
+     */
+    const dbmap_l2_interval_t *dynamics;
     /* classification always null on physical Ear path */
 
     /* spatial: bearing/position always null on physical Ear Stage 1 */

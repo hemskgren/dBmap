@@ -633,6 +633,28 @@ class ObservationView(ObservationBody):
     received_time_utc: datetime
 
 
+class PaginationMeta(BaseModel):
+    """Shared list pagination metadata for Hub collection endpoints."""
+
+    total_count: int = Field(ge=0)
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1)
+    total_pages: int = Field(ge=0)
+    order: Literal["newest", "oldest"]
+    snapshot_id: int | None = None
+
+
+# Backward-compatible alias used by observation OpenAPI/tests.
+ObservationPaginationMeta = PaginationMeta
+
+
+class ObservationListEnvelope(BaseModel):
+    """Paginated observation reports. Retains resource-specific ``reports`` key."""
+
+    pagination: PaginationMeta
+    reports: list[ObservationView]
+
+
 class ObservationCountView(BaseModel):
     """Observation report rows and distinct observation_id values (optional node filter)."""
 
@@ -719,6 +741,13 @@ class UserView(BaseModel):
     external_identities: list[UserIdentityView]
 
 
+class UserListEnvelope(BaseModel):
+    """Paginated users. Uses the shared ``items`` collection key."""
+
+    pagination: PaginationMeta
+    items: list[UserView]
+
+
 class DeviceOwnerBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -784,3 +813,10 @@ class GroupView(BaseModel):
     created_at: datetime
     updated_at: datetime
     members: list[GroupMemberView]
+
+
+class GroupListEnvelope(BaseModel):
+    """Paginated groups. Uses the shared ``items`` collection key."""
+
+    pagination: PaginationMeta
+    items: list[GroupView]

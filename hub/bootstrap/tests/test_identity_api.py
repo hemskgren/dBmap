@@ -30,7 +30,9 @@ def test_admin_can_manage_users_and_github_identities_only() -> None:
 
     viewer_list = client.get("/api/v1/users", headers=viewer_headers)
     assert viewer_list.status_code == 200
-    assert any(item["user_id"] == user["user_id"] for item in viewer_list.json())
+    assert any(
+        item["user_id"] == user["user_id"] for item in viewer_list.json()["items"]
+    )
     viewer_detail = client.get(
         f"/api/v1/users/{user['user_id']}", headers=viewer_headers
     )
@@ -140,7 +142,9 @@ def test_admin_can_manage_groups_and_viewer_can_read_group_directory() -> None:
     ]
     assert any(
         item["group_id"] == group["group_id"]
-        for item in client.get("/api/v1/groups", headers=viewer_headers).json()
+        for item in client.get("/api/v1/groups", headers=viewer_headers).json()[
+            "items"
+        ]
     )
     assert (
         client.post(

@@ -93,6 +93,8 @@ typedef struct {
     dbmap_l0_interval_t measurements;
     bool has_signature;
     dbmap_l1_interval_t signature;
+    bool has_dynamics;
+    dbmap_l2_interval_t dynamics;
 } ear_obs_end_snapshot_t;
 #if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
 static int64_t s_diag_last_snap_us;
@@ -438,6 +440,37 @@ static void observation_enrich(cJSON *state, const dbmap_effective_t *cfg, bool 
     cJSON_AddStringToObject(observation, "detector_kind", "none");
     cJSON_AddNumberToObject(observation, "detector_version", 0);
 #endif
+    /* Compiled Relative END v1 settings (CONFIG_DBMAP_EAR_OBS_*); Hub reads via hello/health. */
+#if defined(CONFIG_DBMAP_EAR_OBS_RELATIVE_END) && CONFIG_DBMAP_EAR_OBS_RELATIVE_END
+    cJSON_AddBoolToObject(observation, "EAR_OBS_RELATIVE_END", true);
+    cJSON_AddNumberToObject(
+        observation,
+        "EAR_OBS_REL_RETURN_MARGIN_DB_X1000",
+        (double)CONFIG_DBMAP_EAR_OBS_REL_RETURN_MARGIN_DB_X1000
+    );
+    cJSON_AddNumberToObject(
+        observation,
+        "EAR_OBS_REL_EXIT_HOLD_MS",
+        (double)CONFIG_DBMAP_EAR_OBS_REL_EXIT_HOLD_MS
+    );
+    cJSON_AddNumberToObject(
+        observation,
+        "EAR_OBS_REL_CANCEL_HYST_DB_X1000",
+        (double)CONFIG_DBMAP_EAR_OBS_REL_CANCEL_HYST_DB_X1000
+    );
+    cJSON_AddNumberToObject(
+        observation,
+        "EAR_OBS_REL_MIN_CONTRAST_DB_X1000",
+        (double)CONFIG_DBMAP_EAR_OBS_REL_MIN_CONTRAST_DB_X1000
+    );
+    cJSON_AddNumberToObject(
+        observation,
+        "EAR_OBS_REL_BASELINE_STALE_MS",
+        (double)CONFIG_DBMAP_EAR_OBS_REL_BASELINE_STALE_MS
+    );
+#else
+    cJSON_AddBoolToObject(observation, "EAR_OBS_RELATIVE_END", false);
+#endif
     cJSON_AddItemToObject(capabilities, "observation", observation);
 }
 
@@ -463,7 +496,8 @@ esp_err_t dbmap_ear_observation_publish(
     const char *emission_kind,
     const char *termination_reason,
     const dbmap_l0_interval_t *measurements,
-    const dbmap_l1_interval_t *signature
+    const dbmap_l1_interval_t *signature,
+    const dbmap_l2_interval_t *dynamics
 )
 {
     if (cfg == NULL || cfg->identity.node_id[0] == '\0' || cfg->topics.observation[0] == '\0') {
@@ -555,6 +589,7 @@ esp_err_t dbmap_ear_observation_publish(
         .signal_level_dbfs = signal_level_dbfs,
         .measurements = measurements,
         .signature = signature,
+        .dynamics = dynamics,
     };
 
     char *json = dbmap_observation_build_json(&fields);
@@ -967,20 +1002,25 @@ static void handle_emission(const dbmap_activity_emission_t *emission)
         const dbmap_l1_interval_t *sig_ptr = NULL;
 #endif
 #if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
-        {
-            dbmap_l2_interval_t local_l2;
-            l2_finalize_interval(
-                emission->interval_start_mono_us,
-                emission->interval_end_mono_us,
+        dbmap_l2_interval_t local_l2;
+        l2_finalize_interval(
+            emission->interval_start_mono_us,
+            emission->interval_end_mono_us,
 #if CONFIG_DBMAP_EAR_OBS_L0
-                local_iv.history_overflow,
+            local_iv.history_overflow,
 #else
-                false,
+            false,
 #endif
-                &local_l2
-            );
-            (void)local_l2;
-        }
+            &local_l2
+        );
+#if defined(CONFIG_DBMAP_EAR_OBS_L2_PUBLISH) && CONFIG_DBMAP_EAR_OBS_L2_PUBLISH
+        const dbmap_l2_interval_t *dyn_ptr = &local_l2;
+#else
+        (void)local_l2;
+        const dbmap_l2_interval_t *dyn_ptr = NULL;
+#endif
+#else
+        const dbmap_l2_interval_t *dyn_ptr = NULL;
 #endif
         if (!mqtt_ok) {
             s_dropped_while_mqtt_down += 1;
@@ -1003,7 +1043,8 @@ static void handle_emission(const dbmap_activity_emission_t *emission)
             "start",
             NULL,
             &local_iv,
-            sig_ptr
+            sig_ptr,
+            dyn_ptr
         );
 #if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
         ear_obs_stack_hwm_checkpoint(
@@ -1069,22 +1110,27 @@ static void handle_emission(const dbmap_activity_emission_t *emission)
         const dbmap_l1_interval_t *sig_ptr = NULL;
 #endif
 #if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
-        {
-            dbmap_l2_interval_t local_l2;
-            const bool ov =
+        dbmap_l2_interval_t local_l2;
+        const bool ov =
 #if CONFIG_DBMAP_EAR_OBS_L0
-                local_iv.history_overflow;
+            local_iv.history_overflow;
 #else
-                false;
+            false;
 #endif
-            l2_finalize_interval(
-                emission->interval_start_mono_us,
-                emission->interval_end_mono_us,
-                ov,
-                &local_l2
-            );
-            (void)local_l2; /* diagnostics only; PUBLISH remains off */
-        }
+        l2_finalize_interval(
+            emission->interval_start_mono_us,
+            emission->interval_end_mono_us,
+            ov,
+            &local_l2
+        );
+#if defined(CONFIG_DBMAP_EAR_OBS_L2_PUBLISH) && CONFIG_DBMAP_EAR_OBS_L2_PUBLISH
+        const dbmap_l2_interval_t *dyn_ptr = &local_l2;
+#else
+        (void)local_l2;
+        const dbmap_l2_interval_t *dyn_ptr = NULL;
+#endif
+#else
+        const dbmap_l2_interval_t *dyn_ptr = NULL;
 #endif
         esp_err_t err = dbmap_ear_observation_publish(
             s_cfg,
@@ -1098,7 +1144,8 @@ static void handle_emission(const dbmap_activity_emission_t *emission)
             "periodic",
             NULL,
             &local_iv,
-            sig_ptr
+            sig_ptr,
+            dyn_ptr
         );
 #if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
         ear_obs_stack_hwm_checkpoint(
@@ -1144,21 +1191,26 @@ static void handle_emission(const dbmap_activity_emission_t *emission)
         const dbmap_l1_interval_t *sig_ptr = NULL;
 #endif
 #if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
-        {
-            dbmap_l2_interval_t local_l2;
-            l2_finalize_interval(
-                emission->interval_start_mono_us,
-                emission->interval_end_mono_us,
+        dbmap_l2_interval_t local_l2;
+        l2_finalize_interval(
+            emission->interval_start_mono_us,
+            emission->interval_end_mono_us,
 #if CONFIG_DBMAP_EAR_OBS_L0
-                local_iv.history_overflow,
+            local_iv.history_overflow,
 #else
-                false,
+            false,
 #endif
-                &local_l2
-            );
-            (void)local_l2;
-            l2_continuity_break(); /* episode END */
-        }
+            &local_l2
+        );
+#if defined(CONFIG_DBMAP_EAR_OBS_L2_PUBLISH) && CONFIG_DBMAP_EAR_OBS_L2_PUBLISH
+        const dbmap_l2_interval_t *dyn_ptr = &local_l2;
+#else
+        (void)local_l2;
+        const dbmap_l2_interval_t *dyn_ptr = NULL;
+#endif
+        l2_continuity_break(); /* episode END */
+#else
+        const dbmap_l2_interval_t *dyn_ptr = NULL;
 #endif
         if (!mqtt_ok) {
             s_dropped_while_mqtt_down += 1;
@@ -1178,7 +1230,8 @@ static void handle_emission(const dbmap_activity_emission_t *emission)
             "end",
             term != NULL ? term : "natural",
             &local_iv,
-            sig_ptr
+            sig_ptr,
+            dyn_ptr
         );
 #if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
         ear_obs_stack_hwm_checkpoint(
@@ -1242,32 +1295,44 @@ static void activity_serial_diag(const dbmap_ear_mic_levels_t *levels, bool leve
             usable = dbmap_activity_sample_usable(&gate);
         }
 
-        if (levels_ok && levels->valid) {
-            ESP_LOGI(
-                TAG,
-                "diag snap mono_us=%lld rms_dbfs=%.2f peak_dbfs=%.2f xport=%s mic=%s "
-                "state=%s enter=%.1f exit=%.1f win_valid=1 usable=%d win_seq=%lu",
-                (long long)now_us,
-                (double)levels->rms_dbfs,
-                (double)levels->peak_dbfs,
-                levels->transport_status[0] ? levels->transport_status : "unavailable",
-                levels->microphone_status[0] ? levels->microphone_status : "unavailable",
-                activity_state_name(dbmap_activity_detector_state(&s_detector)),
-                (double)s_detector.cfg.enter_threshold_dbfs,
-                (double)s_detector.cfg.exit_threshold_dbfs,
-                usable ? 1 : 0,
-                (unsigned long)levels->window_seq
-            );
-        } else {
-            ESP_LOGI(
-                TAG,
-                "diag snap mono_us=%lld rms_dbfs=n/a peak_dbfs=n/a xport=n/a mic=n/a "
-                "state=%s enter=%.1f exit=%.1f win_valid=0 usable=0",
-                (long long)now_us,
-                activity_state_name(dbmap_activity_detector_state(&s_detector)),
-                (double)s_detector.cfg.enter_threshold_dbfs,
-                (double)s_detector.cfg.exit_threshold_dbfs
-            );
+        {
+            dbmap_activity_diag_t adiag;
+            char rel_buf[384];
+            dbmap_activity_detector_fill_diag(&s_detector, &adiag);
+            if (dbmap_activity_format_rel_diag(&adiag, rel_buf, sizeof(rel_buf)) < 0) {
+                rel_buf[0] = '\0';
+            }
+
+            if (levels_ok && levels->valid) {
+                ESP_LOGI(
+                    TAG,
+                    "diag snap mono_us=%lld rms_dbfs=%.2f peak_dbfs=%.2f xport=%s mic=%s "
+                    "state=%s enter=%.1f exit=%.1f win_valid=1 usable=%d win_seq=%lu",
+                    (long long)now_us,
+                    (double)levels->rms_dbfs,
+                    (double)levels->peak_dbfs,
+                    levels->transport_status[0] ? levels->transport_status : "unavailable",
+                    levels->microphone_status[0] ? levels->microphone_status : "unavailable",
+                    activity_state_name(dbmap_activity_detector_state(&s_detector)),
+                    (double)s_detector.cfg.enter_threshold_dbfs,
+                    (double)s_detector.cfg.exit_threshold_dbfs,
+                    usable ? 1 : 0,
+                    (unsigned long)levels->window_seq
+                );
+            } else {
+                ESP_LOGI(
+                    TAG,
+                    "diag snap mono_us=%lld rms_dbfs=n/a peak_dbfs=n/a xport=n/a mic=n/a "
+                    "state=%s enter=%.1f exit=%.1f win_valid=0 usable=0",
+                    (long long)now_us,
+                    activity_state_name(dbmap_activity_detector_state(&s_detector)),
+                    (double)s_detector.cfg.enter_threshold_dbfs,
+                    (double)s_detector.cfg.exit_threshold_dbfs
+                );
+            }
+            if (rel_buf[0] != '\0') {
+                ESP_LOGI(TAG, "diag rel %s", rel_buf);
+            }
         }
 
 #if CONFIG_DBMAP_EAR_OBS_L0
@@ -1619,6 +1684,7 @@ static esp_err_t publish_ota_end_snapshot(const ear_obs_end_snapshot_t *snap)
         .signal_level_dbfs = snap->signal_level_dbfs,
         .measurements = meas,
         .signature = snap->has_signature ? &snap->signature : NULL,
+        .dynamics = snap->has_dynamics ? &snap->dynamics : NULL,
     };
 
     char *json = dbmap_observation_build_json(&fields);
@@ -1703,7 +1769,12 @@ static esp_err_t ear_observation_close_for_ota(void)
                 snap->has_measurements && snap->measurements.history_overflow,
                 &local_l2
             );
+#if defined(CONFIG_DBMAP_EAR_OBS_L2_PUBLISH) && CONFIG_DBMAP_EAR_OBS_L2_PUBLISH
+            snap->dynamics = local_l2;
+            snap->has_dynamics = true;
+#else
             (void)local_l2;
+#endif
         }
 #endif
         if (s_cfg != NULL) {
@@ -1836,6 +1907,19 @@ esp_err_t dbmap_ear_observation_start(const dbmap_effective_t *cfg)
         .boot_settle_ms = (uint32_t)CONFIG_DBMAP_EAR_OBS_BOOT_SETTLE_MS,
         .observation_interval_ms = (uint32_t)CONFIG_DBMAP_EAR_OBS_INTERVAL_MS,
         .max_invalid_hold_ms = (uint32_t)CONFIG_DBMAP_EAR_OBS_MAX_INVALID_HOLD_MS,
+#if defined(CONFIG_DBMAP_EAR_OBS_RELATIVE_END) && CONFIG_DBMAP_EAR_OBS_RELATIVE_END
+        .relative_end_enabled = true,
+        .return_margin_db =
+            ((float)CONFIG_DBMAP_EAR_OBS_REL_RETURN_MARGIN_DB_X1000) / 1000.0f,
+        .cancel_hysteresis_db =
+            ((float)CONFIG_DBMAP_EAR_OBS_REL_CANCEL_HYST_DB_X1000) / 1000.0f,
+        .relative_exit_hold_ms = (uint32_t)CONFIG_DBMAP_EAR_OBS_REL_EXIT_HOLD_MS,
+        .min_event_contrast_db =
+            ((float)CONFIG_DBMAP_EAR_OBS_REL_MIN_CONTRAST_DB_X1000) / 1000.0f,
+        .baseline_stale_ms = (uint32_t)CONFIG_DBMAP_EAR_OBS_REL_BASELINE_STALE_MS,
+#else
+        .relative_end_enabled = false,
+#endif
     };
     if (!dbmap_activity_config_valid(&act_cfg)) {
         ESP_LOGE(TAG, "invalid RMS activity config (check enter > exit thresholds)");
@@ -1904,11 +1988,12 @@ esp_err_t dbmap_ear_observation_start(const dbmap_effective_t *cfg)
     }
     ESP_LOGI(
         TAG,
-        "RMS activity detector ready enter=%.1f exit=%.1f min_ms=%lu interval_ms=%lu",
+        "RMS activity detector ready enter=%.1f exit=%.1f min_ms=%lu interval_ms=%lu relative_end=%d",
         (double)act_cfg.enter_threshold_dbfs,
         (double)act_cfg.exit_threshold_dbfs,
         (unsigned long)act_cfg.min_activity_ms,
-        (unsigned long)act_cfg.observation_interval_ms
+        (unsigned long)act_cfg.observation_interval_ms,
+        act_cfg.relative_end_enabled ? 1 : 0
     );
 #endif
 
@@ -1981,6 +2066,8 @@ void dbmap_ear_observation_poll_test_trigger(const dbmap_effective_t *cfg)
 #else
     const dbmap_l1_interval_t *sig_ptr = NULL;
 #endif
+    /* Phase 1 one-shot does not accumulate L2; publish null dynamics. */
+    const dbmap_l2_interval_t *dyn_ptr = NULL;
     esp_err_t err = dbmap_ear_observation_publish(
         cfg,
         oid,
@@ -1993,7 +2080,8 @@ void dbmap_ear_observation_poll_test_trigger(const dbmap_effective_t *cfg)
         "complete",
         "natural",
         &empty_iv,
-        sig_ptr
+        sig_ptr,
+        dyn_ptr
     );
     if (err == ESP_OK) {
         s_test_published = true;

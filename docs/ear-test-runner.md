@@ -115,7 +115,7 @@ Prefer attaching `analysis.md` + `summary.json`. Add `observations.jsonl` when d
 
 ## Collection
 
-1. **HTTP poll** of `GET /api/v1/observations?node_id=&limit=500` during periods, inter-period pauses, and the final collection pause.
+1. **HTTP poll** of `GET /api/v1/observations?node_id=&page=1&page_size=500&order=newest` during periods, inter-period pauses, and the final collection pause (uses the `reports` array from the pagination envelope).
 2. **Read-only SQLite reconcile** via `docker compose exec hub-bootstrap` at period end and job end.
 
 Deduplication uses `observation_id` and **never overwrites** the first stored payload.

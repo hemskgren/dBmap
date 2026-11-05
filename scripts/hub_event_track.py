@@ -28,6 +28,9 @@ from lib.hub_cli import (
 EARTH_RADIUS_M = 6_371_000
 DEFAULT_EVENT_GAP_SECONDS = 30.0
 DEFAULT_MAX_ASSOCIATION_DISTANCE_M = 500.0
+DEFAULT_OBSERVATION_PAGE_SIZE = 200
+MAX_OBSERVATION_PAGE_SIZE = 500
+WATCH_OBSERVATION_PAGE_SIZE = 500
 
 
 def is_sim_ear(node_id: str) -> bool:
@@ -45,15 +48,111 @@ def admin_request(url: str, admin_token: str) -> urllib.request.Request:
     )
 
 
+def parse_positive_int(value: int | str, *, label: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a positive integer") from exc
+    if parsed < 1:
+        raise ValueError(f"{label} must be a positive integer")
+    return parsed
+
+
+def format_pagination_summary(
+    *,
+    total_count: int,
+    page: int,
+    page_size: int,
+    total_pages: int,
+    order: str,
+) -> str:
+    order_label = "newest first" if order == "newest" else "oldest first"
+    if total_pages <= 0:
+        return f"{total_count} reports | 0 pages | page {page}/0 | {order_label}"
+    return (
+        f"{total_count} reports | {total_pages} pages | "
+        f"page {page}/{total_pages} | {order_label}"
+    )
+
+
+def format_observation_envelope_json(envelope: dict[str, Any]) -> str:
+    """Pretty-print the Hub observation list envelope for --json."""
+    return json.dumps(envelope, indent=2, sort_keys=False, ensure_ascii=False)
+
+
+def parse_observation_list_envelope(payload: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Validate Hub observation list envelope; return (reports, pagination)."""
+    if not isinstance(payload, dict):
+        raise HubApiError("hub observations response must be a JSON object envelope")
+    pagination = payload.get("pagination")
+    reports = payload.get("reports")
+    if not isinstance(pagination, dict):
+        raise HubApiError("hub observations response missing pagination object")
+    if not isinstance(reports, list) or not all(
+        isinstance(observation, dict) for observation in reports
+    ):
+        raise HubApiError("hub observations response missing reports array")
+
+    def require_int(key: str) -> int:
+        value = pagination.get(key)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise HubApiError(f"hub pagination.{key} must be an integer")
+        return value
+
+    order = pagination.get("order")
+    if order not in ("newest", "oldest"):
+        raise HubApiError("hub pagination.order must be 'newest' or 'oldest'")
+    snapshot_id = pagination.get("snapshot_id")
+    if snapshot_id is not None and (
+        not isinstance(snapshot_id, int) or isinstance(snapshot_id, bool)
+    ):
+        raise HubApiError("hub pagination.snapshot_id must be an integer or null")
+
+    meta = {
+        "total_count": require_int("total_count"),
+        "page": require_int("page"),
+        "page_size": require_int("page_size"),
+        "total_pages": require_int("total_pages"),
+        "order": order,
+        "snapshot_id": snapshot_id,
+    }
+    return reports, meta
+
+
 def fetch_observations(
     base_url: str,
     ca_file: str,
     admin_token: str,
     node_id: str | None = None,
-) -> list[dict[str, Any]]:
-    query: dict[str, str | int] = {"limit": 500}
+    *,
+    observation_id: str | None = None,
+    page: int = 1,
+    page_size: int = DEFAULT_OBSERVATION_PAGE_SIZE,
+    order: str = "newest",
+    snapshot_id: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """
+    Fetch one page of observation reports.
+
+    Returns (reports, pagination_meta, full_envelope).
+    """
+    if page_size < 1 or page_size > MAX_OBSERVATION_PAGE_SIZE:
+        raise HubApiError(
+            f"page_size must be between 1 and {MAX_OBSERVATION_PAGE_SIZE}"
+        )
+    if order not in ("newest", "oldest"):
+        raise HubApiError("order must be 'newest' or 'oldest'")
+    query: dict[str, str | int] = {
+        "page": page,
+        "page_size": page_size,
+        "order": order,
+    }
     if node_id is not None:
         query["node_id"] = node_id
+    if observation_id is not None:
+        query["observation_id"] = observation_id
+    if snapshot_id is not None:
+        query["snapshot_id"] = snapshot_id
     path = "/api/v1/observations?" + urllib.parse.urlencode(query)
     request = urllib.request.Request(
         f"{base_url}{path}",
@@ -62,7 +161,7 @@ def fetch_observations(
     context = ssl.create_default_context(cafile=ca_file)
     try:
         with urllib.request.urlopen(request, context=context, timeout=15) as response:
-            observations = json.load(response)
+            envelope = json.load(response)
     except urllib.error.HTTPError as exc:
         raise HubApiError(
             format_hub_http_error(exc.code, exc.read(1024), path=path)
@@ -72,11 +171,8 @@ def fetch_observations(
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise HubApiError("hub returned invalid observation JSON") from exc
 
-    if not isinstance(observations, list) or not all(
-        isinstance(observation, dict) for observation in observations
-    ):
-        raise HubApiError("hub returned an invalid observation list")
-    return observations
+    reports, meta = parse_observation_list_envelope(envelope)
+    return reports, meta, envelope
 
 
 def fetch_observation_count(
@@ -957,10 +1053,33 @@ def main() -> int:
         "--json",
         action="store_true",
         help=(
-            "Print filtered observation reports as pretty-printed JSON "
-            "(all matching MQTT payloads; for AI/report feeds). "
-            "Skips the human text analysis."
+            "Print the Hub observation list JSON envelope for the selected page "
+            "(pagination + reports). Skips human text analysis. "
+            "Pagination summary also goes to stderr."
         ),
+    )
+    list_command.add_argument(
+        "--page",
+        type=int,
+        default=1,
+        metavar="N",
+        help="1-based page index (default: 1)",
+    )
+    list_command.add_argument(
+        "--page-size",
+        type=int,
+        default=DEFAULT_OBSERVATION_PAGE_SIZE,
+        metavar="N",
+        help=(
+            f"Reports per page (default: {DEFAULT_OBSERVATION_PAGE_SIZE}, "
+            f"max: {MAX_OBSERVATION_PAGE_SIZE})"
+        ),
+    )
+    list_command.add_argument(
+        "--order",
+        choices=("newest", "oldest"),
+        default="newest",
+        help="Page ordering by received_time_utc (default: newest)",
     )
     watch_command.add_argument(
         "--node-id",
@@ -992,9 +1111,13 @@ def main() -> int:
         list_node_ids: set[str] = set()
         list_observation_ids: set[str] = set()
         watch_node_id: str | None = None
+        page = 1
+        page_size = WATCH_OBSERVATION_PAGE_SIZE
+        order = "newest"
         if watching:
             watch_node_id = args.node_id
             fetch_node_id = watch_node_id
+            fetch_observation_id = None
         else:
             list_node_ids = {item for item in args.node_id if item}
             list_observation_ids = {
@@ -1003,12 +1126,62 @@ def main() -> int:
             fetch_node_id = (
                 next(iter(list_node_ids)) if len(list_node_ids) == 1 else None
             )
+            fetch_observation_id = (
+                next(iter(list_observation_ids))
+                if len(list_observation_ids) == 1
+                else None
+            )
+            try:
+                page = parse_positive_int(args.page, label="page")
+                page_size = parse_positive_int(args.page_size, label="page-size")
+            except ValueError as exc:
+                parser.error(str(exc))
+            if page_size > MAX_OBSERVATION_PAGE_SIZE:
+                parser.error(
+                    f"page-size must be <= {MAX_OBSERVATION_PAGE_SIZE}"
+                )
+            order = args.order
 
-        fetched = fetch_observations(base_url, args.ca, admin_token, fetch_node_id)
+        fetched, page_meta, envelope = fetch_observations(
+            base_url,
+            args.ca,
+            admin_token,
+            fetch_node_id,
+            observation_id=fetch_observation_id,
+            page=page,
+            page_size=page_size,
+            order=order,
+        )
         filter_status: list[str] = []
         if watching:
             observations = fetched
         else:
+            total_pages = int(page_meta.get("total_pages") or 0)
+            total_count = int(page_meta.get("total_count") or 0)
+            if total_pages > 0 and page > total_pages:
+                print(
+                    f"Requested page {page} is outside the available range "
+                    f"1–{total_pages} "
+                    f"({total_count} reports, page-size {page_meta.get('page_size')}).",
+                    file=sys.stderr,
+                )
+                return 1
+            if total_count == 0 and page > 1:
+                print(
+                    f"Requested page {page} but there are 0 matching reports.",
+                    file=sys.stderr,
+                )
+                return 1
+            print(
+                format_pagination_summary(
+                    total_count=total_count,
+                    page=int(page_meta.get("page") or page),
+                    page_size=int(page_meta.get("page_size") or page_size),
+                    total_pages=total_pages,
+                    order=str(page_meta.get("order") or order),
+                ),
+                file=sys.stderr,
+            )
             observations = filter_observations(
                 fetched,
                 node_ids=list_node_ids,
@@ -1021,7 +1194,24 @@ def main() -> int:
                 filtered_count=len(observations),
             )
             if getattr(args, "json", False):
-                print(format_observations_json(observations))
+                if len(observations) == len(fetched):
+                    print(format_observation_envelope_json(envelope))
+                else:
+                    print(
+                        format_observation_envelope_json(
+                            {
+                                "pagination": {
+                                    "total_count": page_meta["total_count"],
+                                    "page": page_meta["page"],
+                                    "page_size": page_meta["page_size"],
+                                    "total_pages": page_meta["total_pages"],
+                                    "order": page_meta["order"],
+                                    "snapshot_id": page_meta.get("snapshot_id"),
+                                },
+                                "reports": observations,
+                            }
+                        )
+                    )
                 return 0
         nodes = fetch_nodes(base_url, args.ca, admin_token)
         reference_times = [
@@ -1075,8 +1265,14 @@ def main() -> int:
             if count["total"] == last_total:
                 continue
             last_total = count["total"]
-            current = fetch_observations(
-                base_url, args.ca, admin_token, watch_node_id
+            current, _meta, _envelope = fetch_observations(
+                base_url,
+                args.ca,
+                admin_token,
+                watch_node_id,
+                page=1,
+                page_size=WATCH_OBSERVATION_PAGE_SIZE,
+                order="newest",
             )
             new_observations, known_ids = observation_diff(known_ids, current)
             if not new_observations:

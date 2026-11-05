@@ -299,6 +299,200 @@ static void test_force_end_and_reset_idle(void)
     EXPECT(det.state == DBMAP_ACTIVITY_IDLE);
 }
 
+/** Absolute: continuous 2 s hold ends naturally at 2 s of qualifying time. */
+static void test_abs_continuous_2s_hold(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = test_cfg();
+    cfg.boot_settle_ms = 0;
+    cfg.min_activity_ms = 1000;
+    cfg.exit_hold_ms = 2000;
+    dbmap_activity_detector_init(&det, &cfg);
+
+    dbmap_activity_emission_t e =
+        feed(&det, 1, 1000000, 1000, -40.0f, "ok", "signal_present");
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_START);
+
+    e = feed(&det, 2, 2000000, 2000, -60.0f, "ok", "signal_present");
+    EXPECT(det.state == DBMAP_ACTIVITY_PENDING_EXIT);
+    EXPECT(det.exit_hold_elapsed_us == 0);
+    EXPECT(det.exit_hold_anchor_valid);
+
+    e = feed(&det, 3, 3000000, 3000, -60.0f, "ok", "signal_present");
+    EXPECT(det.state == DBMAP_ACTIVITY_PENDING_EXIT);
+    EXPECT(det.exit_hold_elapsed_us == 1000000);
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_NONE);
+
+    e = feed(&det, 4, 4000000, 4000, -60.0f, "ok", "signal_present");
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_END);
+    EXPECT(e.termination == DBMAP_ACTIVITY_TERM_NATURAL);
+    EXPECT(det.state == DBMAP_ACTIVITY_IDLE);
+    EXPECT(!det.exit_hold_anchor_valid);
+    EXPECT(det.exit_hold_elapsed_us == 0);
+}
+
+/** Absolute: missing seq gap is not credited; resume then END. */
+static void test_abs_missing_seq_gap_and_resume(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = test_cfg();
+    cfg.boot_settle_ms = 0;
+    cfg.min_activity_ms = 1000;
+    cfg.exit_hold_ms = 2000;
+    dbmap_activity_detector_init(&det, &cfg);
+
+    feed(&det, 1, 1000000, 1000, -40.0f, "ok", "signal_present");
+    feed(&det, 2, 2000000, 2000, -60.0f, "ok", "signal_present");
+    EXPECT(det.state == DBMAP_ACTIVITY_PENDING_EXIT);
+
+    feed(&det, 3, 3000000, 3000, -60.0f, "ok", "signal_present");
+    EXPECT(det.exit_hold_elapsed_us == 1000000);
+
+    /* Skip seq 4; arrive at seq 5 / t=5s (2 s wall after last stay). */
+    dbmap_activity_emission_t e =
+        feed(&det, 5, 5000000, 5000, -60.0f, "ok", "signal_present");
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_NONE);
+    EXPECT(det.state == DBMAP_ACTIVITY_PENDING_EXIT);
+    EXPECT(det.exit_hold_elapsed_us == 1000000);
+    EXPECT(det.exit_hold_anchor_valid);
+    EXPECT(det.exit_hold_anchor_seq == 5);
+
+    e = feed(&det, 6, 6000000, 6000, -60.0f, "ok", "signal_present");
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_END);
+    EXPECT(det.state == DBMAP_ACTIVITY_IDLE);
+}
+
+/** Absolute: consecutive seq but timestamp delta > contig_max → no credit. */
+static void test_abs_excessive_timestamp_gap(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = test_cfg();
+    cfg.boot_settle_ms = 0;
+    cfg.min_activity_ms = 1000;
+    cfg.exit_hold_ms = 2000;
+    dbmap_activity_detector_init(&det, &cfg);
+
+    feed(&det, 1, 1000000, 1000, -40.0f, "ok", "signal_present");
+    feed(&det, 2, 2000000, 2000, -60.0f, "ok", "signal_present");
+    feed(&det, 3, 3000000, 3000, -60.0f, "ok", "signal_present");
+    EXPECT(det.exit_hold_elapsed_us == 1000000);
+
+    /* seq+1 but delta 2.0 s > 1.5×window → discontinuity. */
+    dbmap_activity_emission_t e =
+        feed(&det, 4, 5000000, 5000, -60.0f, "ok", "signal_present");
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_NONE);
+    EXPECT(det.state == DBMAP_ACTIVITY_PENDING_EXIT);
+    EXPECT(det.exit_hold_elapsed_us == 1000000);
+    EXPECT(det.exit_hold_anchor_us == 5000000);
+
+    e = feed(&det, 5, 6000000, 6000, -60.0f, "ok", "signal_present");
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_END);
+}
+
+static void test_abs_backward_sequence(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = test_cfg();
+    cfg.boot_settle_ms = 0;
+    cfg.min_activity_ms = 1000;
+    cfg.exit_hold_ms = 2000;
+    dbmap_activity_detector_init(&det, &cfg);
+
+    feed(&det, 10, 1000000, 1000, -40.0f, "ok", "signal_present");
+    feed(&det, 11, 2000000, 2000, -60.0f, "ok", "signal_present");
+    feed(&det, 12, 3000000, 3000, -60.0f, "ok", "signal_present");
+    EXPECT(det.exit_hold_elapsed_us == 1000000);
+
+    dbmap_activity_emission_t e =
+        feed(&det, 11, 4000000, 4000, -60.0f, "ok", "signal_present");
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_NONE);
+    EXPECT(det.state == DBMAP_ACTIVITY_PENDING_EXIT);
+    EXPECT(det.exit_hold_elapsed_us == 1000000);
+    EXPECT(det.exit_hold_anchor_seq == 11);
+    EXPECT(det.exit_hold_anchor_valid);
+}
+
+static void test_abs_backward_timestamp(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = test_cfg();
+    cfg.boot_settle_ms = 0;
+    cfg.min_activity_ms = 1000;
+    cfg.exit_hold_ms = 2000;
+    dbmap_activity_detector_init(&det, &cfg);
+
+    feed(&det, 1, 1000000, 1000, -40.0f, "ok", "signal_present");
+    feed(&det, 2, 2000000, 2000, -60.0f, "ok", "signal_present");
+    feed(&det, 3, 3000000, 3000, -60.0f, "ok", "signal_present");
+    EXPECT(det.exit_hold_elapsed_us == 1000000);
+
+    dbmap_activity_emission_t e =
+        feed(&det, 4, 2500000, 2500, -60.0f, "ok", "signal_present");
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_NONE);
+    EXPECT(det.state == DBMAP_ACTIVITY_PENDING_EXIT);
+    EXPECT(det.exit_hold_elapsed_us == 1000000);
+    EXPECT(det.exit_hold_anchor_us == 2500000);
+}
+
+static void test_abs_invalid_pauses_hold(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = test_cfg();
+    cfg.boot_settle_ms = 0;
+    cfg.min_activity_ms = 1000;
+    cfg.exit_hold_ms = 2000;
+    dbmap_activity_detector_init(&det, &cfg);
+
+    feed(&det, 1, 1000000, 1000, -40.0f, "ok", "signal_present");
+    feed(&det, 2, 2000000, 2000, -60.0f, "ok", "signal_present");
+    feed(&det, 3, 3000000, 3000, -60.0f, "ok", "signal_present");
+    EXPECT(det.exit_hold_elapsed_us == 1000000);
+    EXPECT(det.exit_latch == DBMAP_ACTIVITY_EXIT_LATCH_ABSOLUTE);
+
+    dbmap_activity_emission_t e =
+        feed(&det, 4, 4000000, 4000, -120.0f, "ok", "disconnected_suspected");
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_NONE);
+    EXPECT(det.state == DBMAP_ACTIVITY_PENDING_EXIT);
+    EXPECT(det.exit_hold_elapsed_us == 1000000);
+    EXPECT(!det.exit_hold_anchor_valid);
+    EXPECT(det.exit_latch == DBMAP_ACTIVITY_EXIT_LATCH_ABSOLUTE);
+
+    /* Resume: re-anchor with zero credit across the gap. */
+    e = feed(&det, 5, 5000000, 5000, -60.0f, "ok", "signal_present");
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_NONE);
+    EXPECT(det.exit_hold_elapsed_us == 1000000);
+    EXPECT(det.exit_hold_anchor_valid);
+
+    e = feed(&det, 6, 6000000, 6000, -60.0f, "ok", "signal_present");
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_END);
+}
+
+static void test_abs_cancel_clears_hold_progress(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = test_cfg();
+    cfg.boot_settle_ms = 0;
+    cfg.min_activity_ms = 1000;
+    cfg.exit_hold_ms = 2000;
+    dbmap_activity_detector_init(&det, &cfg);
+
+    feed(&det, 1, 1000000, 1000, -40.0f, "ok", "signal_present");
+    feed(&det, 2, 2000000, 2000, -60.0f, "ok", "signal_present");
+    feed(&det, 3, 3000000, 3000, -60.0f, "ok", "signal_present");
+    EXPECT(det.exit_hold_elapsed_us == 1000000);
+
+    /* Cancel absolute stay: rms >= -55. */
+    feed(&det, 4, 4000000, 4000, -50.0f, "ok", "signal_present");
+    EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
+    EXPECT(det.exit_hold_elapsed_us == 0);
+    EXPECT(!det.exit_hold_anchor_valid);
+    EXPECT(det.exit_latch == DBMAP_ACTIVITY_EXIT_LATCH_NONE);
+
+    feed(&det, 5, 5000000, 5000, -60.0f, "ok", "signal_present");
+    EXPECT(det.state == DBMAP_ACTIVITY_PENDING_EXIT);
+    EXPECT(det.exit_hold_elapsed_us == 0);
+}
+
 int main(void)
 {
     /* Existing */
@@ -311,8 +505,15 @@ int main(void)
     test_forced_end_after_max_invalid_hold();
     test_duplicate_window_ignored();
     test_mqtt_independence_contract();
-    /* Newly added */
     test_force_end_and_reset_idle();
+    /* Continuity-aware exit hold */
+    test_abs_continuous_2s_hold();
+    test_abs_missing_seq_gap_and_resume();
+    test_abs_excessive_timestamp_gap();
+    test_abs_backward_sequence();
+    test_abs_backward_timestamp();
+    test_abs_invalid_pauses_hold();
+    test_abs_cancel_clears_hold_progress();
 
     if (g_failures != 0) {
         fprintf(stderr, "%d failure(s)\n", g_failures);

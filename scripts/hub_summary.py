@@ -46,11 +46,14 @@ def api_get(base_url: str, ca_file: str, admin_token: str, path: str) -> Any:
 
 def fetch_snapshot(base_url: str, ca_file: str, admin_token: str) -> dict[str, Any]:
     nodes = api_get(base_url, ca_file, admin_token, "/api/v1/nodes")
-    observations = api_get(
+    observations_envelope = api_get(
         base_url,
         ca_file,
         admin_token,
-        "/api/v1/observations?" + urllib.parse.urlencode({"limit": 500}),
+        "/api/v1/observations?"
+        + urllib.parse.urlencode(
+            {"page": 1, "page_size": 500, "order": "newest"}
+        ),
     )
     broker = api_get(
         base_url,
@@ -60,10 +63,13 @@ def fetch_snapshot(base_url: str, ca_file: str, admin_token: str) -> dict[str, A
     )
     if not isinstance(nodes, list) or not all(isinstance(node, dict) for node in nodes):
         raise HubApiError("hub returned an invalid node list")
+    if not isinstance(observations_envelope, dict):
+        raise HubApiError("hub returned an invalid observation list envelope")
+    observations = observations_envelope.get("reports")
     if not isinstance(observations, list) or not all(
         isinstance(observation, dict) for observation in observations
     ):
-        raise HubApiError("hub returned an invalid observation list")
+        raise HubApiError("hub observation envelope missing reports array")
     if not isinstance(broker, dict):
         raise HubApiError("hub returned invalid Mosquitto details")
     return {"nodes": nodes, "observations": observations, "broker": broker}

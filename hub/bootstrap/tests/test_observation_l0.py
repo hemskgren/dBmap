@@ -396,7 +396,7 @@ def test_ingest_and_api_round_trip_extended() -> None:
         f"/api/v1/observations?node_id={node_id}&limit=10", headers=headers
     )
     assert listed.status_code == 200
-    items = listed.json()
+    items = listed.json()["reports"]
     assert len(items) >= 1
     assert items[0]["protocol_version"] == 1
     assert items[0]["context"]["emission_kind"] == "end"
@@ -458,14 +458,15 @@ def test_simulator_hierarchical_payloads() -> None:
             f"/api/v1/observations?node_id={node_id}&limit=50", headers=headers
         )
         assert listed.status_code == 200
+        listed_reports = listed.json()["reports"]
         extended = [
             i
-            for i in listed.json()
+            for i in listed_reports
             if i.get("context", {}).get("emission_kind") == "periodic"
             or i.get("context", {}).get("emission_kind") == "start"
         ]
         assert len(extended) >= len(SCENARIO_IDS)
-        assert all(i["protocol_version"] == 1 for i in listed.json())
+        assert all(i["protocol_version"] == 1 for i in listed_reports)
         assert any(
             i["acoustic"]["measurements"]["t2"]["rms_slope_db_per_s"] is None
             for i in extended

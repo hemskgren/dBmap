@@ -41,6 +41,12 @@ from app.ids import timing_safe_eq
 from app.models import DesiredState, Node
 from app.mqtt_listener import get_broker_metrics, is_connected
 from app.mqtt_security import MqttSecurityError
+from app.pagination import (
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    ListOrder,
+    PageResult,
+)
 from app.policy import PolicyUnavailable
 from app.schemas import (
     BootstrapTokenResponse,
@@ -57,6 +63,7 @@ from app.schemas import (
     DeviceOwnershipView,
     DeviceSummaryView,
     FirmwareSelectionBody,
+    GroupListEnvelope,
     GroupMemberBody,
     GroupStatusBody,
     GroupView,
@@ -66,11 +73,13 @@ from app.schemas import (
     NodeLifecycleBody,
     NodeView,
     ObservationCountView,
-    ObservationView,
+    ObservationListEnvelope,
     OutputCommandBody,
     OutputCommandView,
+    PaginationMeta,
     ProvisionRequest,
     ProvisionResponse,
+    UserListEnvelope,
     UserStatusBody,
     UserView,
 )
@@ -149,13 +158,66 @@ def get_session(
     return {"role": principal.role}
 
 
+def _pagination_meta(result: PageResult) -> PaginationMeta:
+    return PaginationMeta(
+        total_count=result.total,
+        page=result.page,
+        page_size=result.page_size,
+        total_pages=result.total_pages,
+        order=result.order,
+        snapshot_id=result.snapshot_id,
+    )
+
+
+def _list_query_page_size(
+    page_size: int | None,
+    limit: int | None = None,
+) -> int:
+    if page_size is not None:
+        return page_size
+    if limit is not None:
+        return limit
+    return DEFAULT_PAGE_SIZE
+
+
 @router.get(
     "/api/v1/users",
-    response_model=list[UserView],
+    response_model=UserListEnvelope,
     dependencies=[Depends(require_policy("users.read", "users"))],
 )
-def list_users(db: Session = Depends(get_db)) -> list[UserView]:
-    return identity_service.list_users(db)
+def list_users(
+    page: int = Query(default=1, ge=1, description="1-based page index"),
+    page_size: int | None = Query(
+        default=None,
+        ge=1,
+        le=MAX_PAGE_SIZE,
+        description="Users per page (default 200, max 500)",
+    ),
+    order: ListOrder = Query(
+        default="newest",
+        description="newest = created_at DESC; oldest = ASC",
+    ),
+    snapshot_id: int | None = Query(
+        default=None,
+        ge=1,
+        description=(
+            "Optional freeze boundary (SQLite rowid). Reuse pagination.snapshot_id "
+            "from a prior page to avoid duplicates when new users are created."
+        ),
+    ),
+    db: Session = Depends(get_db),
+) -> UserListEnvelope:
+    try:
+        result = identity_service.list_users_page(
+            db,
+            page=page,
+            page_size=_list_query_page_size(page_size),
+            order=order,
+            snapshot_id=snapshot_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return UserListEnvelope(pagination=_pagination_meta(result), items=result.items)
 
 
 @router.post(
@@ -234,11 +296,42 @@ def put_identity_status(
 
 @router.get(
     "/api/v1/groups",
-    response_model=list[GroupView],
+    response_model=GroupListEnvelope,
     dependencies=[Depends(require_policy("groups.read", "groups"))],
 )
-def list_groups(db: Session = Depends(get_db)) -> list[GroupView]:
-    return group_service.list_groups(db)
+def list_groups(
+    page: int = Query(default=1, ge=1, description="1-based page index"),
+    page_size: int | None = Query(
+        default=None,
+        ge=1,
+        le=MAX_PAGE_SIZE,
+        description="Groups per page (default 200, max 500)",
+    ),
+    order: ListOrder = Query(
+        default="newest",
+        description="newest = created_at DESC; oldest = ASC",
+    ),
+    snapshot_id: int | None = Query(
+        default=None,
+        ge=1,
+        description=(
+            "Optional freeze boundary (SQLite rowid). Reuse pagination.snapshot_id "
+            "from a prior page to avoid duplicates when new groups are created."
+        ),
+    ),
+    db: Session = Depends(get_db),
+) -> GroupListEnvelope:
+    try:
+        result = group_service.list_groups_page(
+            db,
+            page=page,
+            page_size=_list_query_page_size(page_size),
+            order=order,
+            snapshot_id=snapshot_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return GroupListEnvelope(pagination=_pagination_meta(result), items=result.items)
 
 
 @router.post(
@@ -1342,25 +1435,72 @@ def post_node_command(
 )
 def count_observations(
     node_id: str | None = None,
+    observation_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> ObservationCountView:
     return ObservationCountView(
-        total=service.count_observations(db, node_id),
-        unique_observations=service.count_unique_observations(db, node_id),
+        total=service.count_observations(
+            db, node_id, observation_id=observation_id
+        ),
+        unique_observations=service.count_unique_observations(
+            db, node_id, observation_id=observation_id
+        ),
     )
 
 
 @router.get(
     "/api/v1/observations",
-    response_model=list[ObservationView],
+    response_model=ObservationListEnvelope,
     dependencies=[Depends(require_policy("observations.read", "observations"))],
 )
 def list_observations(
     node_id: str | None = None,
-    limit: int = Query(default=100, ge=1, le=500),
+    observation_id: str | None = None,
+    page: int = Query(default=1, ge=1, description="1-based page index"),
+    page_size: int | None = Query(
+        default=None,
+        ge=1,
+        le=MAX_PAGE_SIZE,
+        description="Reports per page (default 200, max 500)",
+    ),
+    limit: int | None = Query(
+        default=None,
+        ge=1,
+        le=MAX_PAGE_SIZE,
+        description="Deprecated alias for page_size",
+    ),
+    order: ListOrder = Query(
+        default="newest",
+        description="newest = received_time_utc DESC; oldest = ASC",
+    ),
+    snapshot_id: int | None = Query(
+        default=None,
+        ge=1,
+        description=(
+            "Optional freeze boundary (Observation.id). Reuse pagination.snapshot_id "
+            "from a prior page to avoid duplicates when new reports arrive."
+        ),
+    ),
     db: Session = Depends(get_db),
-) -> list[ObservationView]:
-    return service.list_observations(db, node_id, limit)
+) -> ObservationListEnvelope:
+    """List observation reports with a JSON pagination envelope."""
+    try:
+        result = service.list_observations_page(
+            db,
+            node_id,
+            observation_id=observation_id,
+            page=page,
+            page_size=_list_query_page_size(page_size, limit),
+            order=order,
+            snapshot_id=snapshot_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return ObservationListEnvelope(
+        pagination=_pagination_meta(result),
+        reports=result.items,
+    )
 
 
 def _device_api_token(authorization: str | None) -> str:

@@ -919,6 +919,27 @@
         return body;
       }
 
+      /** Walk a Hub list envelope ({pagination, items|reports}) under one snapshot. */
+      async function fetchAllListItems(path) {
+        const pageSize = 500;
+        const first = await api(`${path}?page=1&page_size=${pageSize}&order=newest`);
+        const key = Array.isArray(first.items) ? 'items' : 'reports';
+        const items = [...(first[key] || [])];
+        const totalPages = first.pagination?.total_pages || 1;
+        const snapshotId = first.pagination?.snapshot_id;
+        for (let page = 2; page <= totalPages; page += 1) {
+          const query = new URLSearchParams({
+            page: String(page),
+            page_size: String(pageSize),
+            order: 'newest',
+          });
+          if (snapshotId != null) query.set('snapshot_id', String(snapshotId));
+          const body = await api(`${path}?${query}`);
+          items.push(...(body[key] || []));
+        }
+        return items;
+      }
+
       function el(tag, text, className) {
         const node = document.createElement(tag);
         if (text !== undefined) node.textContent = text;
@@ -1481,10 +1502,14 @@
         chart.replaceChildren();
         list.replaceChildren();
         try {
-          const [observations, countBody] = await Promise.all([
-            api('/api/v1/observations?limit=100'),
+          const [observationPage, countBody] = await Promise.all([
+            api('/api/v1/observations?page=1&page_size=100&order=newest'),
             api('/api/v1/observations/count'),
           ]);
+          if (!observationPage || typeof observationPage !== 'object' || !Array.isArray(observationPage.reports)) {
+            throw new Error('Hub returned an invalid observation list envelope.');
+          }
+          const observations = observationPage.reports;
           observationViewState.items = observations;
           observationViewState.latestId = observationReportKey(observations[0]) || null;
           const { dbTotal, uniqueTotal } = updateObservationCountCards(countBody, observations);
@@ -2199,7 +2224,7 @@
 
       async function refreshUsers() {
         try {
-          renderUsers(await api('/api/v1/users'));
+          renderUsers(await fetchAllListItems('/api/v1/users'));
           showUsersStatus(currentRole === 'admin' ? 'Local admin account management' : 'Read-only user directory');
         } catch (error) {
           document.getElementById('user-list').replaceChildren();
@@ -2377,8 +2402,8 @@
       async function refreshGroups() {
         try {
           const [groups, users] = await Promise.all([
-            api('/api/v1/groups'),
-            api('/api/v1/users'),
+            fetchAllListItems('/api/v1/groups'),
+            fetchAllListItems('/api/v1/users'),
           ]);
           renderGroups(groups, users);
           showGroupsStatus(currentRole === 'admin' ? 'Manage groups and members' : 'Read-only group directory');
@@ -2690,7 +2715,10 @@
             }
           });
           ownership.append(assignmentForm);
-          Promise.all([api('/api/v1/users'), api('/api/v1/groups')]).then(([loadedUsers, loadedGroups]) => {
+          Promise.all([
+            fetchAllListItems('/api/v1/users'),
+            fetchAllListItems('/api/v1/groups'),
+          ]).then(([loadedUsers, loadedGroups]) => {
             users = loadedUsers;
             groups = loadedGroups;
             populateOwners();
@@ -3622,8 +3650,8 @@
         status.className = 'notice';
         try {
           const [users, groups] = await Promise.all([
-            api('/api/v1/users'),
-            api('/api/v1/groups'),
+            fetchAllListItems('/api/v1/users'),
+            fetchAllListItems('/api/v1/groups'),
           ]);
           const activeUsers = users.filter((user) => user.status === 'active');
           const activeGroups = groups.filter((group) => group.status === 'active');
