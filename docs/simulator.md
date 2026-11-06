@@ -163,6 +163,50 @@ Needs the Ears used by the scenario already added (and installed). Geometry matc
 
 Default `--mode scripted` keeps the authored observation list (reproducible baseline; exclusive per-Ear windows by design).
 
+**Cross-EAR event pass (sparse stress test)** (`cross_ear_event_pass.json`) — deterministic three-SIM-EAR fixture for Candidate→Event experiments: one westbound vehicle, overlapping A→B→C detection windows, then a time-separated weak ear_b negative Observation. Site baselines are ~1.7–2.3 km — intentionally sparser than normal deployment. Use as a sparse-network stress test (initial localization evaluation target ±250 m). Bearings are true geometry relative to each Ear’s `orientation_deg`, not calibrated accuracy claims. Scripted lifecycles split when the same Ear has a silence greater than 30 s (`SCRIPTED_LIFECYCLE_GAP_SECONDS`).
+
+**Cross-EAR dense scenarios (normal deployment geometry, ≤500 m neighbours)**
+
+| File | Role |
+| --- | --- |
+| `cross_ear_dense_pass.json` | 3-EAR equilateral ≈480 m, moving source (primary dense baseline) |
+| `cross_ear_dense_stationary.json` | Same 3-EAR layout, near-stationary source (~5 m crawl) |
+| `cross_ear_dense_poor_geometry.json` | 3 collinear EARs ≈250 m spacing (poor bearing geometry) |
+| `cross_ear_dense_four_ear.json` | 4-EAR ≈350 m square, moving source |
+
+Aspirational dense evaluation target ±100 m (report ≤50/100/250 m bands). Not a guaranteed accuracy claim.
+
+**Cross-EAR localization stress scenarios (B2.3 failure boundaries)**
+
+| File | Role |
+| --- | --- |
+| `cross_ear_stress_nearly_parallel.json` | Tight ~160 m baseline; source far → nearly parallel LOBs |
+| `cross_ear_stress_near_baseline.json` | Collinear EARs; source close to the EAR baseline |
+| `cross_ear_stress_along_baseline.json` | Collinear EARs; source moves along the baseline |
+| `cross_ear_stress_far_source.json` | Good dense triangle; source ≫ EAR spacing |
+| `cross_ear_stress_poor_distribution.json` | Two EARs clustered; third poorly placed |
+| `cross_ear_stress_inconsistent_bearing.json` | Good triangle control for injected bearing bias/drop/conflict |
+
+Offline dense/sparse/stress evaluation (no MQTT; GT post-hoc only). Geometry classes are summarized separately — do not pool into one accuracy number. B2.4 adds geometric sensitivity (`baseline/sinθ`), ±1/3/5° bearing perturbation displacement, and leave-one-EAR-out layout diagnostics on selected baselines — indicators only, not calibrated uncertainty:
+
+```bash
+./scripts/eval_dense_sparse_localization.py
+```
+
+```bash
+./scripts/sim-ear-scenario dry-run \
+  --scenario-file simulator/ear/scenarios/cross_ear_event_pass.json \
+  --ear ear_a=shared/simulator/sim-ear-a.json \
+  --ear ear_b=shared/simulator/sim-ear-b.json \
+  --ear ear_c=shared/simulator/sim-ear-c.json
+
+./scripts/sim-ear-scenario dry-run \
+  --scenario-file simulator/ear/scenarios/cross_ear_dense_pass.json \
+  --ear ear_a=shared/simulator/sim-ear-a.json \
+  --ear ear_b=shared/simulator/sim-ear-b.json \
+  --ear ear_c=shared/simulator/sim-ear-c.json
+```
+
 `--mode independent_detection` uses one shared clock (default 1 s) and evaluates **every** Ear at each step with a deterministic **range gate** (`--max-range-m`, optional `--ear-max-range ALIAS=m`). Overlap emerges from geometry + range, not authored windows. Detection eligibility is Stage 1 (range only). Stage 2 sets synthetic `signal_level_dbfs` from distance (`--reference-level-dbfs`, `--reference-distance-m`, `--path-loss-exponent`; defaults −30 dBFS @ 1000 m, exponent 1.0). Stage 3 emits observations on episode start / every `--observation-interval-seconds` (default 5, relative to each Ear’s detection-episode start) / episode end — not at every 1 s evaluation. Classification confidence stays a fixed synthetic 0.5; bearing confidence is omitted. Not acoustics.
 
 ```bash

@@ -526,6 +526,49 @@ def test_assign_scripted_ear_lifecycles_groups_per_ear() -> None:
     assert "emission_kind" not in events[0]
 
 
+def test_assign_scripted_splits_lifecycle_after_silence_gap() -> None:
+    gap = simulate_scenario.SCRIPTED_LIFECYCLE_GAP_SECONDS
+    events = [
+        {"at_seconds": 0, "ear": "ear_a"},
+        {"at_seconds": 5, "ear": "ear_a"},
+        {"at_seconds": 10, "ear": "ear_a"},
+        {"at_seconds": 10 + gap + 1, "ear": "ear_a"},
+        {"at_seconds": 10 + gap + 6, "ear": "ear_a"},
+        {"at_seconds": 10 + gap + 11, "ear": "ear_a"},
+    ]
+    assigned = simulate_scenario.assign_scripted_ear_observation_lifecycles(events)
+    assert [item["emission_kind"] for item in assigned] == [
+        "start",
+        "periodic",
+        "end",
+        "start",
+        "periodic",
+        "end",
+    ]
+    first_id = assigned[0]["observation_id"]
+    second_id = assigned[3]["observation_id"]
+    assert first_id != second_id
+    assert assigned[1]["observation_id"] == assigned[2]["observation_id"] == first_id
+    assert assigned[4]["observation_id"] == assigned[5]["observation_id"] == second_id
+    assert assigned[2]["termination_reason"] == "natural"
+    assert assigned[5]["termination_reason"] == "natural"
+
+
+def test_assign_scripted_does_not_use_ground_truth_for_observation_ids() -> None:
+    events = [
+        {"at_seconds": 1, "ear": "ear_a", "source_family": "vehicle"},
+        {"at_seconds": 2, "ear": "ear_b", "source_family": "vehicle"},
+        {"at_seconds": 3, "ear": "ear_a", "source_family": "vehicle"},
+    ]
+    assigned = simulate_scenario.assign_scripted_ear_observation_lifecycles(events)
+    assert assigned[0]["observation_id"] == assigned[2]["observation_id"]
+    assert assigned[0]["observation_id"] != assigned[1]["observation_id"]
+    # Minted IDs are opaque UUIDs, not derived from any ground-truth string.
+    for item in assigned:
+        assert item["observation_id"] != "SIM-XEAR-001"
+        assert "-" in item["observation_id"]
+
+
 def test_helicopter_scripted_run_emits_full_lifecycle_per_ear() -> None:
     path = (
         Path(__file__).parents[3]
@@ -658,3 +701,224 @@ def test_helicopter_independent_range_sweep_counts() -> None:
     # Larger range must not reduce total observations.
     totals = [total for _, _, total in rows]
     assert totals == sorted(totals)
+
+
+def _assert_neighbour_baselines_within(
+    scenario: dict, *, minimum_m: float, maximum_m: float
+) -> None:
+    ears = scenario["ears"]
+    aliases = sorted(ears)
+    for index, first in enumerate(aliases):
+        for second in aliases[index + 1 :]:
+            distance = simulate_scenario._distance_m(ears[first], ears[second])
+            # Diagonals on a square may approach max; require all pairs in band.
+            assert minimum_m <= distance <= maximum_m, (
+                f"{first}-{second}={distance:.1f}m outside [{minimum_m},{maximum_m}]"
+            )
+
+
+def test_cross_ear_dense_pass_baselines_are_within_500m() -> None:
+    path = (
+        Path(__file__).parents[3]
+        / "simulator"
+        / "ear"
+        / "scenarios"
+        / "cross_ear_dense_pass.json"
+    )
+    scenario = simulate_scenario.load_scenario(path)
+    assert scenario["scenario_id"] == "cross_ear_dense_pass_01"
+    _assert_neighbour_baselines_within(scenario, minimum_m=200, maximum_m=500)
+    timed = simulate_scenario.assign_scripted_ear_observation_lifecycles(
+        scenario["observations"]
+    )
+    by_ear: dict[str, set[str]] = {"ear_a": set(), "ear_b": set(), "ear_c": set()}
+    for item in timed:
+        by_ear[item["ear"]].add(item["observation_id"])
+    assert len(by_ear["ear_a"]) == 1
+    assert len(by_ear["ear_c"]) == 1
+    assert len(by_ear["ear_b"]) == 2  # main + negative
+
+
+def test_cross_ear_dense_variant_scenarios_load_and_stay_dense() -> None:
+    base = Path(__file__).parents[3] / "simulator" / "ear" / "scenarios"
+    variants = [
+        ("cross_ear_dense_stationary.json", "cross_ear_dense_stationary_01", 3),
+        ("cross_ear_dense_poor_geometry.json", "cross_ear_dense_poor_geometry_01", 3),
+        ("cross_ear_dense_four_ear.json", "cross_ear_dense_four_ear_01", 4),
+    ]
+    for filename, scenario_id, ear_count in variants:
+        scenario = simulate_scenario.load_scenario(base / filename)
+        assert scenario["scenario_id"] == scenario_id
+        assert len(scenario["ears"]) == ear_count
+        _assert_neighbour_baselines_within(scenario, minimum_m=200, maximum_m=500)
+        assert scenario["observations"]
+
+
+def test_cross_ear_event_pass_scripted_lifecycles_and_overlap() -> None:
+    path = (
+        Path(__file__).parents[3]
+        / "simulator"
+        / "ear"
+        / "scenarios"
+        / "cross_ear_event_pass.json"
+    )
+    scenario = simulate_scenario.load_scenario(path)
+    assert scenario["scenario_id"] == "cross_ear_event_pass_01"
+    assert scenario["source_id"] == "SIM-XEAR-001"
+    assert len(scenario["observations"]) == 15
+
+    # Site baselines are multi-km (explicit SIM geometry; not a Hub max-range).
+    ears = scenario["ears"]
+    ab = simulate_scenario._distance_m(ears["ear_a"], ears["ear_b"])
+    ac = simulate_scenario._distance_m(ears["ear_a"], ears["ear_c"])
+    bc = simulate_scenario._distance_m(ears["ear_b"], ears["ear_c"])
+    assert 1500 < ab < 2500
+    assert 1500 < ac < 2500
+    assert 1500 < bc < 2500
+
+    timed = simulate_scenario.assign_scripted_ear_observation_lifecycles(
+        scenario["observations"]
+    )
+    by_ear: dict[str, list[dict]] = {"ear_a": [], "ear_b": [], "ear_c": []}
+    for item in timed:
+        by_ear[item["ear"]].append(item)
+
+    # Main pass: one Observation ID per Ear; ear_b also has a late negative lifecycle.
+    assert len({item["observation_id"] for item in by_ear["ear_a"]}) == 1
+    assert len({item["observation_id"] for item in by_ear["ear_c"]}) == 1
+    assert len({item["observation_id"] for item in by_ear["ear_b"]}) == 2
+
+    main_a = by_ear["ear_a"][0]["observation_id"]
+    main_b = by_ear["ear_b"][0]["observation_id"]
+    main_c = by_ear["ear_c"][0]["observation_id"]
+    negative_b = by_ear["ear_b"][-1]["observation_id"]
+    assert len({main_a, main_b, main_c}) == 3
+    assert negative_b != main_b
+    assert negative_b not in {main_a, main_c}
+
+    assert [item["emission_kind"] for item in by_ear["ear_a"]] == [
+        "start",
+        "periodic",
+        "periodic",
+        "end",
+    ]
+    assert [item["emission_kind"] for item in by_ear["ear_b"][:4]] == [
+        "start",
+        "periodic",
+        "periodic",
+        "end",
+    ]
+    assert [item["emission_kind"] for item in by_ear["ear_b"][4:]] == [
+        "start",
+        "periodic",
+        "end",
+    ]
+    assert [item["emission_kind"] for item in by_ear["ear_c"]] == [
+        "start",
+        "periodic",
+        "periodic",
+        "end",
+    ]
+
+    # Temporal overlap among the three main-pass Observation windows.
+    def window(items: list[dict]) -> tuple[float, float]:
+        return items[0]["at_seconds"], items[-1]["at_seconds"]
+
+    a0, a1 = window(by_ear["ear_a"])
+    b0, b1 = window(by_ear["ear_b"][:4])
+    c0, c1 = window(by_ear["ear_c"])
+    assert a0 < b0 < c0
+    assert max(a0, b0) < min(a1, b1)  # A∩B
+    assert max(a0, b0, c0) < min(a1, b1, c1)  # A∩B∩C
+    neg0, _ = window(by_ear["ear_b"][4:])
+    assert neg0 - b1 > simulate_scenario.SCRIPTED_LIFECYCLE_GAP_SECONDS
+
+    # Bearings come from route geometry (node-relative), not authored constants.
+    for item in timed:
+        assert "bearing_deg" in item
+        assert 0 <= item["bearing_deg"] < 360
+
+    credentials = {
+        "ear_a": {"node_id": "SIM-EAR-001", "next_sequence_number": 1},
+        "ear_b": {"node_id": "SIM-EAR-002", "next_sequence_number": 10},
+        "ear_c": {"node_id": "SIM-EAR-003", "next_sequence_number": 100},
+    }
+    published: list[dict] = []
+    ids = simulate_scenario.run_scenario(
+        scenario,
+        credentials,
+        {
+            "ear_a": Path("a.json"),
+            "ear_b": Path("b.json"),
+            "ear_c": Path("c.json"),
+        },
+        "ca.crt",
+        1.0,
+        publish=lambda _credentials, payload, _ca: (
+            published.append(payload) or payload["identity"]["observation_id"]
+        ),
+        sleep=lambda _seconds: None,
+        monotonic=lambda: 10**12,
+        started_at_utc=datetime(2026, 11, 5, 18, 0, tzinfo=timezone.utc),
+        started_at_monotonic_us=0,
+        save=lambda *_args, **_kwargs: None,
+        publish_keepalive=lambda *_args, **_kwargs: None,
+        make_keepalive=lambda credentials, uptime_s: {"uptime_s": uptime_s},
+        announce=False,
+    )
+
+    assert len(published) == 15
+    assert len(ids) == 15
+    assert len(set(ids)) == 4  # three main + one negative
+
+    ObservationBody = simulate_scenario._observation_body()
+    by_node: dict[str, list[dict]] = {
+        "SIM-EAR-001": [],
+        "SIM-EAR-002": [],
+        "SIM-EAR-003": [],
+    }
+    for payload in published:
+        ObservationBody.model_validate(payload)
+        by_node[payload["identity"]["node_id"]].append(payload)
+        # GT hint may appear for evaluation, but identity is not the GT id.
+        assert payload["identity"]["observation_id"] != scenario["source_id"]
+        hint = payload["acoustic"]["classification"]["hints"]["simulated_source_id"]
+        assert hint == scenario["source_id"]
+
+    assert len(by_node["SIM-EAR-001"]) == 4
+    assert len(by_node["SIM-EAR-002"]) == 7
+    assert len(by_node["SIM-EAR-003"]) == 4
+
+    for reports in by_node.values():
+        sequences = [item["identity"]["sequence_number"] for item in reports]
+        assert sequences == sorted(sequences)
+        assert len(sequences) == len(set(sequences))
+
+    # START/PERIODIC/END share one ID within each lifecycle segment.
+    a_id = by_node["SIM-EAR-001"][0]["identity"]["observation_id"]
+    assert all(p["identity"]["observation_id"] == a_id for p in by_node["SIM-EAR-001"])
+    b_main = by_node["SIM-EAR-002"][:4]
+    b_neg = by_node["SIM-EAR-002"][4:]
+    assert len({p["identity"]["observation_id"] for p in b_main}) == 1
+    assert len({p["identity"]["observation_id"] for p in b_neg}) == 1
+    assert (
+        b_main[0]["identity"]["observation_id"]
+        != b_neg[0]["identity"]["observation_id"]
+    )
+    c_id = by_node["SIM-EAR-003"][0]["identity"]["observation_id"]
+    assert all(p["identity"]["observation_id"] == c_id for p in by_node["SIM-EAR-003"])
+    assert len({a_id, b_main[0]["identity"]["observation_id"], c_id}) == 3
+
+    # Negative pass is geometrically farther on ear_b than the main-pass closest report.
+    main_b_distances = [
+        item["source_distance_m"]
+        for item in scenario["observations"]
+        if item["ear"] == "ear_b" and item["at_seconds"] <= 60
+    ]
+    neg_b_distances = [
+        item["source_distance_m"]
+        for item in scenario["observations"]
+        if item["ear"] == "ear_b" and item["at_seconds"] >= 175
+    ]
+    assert min(neg_b_distances) > max(main_b_distances)
+    assert min(neg_b_distances) > 2000

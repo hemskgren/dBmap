@@ -579,14 +579,42 @@ def load_ear_credentials(
     return credentials_by_alias
 
 
+# Gap (same Ear, consecutive scripted points) that starts a new Observation
+# lifecycle. Existing exclusive-window scenarios stay under this threshold;
+# overlapping Cross-EAR fixtures use a larger silence for a negative pass.
+SCRIPTED_LIFECYCLE_GAP_SECONDS = 30.0
+
+
+def _scripted_lifecycle_segments(
+    prepared: list[dict[str, Any]], indices: list[int]
+) -> list[list[int]]:
+    if not indices:
+        return []
+    segments: list[list[int]] = [[indices[0]]]
+    for index in indices[1:]:
+        previous = segments[-1][-1]
+        gap = float(prepared[index]["at_seconds"]) - float(
+            prepared[previous]["at_seconds"]
+        )
+        if gap > SCRIPTED_LIFECYCLE_GAP_SECONDS:
+            segments.append([index])
+        else:
+            segments[-1].append(index)
+    return segments
+
+
 def assign_scripted_ear_observation_lifecycles(
     observations: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Group scripted points by Ear into one Observation lifecycle each.
+    """Group scripted points by Ear into Observation lifecycles.
 
     Points that already set ``emission_kind`` (independent_detection) are unchanged.
-    One unassigned point per Ear -> COMPLETE. Two or more -> START, PERIODIC..., END
-    with one stable ``observation_id`` shared across that Ear's messages.
+    Consecutive unassigned points for the same Ear share one ``observation_id``
+    until a silence greater than ``SCRIPTED_LIFECYCLE_GAP_SECONDS``, which starts
+    a new lifecycle. One point -> COMPLETE; two or more -> START, PERIODIC..., END.
+
+    Lifecycle IDs are minted per Ear segment only — never from simulator
+    ``ground_truth_id`` / ``simulated_source_id``.
     """
     prepared = [dict(item) for item in observations]
     by_ear: dict[str, list[int]] = defaultdict(list)
@@ -598,23 +626,24 @@ def assign_scripted_ear_observation_lifecycles(
             by_ear[ear].append(index)
 
     for indices in by_ear.values():
-        observation_id = str(uuid4())
-        count = len(indices)
-        episode_start = prepared[indices[0]]["at_seconds"]
-        for position, index in enumerate(indices):
-            if count == 1:
-                kind = "complete"
-            elif position == 0:
-                kind = "start"
-            elif position == count - 1:
-                kind = "end"
-            else:
-                kind = "periodic"
-            prepared[index]["emission_kind"] = kind
-            prepared[index]["observation_id"] = observation_id
-            prepared[index]["episode_start_at_seconds"] = episode_start
-            if kind in ("end", "complete"):
-                prepared[index].setdefault("termination_reason", "natural")
+        for segment in _scripted_lifecycle_segments(prepared, indices):
+            observation_id = str(uuid4())
+            count = len(segment)
+            episode_start = prepared[segment[0]]["at_seconds"]
+            for position, index in enumerate(segment):
+                if count == 1:
+                    kind = "complete"
+                elif position == 0:
+                    kind = "start"
+                elif position == count - 1:
+                    kind = "end"
+                else:
+                    kind = "periodic"
+                prepared[index]["emission_kind"] = kind
+                prepared[index]["observation_id"] = observation_id
+                prepared[index]["episode_start_at_seconds"] = episode_start
+                if kind in ("end", "complete"):
+                    prepared[index].setdefault("termination_reason", "natural")
     return prepared
 
 
