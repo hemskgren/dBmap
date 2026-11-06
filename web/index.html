@@ -2517,9 +2517,13 @@
         }
       }
 
+      // Latitude/longitude use step="any" so the browser does not impose a
+      // six-decimal stepMismatch stricter than the Hub API (which accepts
+      // IEEE floats without a decimal-place limit). Range is still enforced
+      // via min/max (-90..90 / -180..180).
       const installationFields = [
-        ['latitude', 'Latitude', 'number', '0.000001'],
-        ['longitude', 'Longitude', 'number', '0.000001'],
+        ['latitude', 'Latitude', 'number', 'any'],
+        ['longitude', 'Longitude', 'number', 'any'],
         ['floor', 'Floor', 'number', '1'],
         ['height_m', 'Height (m)', 'number', '0.1'],
         ['height_accuracy_m', 'Height accuracy (m)', 'number', '0.1'],

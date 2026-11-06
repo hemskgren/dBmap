@@ -350,10 +350,16 @@ class OutputCommandView(BaseModel):
 
 class InstallationMetadataBody(BaseModel):
     latitude: float = Field(
-        ge=-90, le=90, description="WGS84 latitude in decimal degrees"
+        ge=-90,
+        le=90,
+        allow_inf_nan=False,
+        description="WGS84 latitude in decimal degrees",
     )
     longitude: float = Field(
-        ge=-180, le=180, description="WGS84 longitude in decimal degrees"
+        ge=-180,
+        le=180,
+        allow_inf_nan=False,
+        description="WGS84 longitude in decimal degrees",
     )
     floor: int | None = None
     height_m: float | None = Field(default=None, ge=0)

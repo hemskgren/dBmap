@@ -1,0 +1,157 @@
+{
+  "scenario_id": "cross_ear_stress_near_baseline_01",
+  "source": {
+    "ground_truth_id": "SIM-XEAR-STRESS-NEARBASE-001",
+    "source_family": "vehicle",
+    "movement": {
+      "start": {
+        "latitude": 59.3421799,
+        "longitude": 18.056
+      },
+      "end": {
+        "latitude": 59.34222486,
+        "longitude": 18.05608818
+      },
+      "speed_m_s": 0.5
+    }
+  },
+  "ears": {
+    "ear_a": {
+      "latitude": 59.342045,
+      "longitude": 18.05247264,
+      "orientation_deg": 0
+    },
+    "ear_b": {
+      "latitude": 59.342045,
+      "longitude": 18.056,
+      "orientation_deg": 0
+    },
+    "ear_c": {
+      "latitude": 59.342045,
+      "longitude": 18.05952736,
+      "orientation_deg": 0
+    }
+  },
+  "observations": [
+    {
+      "at_seconds": 2,
+      "ear": "ear_a",
+      "bearing_confidence": 0.7,
+      "classification_confidence": 0.7,
+      "signal_level_dbfs": -32,
+      "duration_ms": 900
+    },
+    {
+      "at_seconds": 2,
+      "ear": "ear_b",
+      "bearing_confidence": 0.7,
+      "classification_confidence": 0.7,
+      "signal_level_dbfs": -33,
+      "duration_ms": 900
+    },
+    {
+      "at_seconds": 2,
+      "ear": "ear_c",
+      "bearing_confidence": 0.7,
+      "classification_confidence": 0.7,
+      "signal_level_dbfs": -34,
+      "duration_ms": 900
+    },
+    {
+      "at_seconds": 4,
+      "ear": "ear_a",
+      "bearing_confidence": 0.7,
+      "classification_confidence": 0.7,
+      "signal_level_dbfs": -32,
+      "duration_ms": 900
+    },
+    {
+      "at_seconds": 4,
+      "ear": "ear_b",
+      "bearing_confidence": 0.7,
+      "classification_confidence": 0.7,
+      "signal_level_dbfs": -33,
+      "duration_ms": 900
+    },
+    {
+      "at_seconds": 4,
+      "ear": "ear_c",
+      "bearing_confidence": 0.7,
+      "classification_confidence": 0.7,
+      "signal_level_dbfs": -34,
+      "duration_ms": 900
+    },
+    {
+      "at_seconds": 6,
+      "ear": "ear_a",
+      "bearing_confidence": 0.7,
+      "classification_confidence": 0.7,
+      "signal_level_dbfs": -32,
+      "duration_ms": 900
+    },
+    {
+      "at_seconds": 6,
+      "ear": "ear_b",
+      "bearing_confidence": 0.7,
+      "classification_confidence": 0.7,
+      "signal_level_dbfs": -33,
+      "duration_ms": 900
+    },
+    {
+      "at_seconds": 6,
+      "ear": "ear_c",
+      "bearing_confidence": 0.7,
+      "classification_confidence": 0.7,
+      "signal_level_dbfs": -34,
+      "duration_ms": 900
+    },
+    {
+      "at_seconds": 8,
+      "ear": "ear_a",
+      "bearing_confidence": 0.7,
+      "classification_confidence": 0.7,
+      "signal_level_dbfs": -32,
+      "duration_ms": 900
+    },
+    {
+      "at_seconds": 8,
+      "ear": "ear_b",
+      "bearing_confidence": 0.7,
+      "classification_confidence": 0.7,
+      "signal_level_dbfs": -33,
+      "duration_ms": 900
+    },
+    {
+      "at_seconds": 8,
+      "ear": "ear_c",
+      "bearing_confidence": 0.7,
+      "classification_confidence": 0.7,
+      "signal_level_dbfs": -34,
+      "duration_ms": 900
+    },
+    {
+      "at_seconds": 10,
+      "ear": "ear_a",
+      "bearing_confidence": 0.7,
+      "classification_confidence": 0.7,
+      "signal_level_dbfs": -32,
+      "duration_ms": 900
+    },
+    {
+      "at_seconds": 10,
+      "ear": "ear_b",
+      "bearing_confidence": 0.7,
+      "classification_confidence": 0.7,
+      "signal_level_dbfs": -33,
+      "duration_ms": 900
+    },
+    {
+      "at_seconds": 10,
+      "ear": "ear_c",
+      "bearing_confidence": 0.7,
+      "classification_confidence": 0.7,
+      "signal_level_dbfs": -34,
+      "duration_ms": 900
+    }
+  ]
+}
