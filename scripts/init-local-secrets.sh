@@ -26,6 +26,8 @@ DBMAP_PUBLIC_MQTT_HOST=hub.local
 DBMAP_PUBLIC_MQTT_PORT=8883
 DBMAP_LOCAL_MQTT_HOST=hub.local
 DBMAP_LOCAL_MQTT_PORT=8883
+# Optional Analysis service (scratch API). Omit for a minimal Hub-only install.
+COMPOSE_PROFILES=analysis
 EOF
 chmod 0600 "$ENV_FILE"
 echo "Wrote generated secrets to $ENV_FILE (mode 0600). Keep this file private and backed up."

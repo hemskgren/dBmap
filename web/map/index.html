@@ -36,12 +36,20 @@
       }
       header h1 { margin: 0; font-size: 1.1rem; font-weight: 700; }
       header p { margin: 0; color: #cbd5e1; font-size: 0.88rem; }
-      header .actions { margin-left: auto; display: flex; gap: 0.5rem; align-items: center; }
+      header .actions { margin-left: auto; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
       button {
         border: 0; border-radius: 7px; padding: 0.4rem 0.7rem; cursor: pointer;
         color: #fff; background: #2457a7; font: inherit; font-weight: 600;
       }
       button.secondary { color: #183153; background: #e6edf7; }
+      #dataset-wrap {
+        display: none; align-items: center; gap: 0.35rem; color: #cbd5e1; font-size: 0.88rem;
+      }
+      #dataset-wrap.visible { display: flex; }
+      #dataset-select {
+        border: 1px solid #334155; border-radius: 7px; padding: 0.35rem 0.5rem;
+        background: #0f172a; color: #f8fafc; font: inherit;
+      }
       #status { min-width: 12rem; color: #cbd5e1; font-size: 0.88rem; }
       #map { width: 100%; height: 100%; min-height: 320px; }
       .notice {
@@ -123,6 +131,12 @@
         <p>Active devices with installation coordinates · observations in the last 15 min · OpenStreetMap</p>
       </div>
       <div class="actions">
+        <label id="dataset-wrap" for="dataset-select">
+          Dataset
+          <select id="dataset-select" aria-label="Temporary analysis dataset">
+            <option value="">Devices (default)</option>
+          </select>
+        </label>
         <span id="status" role="status">Waiting for Hub session…</span>
         <button id="fit-view" class="secondary" type="button" hidden>Fit devices</button>
         <button id="refresh" class="secondary" type="button" hidden>Refresh</button>
@@ -138,16 +152,23 @@
     <script>
       const REFRESH_MS = 60000;
       const OBSERVATION_WINDOW_MS = 15 * 60 * 1000;
+      const MAP_DEMO_NAMESPACE = 'map-demo';
       const statusEl = document.getElementById('status');
       const refreshBtn = document.getElementById('refresh');
       const fitViewBtn = document.getElementById('fit-view');
+      const datasetWrap = document.getElementById('dataset-wrap');
+      const datasetSelect = document.getElementById('dataset-select');
       const mapRoot = document.getElementById('map-root');
       let map;
       let markerLayer;
+      let analysisLayer;
       let refreshTimer;
       let session = null;
       let hasFittedView = false;
       let lastBounds = [];
+      let availableDatasets = [];
+      let selectedDatasetId = '';
+      let analysisNotice = '';
 
       function setStatus(text) {
         statusEl.textContent = text;
@@ -299,6 +320,10 @@
           '<div>Orange pulse ring = observations in last 15 min</div>',
           '<div>Orange badge on one Ear = observation count</div>',
           '<div>Dimmed pin = all offline at that point</div>',
+          '<div style="margin-top:0.35rem;padding-top:0.35rem;border-top:1px solid #d8e0eb">Analysis dataset (optional)</div>',
+          '<div>Green dashed = simulated ground-truth route</div>',
+          '<div>Blue = simulated observations · Orange = event</div>',
+          '<div>Purple diamond = estimated localization</div>',
         ].join('');
         mapRoot.append(legend);
         mapRoot.style.position = 'relative';
@@ -309,9 +334,209 @@
           attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
         }).addTo(map);
         markerLayer = L.layerGroup().addTo(map);
+        analysisLayer = L.layerGroup().addTo(map);
         map.setView([59.91, 10.75], 6);
         refreshBtn.hidden = false;
         fitViewBtn.hidden = false;
+      }
+
+      function clearAnalysisOverlays() {
+        if (analysisLayer) analysisLayer.clearLayers();
+      }
+
+      function circleMarker(lat, lon, options, popupHtml) {
+        const marker = L.circleMarker([lat, lon], options);
+        if (popupHtml) marker.bindPopup(popupHtml);
+        marker.addTo(analysisLayer);
+        return marker;
+      }
+
+      function drawHelicopterLayers(routeContent, analysisContent) {
+        clearAnalysisOverlays();
+        const bounds = [];
+
+        if (routeContent && Array.isArray(routeContent.points)) {
+          const latLngs = [];
+          for (const point of routeContent.points) {
+            const lat = Number(point.lat);
+            const lon = Number(point.lon);
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+            latLngs.push([lat, lon]);
+            bounds.push([lat, lon]);
+          }
+          if (latLngs.length >= 2) {
+            L.polyline(latLngs, {
+              color: '#15803d',
+              weight: 3,
+              opacity: 0.9,
+              dashArray: '8 6',
+            }).bindPopup(
+              `<strong>${escapeHtml(routeContent.title || 'Ground-truth route')}</strong>`
+              + `<p class="popup-meta">${escapeHtml(routeContent.description || 'Simulated ground truth')}</p>`,
+            ).addTo(analysisLayer);
+          }
+        }
+
+        if (analysisContent) {
+          for (const obs of analysisContent.observations || []) {
+            const lat = Number(obs.lat);
+            const lon = Number(obs.lon);
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+            bounds.push([lat, lon]);
+            circleMarker(lat, lon, {
+              radius: 7,
+              color: '#1d4ed8',
+              fillColor: '#3b82f6',
+              fillOpacity: 0.9,
+              weight: 2,
+            }, `<strong>${escapeHtml(obs.label || 'Observation')}</strong>`
+              + `<br>${escapeHtml(obs.node_id || '')}`
+              + `<br>${escapeHtml(obs.time_utc || '')}`);
+          }
+          for (const event of analysisContent.events || []) {
+            const lat = Number(event.lat);
+            const lon = Number(event.lon);
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+            bounds.push([lat, lon]);
+            circleMarker(lat, lon, {
+              radius: 9,
+              color: '#7c2d12',
+              fillColor: '#ea580c',
+              fillOpacity: 0.95,
+              weight: 2,
+            }, `<strong>Event: ${escapeHtml(event.label || event.id || '')}</strong>`
+              + `<br>${escapeHtml(event.status || '')}`
+              + `<br>${escapeHtml(event.time_utc || '')}`);
+          }
+          for (const loc of analysisContent.localizations || []) {
+            const lat = Number(loc.lat);
+            const lon = Number(loc.lon);
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+            bounds.push([lat, lon]);
+            const icon = L.divIcon({
+              className: '',
+              iconSize: [16, 16],
+              iconAnchor: [8, 8],
+              html: '<div style="width:14px;height:14px;background:#7c3aed;border:2px solid #fff;transform:rotate(45deg);box-shadow:0 1px 2px rgb(15 23 42 / 35%)"></div>',
+            });
+            L.marker([lat, lon], { icon }).bindPopup(
+              `<strong>${escapeHtml(loc.label || 'Localization')}</strong>`
+              + `<br>Estimated (not ground truth)`
+              + (loc.confidence != null ? `<br>confidence ${escapeHtml(String(loc.confidence))}` : '')
+              + `<br>${escapeHtml(loc.time_utc || '')}`,
+            ).addTo(analysisLayer);
+          }
+        }
+
+        if (bounds.length) {
+          map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+        }
+      }
+
+      function datasetsFromScratchList(objects) {
+        const byDataset = new Map();
+        for (const item of objects) {
+          if (!item || typeof item !== 'object') continue;
+          const meta = item.metadata && typeof item.metadata === 'object' ? item.metadata : {};
+          if (meta.kind !== 'map-layer' || !meta.dataset) continue;
+          const datasetId = String(meta.dataset);
+          let entry = byDataset.get(datasetId);
+          if (!entry) {
+            entry = {
+              id: datasetId,
+              title: meta.dataset_title || datasetId,
+              layers: [],
+            };
+            byDataset.set(datasetId, entry);
+          }
+          entry.layers.push({
+            objectId: item.id,
+            layer: meta.layer || '',
+            title: meta.title || meta.layer || item.id,
+            role: meta.role || '',
+          });
+          if (meta.dataset_title) entry.title = meta.dataset_title;
+        }
+        return [...byDataset.values()].sort((a, b) => a.title.localeCompare(b.title));
+      }
+
+      function syncDatasetSelector(datasets) {
+        availableDatasets = datasets;
+        const previous = selectedDatasetId;
+        const options = ['<option value="">Devices (default)</option>'];
+        for (const dataset of datasets) {
+          options.push(
+            `<option value="${escapeHtml(dataset.id)}">${escapeHtml(dataset.title)}</option>`,
+          );
+        }
+        datasetSelect.innerHTML = options.join('');
+        const stillThere = datasets.some((dataset) => dataset.id === previous);
+        selectedDatasetId = stillThere ? previous : '';
+        datasetSelect.value = selectedDatasetId;
+        datasetWrap.classList.toggle('visible', datasets.length > 0);
+        if (!stillThere) clearAnalysisOverlays();
+      }
+
+      async function discoverDatasets() {
+        try {
+          const body = await fetchJson(
+            `/api/v1/analysis/scratch?namespace=${encodeURIComponent(MAP_DEMO_NAMESPACE)}&include_content=false`,
+          );
+          if (!body || typeof body !== 'object' || !Array.isArray(body.objects)) {
+            throw new Error('invalid scratch list');
+          }
+          syncDatasetSelector(datasetsFromScratchList(body.objects));
+          analysisNotice = '';
+        } catch (error) {
+          availableDatasets = [];
+          selectedDatasetId = '';
+          datasetSelect.innerHTML = '<option value="">Devices (default)</option>';
+          datasetWrap.classList.remove('visible');
+          clearAnalysisOverlays();
+          const message = error && error.message ? String(error.message) : String(error);
+          analysisNotice = /503|unavailable|Analysis/i.test(message)
+            ? 'Analysis unavailable'
+            : '';
+        }
+      }
+
+      async function loadSelectedDataset() {
+        if (!selectedDatasetId) {
+          clearAnalysisOverlays();
+          return;
+        }
+        const dataset = availableDatasets.find((item) => item.id === selectedDatasetId);
+        if (!dataset || !dataset.layers.length) {
+          clearAnalysisOverlays();
+          selectedDatasetId = '';
+          datasetSelect.value = '';
+          return;
+        }
+        try {
+          const payloads = await Promise.all(
+            dataset.layers.map(async (layer) => {
+              const body = await fetchJson(
+                `/api/v1/analysis/scratch/${encodeURIComponent(layer.objectId)}`,
+              );
+              return { layer: layer.layer, content: body && body.content };
+            }),
+          );
+          const route = payloads.find((item) => item.layer === 'route')?.content || null;
+          const analysis = payloads.find((item) => item.layer === 'analysis')?.content || null;
+          if (!route && !analysis) {
+            clearAnalysisOverlays();
+            analysisNotice = 'Selected dataset has no drawable layers';
+            return;
+          }
+          drawHelicopterLayers(route, analysis);
+          analysisNotice = `${dataset.title} overlay`;
+        } catch (error) {
+          clearAnalysisOverlays();
+          selectedDatasetId = '';
+          datasetSelect.value = '';
+          analysisNotice = 'Selected dataset expired or unavailable';
+          await discoverDatasets();
+        }
       }
 
       function recentObservationStats(observations, nowMs = Date.now()) {
@@ -406,11 +631,10 @@
         }
         const siteLabel = groups.length === 1 ? 'site' : 'sites';
         const obsLabel = `${recentObsTotal} observation${recentObsTotal === 1 ? '' : 's'} in last 15 min`;
-        setStatus(
-          points.length
-            ? `${points.length} device${points.length === 1 ? '' : 's'} on ${groups.length} ${siteLabel} · ${obsLabel}`
-            : `No active devices with installation coordinates · ${obsLabel}`,
-        );
+        const hubStatus = points.length
+          ? `${points.length} device${points.length === 1 ? '' : 's'} on ${groups.length} ${siteLabel} · ${obsLabel}`
+          : `No active devices with installation coordinates · ${obsLabel}`;
+        setStatus(analysisNotice ? `${hubStatus} · ${analysisNotice}` : hubStatus);
       }
 
       function escapeHtml(value) {
@@ -453,12 +677,16 @@
       }
 
       async function refresh() {
+        let devices = [];
+        let observations = [];
+        let hubOk = false;
         try {
           if (!map) initMap();
-          const [devices, observations] = await Promise.all([
+          [devices, observations] = await Promise.all([
             fetchDevices(),
             fetchObservations(),
           ]);
+          hubOk = true;
           renderMarkers(devices, observations);
         } catch (error) {
           setStatus(error.message || String(error));
@@ -470,6 +698,15 @@
             }
           }
         }
+
+        // Analysis discovery/overlays must not block or undo a successful Hub render.
+        await discoverDatasets();
+        if (selectedDatasetId) {
+          await loadSelectedDataset();
+        } else {
+          clearAnalysisOverlays();
+        }
+        if (hubOk) renderMarkers(devices, observations);
       }
 
       function startAutoRefresh() {
@@ -485,6 +722,27 @@
 
       fitViewBtn.addEventListener('click', () => {
         if (map && lastBounds.length) fitDevices(lastBounds);
+      });
+
+      datasetSelect.addEventListener('change', async () => {
+        selectedDatasetId = datasetSelect.value || '';
+        if (!selectedDatasetId) {
+          clearAnalysisOverlays();
+          analysisNotice = '';
+          await refresh();
+          return;
+        }
+        await loadSelectedDataset();
+        // Refresh Hub status line with overlay notice without re-fitting devices.
+        try {
+          const [devices, observations] = await Promise.all([
+            fetchDevices(),
+            fetchObservations(),
+          ]);
+          renderMarkers(devices, observations);
+        } catch (_) {
+          /* Hub failure handled on next full refresh */
+        }
       });
 
       refresh().then(startAutoRefresh);

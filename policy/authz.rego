@@ -24,6 +24,7 @@ allow if {
 		"users.read",
 		"groups.read",
 		"firmware.catalog.read",
+		"analysis.scratch.read",
 	}
 }
 

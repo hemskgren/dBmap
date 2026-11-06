@@ -245,3 +245,39 @@ test_unauthenticated_subject_is_denied if {
 		"context": {},
 	}
 }
+
+test_viewer_can_read_analysis_scratch_but_not_write_or_delete if {
+	authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "analysis.scratch.read",
+		"resource": {"type": "analysis_scratch"},
+		"context": {},
+	}
+	not authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "analysis.scratch.write",
+		"resource": {"type": "analysis_scratch"},
+		"context": {},
+	}
+	not authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "analysis.scratch.delete",
+		"resource": {"type": "analysis_scratch", "id": "obj-1"},
+		"context": {},
+	}
+}
+
+test_admin_can_write_and_delete_analysis_scratch if {
+	authz.allow with input as {
+		"subject": {"id": "local-admin", "role": "admin", "authenticated": true},
+		"action": "analysis.scratch.write",
+		"resource": {"type": "analysis_scratch"},
+		"context": {},
+	}
+	authz.allow with input as {
+		"subject": {"id": "local-admin", "role": "admin", "authenticated": true},
+		"action": "analysis.scratch.delete",
+		"resource": {"type": "analysis_scratch", "id": "obj-1"},
+		"context": {},
+	}
+}

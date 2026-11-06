@@ -24,7 +24,7 @@ if [[ ! "$LAN_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
   exit 1
 fi
 
-SERVICES=(nginx hub-bootstrap mosquitto dbmap-web opa firmware-builder)
+SERVICES=(nginx hub-bootstrap mosquitto dbmap-web opa firmware-builder analysis)
 
 mkdir -p "$TRUST_DIR" "$CA_DIR"
 for service in "${SERVICES[@]}"; do
@@ -135,6 +135,8 @@ issue_cert mosquitto mosquitto "$MOSQUITTO_SAN"
 issue_cert dbmap-web web "DNS:dbmap-web" dbmap-web
 issue_cert opa opa "DNS:opa"
 issue_cert firmware-builder firmware-builder "DNS:firmware-builder"
+# Internal analysis API. Nginx verifies DNS:analysis; the health check uses localhost.
+issue_cert analysis analysis "DNS:analysis,DNS:localhost"
 
 # Copy public CA into each service certs dir so Compose can use a single read-only
 # directory mount. Docker cannot overlay a file onto a :ro directory mountpoint.
@@ -149,7 +151,8 @@ chmod 600 "$CA_DIR/ca.key" \
   "$SHARED/mosquitto/certs/mosquitto.key" \
   "$SHARED/dbmap-web/certs/web.key" \
   "$SHARED/opa/certs/opa.key" \
-  "$SHARED/firmware-builder/certs/firmware-builder.key"
+  "$SHARED/firmware-builder/certs/firmware-builder.key" \
+  "$SHARED/analysis/certs/analysis.key"
 chmod 644 "$TRUST_DIR/ca.crt"
 
 echo "Wrote dBmap TLS material under $SHARED"

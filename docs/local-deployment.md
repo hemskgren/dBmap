@@ -63,9 +63,10 @@ DBMAP_LOCAL_MQTT_HOST=hub.local
 DBMAP_LOCAL_MQTT_PORT=8883
 DBMAP_PUBLIC_HUB_URL=
 DBMAP_PUBLIC_HUB_HOST=
+COMPOSE_PROFILES=analysis
 ```
 
-Generate each secret with `openssl rand -hex 32`. Keep admin and viewer tokens different. `chmod 600 .env`.
+Generate each secret with `openssl rand -hex 32`. Keep admin and viewer tokens different. `chmod 600 .env`. For a minimal Hub without Analysis, omit `COMPOSE_PROFILES` or leave it empty.
 
 `DBMAP_HUB_ID` is the Hub id shown in the UI (default `local-01`). Change it in `.env` and recreate `hub-bootstrap` if you run several Hubs later.
 
@@ -89,6 +90,7 @@ Material lands under `shared/` (public trust at `shared/trust/ca.crt`; CA key on
 
 - Optional path prefix: `DBMAP_PUBLIC_BASE_PATH=/dbmap` (or empty for `/`).
 - OPA is HTTPS-only on a private network; policy lives in `policy/` and reloads on change. Policy unit tests: `sh scripts/test-policy.sh`.
+- Optional Analysis service: Compose profile `analysis`, enabled for normal development by `COMPOSE_PROFILES=analysis` in `.env`. Own SQLite volume and `/api/v1/analysis/*` routes via Nginx. Omit the profile for a minimal Hub; EAR ingest and Hub Observation APIs are unaffected. When the profile is off, analysis routes return JSON `503`.
 - Optional firmware builder: Compose profile `firmware-build` (not required for normal Hub use).
 - Trust `shared/trust/ca.crt` in browsers/OS clients that talk to the Hub; CLI tools use `--cacert shared/trust/ca.crt`.
 - Optional mDNS: `./scripts/publish-hub-mdns.sh "$DBMAP_LAN_IP"`.
@@ -156,6 +158,8 @@ All `scripts/hub_*.py` tools read Hub address and `DBMAP_ADMIN_TOKEN` from `.env
 ```bash
 uv run python scripts/hub_summary.py list          # Hub / component snapshot
 uv run python scripts/hub_admin.py list            # Nodes
+uv run python scripts/map_demo_helicopter.py upload  # Temporary Helicopter map layers (Analysis scratch; needs COMPOSE_PROFILES=analysis)
+uv run python scripts/map_demo_helicopter.py clear   # Remove map-demo scratch objects
 uv run python scripts/hub_event_track.py list      # Read-only observation/site report (not a tracker)
 uv run python scripts/ear_audio_compare.py list    # Ear mic levels (dBFS)
 uv run python scripts/ear_test_runner.py list      # Physical EAR period-test jobs (see docs/ear-test-runner.md)
@@ -195,6 +199,7 @@ Start with Ear A:
 
 ```text
 hub/bootstrap          Local Hub API and monitor
+analysis/              Optional Analysis API (Compose profile `analysis`)
 mqtt                   Mosquitto + Dynamic Security
 web                    Hub UI (+ /map)
 firmware/              Ear / Output + shared client
@@ -210,6 +215,11 @@ cd hub/bootstrap
 uv sync --extra dev
 uv run ruff check app
 uv run pytest tests ../../tests
+
+cd ../analysis
+uv sync --extra dev
+uv run ruff check app
+uv run pytest tests
 ```
 
 Hub image uses Python 3.14; package metadata still allows 3.11+.

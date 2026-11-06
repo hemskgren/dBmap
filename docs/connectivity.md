@@ -15,14 +15,16 @@ Message fields are in the [protocol reference](./protocol.md). Authorization act
 | `nginx` | Laptop, Output, Ear simulator, CLI | HTTPS, TLS 1.2 and 1.3 | `${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}` | Only published HTTPS port. Verifies each upstream certificate. |
 | `dbmap-web` | `nginx` on the Compose network | HTTPS | `443` | Static files. No API, database, or MQTT client. |
 | `hub-bootstrap` | `nginx` on the Compose network | HTTPS | `8443` | API, SQLite, MQTT subscriber, command publisher, broker-user admin. |
-| `opa` | `hub-bootstrap` on `opa-private` | HTTPS | `8181` | No host port. Decision URL `POST /v1/data/dbmap/authz/allow`. |
+| `opa` | `hub-bootstrap` and `analysis` on `opa-private` | HTTPS | `8181` | No host port. Decision URL `POST /v1/data/dbmap/authz/allow`. |
 | `mosquitto` | Devices, simulator, `hub-bootstrap`, and the LAN | MQTT 3.1.1 over TLS | `${DBMAP_LAN_IP}:8883` | Username and password. Server certificate only; clients do not present a certificate. |
 | `firmware-builder` | `nginx` on `firmware-private` | HTTPS | `8443` | Optional `firmware-build` profile. No host port. |
+| `analysis` | `nginx` on the Compose network | HTTPS | `8443` | Optional `analysis` profile (`COMPOSE_PROFILES=analysis` in normal/dev). No host port. Own SQLite. |
 | SQLite | The `hub-bootstrap` process | File | none | `sqlite:////data/bootstrap.db` |
+| Analysis SQLite | The `analysis` process | File | none | `sqlite:////data/analysis.db` on `analysis-data` |
 | Board USB serial | The laptop browser | Web Serial | 115200 baud | Identity, flash, and NVS provisioning. The Hub is not on this path. |
 | NTP server | The Output board | SNTP, UDP | `123` | `DBMAP_NTP_SERVER`, default `se.pool.ntp.org`. Set at firmware build time. |
 
-`opa-private` and `firmware-private` are internal Compose networks. OPA shares a network only with `hub-bootstrap`. The firmware builder shares `firmware-private` with Nginx and with `hub-bootstrap`, which uses it only for the builder health check.
+`opa-private` and `firmware-private` are internal Compose networks. OPA shares a network with `hub-bootstrap` and the optional `analysis` service. The firmware builder shares `firmware-private` with Nginx and with `hub-bootstrap`, which uses it only for the builder health check. Analysis does not join `firmware-private` and does not mount Hub SQLite.
 
 ## Laptop opens one device
 
