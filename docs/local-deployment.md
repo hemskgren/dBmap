@@ -157,9 +157,12 @@ All `scripts/hub_*.py` tools read Hub address and `DBMAP_ADMIN_TOKEN` from `.env
 
 ```bash
 uv run python scripts/hub_summary.py list          # Hub / component snapshot
-uv run python scripts/hub_admin.py list            # Nodes
+uv run python scripts/hub_admin.py list            # Nodes (summary table)
+uv run python scripts/hub_admin.py list --detail   # Summary + reported state + Hub installation
 uv run python scripts/map_demo_helicopter.py upload  # Temporary Helicopter map layers (Analysis scratch; needs COMPOSE_PROFILES=analysis)
 uv run python scripts/map_demo_helicopter.py clear   # Remove map-demo scratch objects
+uv run python scripts/hub_map_analysis.py analyze  # Complete Hub snapshot → analyze() (see docs/hub-map-analysis.md)
+uv run python scripts/hub_map_analysis.py publish --dataset live-site-a  # Analysis-only map overlay (scratch; ephemeral)
 uv run python scripts/hub_event_track.py list      # Read-only observation/site report (not a tracker)
 uv run python scripts/ear_audio_compare.py list    # Ear mic levels (dBFS)
 uv run python scripts/ear_test_runner.py list      # Physical EAR period-test jobs (see docs/ear-test-runner.md)
