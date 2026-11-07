@@ -212,7 +212,7 @@ def generate_independent_detection_events(
     config: RangeDetectionConfig,
     signal_level_config: SignalLevelConfig | None = None,
     emission_policy: ObservationEmissionPolicy | None = None,
-    position_on_route: Callable[[dict[str, float], dict[str, float], float], dict[str, float]],
+    position_at: Callable[[dict[str, Any], float], dict[str, float]],
     distance_m: Callable[[dict[str, float], dict[str, float]], float],
     bearing_deg: Callable[[dict[str, float], dict[str, float]], float],
 ) -> tuple[list[dict[str, Any]], IndependentDetectionDiagnostics]:
@@ -235,17 +235,16 @@ def generate_independent_detection_events(
     policy.validate()
 
     duration = float(movement["duration_seconds"])
-    start = movement["start"]
-    end = movement["end"]
     step = float(config.time_step_seconds)
 
     times: list[float] = []
     t = 0.0
     while t < duration - 1e-12:
-        times.append(round(t, 9))
+        # Keep samples inside [0, duration]; round() can push the end past duration.
+        times.append(min(duration, round(t, 9)))
         t += step
     if not times or times[-1] < duration - 1e-9:
-        times.append(round(duration, 9))
+        times.append(duration)
 
     stats = {alias: EarPassStats() for alias in ears}
     detection_times: dict[str, list[float]] = {alias: [] for alias in ears}
@@ -255,8 +254,8 @@ def generate_independent_detection_events(
     multi_three_times: list[float] = []
 
     for sample_t in times:
-        fraction = 0.0 if duration <= 0 else min(1.0, sample_t / duration)
-        source_position = position_on_route(start, end, fraction)
+        sample_t = min(max(0.0, float(sample_t)), duration)
+        source_position = position_at(movement, sample_t)
         detecting_aliases: list[str] = []
         for alias, ear in ears.items():
             stats[alias].evaluations += 1

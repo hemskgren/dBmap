@@ -139,7 +139,7 @@ def apply_scripted_cadence_profile(
     scenario: dict[str, Any],
     profile_id: str,
     *,
-    position_on_route: Callable[..., dict[str, float]],
+    position_at: Callable[..., dict[str, float]],
     distance_m: Callable[..., float],
     bearing_deg: Callable[..., float],
 ) -> dict[str, Any]:
@@ -195,11 +195,7 @@ def apply_scripted_cadence_profile(
                     f"resampled at_seconds={at_seconds} exceeds route duration "
                     f"{duration}"
                 )
-            source_position = position_on_route(
-                movement["start"],
-                movement["end"],
-                at_seconds / duration,
-            )
+            source_position = position_at(movement, at_seconds)
             dist = distance_m(ear_position, source_position)
             if dist <= 1e-6:
                 raise ScriptedCadenceProfileError(
