@@ -42,6 +42,10 @@ from lib.hub_cli import (
     print_help_without_arguments,
     validate_hub_connection,
 )
+from lib.localization_epoch_diagnostic import (
+    evaluate_event_localization_epochs,
+    format_event_epoch_localization_report,
+)
 
 EARTH_RADIUS_M = 6_371_000
 DEFAULT_EVENT_GAP_SECONDS = 30.0
@@ -66,6 +70,7 @@ class AnalysisConfig:
     cross_ear_geometry_detail: bool = False
     include_site_context: bool = True
     include_observation_details: bool = False
+    include_temporal_localization: bool = False
 
 
 @dataclass
@@ -1012,6 +1017,7 @@ def analyze(snapshot: AnalysisSnapshot) -> AnalysisResult:
         include_cross_ear_geometry=config.include_cross_ear_geometry,
         cross_ear_geometry_detail=config.cross_ear_geometry_detail,
         include_observation_details=config.include_observation_details,
+        include_temporal_localization=config.include_temporal_localization,
         filter_status_lines=snapshot.filter_status_lines or None,
         hub_snapshot_id=snapshot.snapshot_id,
         fetch_meta=snapshot.fetch_meta,
@@ -1253,6 +1259,8 @@ def format_correlation_lines(
     correlation: CorrelationResult,
     *,
     ground_truth_by_event: dict[str, GroundTruthEvaluation] | None = None,
+    nodes: dict[str, dict[str, Any]] | None = None,
+    include_temporal_localization: bool = False,
 ) -> list[str]:
     params = correlation.parameters
     lines = [
@@ -1340,6 +1348,9 @@ def format_correlation_lines(
             lines.append(
                 "      note: Event may exist without a reliable position estimate"
             )
+        if include_temporal_localization:
+            temporal = evaluate_event_localization_epochs(event, nodes or {})
+            lines.extend(format_event_epoch_localization_report(temporal))
 
     unresolved = getattr(correlation, "unresolved", None) or []
     lines.append(f"  Unresolved multi-compatible associations: {len(unresolved)}")
@@ -1393,6 +1404,7 @@ def report(
     include_cross_ear_geometry: bool = True,
     cross_ear_geometry_detail: bool = False,
     include_observation_details: bool = False,
+    include_temporal_localization: bool = False,
     filter_status_lines: list[str] | None = None,
     hub_snapshot_id: int | None = None,
     fetch_meta: dict[str, Any] | None = None,
@@ -1509,7 +1521,13 @@ def report(
                 correlation.observations, correlation
             )
         )
-        lines.extend(format_correlation_lines(correlation))
+        lines.extend(
+            format_correlation_lines(
+                correlation,
+                nodes=nodes,
+                include_temporal_localization=include_temporal_localization,
+            )
+        )
 
     lines.append(
         f"Per-Ear activity episodes (not Events): {event_gap_seconds:g}s of silence "
@@ -1759,6 +1777,14 @@ def main() -> int:
         default="newest",
         help="Page ordering by received_time_utc (default: newest)",
     )
+    list_command.add_argument(
+        "--temporal-localization",
+        action="store_true",
+        help=(
+            "For each promoted Event, print an observational per-common-epoch "
+            "localization diagnostic (does not replace production localization)"
+        ),
+    )
     watch_command.add_argument(
         "--node-id",
         help="Optionally restrict watched observations to one Ear",
@@ -1935,6 +1961,9 @@ def main() -> int:
             cross_ear_geometry_detail=args.cross_ear_geometry_detail,
             include_site_context=True,
             include_observation_details=args.details,
+            include_temporal_localization=(
+                getattr(args, "temporal_localization", False)
+            ),
         )
         snapshot = AnalysisSnapshot(
             reports=observations,
