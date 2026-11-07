@@ -24,6 +24,8 @@ shared/mosquitto/logs/*
 !shared/mosquitto/logs/.gitkeep
 shared/simulator/*
 !shared/simulator/.gitkeep
+!shared/simulator/ear-profiles/
+!shared/simulator/ear-profiles/**
 shared/results/ear-tests/**
 !shared/results/ear-tests/.gitkeep
 

@@ -12,9 +12,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+_EAR_DIR = Path(__file__).resolve().parent
 _SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
-if str(_SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS))
+for _path in (_EAR_DIR, _SCRIPTS):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 from lib.hub_cli import (
     add_hub_connection_arguments,
     format_hub_http_error,
@@ -22,12 +24,17 @@ from lib.hub_cli import (
     print_help_without_arguments,
     validate_hub_connection,
 )
+from sim_ear_slots import (
+    DEFAULT_EAR,
+    EAR_SLOTS,
+    SimEarSlotError,
+    assert_node_id_matches_slot,
+    credentials_file_for_ear,
+    slot_help_text,
+)
 
-DEFAULT_EAR = "a"
-
-
-def credentials_file_for_ear(ear: str) -> str:
-    return f"shared/simulator/sim-ear-{ear}.json"
+# Re-export for tests / callers that import from this module.
+__all_slots__ = EAR_SLOTS
 
 
 def resolve_credentials_file(args: argparse.Namespace) -> str:
@@ -288,6 +295,11 @@ def load_or_provision(args: argparse.Namespace, admin_token: str) -> dict:
     }
     save_credentials(credentials_path, pending)
     require_simulator_identity(pending["node_id"])
+    # Slot letters conventionally map to SIM-EAR-001…007. Refuse unexpected ids
+    # so we never silently bind e.g. slot d to an unrelated device.
+    ear_slot = getattr(args, "ear", None)
+    if ear_slot in EAR_SLOTS:
+        assert_node_id_matches_slot(ear_slot, pending["node_id"])
     return finish_provisioning(args, pending, admin_token)
 
 
@@ -373,9 +385,9 @@ def publish_observation_batch(
 def _add_ear_selection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--ear",
-        choices=("a", "b", "c"),
+        choices=EAR_SLOTS,
         default=DEFAULT_EAR,
-        help="Sim Ear slot → shared/simulator/sim-ear-{a,b,c}.json (default: a)",
+        help=slot_help_text(),
     )
     parser.add_argument(
         "--credentials-file",
@@ -522,6 +534,13 @@ def main() -> int:
         print(
             f"The pending node record is in {args.credentials_file}; "
             "use a new --ear / credentials-file path after redeploying the hub.",
+            file=sys.stderr,
+        )
+        return 1
+    except SimEarSlotError as exc:
+        print(f"Simulator slot binding failed: {exc}", file=sys.stderr)
+        print(
+            f"Pending/partial credentials (if any): {args.credentials_file}",
             file=sys.stderr,
         )
         return 1

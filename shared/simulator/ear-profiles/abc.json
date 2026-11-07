@@ -1,0 +1,8 @@
+{
+  "name": "abc",
+  "ears": {
+    "ear_a": "a",
+    "ear_b": "b",
+    "ear_c": "c"
+  }
+}
