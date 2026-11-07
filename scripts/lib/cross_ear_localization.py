@@ -398,6 +398,25 @@ def extract_bearing_samples(
     return samples
 
 
+BearingSelectionMode = Literal["auto", "pairwise_only"]
+# Production detail labels (also used by diagnostics / Hub printout).
+BEARING_SELECTION_COMMON_EPOCH = "common_epoch"
+BEARING_SELECTION_PAIRWISE_FALLBACK = "pairwise_fallback"
+
+# Documented Event-level common-epoch ranking (no ground truth):
+# 1. more Ears with a sample at the epoch
+# 2. localization status: useful > weak > unavailable
+# 3. more time-aligned forward pairs
+# 4. lower network geometric sensitivity (baseline/sinθ)
+# 5. higher min consensus intersection angle
+# 6. earlier epoch_utc (deterministic tie-break; independent of report order)
+COMMON_EPOCH_RANKING_RULE = (
+    "ear_count > status(useful>weak>unavailable) > aligned_forward_pair_count > "
+    "lower network_geometric_sensitivity_m > higher min_intersection_angle_deg > "
+    "earlier common_epoch_utc"
+)
+
+
 def select_time_aware_bearing_pair(
     samples_a: list[BearingSample],
     samples_b: list[BearingSample],
@@ -447,6 +466,161 @@ def select_time_aware_bearing_pair(
     )
 
 
+def _sample_event_time_utc(sample: BearingSample) -> datetime | None:
+    if sample.event_time_utc is None:
+        return None
+    return sample.event_time_utc.astimezone(UTC)
+
+
+def list_common_epoch_candidates(
+    members: list[Any],
+    *,
+    max_dt_s: float = LOCALIZATION_MAX_BEARING_DT_S,
+    min_ears: int = 2,
+) -> list[datetime]:
+    """Return ascending candidate epochs where ≥min_ears Ears have a sample.
+
+    An epoch is a distinct sample timestamp. An Ear participates if it has any
+    bearing sample within ``max_dt_s`` of that timestamp (existing alignment gate).
+    """
+    stamps: set[datetime] = set()
+    for member in members:
+        for sample in getattr(member, "bearing_samples", None) or []:
+            stamp = _sample_event_time_utc(sample)
+            if stamp is not None:
+                stamps.add(stamp)
+    candidates: list[datetime] = []
+    for epoch in sorted(stamps):
+        present = 0
+        for member in members:
+            for sample in getattr(member, "bearing_samples", None) or []:
+                stamp = _sample_event_time_utc(sample)
+                if stamp is None:
+                    continue
+                if abs((stamp - epoch).total_seconds()) <= max_dt_s:
+                    present += 1
+                    break
+        if present >= min_ears:
+            candidates.append(epoch)
+    return candidates
+
+
+def _pick_bearing_sample_at_epoch(
+    samples: list[BearingSample],
+    epoch: datetime,
+    *,
+    max_dt_s: float,
+) -> BearingSample | None:
+    """Choose one reported sample for ``epoch``; prefer smaller |Δt|, then confidence."""
+    epoch = epoch.astimezone(UTC)
+    ranked: list[tuple[float, float, int, BearingSample]] = []
+    for index, sample in enumerate(samples):
+        stamp = _sample_event_time_utc(sample)
+        if stamp is None:
+            continue
+        dt = abs((stamp - epoch).total_seconds())
+        if dt > max_dt_s:
+            continue
+        conf = sample.confidence if sample.confidence is not None else -1.0
+        # report_index then enumerate index keep ties deterministic.
+        ranked.append((dt, -conf, sample.report_index, sample))
+        _ = index
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+    return ranked[0][3]
+
+
+def _members_at_common_epoch(
+    members: list[Any],
+    epoch: datetime,
+    *,
+    max_dt_s: float,
+) -> tuple[list[Any], dict[str, dict[str, Any]], list[dict[str, str]]]:
+    """Restrict each Observation to ≤1 sample at ``epoch``; omit Ears without one."""
+    restricted: list[Any] = []
+    selected: dict[str, dict[str, Any]] = {}
+    excluded: list[dict[str, str]] = []
+    epoch = epoch.astimezone(UTC)
+    # Stable member order by node_id then observation_id (not report arrival).
+    ordered = sorted(
+        members,
+        key=lambda item: (
+            str(getattr(item, "node_id", "")),
+            str(getattr(item, "observation_id", "")),
+        ),
+    )
+    for member in ordered:
+        samples = list(getattr(member, "bearing_samples", None) or [])
+        chosen = _pick_bearing_sample_at_epoch(samples, epoch, max_dt_s=max_dt_s)
+        if chosen is None:
+            excluded.append(
+                {
+                    "ear_id": str(member.node_id),
+                    "observation_id": str(member.observation_id),
+                    "reason": (
+                        f"no bearing sample within {max_dt_s:g}s of "
+                        f"common epoch {epoch.isoformat()}"
+                    ),
+                }
+            )
+            continue
+        stamp = _sample_event_time_utc(chosen)
+        selected[str(member.node_id)] = {
+            "observation_id": str(member.observation_id),
+            "event_time_utc": stamp.isoformat() if stamp is not None else None,
+            "bearing_deg": chosen.bearing_deg,
+            "confidence": chosen.confidence,
+            "report_index": chosen.report_index,
+            "emission_kind": chosen.emission_kind,
+            "sequence_number": chosen.sequence_number,
+        }
+        if hasattr(member, "__dataclass_fields__"):
+            clone = replace(
+                member,
+                bearing_samples=[chosen],
+                bearing_deg=chosen.bearing_deg,
+                bearing_confidence=chosen.confidence,
+            )
+        else:
+            clone = deepcopy(member)
+            clone.bearing_samples = [chosen]
+            clone.bearing_deg = chosen.bearing_deg
+            clone.bearing_confidence = chosen.confidence
+        restricted.append(clone)
+    return restricted, selected, excluded
+
+
+def _status_rank_for_epoch(status: str) -> int:
+    return {"useful": 3, "weak": 2, "unavailable": 1}.get(status, 0)
+
+
+def _rank_common_epoch_result(
+    *,
+    ear_count: int,
+    localization: LocalizationResult,
+    epoch: datetime,
+) -> tuple:
+    """Sort key for common-epoch candidates (higher tuple = better)."""
+    details = localization.details or {}
+    aligned = int(details.get("aligned_forward_pair_count") or 0)
+    sens = details.get("network_geometric_sensitivity_m")
+    if isinstance(sens, (int, float)) and math.isfinite(float(sens)):
+        sens_key = -float(sens)
+    else:
+        sens_key = float("-inf")
+    min_angle = details.get("min_intersection_angle_deg")
+    angle_key = float(min_angle) if isinstance(min_angle, (int, float)) else -1.0
+    return (
+        ear_count,
+        _status_rank_for_epoch(localization.status),
+        aligned,
+        sens_key,
+        angle_key,
+        -epoch.timestamp(),
+    )
+
+
 def estimate_localization(
     members: list[Any],
     nodes: dict[str, dict[str, Any]],
@@ -455,8 +629,164 @@ def estimate_localization(
     max_dt_s: float = LOCALIZATION_MAX_BEARING_DT_S,
     useful_spread_m: float | None = None,
     network_class: NetworkGeometryClass | None = None,
+    bearing_selection: BearingSelectionMode = "auto",
 ) -> LocalizationResult:
-    """Build a coarse localization diagnostic from assembled Observation members."""
+    """Build a coarse localization diagnostic from assembled Observation members.
+
+    Default ``bearing_selection="auto"`` tries Event-level common-epoch selection
+    first (one shared timestamp; ≤1 bearing per Ear). If no epoch has ≥2 Ears
+    with samples inside ``max_dt_s``, falls back to pairwise
+    ``select_time_aware_bearing_pair`` unchanged. Modes are never mixed inside
+    one result. Association / Event membership are not modified.
+    """
+    if bearing_selection == "pairwise_only":
+        return _estimate_localization_pairwise(
+            members,
+            nodes,
+            good_dt_s=good_dt_s,
+            max_dt_s=max_dt_s,
+            useful_spread_m=useful_spread_m,
+            network_class=network_class,
+            bearing_selection_mode=BEARING_SELECTION_PAIRWISE_FALLBACK,
+        )
+
+    candidates = list_common_epoch_candidates(members, max_dt_s=max_dt_s, min_ears=2)
+    if not candidates:
+        return _estimate_localization_pairwise(
+            members,
+            nodes,
+            good_dt_s=good_dt_s,
+            max_dt_s=max_dt_s,
+            useful_spread_m=useful_spread_m,
+            network_class=network_class,
+            bearing_selection_mode=BEARING_SELECTION_PAIRWISE_FALLBACK,
+        )
+
+    best: LocalizationResult | None = None
+    best_key: tuple | None = None
+    best_epoch: datetime | None = None
+    best_selected: dict[str, dict[str, Any]] = {}
+    best_excluded: list[dict[str, str]] = []
+    for epoch in candidates:
+        restricted, selected, excluded = _members_at_common_epoch(
+            members, epoch, max_dt_s=max_dt_s
+        )
+        if len(restricted) < 2:
+            continue
+        trial = _estimate_localization_pairwise(
+            restricted,
+            nodes,
+            good_dt_s=good_dt_s,
+            max_dt_s=max_dt_s,
+            useful_spread_m=useful_spread_m,
+            network_class=network_class,
+            bearing_selection_mode=BEARING_SELECTION_COMMON_EPOCH,
+            common_epoch_utc=epoch,
+            common_epoch_selected_bearings=selected,
+            common_epoch_excluded_ears=excluded,
+            association_member_ears=sorted({m.node_id for m in members}),
+        )
+        key = _rank_common_epoch_result(
+            ear_count=len(restricted), localization=trial, epoch=epoch
+        )
+        if best is None or best_key is None or key > best_key:
+            best = trial
+            best_key = key
+            best_epoch = epoch
+            best_selected = selected
+            best_excluded = excluded
+
+    if best is None or best_epoch is None:
+        return _estimate_localization_pairwise(
+            members,
+            nodes,
+            good_dt_s=good_dt_s,
+            max_dt_s=max_dt_s,
+            useful_spread_m=useful_spread_m,
+            network_class=network_class,
+            bearing_selection_mode=BEARING_SELECTION_PAIRWISE_FALLBACK,
+        )
+
+    # Re-apply metadata explicitly (already set on trial; ensure ranking fields).
+    best.details["bearing_selection_mode"] = BEARING_SELECTION_COMMON_EPOCH
+    best.details["common_epoch_utc"] = best_epoch.isoformat()
+    best.details["common_epoch_ranking_rule"] = COMMON_EPOCH_RANKING_RULE
+    best.details["common_epoch_candidate_count"] = len(candidates)
+    best.details["common_epoch_participating_ears"] = sorted(best_selected)
+    best.details["common_epoch_selected_bearings"] = best_selected
+    best.details["common_epoch_excluded_ears"] = best_excluded
+    best.details["association_member_ears"] = sorted({m.node_id for m in members})
+    # Usable bearings are Observation-level (any sample), not epoch-restricted.
+    best.details["ears_with_usable_bearing"] = sorted(
+        {
+            member.node_id
+            for member in members
+            if (
+                getattr(member, "bearing_deg", None) is not None
+                or (getattr(member, "bearing_samples", None) or [])
+            )
+        }
+    )
+    # Intra-Ear conflicts are evaluated on the full sample history, even though
+    # common-epoch keeps ≤1 sample for intersections.
+    full_conflicts: list[str] = []
+    for member in members:
+        near = intra_ear_near_conflict_deg(
+            getattr(member, "bearing_samples", None) or []
+        )
+        if near is not None and near >= INTRA_EAR_BEARING_CONFLICT_DEG:
+            full_conflicts.append(
+                f"{member.node_id} near-window Δ={near:.1f}° "
+                f"within {INTRA_EAR_CONFLICT_NEAR_DT_S:g}s "
+                f"(≥{INTRA_EAR_BEARING_CONFLICT_DEG:g}°)"
+            )
+    if full_conflicts:
+        best.details["intra_ear_bearing_conflicts"] = full_conflicts
+        best.quality_notes.append(
+            "Conflicting bearing samples over time on: "
+            + "; ".join(full_conflicts)
+            + " — localization cannot be useful while unresolved."
+        )
+        if best.status == "useful":
+            best.status = "weak"
+            best.quality_notes.append(
+                "Intra-Ear bearing conflict present; estimate retained as "
+                "weak only (common-epoch selection cannot resolve contradiction)."
+            )
+    best.selection_method = (
+        f"common_epoch {best_epoch.isoformat()} "
+        f"(≤1 bearing/Ear within {max_dt_s:g}s; {COMMON_EPOCH_RANKING_RULE})"
+    )
+    best.quality_notes = [
+        (
+            f"Bearing selection mode={BEARING_SELECTION_COMMON_EPOCH}; "
+            f"common_epoch_utc={best_epoch.isoformat()}; "
+            f"participating_ears={sorted(best_selected)}."
+        ),
+        *best.quality_notes,
+    ]
+    return best
+
+
+def _estimate_localization_pairwise(
+    members: list[Any],
+    nodes: dict[str, dict[str, Any]],
+    *,
+    good_dt_s: float = LOCALIZATION_GOOD_BEARING_DT_S,
+    max_dt_s: float = LOCALIZATION_MAX_BEARING_DT_S,
+    useful_spread_m: float | None = None,
+    network_class: NetworkGeometryClass | None = None,
+    bearing_selection_mode: str = BEARING_SELECTION_PAIRWISE_FALLBACK,
+    common_epoch_utc: datetime | None = None,
+    common_epoch_selected_bearings: dict[str, dict[str, Any]] | None = None,
+    common_epoch_excluded_ears: list[dict[str, str]] | None = None,
+    association_member_ears: list[str] | None = None,
+) -> LocalizationResult:
+    """Pairwise time-aware bearing selection + existing geometry/quality pipeline.
+
+    Used as the complete fallback when no common epoch exists, and as the
+    geometry engine after common-epoch sample restriction.
+    """
     ear_ids = sorted({member.node_id for member in members})
     detected_class, max_baseline, baselines = classify_network_geometry(nodes, ear_ids)
     resolved_class = network_class or detected_class
@@ -957,6 +1287,99 @@ def estimate_localization(
     # If no position is published, no EAR contributes to a final estimate.
     contributor_ids = [] if withhold_position or latitude is None else consensus_ear_ids
 
+    association_ears = (
+        list(association_member_ears) if association_member_ears is not None else ear_ids
+    )
+    if bearing_selection_mode == BEARING_SELECTION_COMMON_EPOCH:
+        selection_method = (
+            "common_epoch restricted samples → pairwise intersections "
+            f"(gate {max_dt_s:g}s)"
+        )
+    else:
+        selection_method = (
+            "pairwise_fallback: time-aware min_|Δt| per pair "
+            "(fallback max confidence)"
+        )
+
+    pair_time_deltas = [
+        {
+            "ear_a_id": item.ear_a_id,
+            "ear_b_id": item.ear_b_id,
+            "bearing_a_time": (
+                item.bearing_a_time.astimezone(UTC).isoformat()
+                if item.bearing_a_time is not None
+                else None
+            ),
+            "bearing_b_time": (
+                item.bearing_b_time.astimezone(UTC).isoformat()
+                if item.bearing_b_time is not None
+                else None
+            ),
+            "bearing_dt_s": item.bearing_dt_s,
+            "time_aligned": item.time_aligned,
+        }
+        for item in pair_results
+    ]
+
+    details: dict[str, Any] = {
+        "bearing_selection_mode": bearing_selection_mode,
+        "common_epoch_utc": (
+            common_epoch_utc.astimezone(UTC).isoformat()
+            if common_epoch_utc is not None
+            else None
+        ),
+        "common_epoch_ranking_rule": (
+            COMMON_EPOCH_RANKING_RULE
+            if bearing_selection_mode == BEARING_SELECTION_COMMON_EPOCH
+            else None
+        ),
+        "common_epoch_participating_ears": (
+            sorted((common_epoch_selected_bearings or {}).keys())
+            if bearing_selection_mode == BEARING_SELECTION_COMMON_EPOCH
+            else []
+        ),
+        "common_epoch_selected_bearings": (
+            dict(common_epoch_selected_bearings or {})
+            if bearing_selection_mode == BEARING_SELECTION_COMMON_EPOCH
+            else {}
+        ),
+        "common_epoch_excluded_ears": (
+            list(common_epoch_excluded_ears or [])
+            if bearing_selection_mode == BEARING_SELECTION_COMMON_EPOCH
+            else []
+        ),
+        "pair_bearing_time_deltas": pair_time_deltas,
+        "forward_pair_count": len(forward),
+        "aligned_forward_pair_count": len(aligned_forward),
+        "consensus_pair_count": len(consensus_pairs),
+        "association_member_ears": association_ears,
+        "ears_with_usable_bearing": ears_with_usable_bearing,
+        "forward_intersection_ears": forward_ears,
+        "consensus_selected_ears": consensus_ear_ids,
+        "outlier_pair_ears": outlier_ears,
+        "contributing_ears_definition": (
+            "Unique EARs in non-outlier consensus pairs that feed the "
+            "published position; empty when position is withheld. "
+            "Independent of Event association membership."
+        ),
+        "outlier_pairs": outlier_ids,
+        "intra_ear_bearing_conflicts": intra_ear_conflicts,
+        "min_intersection_angle_deg": min_angle,
+        "best_intersection_angle_deg": best_angle,
+        "all_forward_spread_m": all_forward_spread,
+        "position_withheld": withhold_position,
+        "network_class": resolved_class,
+        "max_baseline_m": max_baseline,
+        "evaluation_target_m": target_m,
+        "useful_spread_m": spread_limit,
+        "pair_geometry_sensitivity": pair_sensitivity,
+        "network_geometric_sensitivity_m": network_sensitivity,
+        "geometric_sensitivity_definition": (
+            "baseline_m / sin(intersection_angle_deg); "
+            "geometric sensitivity indicator only — not position accuracy"
+        ),
+    }
+
     return LocalizationResult(
         status=status,
         quality_notes=notes,
@@ -968,38 +1391,8 @@ def estimate_localization(
         pairwise_spread_m=spread if not withhold_position else all_forward_spread,
         calibrated_uncertainty_m=None,
         contributing_ears=contributor_ids,
-        selection_method="time-aware min_|Δt| per pair (fallback max confidence)",
-        details={
-            "forward_pair_count": len(forward),
-            "aligned_forward_pair_count": len(aligned_forward),
-            "consensus_pair_count": len(consensus_pairs),
-            "association_member_ears": ear_ids,
-            "ears_with_usable_bearing": ears_with_usable_bearing,
-            "forward_intersection_ears": forward_ears,
-            "consensus_selected_ears": consensus_ear_ids,
-            "outlier_pair_ears": outlier_ears,
-            "contributing_ears_definition": (
-                "Unique EARs in non-outlier consensus pairs that feed the "
-                "published position; empty when position is withheld. "
-                "Independent of Event association membership."
-            ),
-            "outlier_pairs": outlier_ids,
-            "intra_ear_bearing_conflicts": intra_ear_conflicts,
-            "min_intersection_angle_deg": min_angle,
-            "best_intersection_angle_deg": best_angle,
-            "all_forward_spread_m": all_forward_spread,
-            "position_withheld": withhold_position,
-            "network_class": resolved_class,
-            "max_baseline_m": max_baseline,
-            "evaluation_target_m": target_m,
-            "useful_spread_m": spread_limit,
-            "pair_geometry_sensitivity": pair_sensitivity,
-            "network_geometric_sensitivity_m": network_sensitivity,
-            "geometric_sensitivity_definition": (
-                "baseline_m / sin(intersection_angle_deg); "
-                "geometric sensitivity indicator only — not position accuracy"
-            ),
-        },
+        selection_method=selection_method,
+        details=details,
     )
 
 

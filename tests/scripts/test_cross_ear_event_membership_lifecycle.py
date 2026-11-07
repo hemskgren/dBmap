@@ -183,7 +183,23 @@ def test_a_valid_compatible_bearing_joins_after_promotion() -> None:
     assert accepted
     assert "post-promotion" in accepted[0].reason
     assert event.localization is not None
-    assert "SIM-EAR-004" in event.localization.contributing_ears
+    # Event membership includes SIM-EAR-004; common-epoch localization may omit
+    # it when its report falls outside the selected epoch's 1 s gate while still
+    # remaining an association member with a usable bearing.
+    assert "SIM-EAR-004" in event.ear_ids
+    assert "SIM-EAR-004" in event.localization.details["association_member_ears"]
+    assert "SIM-EAR-004" in event.localization.details["ears_with_usable_bearing"]
+    excluded = {
+        item.get("ear_id")
+        for item in (event.localization.details.get("common_epoch_excluded_ears") or [])
+    }
+    if event.localization.details.get("bearing_selection_mode") == "common_epoch":
+        assert (
+            "SIM-EAR-004" in event.localization.contributing_ears
+            or "SIM-EAR-004" in excluded
+        )
+    else:
+        assert "SIM-EAR-004" in event.localization.contributing_ears
 
 
 def test_a_incompatible_synthetic_bearing_is_rejected_by_b25_rule() -> None:
