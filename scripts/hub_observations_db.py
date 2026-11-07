@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from lib.hub_cli import print_help_without_arguments
@@ -117,8 +118,8 @@ def parse_stored_utc(value: str) -> datetime:
         text = text[:-1] + "+00:00"
     parsed = datetime.fromisoformat(text)
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def prune_observation_ids(
@@ -135,7 +136,7 @@ def prune_observation_ids(
     """
     if cutoff.tzinfo is None or cutoff.utcoffset() is None:
         raise ValueError("cutoff must be timezone-aware")
-    cutoff_utc = cutoff.astimezone(timezone.utc)
+    cutoff_utc = cutoff.astimezone(UTC)
     doomed: list[str] = []
     for observation_id, received in rows:
         try:
@@ -151,7 +152,7 @@ def prune_observation_ids(
 
 
 def prune_observations(*, older_than_hours: float) -> dict[str, int | float]:
-    if older_than_hours < 0 or older_than_hours != older_than_hours:
+    if older_than_hours < 0 or not math.isfinite(older_than_hours):
         raise ValueError("--older-than-hours must be finite and at least zero")
     if older_than_hours == 0:
         result = clear_all_observations()

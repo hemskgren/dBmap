@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -267,7 +267,7 @@ class OutputCommandBody(BaseModel):
             return None
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("expires_at_utc must include a timezone")
-        return value.astimezone(timezone.utc)
+        return value.astimezone(UTC)
 
     @field_validator("url")
     @classmethod
@@ -350,10 +350,16 @@ class OutputCommandView(BaseModel):
 
 class InstallationMetadataBody(BaseModel):
     latitude: float = Field(
-        ge=-90, le=90, description="WGS84 latitude in decimal degrees"
+        ge=-90,
+        le=90,
+        allow_inf_nan=False,
+        description="WGS84 latitude in decimal degrees",
     )
     longitude: float = Field(
-        ge=-180, le=180, description="WGS84 longitude in decimal degrees"
+        ge=-180,
+        le=180,
+        allow_inf_nan=False,
+        description="WGS84 longitude in decimal degrees",
     )
     floor: int | None = None
     height_m: float | None = Field(default=None, ge=0)
@@ -415,7 +421,7 @@ class ObservationContext(BaseModel):
     def require_timezone_and_normalize_utc(cls, value: datetime) -> datetime:
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("event_time_utc must include a timezone")
-        return value.astimezone(timezone.utc)
+        return value.astimezone(UTC)
 
 
 class ObservationSpatial(BaseModel):

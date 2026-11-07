@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from pathlib import Path
 import sys
+from datetime import UTC, datetime
+from pathlib import Path
 
 SCRIPT_LIB = Path(__file__).resolve().parents[2] / "scripts"
 if str(SCRIPT_LIB) not in sys.path:
@@ -16,7 +16,6 @@ from lib.ear_test.models import JobMetadata
 from lib.ear_test.outputs import write_job_outputs
 from lib.ear_test.summary import build_summary
 
-UTC = timezone.utc
 T0 = datetime(2026, 11, 2, 18, 0, 0, tzinfo=UTC)
 
 
@@ -78,7 +77,7 @@ def test_sequence_no_inter_period_after_last_but_final_collection(
     monkeypatch.setattr(runner, "reassociate_observations", lambda *_a, **_k: 0)
     monkeypatch.setenv("HOME", str(tmp_path))
     # Point results root at temp via store.results_root patch
-    import lib.ear_test.store as store
+    from lib.ear_test import store
 
     monkeypatch.setattr(store, "RESULTS_ROOT", tmp_path / "ear-tests")
     monkeypatch.setattr(runner, "job_dir", lambda job_id: store.job_dir(job_id))
@@ -143,7 +142,7 @@ def test_sequence_no_inter_period_after_last_but_final_collection(
 
 
 def test_sequence_interrupt_during_inter_period_pause(tmp_path, monkeypatch) -> None:
-    import lib.ear_test.store as store
+    from lib.ear_test import store
 
     monkeypatch.setattr(store, "RESULTS_ROOT", tmp_path / "ear-tests")
     monkeypatch.setattr(runner, "reconcile_sqlite", lambda *_a, **_k: None)
@@ -200,7 +199,7 @@ def test_sequence_interrupt_during_inter_period_pause(tmp_path, monkeypatch) -> 
 def test_final_collection_observation_association_and_report_distinction(
     tmp_path, monkeypatch
 ) -> None:
-    import lib.ear_test.store as store
+    from lib.ear_test import store
 
     monkeypatch.setattr(store, "RESULTS_ROOT", tmp_path / "ear-tests")
 
@@ -257,7 +256,7 @@ def test_final_collection_observation_association_and_report_distinction(
 
 
 def test_manual_progression_compatible(tmp_path, monkeypatch) -> None:
-    import lib.ear_test.store as store
+    from lib.ear_test import store
 
     monkeypatch.setattr(store, "RESULTS_ROOT", tmp_path / "ear-tests")
     monkeypatch.setattr(runner, "reconcile_sqlite", lambda *_a, **_k: None)

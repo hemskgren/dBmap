@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -125,7 +125,7 @@ def _hierarchical(
     classification: dict | None = None,
 ) -> dict:
     context = {
-        "event_time_utc": datetime.now(timezone.utc).isoformat(),
+        "event_time_utc": datetime.now(UTC).isoformat(),
         "capture_timestamp_monotonic_us": 123456,
         "timing_quality": "estimated",
         "clock_offset_ms": None,

@@ -15,15 +15,15 @@ Does not interpret detector emit kinds or acoustic episodes.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from lib.ear_test.models import AssociationResult, PauseRecord, PeriodRecord, PhaseKind
 
 
 def _aware(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _period_window(period: PeriodRecord) -> tuple[datetime | None, datetime | None]:

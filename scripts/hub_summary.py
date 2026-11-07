@@ -9,7 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from lib.hub_cli import (
@@ -262,11 +262,11 @@ def _format_local_timestamp(value: Any) -> str:
     if not isinstance(value, str) or not value:
         return "Not reported"
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return value
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone().strftime("%d/%m/%Y %H:%M:%S %Z")
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -131,7 +131,7 @@ def _seed_reports(
     db = SessionLocal()
     try:
         _ensure_node(db, node_id)
-        base = datetime(2026, 11, 5, 12, 0, 0, tzinfo=timezone.utc)
+        base = datetime(2026, 11, 5, 12, 0, 0, tzinfo=UTC)
         shared_received = base + timedelta(hours=1)
         for i in range(n):
             event_time = base + timedelta(seconds=i)
@@ -348,7 +348,7 @@ def test_snapshot_prevents_duplicates_across_pages_when_inserts_arrive() -> None
                 "EAR-PAG",
                 observation_id=oid,
                 sequence_number=9999,
-                event_time=datetime.now(timezone.utc),
+                event_time=datetime.now(UTC),
             )
         )
         assert ingest_observation(db, "EAR-PAG", body) is True
@@ -367,6 +367,190 @@ def test_snapshot_prevents_duplicates_across_pages_when_inserts_arrive() -> None
         assert 9999 not in first_seqs | second_seqs
         assert first.total == 4
         assert second.total == 4
+    finally:
+        db.close()
+
+
+def test_frozen_snapshot_immutable_when_late_report_extends_same_observation_id() -> None:
+    """B2.7: late report for an existing observation_id must not enter a frozen snapshot.
+
+    Hub stores one immutable row per MQTT report. A late report for the same
+    observation_id is a *new* row with a higher autoincrement id, so
+    ``Observation.id <= snapshot_id`` excludes it. There is no append/update of
+    an existing report row's payload.
+    """
+    from app.models import Observation
+    from sqlalchemy import select
+
+    oid = _seed_reports(3, observation_id=str(uuid4()))
+    db = SessionLocal()
+    try:
+        first = list_observations_page(
+            db, "EAR-PAG", observation_id=oid, page=1, page_size=2, order="oldest"
+        )
+        snapshot = first.snapshot_id
+        assert snapshot is not None
+        assert first.total == 3
+        assert len(first.items) == 2
+
+        # Capture payloads of rows at/below the freeze boundary.
+        frozen_rows = db.scalars(
+            select(Observation).where(
+                Observation.observation_id == oid,
+                Observation.id <= snapshot,
+            )
+        ).all()
+        assert len(frozen_rows) == 3
+        frozen_payloads = {row.id: row.payload_json for row in frozen_rows}
+        frozen_ids = {row.id for row in frozen_rows}
+
+        # Late report for the *same* observation_id (new sequence → new row).
+        late_same = ObservationBody.model_validate(
+            _payload(
+                "EAR-PAG",
+                observation_id=oid,
+                sequence_number=5000,
+                event_time=datetime(2026, 11, 5, 12, 0, 30, tzinfo=UTC),
+                emission_kind="periodic",
+            )
+        )
+        assert ingest_observation(db, "EAR-PAG", late_same) is True
+        late_row = db.scalars(
+            select(Observation).where(
+                Observation.node_id == "EAR-PAG",
+                Observation.sequence_number == 5000,
+            )
+        ).one()
+        assert late_row.id > snapshot
+        assert late_row.observation_id == oid
+
+        # Remaining pages of the original snapshot must stay frozen.
+        second = list_observations_page(
+            db,
+            "EAR-PAG",
+            observation_id=oid,
+            page=2,
+            page_size=2,
+            order="oldest",
+            snapshot_id=snapshot,
+        )
+        assert second.snapshot_id == snapshot
+        assert second.total == 3
+        all_seqs = [
+            item.identity.sequence_number
+            for page in (first, second)
+            for item in page.items
+        ]
+        assert 5000 not in all_seqs
+        assert len(all_seqs) == 3
+        assert len(set(all_seqs)) == 3
+
+        # Existing frozen row contents are unchanged (no in-place append).
+        for row in db.scalars(
+            select(Observation).where(Observation.id.in_(frozen_ids))
+        ).all():
+            assert row.payload_json == frozen_payloads[row.id]
+
+        # A newly created snapshot must include the late report.
+        fresh = list_observations_page(
+            db, "EAR-PAG", observation_id=oid, page=1, page_size=10, order="oldest"
+        )
+        assert fresh.total == 4
+        assert fresh.snapshot_id is not None
+        assert fresh.snapshot_id > snapshot
+        fresh_seqs = {item.identity.sequence_number for item in fresh.items}
+        assert 5000 in fresh_seqs
+    finally:
+        db.close()
+
+
+def test_frozen_snapshot_excludes_late_new_observation_id_then_fresh_includes() -> None:
+    """Late report that creates a new observation_id stays outside the freeze."""
+    _seed_reports(3)
+    oid_b = str(uuid4())
+    db = SessionLocal()
+    try:
+        first = list_observations_page(
+            db, "EAR-PAG", page=1, page_size=2, order="oldest"
+        )
+        snapshot = first.snapshot_id
+        assert snapshot is not None
+        assert first.total == 3
+
+        late_new = ObservationBody.model_validate(
+            _payload(
+                "EAR-PAG",
+                observation_id=oid_b,
+                sequence_number=8000,
+                event_time=datetime(2026, 11, 5, 13, 0, 0, tzinfo=UTC),
+                emission_kind="complete",
+            )
+        )
+        assert ingest_observation(db, "EAR-PAG", late_new) is True
+
+        remaining = list_observations_page(
+            db,
+            "EAR-PAG",
+            page=2,
+            page_size=2,
+            order="oldest",
+            snapshot_id=snapshot,
+        )
+        snap_seqs = {
+            item.identity.sequence_number
+            for page in (first, remaining)
+            for item in page.items
+        }
+        snap_oids = {
+            str(item.identity.observation_id)
+            for page in (first, remaining)
+            for item in page.items
+        }
+        assert 8000 not in snap_seqs
+        assert oid_b not in snap_oids
+        assert remaining.total == 3
+
+        fresh = list_observations_page(
+            db, "EAR-PAG", page=1, page_size=20, order="oldest"
+        )
+        assert fresh.total == 4
+        assert any(
+            str(item.identity.observation_id) == oid_b for item in fresh.items
+        )
+        assert any(item.identity.sequence_number == 8000 for item in fresh.items)
+    finally:
+        db.close()
+
+
+def test_duplicate_sequence_does_not_mutate_existing_report_row() -> None:
+    """Re-delivery of the same (node_id, sequence_number) is a no-op."""
+    from app.models import Observation
+    from sqlalchemy import select
+
+    oid = _seed_reports(1)
+    db = SessionLocal()
+    try:
+        row = db.scalars(select(Observation).where(Observation.node_id == "EAR-PAG")).one()
+        original_payload = row.payload_json
+        original_id = row.id
+        body = ObservationBody.model_validate(
+            _payload(
+                "EAR-PAG",
+                observation_id=oid,
+                sequence_number=1000,
+                event_time=datetime(2026, 11, 5, 12, 0, 0, tzinfo=UTC),
+                emission_kind="start",
+            )
+        )
+        # Force a different signal level in the re-delivered body.
+        mutated = body.model_dump(by_alias=True)
+        mutated["acoustic"]["signal_level_dbfs"] = -10.0
+        body2 = ObservationBody.model_validate(mutated)
+        assert ingest_observation(db, "EAR-PAG", body2) is False
+        row2 = db.get(Observation, original_id)
+        assert row2 is not None
+        assert row2.payload_json == original_payload
+        assert "-10.0" not in row2.payload_json
     finally:
         db.close()
 

@@ -8,8 +8,9 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 from lib.ear_test.job import JobController
 from lib.ear_test.models import format_utc, parse_utc, utc_now
@@ -32,7 +33,7 @@ def _normalize_received_time(value: Any) -> str:
     text = str(value)
     if " " in text and "T" not in text[:11]:
         text = text.replace(" ", "T", 1)
-    if text.endswith("Z") or "+" in text[10:] or text.endswith("UTC"):
+    if text.endswith(("Z", "UTC")) or "+" in text[10:]:
         parsed = parse_utc(text.replace("UTC", "+00:00"))
         return format_utc(parsed) or text
     parsed = parse_utc(text)
@@ -71,10 +72,10 @@ def fetch_observations_http(
         detail = exc.read() if hasattr(exc, "read") else b""
         raise RuntimeError(format_hub_http_error(exc.code, detail, path=path)) from exc
     if not isinstance(body, dict):
-        raise RuntimeError("hub observations response was not a JSON envelope")
+        raise TypeError("hub observations response was not a JSON envelope")
     reports = body.get("reports")
     if not isinstance(reports, list):
-        raise RuntimeError("hub observations envelope missing reports array")
+        raise TypeError("hub observations envelope missing reports array")
     return reports
 
 

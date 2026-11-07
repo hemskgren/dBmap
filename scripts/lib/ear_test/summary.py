@@ -167,9 +167,9 @@ def build_summary(controller: JobController) -> dict[str, Any]:
         "notes": [
             "Counts describe Observations received by the Hub during the job.",
             "No START/PERIODIC/END or acoustic-episode conclusions are made.",
-            "final_collection is a trailing poll window after the last active period; "
+            ("final_collection is a trailing poll window after the last active period; "
             "it is not an active test period. event_time_utc may still refer to an "
-            "earlier interval.",
+            "earlier interval."),
             *controller.manifest.collection.completeness_notes,
         ],
     }

@@ -23,6 +23,22 @@ def test_map_page_uses_vendored_leaflet_and_devices_api() -> None:
     assert LEAFLET_JS.is_file()
 
 
+def test_map_page_optionally_loads_analysis_scratch_datasets() -> None:
+    html = MAP_INDEX.read_text(encoding="utf-8")
+    assert 'id="dataset-select"' in html
+    assert "Devices (default)" in html
+    assert "/api/v1/analysis/scratch" in html
+    assert "include_content=false" in html
+    assert "discoverDatasets" in html
+    assert "loadSelectedDataset" in html
+    assert "drawHelicopterLayers" in html
+    assert "Analysis unavailable" in html
+    # Hub device/observation fetches remain the default path.
+    assert "fetchDevices" in html
+    assert "fetchObservations" in html
+    assert "analysisLayer" in html
+
+
 def test_hub_exposes_map_session_helper() -> None:
     hub = (Path(__file__).resolve().parents[2] / "web" / "index.html").read_text(
         encoding="utf-8"

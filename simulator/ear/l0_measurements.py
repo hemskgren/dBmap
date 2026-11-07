@@ -10,8 +10,9 @@ same linear band energies (same production formulas as Ear finalize).
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from copy import deepcopy
-from typing import Any, Literal, Sequence
+from typing import Any, Literal
 
 EmissionKind = Literal["start", "periodic", "end", "complete"]
 

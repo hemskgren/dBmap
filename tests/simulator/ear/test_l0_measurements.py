@@ -11,14 +11,14 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "hub" / "bootstrap"))
 sys.path.insert(0, str(ROOT / "simulator" / "ear"))
 
-from app.schemas import ObservationBody  # noqa: E402
-from l0_measurements import (  # noqa: E402
+from app.schemas import ObservationBody
+from l0_measurements import (
     SCENARIO_IDS,
     assert_band_hl_consistent,
     attach_l0_extension,
     make_l0_measurements,
 )
-from simulate_observation import make_observation  # noqa: E402
+from simulate_observation import make_observation
 
 
 def test_legacy_observation_still_validates() -> None:

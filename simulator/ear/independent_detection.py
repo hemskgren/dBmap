@@ -11,8 +11,10 @@ selects which positive detections become published observations.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal
+from typing import Any, Literal
+from uuid import uuid4
 
 SYNTHETIC_CLASSIFICATION_CONFIDENCE = 0.5
 SYNTHETIC_DURATION_MS = 850.0
@@ -320,6 +322,9 @@ def generate_independent_detection_events(
         ear_stats.detection_intervals = intervals
         ear_stats.detection_episodes = len(intervals)
         for episode_start, episode_end in intervals:
+            # One opaque Observation lifecycle ID per detection episode
+            # (START/PERIODIC/END share it). Never derived from ground_truth_id.
+            observation_id = str(uuid4())
             for emit_t, kind in emission_schedule_for_episode(
                 episode_start, episode_end, policy
             ):
@@ -339,6 +344,10 @@ def generate_independent_detection_events(
                 event = dict(measurements[key])
                 event["at_seconds"] = emit_t
                 event["emission_kind"] = kind
+                event["observation_id"] = observation_id
+                event["episode_start_at_seconds"] = episode_start
+                if kind == "end":
+                    event["termination_reason"] = "natural"
                 events.append(event)
                 ear_stats.observations_emitted += 1
                 if kind == "start":
@@ -375,22 +384,22 @@ def generate_independent_detection_events(
         simultaneous_two_or_more_intervals=_merge_intervals(multi_two_times, step),
         simultaneous_three_intervals=_merge_intervals(multi_three_times, step),
         notes=[
-            "Detection model: deterministic range gate (Stage 1); "
-            "eligibility is not based on signal level or emission policy.",
-            "Signal level model (Stage 2): "
+            ("Detection model: deterministic range gate (Stage 1); "
+            "eligibility is not based on signal level or emission policy."),
+            ("Signal level model (Stage 2): "
             "reference_level - 20*exponent*log10(distance/reference_distance); "
-            "synthetic/uncalibrated, not microphone measurements.",
-            f"signal params: reference_level_dbfs={level_config.reference_level_dbfs:g}, "
+            "synthetic/uncalibrated, not microphone measurements."),
+            (f"signal params: reference_level_dbfs={level_config.reference_level_dbfs:g}, "
             f"reference_distance_m={level_config.reference_distance_m:g}, "
             f"path_loss_exponent={level_config.path_loss_exponent:g}, "
             f"min_distance_for_log={MIN_DISTANCE_FOR_SIGNAL_LEVEL_M:g}m; "
-            "levels clamped to ≤0 dBFS for protocol.",
-            "Emission policy (Stage 3): episode-relative fixed interval; "
+            "levels clamped to ≤0 dBFS for protocol."),
+            ("Emission policy (Stage 3): episode-relative fixed interval; "
             f"observation_interval={policy.observation_interval_seconds:g}s; "
             f"emit_on_start={policy.emit_on_start}; emit_on_end={policy.emit_on_end}. "
-            "Detection evaluations ≠ emitted observations.",
-            f"Synthetic classification_confidence="
-            f"{SYNTHETIC_CLASSIFICATION_CONFIDENCE} (not calibrated).",
+            "Detection evaluations ≠ emitted observations."),
+            (f"Synthetic classification_confidence="
+            f"{SYNTHETIC_CLASSIFICATION_CONFIDENCE} (not calibrated)."),
             "Bearing confidence omitted (unavailable / not calibrated).",
             "All configured Ears are evaluated at every shared simulation step.",
         ],
@@ -404,10 +413,10 @@ def format_independent_detection_diagnostics(
     signal = diagnostics.signal_level
     policy = diagnostics.emission_policy
     lines = [
-        "Independent detection diagnostics "
-        "(Stage 1 range gate + Stage 2 levels + Stage 3 emission):",
-        f"  mode={diagnostics.mode}  time_step={diagnostics.time_step_seconds:g}s  "
-        f"default_max_range={diagnostics.default_max_range_m:g}m",
+        ("Independent detection diagnostics "
+        "(Stage 1 range gate + Stage 2 levels + Stage 3 emission):"),
+        (f"  mode={diagnostics.mode}  time_step={diagnostics.time_step_seconds:g}s  "
+        f"default_max_range={diagnostics.default_max_range_m:g}m"),
         (
             f"  signal model (synthetic): "
             f"reference_level={signal.reference_level_dbfs:g} dBFS  "

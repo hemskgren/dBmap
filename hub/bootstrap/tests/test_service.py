@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -31,9 +31,10 @@ from app.models import (
 )
 from app.mqtt_security import MqttSecurityError
 from app.policy import PolicyUnavailable
-from app.schemas import ObservationBody
+from app.schemas import InstallationMetadataBody, ObservationBody
 from app.service import ingest_observation, list_observations
 from app.topics import parse_observation_topic
+from pydantic import ValidationError
 
 
 def setup_module() -> None:
@@ -82,7 +83,7 @@ def valid_observation_payload(node_id: str = "SIM-EAR-001") -> dict:
             "sequence_number": 1,
         },
         "context": {
-            "event_time_utc": datetime.now(timezone.utc).isoformat(),
+            "event_time_utc": datetime.now(UTC).isoformat(),
             "capture_timestamp_monotonic_us": 123456,
             "timing_quality": "estimated",
             "clock_offset_ms": None,
@@ -258,7 +259,7 @@ def test_device_summary_status_uses_recent_keepalive() -> None:
     try:
         reported = db.get(ReportedState, node_id)
         assert reported is not None
-        reported.last_seen_at = datetime.now(timezone.utc) - timedelta(
+        reported.last_seen_at = datetime.now(UTC) - timedelta(
             seconds=settings.device_online_window_s + 1
         )
         db.commit()
@@ -467,6 +468,71 @@ def test_installation_requires_geographic_position_and_is_returned_by_node_api()
         json=installation,
     )
     assert unauthorized.status_code == 401
+
+
+def test_installation_coordinate_precision_roundtrip_and_range() -> None:
+    """API/DB preserve IEEE float coords; no six-decimal cap (web must match)."""
+    client = TestClient(create_app())
+    headers = {"Authorization": "Bearer test-admin"}
+    created = client.post(
+        "/api/v1/nodes", json={"node_type": "ear"}, headers=headers
+    )
+    assert created.status_code == 200, created.text
+    node_id = created.json()["node_id"]
+
+    cases = [
+        # integers
+        {"latitude": 60, "longitude": 10},
+        # six decimal places
+        {"latitude": 59.912345, "longitude": 10.752345},
+        # seven+ decimal places (IEEE float, same as JSON/JS Number)
+        {"latitude": 59.1234567, "longitude": 10.7654321},
+        {"latitude": -33.8688197, "longitude": 151.2092955},
+        # geographic boundaries
+        {"latitude": -90, "longitude": -180},
+        {"latitude": 90, "longitude": 180},
+        {"latitude": 0, "longitude": 0},
+    ]
+    for coords in cases:
+        updated = client.put(
+            f"/api/v1/nodes/{node_id}/installation",
+            json=coords,
+            headers=headers,
+        )
+        assert updated.status_code == 200, (coords, updated.text)
+        body = updated.json()["installation"]
+        assert body["latitude"] == coords["latitude"]
+        assert body["longitude"] == coords["longitude"]
+
+        fetched = client.get(f"/api/v1/nodes/{node_id}", headers=headers)
+        assert fetched.status_code == 200
+        installation = fetched.json()["installation"]
+        assert installation["latitude"] == coords["latitude"]
+        assert installation["longitude"] == coords["longitude"]
+
+    out_of_range = [
+        {"latitude": 90.0000001, "longitude": 0},
+        {"latitude": -90.1, "longitude": 0},
+        {"latitude": 0, "longitude": 180.0000001},
+        {"latitude": 0, "longitude": -180.1},
+    ]
+    for coords in out_of_range:
+        rejected = client.put(
+            f"/api/v1/nodes/{node_id}/installation",
+            json=coords,
+            headers=headers,
+        )
+        assert rejected.status_code == 422, coords
+
+    # Non-finite values are rejected by the schema (allow_inf_nan=False).
+    # Assert via model_validate: JSON cannot carry NaN/Inf in a standard body.
+    for bad in (
+        {"latitude": float("nan"), "longitude": 0.0},
+        {"latitude": float("inf"), "longitude": 0.0},
+        {"latitude": 0.0, "longitude": float("-inf")},
+    ):
+        with pytest.raises(ValidationError):
+            InstallationMetadataBody.model_validate(bad)
 
 
 def test_observations_are_validated_deduplicated_and_listed() -> None:
@@ -808,7 +874,7 @@ def test_output_node_commands(monkeypatch) -> None:
 
     monkeypatch.setattr(mqtt_listener, "publish_json", fake_publish_json)
 
-    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
+    expires_at = (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
     test_cmd = client.post(
         f"/api/v1/nodes/{node_id}/commands",
         json={

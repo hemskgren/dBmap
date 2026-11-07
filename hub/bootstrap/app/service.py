@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import func, select
@@ -229,7 +229,7 @@ def rotate_pending_bootstrap_token(db: Session, node_id: str) -> str:
             "bootstrap tokens can only be replaced while the device is pending"
         )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     active_tokens = db.scalars(
         select(BootstrapToken)
         .where(
@@ -280,7 +280,7 @@ def provision(db: Session, body: ProvisionRequest) -> ProvisionResponse:
         cred = NodeCredential(node_id=node.node_id, mqtt_username=username)
         db.add(cred)
     cred.mqtt_username = username
-    cred.issued_at = datetime.now(timezone.utc)
+    cred.issued_at = datetime.now(UTC)
     device_api_token = _store_device_api_token(cred)
     if settings.mqtt_enabled:
         ensure_node_security(node.node_type, node.node_id, password)
@@ -298,7 +298,7 @@ def provision(db: Session, body: ProvisionRequest) -> ProvisionResponse:
     reported.hardware_revision = body.hardware_revision
     reported.firmware_version = body.firmware_version
 
-    row.consumed_at = datetime.now(timezone.utc)
+    row.consumed_at = datetime.now(UTC)
     db.commit()
 
     t = topics_for(node.node_type, node.node_id)
@@ -332,7 +332,7 @@ def _store_device_api_token(cred: NodeCredential) -> str:
     """Replace the device HTTPS credential. Returns plaintext once; only the hash is stored."""
     token = new_token()
     cred.device_api_token_hash = token_hash(token)
-    cred.device_api_issued_at = datetime.now(timezone.utc)
+    cred.device_api_issued_at = datetime.now(UTC)
     cred.device_api_revoked_at = None
     return token
 
@@ -361,7 +361,7 @@ def revoke_device_api_token(db: Session, node_id: str) -> None:
     if cred.device_api_token_hash is None:
         raise DeviceCredentialUnavailable("device API token is already revoked")
     cred.device_api_token_hash = None
-    cred.device_api_revoked_at = datetime.now(timezone.utc)
+    cred.device_api_revoked_at = datetime.now(UTC)
     db.commit()
 
 
@@ -376,7 +376,7 @@ def open_recovery_provision(db: Session, node_id: str) -> str:
             "recovery provisioning is only for an already provisioned device"
         )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     active_tokens = db.scalars(
         select(BootstrapToken)
         .where(
@@ -725,7 +725,7 @@ def list_observations_page(
         payload = json.loads(row.payload_json)
         received_at = row.received_time_utc
         if received_at.tzinfo is None:
-            received_at = received_at.replace(tzinfo=timezone.utc)
+            received_at = received_at.replace(tzinfo=UTC)
         items.append(ObservationView(**payload, received_time_utc=received_at))
 
     return PageResult(
@@ -835,7 +835,7 @@ def apply_reported(db: Session, node_id: str, payload: dict) -> None:
     reported.uptime_s = int(payload.get("uptime_s", reported.uptime_s) or 0)
     reported.pending_configuration_change = 1 if pending else 0
     reported.payload_json = json.dumps(payload)
-    reported.last_seen_at = datetime.now(timezone.utc)
+    reported.last_seen_at = datetime.now(UTC)
 
     if node.provisioning_state == "provisioned":
         node.availability = "OPERATIONAL"
@@ -915,7 +915,7 @@ def node_view(db: Session, node: Node, *, include_monitoring: bool = False) -> N
             installation_view = None
     last_seen_at = reported.last_seen_at if reported else None
     if last_seen_at is not None and last_seen_at.tzinfo is None:
-        last_seen_at = last_seen_at.replace(tzinfo=timezone.utc)
+        last_seen_at = last_seen_at.replace(tzinfo=UTC)
     online = device_monitor.is_online(last_seen_at)
     monitoring = None
     if include_monitoring:
@@ -964,7 +964,7 @@ def send_output_command(
     if node.provisioning_state not in {"provisioned", "active"}:
         raise OutputCommandUnavailable("the node has not completed Hub provisioning")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if body.expires_at_utc is None:
         if body.duration_s is not None:
             lifetime_s = body.duration_s + 30

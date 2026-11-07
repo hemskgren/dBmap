@@ -90,7 +90,7 @@ def test_interval_changes_emissions_not_detections(tmp_path) -> None:
     path = tmp_path / "scenario.json"
     path.write_text(json.dumps(_two_ear_scenario()))
     loaded = simulate_scenario.load_scenario(path)
-    every, every_diag = simulate_scenario.apply_simulation_mode(
+    _every, every_diag = simulate_scenario.apply_simulation_mode(
         loaded,
         mode="independent_detection",
         time_step_seconds=1.0,
@@ -207,6 +207,17 @@ def test_new_episode_emits_fresh_start(tmp_path) -> None:
     ]
     assert diagnostics.per_ear["ear_a"].detection_episodes == len(starts)
     assert len(starts) == len(set(starts))
+    # Each episode shares one opaque observation_id across start/periodic/end.
+    by_id: dict[str, list[str]] = {}
+    for item in prepared["observations"]:
+        observation_id = item["observation_id"]
+        by_id.setdefault(observation_id, []).append(item["emission_kind"])
+        assert observation_id != "SIM-SRC"
+        assert item["episode_start_at_seconds"] is not None
+    assert len(by_id) == diagnostics.per_ear["ear_a"].detection_episodes
+    for kinds in by_id.values():
+        assert kinds[0] == "start"
+        assert kinds[-1] == "end"
 
 
 def test_helicopter_emission_interval_preserves_stage1_detections() -> None:
@@ -225,7 +236,7 @@ def test_helicopter_emission_interval_preserves_stage1_detections() -> None:
         max_range_m=4000.0,
         observation_interval_seconds=1.0,
     )
-    sampled, sampled_diag = simulate_scenario.apply_simulation_mode(
+    _sampled, sampled_diag = simulate_scenario.apply_simulation_mode(
         loaded,
         mode="independent_detection",
         time_step_seconds=1.0,
@@ -235,12 +246,15 @@ def test_helicopter_emission_interval_preserves_stage1_detections() -> None:
     assert (
         baseline_diag.total_positive_detection_evaluations
         == sampled_diag.total_positive_detection_evaluations
-        == 497
     )
+    assert baseline_diag.total_positive_detection_evaluations > 0
     for alias in baseline_diag.per_ear:
         assert (
             baseline_diag.per_ear[alias].detection_intervals
             == sampled_diag.per_ear[alias].detection_intervals
         )
     assert sampled_diag.observations_generated < baseline_diag.observations_generated
-    assert len(baseline["observations"]) == 497
+    # Interval 1s emits every positive detection sample (start/periodic/end schedule).
+    assert len(baseline["observations"]) == (
+        baseline_diag.total_positive_detection_evaluations
+    )

@@ -7,7 +7,7 @@ import sys
 import time
 from collections import defaultdict
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from typing import Any
@@ -18,11 +18,7 @@ _SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 for _path in (_EAR_DIR, _SCRIPTS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
-from lib.hub_cli import (  # noqa: E402
-    load_project_env,
-    print_help_without_arguments,
-)
-from independent_detection import (  # noqa: E402
+from independent_detection import (
     DEFAULT_OBSERVATION_INTERVAL_S,
     DEFAULT_PATH_LOSS_EXPONENT,
     DEFAULT_REFERENCE_DISTANCE_M,
@@ -32,6 +28,10 @@ from independent_detection import (  # noqa: E402
     SignalLevelConfig,
     format_independent_detection_diagnostics,
     generate_independent_detection_events,
+)
+from lib.hub_cli import (
+    load_project_env,
+    print_help_without_arguments,
 )
 
 _simulator_module = None
@@ -579,14 +579,42 @@ def load_ear_credentials(
     return credentials_by_alias
 
 
+# Gap (same Ear, consecutive scripted points) that starts a new Observation
+# lifecycle. Existing exclusive-window scenarios stay under this threshold;
+# overlapping Cross-EAR fixtures use a larger silence for a negative pass.
+SCRIPTED_LIFECYCLE_GAP_SECONDS = 30.0
+
+
+def _scripted_lifecycle_segments(
+    prepared: list[dict[str, Any]], indices: list[int]
+) -> list[list[int]]:
+    if not indices:
+        return []
+    segments: list[list[int]] = [[indices[0]]]
+    for index in indices[1:]:
+        previous = segments[-1][-1]
+        gap = float(prepared[index]["at_seconds"]) - float(
+            prepared[previous]["at_seconds"]
+        )
+        if gap > SCRIPTED_LIFECYCLE_GAP_SECONDS:
+            segments.append([index])
+        else:
+            segments[-1].append(index)
+    return segments
+
+
 def assign_scripted_ear_observation_lifecycles(
     observations: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Group scripted points by Ear into one Observation lifecycle each.
+    """Group scripted points by Ear into Observation lifecycles.
 
     Points that already set ``emission_kind`` (independent_detection) are unchanged.
-    One unassigned point per Ear -> COMPLETE. Two or more -> START, PERIODIC..., END
-    with one stable ``observation_id`` shared across that Ear's messages.
+    Consecutive unassigned points for the same Ear share one ``observation_id``
+    until a silence greater than ``SCRIPTED_LIFECYCLE_GAP_SECONDS``, which starts
+    a new lifecycle. One point -> COMPLETE; two or more -> START, PERIODIC..., END.
+
+    Lifecycle IDs are minted per Ear segment only — never from simulator
+    ``ground_truth_id`` / ``simulated_source_id``.
     """
     prepared = [dict(item) for item in observations]
     by_ear: dict[str, list[int]] = defaultdict(list)
@@ -598,23 +626,24 @@ def assign_scripted_ear_observation_lifecycles(
             by_ear[ear].append(index)
 
     for indices in by_ear.values():
-        observation_id = str(uuid4())
-        count = len(indices)
-        episode_start = prepared[indices[0]]["at_seconds"]
-        for position, index in enumerate(indices):
-            if count == 1:
-                kind = "complete"
-            elif position == 0:
-                kind = "start"
-            elif position == count - 1:
-                kind = "end"
-            else:
-                kind = "periodic"
-            prepared[index]["emission_kind"] = kind
-            prepared[index]["observation_id"] = observation_id
-            prepared[index]["episode_start_at_seconds"] = episode_start
-            if kind in ("end", "complete"):
-                prepared[index].setdefault("termination_reason", "natural")
+        for segment in _scripted_lifecycle_segments(prepared, indices):
+            observation_id = str(uuid4())
+            count = len(segment)
+            episode_start = prepared[segment[0]]["at_seconds"]
+            for position, index in enumerate(segment):
+                if count == 1:
+                    kind = "complete"
+                elif position == 0:
+                    kind = "start"
+                elif position == count - 1:
+                    kind = "end"
+                else:
+                    kind = "periodic"
+                prepared[index]["emission_kind"] = kind
+                prepared[index]["observation_id"] = observation_id
+                prepared[index]["episode_start_at_seconds"] = episode_start
+                if kind in ("end", "complete"):
+                    prepared[index].setdefault("termination_reason", "natural")
     return prepared
 
 
@@ -816,7 +845,7 @@ def run_scenario(
         make_keepalive=make_keepalive,
         uptime_s=0,
     )
-    scenario_start = started_at_utc or datetime.now(timezone.utc)
+    scenario_start = started_at_utc or datetime.now(UTC)
     monotonic_start = (
         started_at_monotonic_us
         if started_at_monotonic_us is not None
@@ -872,7 +901,7 @@ def run_scenario(
 
 
 def print_schedule(scenario: dict[str, Any], *, time_scale: float = 1.0) -> None:
-    started_at = datetime.now(timezone.utc)
+    started_at = datetime.now(UTC)
     started_at_monotonic_us = time.monotonic_ns() // 1000
     sequences: dict[str, int] = {}
     timed_events = assign_scripted_ear_observation_lifecycles(scenario["observations"])
@@ -1063,7 +1092,7 @@ def _add_scenario_common_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "scripted = authored observations (baseline); "
             "independent_detection = shared trajectory + per-Ear range gate "
-            f"(default: scripted)"
+            "(default: scripted)"
         ),
     )
     parser.add_argument(

@@ -3,7 +3,7 @@ import logging
 import ssl
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import paho.mqtt.client as mqtt
 from sqlalchemy.orm import Session
@@ -138,7 +138,7 @@ def _on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
             return
         with _connection_lock:
             _broker_metrics[metric_name] = metric
-            _broker_metrics_updated_at = datetime.now(timezone.utc).isoformat()
+            _broker_metrics_updated_at = datetime.now(UTC).isoformat()
         return
 
     if msg.topic.endswith("/observation"):

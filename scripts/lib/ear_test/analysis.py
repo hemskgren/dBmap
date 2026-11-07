@@ -7,6 +7,7 @@ acoustic-episode interpretation.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from lib.ear_test.job import JobController
@@ -390,9 +391,9 @@ def _num(value: Any) -> str:
     if value is None:
         return "—"
     if isinstance(value, float):
-        if value != value:  # NaN
+        if math.isnan(value):
             return "—"
         if abs(value - round(value)) < 1e-9:
-            return str(int(round(value)))
+            return str(round(value))
         return f"{value:.3f}".rstrip("0").rstrip(".")
     return str(value)

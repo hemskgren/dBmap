@@ -29,6 +29,7 @@ Other docs (authorization, identity, health, security) live under [`docs/`](docs
 
 ```text
 hub/bootstrap          Local Hub service
+analysis/              Optional Analysis API (Compose profile `analysis`)
 mqtt                   Broker config and TLS
 web                    Hub UI
 firmware/              Shared client, Ear, and Output
@@ -41,12 +42,27 @@ compose.yaml           Local Hub stack
 
 ## Tests
 
+Repo-wide lint (uses root `ruff.toml`; covers `scripts/`, `simulator/`, tests, etc.):
+
+```bash
+uv sync --group dev
+uv run ruff check
+```
+
 From `hub/bootstrap`:
 
 ```bash
 uv sync --extra dev
 uv run ruff check app
 uv run pytest tests ../../tests
+```
+
+From `analysis`:
+
+```bash
+uv sync --extra dev
+uv run ruff check app
+uv run pytest tests
 ```
 
 Policy tests from the repo root: `sh scripts/test-policy.sh`.

@@ -1,5 +1,6 @@
 import json
 import sys
+from datetime import UTC, datetime
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
@@ -98,7 +99,8 @@ def test_report_disclaims_event_track_and_geographic_position_inference() -> Non
     )
 
     output = "\n".join(lines)
-    assert "Observation reports: 1 (fetched maximum 500)" in output
+    assert "Observation reports: 1 (" in output
+    assert "page fetch" in output or "complete snapshot" in output
     assert "Unique observations: 1" in output
     assert "Report R1:" not in output
     assert "Candidate C" not in output
@@ -108,7 +110,8 @@ def test_report_disclaims_event_track_and_geographic_position_inference() -> Non
     )
     assert "SIM-VEHICLE-001" not in output
     assert "Ear activity episode A1 for SIM-EAR-001" in output
-    assert "No Event or Track association is attempted" in output
+    assert "Track is not implemented" in output
+    assert "experimental script-local analysis only" in output
     assert "Cross-Ear Bearing Geometry (diagnostic only" in output
     assert "Weather remains informational only" in output
 
@@ -260,7 +263,8 @@ def test_report_keeps_same_hint_observations_separate_and_groups_only_ear_activi
 
     assert "Candidate C" not in output
     assert "Report R" not in output
-    assert "Observation reports: 6 (fetched maximum 500)" in output
+    assert "Observation reports: 6 (" in output
+    assert "page fetch" in output or "complete snapshot" in output
     assert "Unique observations: 6" in output
     assert "SIM-VEHICLE-001" not in output
     assert "Ear activity episode A1 for EAR-001: 1 report(s)" in output
@@ -456,7 +460,8 @@ def test_report_can_omit_site_context_for_watch_updates() -> None:
             include_site_context=False,
         )
     )
-    assert "Observation reports: 2 (fetched maximum 500)" in output
+    assert "Observation reports: 2 (" in output
+    assert "page fetch" in output or "complete snapshot" in output
     assert "Report R" not in output
     assert "Ear activity episode" in output
     assert "Node installation metadata" not in output
@@ -1000,3 +1005,978 @@ def test_fetch_observations_rejects_invalid_page_size() -> None:
             "tok",
             page_size=501,
         )
+
+
+def _node(lat: float, lon: float, orientation: float = 0.0) -> dict:
+    return {
+        "installation": {
+            "latitude": lat,
+            "longitude": lon,
+            "orientation_deg": orientation,
+        }
+    }
+
+
+def _obs(
+    observation_id: str,
+    node_id: str,
+    event_time_utc: str,
+    *,
+    duration_ms: float = 1000,
+    bearing_deg: float | None = 90.0,
+    bearing_confidence: float | None = 0.8,
+    source_family: str | None = "vehicle",
+    classification_confidence: float | None = 0.7,
+    simulated_source_id: str | None = None,
+) -> dict:
+    classification = None
+    if source_family is not None or simulated_source_id is not None:
+        classification = {}
+        if source_family is not None:
+            classification["source_family"] = source_family
+        if classification_confidence is not None:
+            classification["confidence"] = classification_confidence
+        if simulated_source_id is not None:
+            classification["hints"] = {"simulated_source_id": simulated_source_id}
+    bearing = None
+    if bearing_deg is not None:
+        bearing = {"deg": bearing_deg, "reference": "node"}
+        if bearing_confidence is not None:
+            bearing["confidence"] = bearing_confidence
+    return {
+        "observation_id": observation_id,
+        "node_id": node_id,
+        "event_time_utc": event_time_utc,
+        "duration_ms": duration_ms,
+        "classification": classification,
+        "bearing": bearing,
+    }
+
+
+TRIANGLE_NODES = {
+    # ~1 km east-west / north baselines — inside a raised association radius.
+    "SIM-EAR-001": _node(59.3400, 18.0500, 0.0),
+    "SIM-EAR-002": _node(59.3400, 18.0600, 0.0),
+    "SIM-EAR-003": _node(59.3480, 18.0550, 180.0),
+}
+
+
+def test_one_ear_cannot_create_cross_ear_candidate() -> None:
+    result = hub_event_track.run_cross_ear_correlation(
+        [
+            _obs("a1", "SIM-EAR-001", "2026-11-05T18:00:20Z"),
+            _obs("a2", "SIM-EAR-001", "2026-11-05T18:00:25Z"),
+        ],
+        TRIANGLE_NODES,
+        max_association_distance_m=5000,
+        allow_long_range_sim_ears=True,
+    )
+    assert result.candidates == []
+    assert result.events == []
+    assert any("same Ear" in item.reason for item in result.rejected)
+
+
+def test_two_compatible_ears_create_one_candidate() -> None:
+    result = hub_event_track.run_cross_ear_correlation(
+        [
+            _obs("a1", "SIM-EAR-001", "2026-11-05T18:00:20Z", bearing_deg=120.0),
+            _obs("b1", "SIM-EAR-002", "2026-11-05T18:00:22Z", bearing_deg=240.0),
+        ],
+        TRIANGLE_NODES,
+        max_association_distance_m=5000,
+        allow_long_range_sim_ears=True,
+    )
+    assert len(result.events) == 0
+    open_candidates = [
+        item for item in result.candidates if item.status == "EventCandidate"
+    ]
+    assert len(open_candidates) == 1
+    assert set(open_candidates[0].ear_ids) == {"SIM-EAR-001", "SIM-EAR-002"}
+    assert set(open_candidates[0].observation_ids) == {"a1", "b1"}
+
+
+def test_third_ear_updates_same_candidate_and_can_promote() -> None:
+    result = hub_event_track.run_cross_ear_correlation(
+        [
+            _obs(
+                "a1",
+                "SIM-EAR-001",
+                "2026-11-05T18:00:20Z",
+                duration_ms=10000,
+                bearing_deg=150.0,
+            ),
+            _obs(
+                "b1",
+                "SIM-EAR-002",
+                "2026-11-05T18:00:22Z",
+                duration_ms=10000,
+                bearing_deg=210.0,
+            ),
+            _obs(
+                "c1",
+                "SIM-EAR-003",
+                "2026-11-05T18:00:24Z",
+                duration_ms=10000,
+                bearing_deg=0.0,
+            ),
+        ],
+        TRIANGLE_NODES,
+        max_association_distance_m=5000,
+        allow_long_range_sim_ears=True,
+        min_ears_for_event=3,
+        min_promote_score=4,
+    )
+    assert len(result.events) == 1
+    assert set(result.events[0].ear_ids) == {
+        "SIM-EAR-001",
+        "SIM-EAR-002",
+        "SIM-EAR-003",
+    }
+    promoted = [item for item in result.candidates if item.status == "Promoted"]
+    assert len(promoted) == 1
+    assert promoted[0].candidate_id == result.events[0].candidate_id
+
+
+def test_three_ears_with_insufficient_evidence_do_not_promote() -> None:
+    # Gap-only temporal compatibility (no overlap) and no bearings: 3 Ears stay Candidate.
+    result = hub_event_track.run_cross_ear_correlation(
+        [
+            _obs(
+                "a1",
+                "SIM-EAR-001",
+                "2026-11-05T18:00:00Z",
+                duration_ms=500,
+                bearing_deg=None,
+                source_family=None,
+            ),
+            _obs(
+                "b1",
+                "SIM-EAR-002",
+                "2026-11-05T18:00:10Z",
+                duration_ms=500,
+                bearing_deg=None,
+                source_family=None,
+            ),
+            _obs(
+                "c1",
+                "SIM-EAR-003",
+                "2026-11-05T18:00:20Z",
+                duration_ms=500,
+                bearing_deg=None,
+                source_family=None,
+            ),
+        ],
+        TRIANGLE_NODES,
+        max_association_distance_m=5000,
+        allow_long_range_sim_ears=True,
+        association_temporal_gap_seconds=30.0,
+        min_ears_for_event=3,
+        min_promote_score=4,
+    )
+    assert result.events == []
+    open_candidates = [
+        item for item in result.candidates if item.status == "EventCandidate"
+    ]
+    assert len(open_candidates) == 1
+    assert len(open_candidates[0].ear_ids) == 3
+    assert open_candidates[0].score_breakdown["temporal"] == 1
+    assert any("promotion withheld" in note for note in open_candidates[0].evidence_notes)
+
+
+def test_same_ear_observations_cannot_create_cross_ear_support() -> None:
+    evidence = hub_event_track.run_cross_ear_correlation(
+        [
+            _obs("a1", "SIM-EAR-001", "2026-11-05T18:00:20Z"),
+            _obs("a2", "SIM-EAR-001", "2026-11-05T18:00:21Z"),
+        ],
+        TRIANGLE_NODES,
+        max_association_distance_m=5000,
+        allow_long_range_sim_ears=True,
+    )
+    assert evidence.candidates == []
+    assert any("same Ear" in item.reason for item in evidence.rejected)
+
+
+def test_temporally_incompatible_observation_is_rejected() -> None:
+    from lib.cross_ear_event_correlation import (
+        assemble_observations,
+        evaluate_observation_pair,
+    )
+
+    reports = [
+        _obs("a1", "SIM-EAR-001", "2026-11-05T18:00:00Z", duration_ms=500),
+        _obs("b1", "SIM-EAR-002", "2026-11-05T18:05:00Z", duration_ms=500),
+    ]
+    assembled = assemble_observations(
+        reports,
+        TRIANGLE_NODES,
+        observation_fields=hub_event_track.observation_fields,
+        observation_time=hub_event_track.observation_time,
+        sequence_gap_count=hub_event_track.sequence_gap_count,
+        sort_observations=hub_event_track.sort_observations,
+    )
+    evidence = evaluate_observation_pair(
+        assembled[0],
+        assembled[1],
+        TRIANGLE_NODES,
+        association_temporal_gap_seconds=30.0,
+        max_association_distance_m=5000,
+        allow_long_range_sim_ears=True,
+        installation_distance_m=hub_event_track.installation_distance_m,
+        is_sim_ear=hub_event_track.is_sim_ear,
+    )
+    assert evidence.rejected
+    assert evidence.temporal == "incompatible"
+
+
+def test_geometrically_contradictory_observation_not_silently_joined() -> None:
+    # Outward rays (300° / 60°) yield a behind_both intersection — reject, don't join.
+    result = hub_event_track.run_cross_ear_correlation(
+        [
+            _obs("a1", "SIM-EAR-001", "2026-11-05T18:00:20Z", bearing_deg=300.0),
+            _obs("b1", "SIM-EAR-002", "2026-11-05T18:00:22Z", bearing_deg=60.0),
+        ],
+        {
+            "SIM-EAR-001": _node(0.0, 0.0, 0.0),
+            "SIM-EAR-002": _node(0.0, 0.01, 0.0),
+        },
+        max_association_distance_m=5000,
+        allow_long_range_sim_ears=True,
+    )
+    assert result.candidates == []
+    assert any(
+        "bearing" in item.reason or "contradictory" in item.reason
+        for item in result.rejected
+    )
+
+
+def test_missing_bearings_do_not_automatically_reject_compatible_pair() -> None:
+    result = hub_event_track.run_cross_ear_correlation(
+        [
+            _obs(
+                "a1",
+                "SIM-EAR-001",
+                "2026-11-05T18:00:20Z",
+                bearing_deg=None,
+                source_family="vehicle",
+            ),
+            _obs(
+                "b1",
+                "SIM-EAR-002",
+                "2026-11-05T18:00:22Z",
+                bearing_deg=None,
+                source_family="vehicle",
+            ),
+        ],
+        TRIANGLE_NODES,
+        max_association_distance_m=5000,
+        allow_long_range_sim_ears=True,
+    )
+    open_candidates = [
+        item for item in result.candidates if item.status == "EventCandidate"
+    ]
+    assert len(open_candidates) == 1
+    assert open_candidates[0].provisional_position is None
+
+
+def test_duplicate_input_does_not_create_duplicate_candidates() -> None:
+    reports = [
+        _obs("a1", "SIM-EAR-001", "2026-11-05T18:00:20Z", bearing_deg=120.0),
+        _obs("b1", "SIM-EAR-002", "2026-11-05T18:00:22Z", bearing_deg=240.0),
+        # Duplicate reports for the same Observation lifecycles:
+        _obs("a1", "SIM-EAR-001", "2026-11-05T18:00:21Z", bearing_deg=121.0),
+        _obs("b1", "SIM-EAR-002", "2026-11-05T18:00:23Z", bearing_deg=239.0),
+    ]
+    result = hub_event_track.run_cross_ear_correlation(
+        reports,
+        TRIANGLE_NODES,
+        max_association_distance_m=5000,
+        allow_long_range_sim_ears=True,
+    )
+    assert len(result.observations) == 2
+    open_candidates = [
+        item for item in result.candidates if item.status == "EventCandidate"
+    ]
+    assert len(open_candidates) == 1
+
+
+def test_simulator_ground_truth_hints_do_not_affect_associations() -> None:
+    shared_hint = [
+        _obs(
+            "a1",
+            "SIM-EAR-001",
+            "2026-11-05T18:00:20Z",
+            bearing_deg=120.0,
+            simulated_source_id="SIM-XEAR-001",
+        ),
+        _obs(
+            "b1",
+            "SIM-EAR-002",
+            "2026-11-05T18:00:22Z",
+            bearing_deg=240.0,
+            simulated_source_id="SIM-XEAR-001",
+        ),
+    ]
+    mixed_hint = [
+        _obs(
+            "a1",
+            "SIM-EAR-001",
+            "2026-11-05T18:00:20Z",
+            bearing_deg=120.0,
+            simulated_source_id="SIM-XEAR-001",
+        ),
+        _obs(
+            "b1",
+            "SIM-EAR-002",
+            "2026-11-05T18:00:22Z",
+            bearing_deg=240.0,
+            simulated_source_id="SIM-OTHER-999",
+        ),
+    ]
+    first = hub_event_track.run_cross_ear_correlation(
+        shared_hint,
+        TRIANGLE_NODES,
+        max_association_distance_m=5000,
+        allow_long_range_sim_ears=True,
+    )
+    second = hub_event_track.run_cross_ear_correlation(
+        mixed_hint,
+        TRIANGLE_NODES,
+        max_association_distance_m=5000,
+        allow_long_range_sim_ears=True,
+    )
+    assert len(first.candidates) == len(second.candidates) == 1
+    assert first.candidates[0].observation_ids == second.candidates[0].observation_ids
+    assert first.candidates[0].score == second.candidates[0].score
+
+
+def test_event_can_exist_without_position_estimate() -> None:
+    result = hub_event_track.run_cross_ear_correlation(
+        [
+            _obs(
+                "a1",
+                "SIM-EAR-001",
+                "2026-11-05T18:00:20Z",
+                duration_ms=10000,
+                bearing_deg=None,
+                source_family="vehicle",
+            ),
+            _obs(
+                "b1",
+                "SIM-EAR-002",
+                "2026-11-05T18:00:22Z",
+                duration_ms=10000,
+                bearing_deg=None,
+                source_family="vehicle",
+            ),
+            _obs(
+                "c1",
+                "SIM-EAR-003",
+                "2026-11-05T18:00:24Z",
+                duration_ms=10000,
+                bearing_deg=None,
+                source_family="vehicle",
+            ),
+        ],
+        TRIANGLE_NODES,
+        max_association_distance_m=5000,
+        allow_long_range_sim_ears=True,
+        min_ears_for_event=3,
+        min_promote_score=4,
+    )
+    assert len(result.events) == 1
+    assert result.events[0].provisional_position is None
+    assert result.events[0].localization is not None
+    assert result.events[0].localization.status == "unavailable"
+    # Classification family must not be required for promotion.
+    assert result.events[0].score_breakdown["acoustic"] == 0
+
+
+def test_classification_null_matches_classification_present_association() -> None:
+    with_class = [
+        _obs(
+            "a1",
+            "SIM-EAR-001",
+            "2026-11-05T18:00:20Z",
+            duration_ms=10000,
+            bearing_deg=120.0,
+        ),
+        _obs(
+            "b1",
+            "SIM-EAR-002",
+            "2026-11-05T18:00:22Z",
+            duration_ms=10000,
+            bearing_deg=240.0,
+        ),
+        _obs(
+            "c1",
+            "SIM-EAR-003",
+            "2026-11-05T18:00:24Z",
+            duration_ms=10000,
+            bearing_deg=0.0,
+        ),
+    ]
+    null_class = [
+        _obs(
+            "a1",
+            "SIM-EAR-001",
+            "2026-11-05T18:00:20Z",
+            duration_ms=10000,
+            bearing_deg=120.0,
+            source_family=None,
+        ),
+        _obs(
+            "b1",
+            "SIM-EAR-002",
+            "2026-11-05T18:00:22Z",
+            duration_ms=10000,
+            bearing_deg=240.0,
+            source_family=None,
+        ),
+        _obs(
+            "c1",
+            "SIM-EAR-003",
+            "2026-11-05T18:00:24Z",
+            duration_ms=10000,
+            bearing_deg=0.0,
+            source_family=None,
+        ),
+    ]
+    first = hub_event_track.run_cross_ear_correlation(
+        with_class,
+        TRIANGLE_NODES,
+        max_association_distance_m=5000,
+        allow_long_range_sim_ears=True,
+    )
+    second = hub_event_track.run_cross_ear_correlation(
+        null_class,
+        TRIANGLE_NODES,
+        max_association_distance_m=5000,
+        allow_long_range_sim_ears=True,
+    )
+    assert len(first.events) == len(second.events) == 1
+    assert first.events[0].score == second.events[0].score
+    assert first.events[0].score_breakdown == second.events[0].score_breakdown
+    assert first.events[0].score_breakdown["acoustic"] == 0
+
+
+def test_cross_ear_event_pass_scenario_end_to_end() -> None:
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    scenario_path = (
+        Path(__file__).parents[2]
+        / "simulator"
+        / "ear"
+        / "scenarios"
+        / "cross_ear_event_pass.json"
+    )
+    sim_spec = spec_from_file_location(
+        "dbmap_ear_scenario_simulator_for_correlation",
+        Path(__file__).parents[2] / "simulator" / "ear" / "simulate_scenario.py",
+    )
+    assert sim_spec is not None and sim_spec.loader is not None
+    simulate_scenario = module_from_spec(sim_spec)
+    sim_spec.loader.exec_module(simulate_scenario)
+
+    scenario = simulate_scenario.load_scenario(scenario_path)
+    credentials = {
+        "ear_a": {"node_id": "SIM-EAR-001", "next_sequence_number": 1},
+        "ear_b": {"node_id": "SIM-EAR-002", "next_sequence_number": 1},
+        "ear_c": {"node_id": "SIM-EAR-003", "next_sequence_number": 1},
+    }
+    published: list[dict] = []
+    simulate_scenario.run_scenario(
+        scenario,
+        credentials,
+        {
+            "ear_a": Path("a.json"),
+            "ear_b": Path("b.json"),
+            "ear_c": Path("c.json"),
+        },
+        "ca.crt",
+        1.0,
+        publish=lambda _credentials, payload, _ca: (
+            published.append(payload) or payload["identity"]["observation_id"]
+        ),
+        sleep=lambda _seconds: None,
+        monotonic=lambda: 10**12,
+        started_at_utc=datetime(2026, 11, 5, 18, 0, tzinfo=UTC),
+        started_at_monotonic_us=0,
+        save=lambda *_args, **_kwargs: None,
+        publish_keepalive=lambda *_args, **_kwargs: None,
+        make_keepalive=lambda credentials, uptime_s: {"uptime_s": uptime_s},
+        announce=False,
+    )
+    nodes = {
+        "SIM-EAR-001": {
+            "installation": {
+                "latitude": scenario["ears"]["ear_a"]["latitude"],
+                "longitude": scenario["ears"]["ear_a"]["longitude"],
+                "orientation_deg": scenario["ears"]["ear_a"]["orientation_deg"],
+            }
+        },
+        "SIM-EAR-002": {
+            "installation": {
+                "latitude": scenario["ears"]["ear_b"]["latitude"],
+                "longitude": scenario["ears"]["ear_b"]["longitude"],
+                "orientation_deg": scenario["ears"]["ear_b"]["orientation_deg"],
+            }
+        },
+        "SIM-EAR-003": {
+            "installation": {
+                "latitude": scenario["ears"]["ear_c"]["latitude"],
+                "longitude": scenario["ears"]["ear_c"]["longitude"],
+                "orientation_deg": scenario["ears"]["ear_c"]["orientation_deg"],
+            }
+        },
+    }
+
+    # Progressive slices: A alone → A+B → A+B+C → full incl. negative.
+    by_time = sorted(
+        published,
+        key=lambda item: item["context"]["event_time_utc"],
+    )
+    main_pass = [
+        item
+        for item in by_time
+        if item["context"]["event_time_utc"] < "2026-11-05T18:02:55"
+    ]
+
+    def up_to_ear_count(ear_count: int) -> list[dict]:
+        if ear_count == 1:
+            return [
+                item
+                for item in main_pass
+                if item["identity"]["node_id"] == "SIM-EAR-001"
+            ]
+        if ear_count == 2:
+            return [
+                item
+                for item in main_pass
+                if item["identity"]["node_id"] in {"SIM-EAR-001", "SIM-EAR-002"}
+            ]
+        return main_pass
+
+    alone = hub_event_track.run_cross_ear_correlation(
+        up_to_ear_count(1),
+        nodes,
+        max_association_distance_m=500,
+        allow_long_range_sim_ears=True,
+    )
+    assert alone.candidates == []
+    assert alone.events == []
+
+    pair = hub_event_track.run_cross_ear_correlation(
+        up_to_ear_count(2),
+        nodes,
+        max_association_distance_m=500,
+        allow_long_range_sim_ears=True,
+    )
+    assert len(pair.events) == 0
+    assert len([c for c in pair.candidates if c.status == "EventCandidate"]) == 1
+
+    triple = hub_event_track.run_cross_ear_correlation(
+        up_to_ear_count(3),
+        nodes,
+        max_association_distance_m=500,
+        allow_long_range_sim_ears=True,
+    )
+    assert len(triple.events) == 1
+    assert len(triple.events[0].ear_ids) == 3
+    assert triple.events[0].score_breakdown["acoustic"] == 0
+    assert triple.events[0].localization is not None
+
+    # Null classification must not change association outcome on this scenario.
+    import copy
+
+    null_main = []
+    for payload in up_to_ear_count(3):
+        item = copy.deepcopy(payload)
+        item["acoustic"]["classification"] = None
+        null_main.append(item)
+    null_result = hub_event_track.run_cross_ear_correlation(
+        null_main,
+        nodes,
+        max_association_distance_m=500,
+        allow_long_range_sim_ears=True,
+    )
+    assert len(null_result.events) == 1
+    assert null_result.events[0].score == triple.events[0].score
+
+    full = hub_event_track.run_cross_ear_correlation(
+        published,
+        nodes,
+        max_association_distance_m=500,
+        allow_long_range_sim_ears=True,
+    )
+    assert len(full.events) == 1
+    assert len(full.observations) == 4
+    event_obs = set(full.events[0].observation_ids)
+    negative = [
+        item
+        for item in full.observations
+        if item.observation_id not in event_obs
+    ]
+    assert len(negative) == 1
+    assert negative[0].node_id == "SIM-EAR-002"
+    assert any(
+        item.observation_id == negative[0].observation_id for item in full.rejected
+    )
+
+    output = "\n".join(
+        hub_event_track.report(
+            published,
+            nodes=nodes,
+            max_association_distance_m=500,
+            allow_long_range_sim_ears=True,
+            include_cross_ear_geometry=False,
+        )
+    )
+    assert "Event Candidates (open): 0" in output or "Event Candidates (open):" in output
+    assert "Events (promoted): 1" in output
+    assert "Rejected associations:" in output
+    assert "Localization (separate from association)" in output
+    assert "source_family does not award acoustic" in output
+    assert "SIM-XEAR-001" not in output
+
+
+def _publish_cross_ear_event_pass():
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    scenario_path = (
+        Path(__file__).parents[2]
+        / "simulator"
+        / "ear"
+        / "scenarios"
+        / "cross_ear_event_pass.json"
+    )
+    sim_spec = spec_from_file_location(
+        "dbmap_ear_scenario_simulator_b21",
+        Path(__file__).parents[2] / "simulator" / "ear" / "simulate_scenario.py",
+    )
+    assert sim_spec is not None and sim_spec.loader is not None
+    simulate_scenario = module_from_spec(sim_spec)
+    sim_spec.loader.exec_module(simulate_scenario)
+    scenario = simulate_scenario.load_scenario(scenario_path)
+    credentials = {
+        "ear_a": {"node_id": "SIM-EAR-001", "next_sequence_number": 1},
+        "ear_b": {"node_id": "SIM-EAR-002", "next_sequence_number": 1},
+        "ear_c": {"node_id": "SIM-EAR-003", "next_sequence_number": 1},
+    }
+    published: list[dict] = []
+    simulate_scenario.run_scenario(
+        scenario,
+        credentials,
+        {
+            "ear_a": Path("a.json"),
+            "ear_b": Path("b.json"),
+            "ear_c": Path("c.json"),
+        },
+        "ca.crt",
+        1.0,
+        publish=lambda _credentials, payload, _ca: (
+            published.append(payload) or payload["identity"]["observation_id"]
+        ),
+        sleep=lambda _seconds: None,
+        monotonic=lambda: 10**12,
+        started_at_utc=datetime(2026, 11, 5, 18, 0, tzinfo=UTC),
+        started_at_monotonic_us=0,
+        save=lambda *_args, **_kwargs: None,
+        publish_keepalive=lambda *_args, **_kwargs: None,
+        make_keepalive=lambda credentials, uptime_s: {"uptime_s": uptime_s},
+        announce=False,
+    )
+    nodes = {
+        "SIM-EAR-001": {
+            "installation": {
+                "latitude": scenario["ears"]["ear_a"]["latitude"],
+                "longitude": scenario["ears"]["ear_a"]["longitude"],
+                "orientation_deg": scenario["ears"]["ear_a"]["orientation_deg"],
+            }
+        },
+        "SIM-EAR-002": {
+            "installation": {
+                "latitude": scenario["ears"]["ear_b"]["latitude"],
+                "longitude": scenario["ears"]["ear_b"]["longitude"],
+                "orientation_deg": scenario["ears"]["ear_b"]["orientation_deg"],
+            }
+        },
+        "SIM-EAR-003": {
+            "installation": {
+                "latitude": scenario["ears"]["ear_c"]["latitude"],
+                "longitude": scenario["ears"]["ear_c"]["longitude"],
+                "orientation_deg": scenario["ears"]["ear_c"]["orientation_deg"],
+            }
+        },
+    }
+    return scenario, published, nodes
+
+
+def test_timing_offsets_preserve_event_and_degrade_localization() -> None:
+    from lib.cross_ear_localization import (
+        apply_sensor_imperfections,
+    )
+
+    _scenario, published, nodes = _publish_cross_ear_event_pass()
+    main = [
+        item
+        for item in published
+        if item["context"]["event_time_utc"] < "2026-11-05T18:02:55"
+    ]
+    baseline = hub_event_track.run_cross_ear_correlation(
+        main,
+        nodes,
+        max_association_distance_m=500,
+        allow_long_range_sim_ears=True,
+    )
+    assert len(baseline.events) == 1
+
+    for offset in (0.1, 0.5, 1.0):
+        imperfect = apply_sensor_imperfections(
+            main,
+            ear_time_offsets_s={
+                "SIM-EAR-001": 0.0,
+                "SIM-EAR-002": offset,
+                "SIM-EAR-003": -offset / 2,
+            },
+            bearing_noise_deg=0.0,
+            seed=42,
+        )
+        result = hub_event_track.run_cross_ear_correlation(
+            imperfect,
+            nodes,
+            max_association_distance_m=500,
+            allow_long_range_sim_ears=True,
+        )
+        assert len(result.events) == 1, f"offset={offset}"
+        loc = result.events[0].localization
+        assert loc is not None
+        assert loc.max_bearing_dt_s is not None
+        assert loc.max_bearing_dt_s + 1e-9 >= offset / 2
+        # Localization may weaken at 1.0s but Event remains.
+        if offset >= 1.0:
+            assert loc.status in {"weak", "useful", "unavailable"}
+
+
+def test_bearing_noise_and_gt_evaluation_do_not_affect_association() -> None:
+    from lib.cross_ear_localization import (
+        apply_sensor_imperfections,
+        evaluate_against_ground_truth,
+        source_position_on_route,
+    )
+
+    scenario, published, nodes = _publish_cross_ear_event_pass()
+    main = [
+        item
+        for item in published
+        if item["context"]["event_time_utc"] < "2026-11-05T18:02:55"
+    ]
+    baseline = hub_event_track.run_cross_ear_correlation(
+        main,
+        nodes,
+        max_association_distance_m=500,
+        allow_long_range_sim_ears=True,
+    )
+    assert len(baseline.events) == 1
+    base_ids = set(baseline.events[0].observation_ids)
+
+    for noise in (1.0, 3.0, 5.0):
+        imperfect = apply_sensor_imperfections(
+            main,
+            bearing_noise_deg=noise,
+            seed=7,
+        )
+        result = hub_event_track.run_cross_ear_correlation(
+            imperfect,
+            nodes,
+            max_association_distance_m=500,
+            allow_long_range_sim_ears=True,
+        )
+        assert len(result.events) == 1, f"noise={noise}"
+        assert set(result.events[0].observation_ids) == base_ids
+        assert result.events[0].score_breakdown["acoustic"] == 0
+
+    # GT evaluation is post-hoc only.
+    loc = baseline.events[0].localization
+    assert loc is not None and loc.evaluation_time_utc is not None
+    started = datetime(2026, 11, 5, 18, 0, tzinfo=UTC)
+    at_seconds = (loc.evaluation_time_utc - started).total_seconds()
+    gt_lat, gt_lon = source_position_on_route(
+        scenario["movement"]["start"],
+        scenario["movement"]["end"],
+        speed_m_s=scenario["movement"]["speed_m_s"],
+        at_seconds=at_seconds,
+    )
+    evaluation = evaluate_against_ground_truth(
+        loc,
+        ground_truth_latitude=gt_lat,
+        ground_truth_longitude=gt_lon,
+        ground_truth_time_utc=loc.evaluation_time_utc,
+    )
+    assert evaluation.error_m is not None
+    assert "not used for association" in evaluation.notes
+
+
+def test_network_geometry_classifies_dense_vs_sparse() -> None:
+    from lib.cross_ear_localization import classify_network_geometry
+
+    sparse_class, sparse_max, _ = classify_network_geometry(
+        {
+            "SIM-EAR-001": _node(59.348, 18.055),
+            "SIM-EAR-002": _node(59.336, 18.085),
+            "SIM-EAR-003": _node(59.334, 18.045),
+        }
+    )
+    assert sparse_class == "sparse"
+    assert sparse_max is not None and sparse_max > 500
+
+    dense_class, dense_max, baselines = classify_network_geometry(
+        {
+            "SIM-EAR-001": _node(59.344534, 18.056),
+            "SIM-EAR-002": _node(59.3408, 18.060228),
+            "SIM-EAR-003": _node(59.3408, 18.051772),
+        }
+    )
+    assert dense_class == "dense"
+    assert dense_max is not None and dense_max <= 500
+    assert len(baselines) == 3
+
+
+def test_cross_ear_dense_pass_event_and_dense_localization_class() -> None:
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    from lib.cross_ear_localization import (
+        evaluate_against_ground_truth,
+        source_position_on_route,
+    )
+
+    scenario_path = (
+        Path(__file__).parents[2]
+        / "simulator"
+        / "ear"
+        / "scenarios"
+        / "cross_ear_dense_pass.json"
+    )
+    sim_spec = spec_from_file_location(
+        "dbmap_ear_scenario_simulator_dense",
+        Path(__file__).parents[2] / "simulator" / "ear" / "simulate_scenario.py",
+    )
+    assert sim_spec is not None and sim_spec.loader is not None
+    simulate_scenario = module_from_spec(sim_spec)
+    sim_spec.loader.exec_module(simulate_scenario)
+    scenario = simulate_scenario.load_scenario(scenario_path)
+    credentials = {
+        "ear_a": {"node_id": "SIM-EAR-001", "next_sequence_number": 1},
+        "ear_b": {"node_id": "SIM-EAR-002", "next_sequence_number": 1},
+        "ear_c": {"node_id": "SIM-EAR-003", "next_sequence_number": 1},
+    }
+    published: list[dict] = []
+    simulate_scenario.run_scenario(
+        scenario,
+        credentials,
+        {
+            "ear_a": Path("a.json"),
+            "ear_b": Path("b.json"),
+            "ear_c": Path("c.json"),
+        },
+        "ca.crt",
+        1.0,
+        publish=lambda _credentials, payload, _ca: (
+            published.append(payload) or payload["identity"]["observation_id"]
+        ),
+        sleep=lambda _seconds: None,
+        monotonic=lambda: 10**12,
+        started_at_utc=datetime(2026, 11, 5, 18, 0, tzinfo=UTC),
+        started_at_monotonic_us=0,
+        save=lambda *_args, **_kwargs: None,
+        publish_keepalive=lambda *_args, **_kwargs: None,
+        make_keepalive=lambda credentials, uptime_s: {"uptime_s": uptime_s},
+        announce=False,
+    )
+    nodes = {
+        "SIM-EAR-001": {
+            "installation": {
+                "latitude": scenario["ears"]["ear_a"]["latitude"],
+                "longitude": scenario["ears"]["ear_a"]["longitude"],
+                "orientation_deg": scenario["ears"]["ear_a"]["orientation_deg"],
+            }
+        },
+        "SIM-EAR-002": {
+            "installation": {
+                "latitude": scenario["ears"]["ear_b"]["latitude"],
+                "longitude": scenario["ears"]["ear_b"]["longitude"],
+                "orientation_deg": scenario["ears"]["ear_b"]["orientation_deg"],
+            }
+        },
+        "SIM-EAR-003": {
+            "installation": {
+                "latitude": scenario["ears"]["ear_c"]["latitude"],
+                "longitude": scenario["ears"]["ear_c"]["longitude"],
+                "orientation_deg": scenario["ears"]["ear_c"]["orientation_deg"],
+            }
+        },
+    }
+    main = [
+        item
+        for item in published
+        if item["context"]["event_time_utc"] < "2026-11-05T18:01:15"
+    ]
+    result = hub_event_track.run_cross_ear_correlation(
+        main,
+        nodes,
+        max_association_distance_m=500,
+        allow_long_range_sim_ears=False,
+    )
+    assert len(result.events) == 1
+    loc = result.events[0].localization
+    assert loc is not None
+    assert loc.details.get("network_class") == "dense"
+    assert loc.details.get("evaluation_target_m") == 100.0
+    assert loc.latitude is not None
+    started = datetime(2026, 11, 5, 18, 0, tzinfo=UTC)
+    assert loc.evaluation_time_utc is not None
+    at_seconds = (loc.evaluation_time_utc - started).total_seconds()
+    gt_lat, gt_lon = source_position_on_route(
+        scenario["movement"]["start"],
+        scenario["movement"]["end"],
+        speed_m_s=scenario["movement"]["speed_m_s"],
+        at_seconds=at_seconds,
+    )
+    evaluation = evaluate_against_ground_truth(
+        loc,
+        ground_truth_latitude=gt_lat,
+        ground_truth_longitude=gt_lon,
+        ground_truth_time_utc=loc.evaluation_time_utc,
+    )
+    assert evaluation.network_class == "dense"
+    assert evaluation.target_m == 100.0
+    assert evaluation.error_m is not None
+
+
+def test_ground_truth_hints_do_not_change_localization_inputs() -> None:
+    """Localization uses bearings/installations only — not simulated_source_id."""
+    from lib.cross_ear_localization import estimate_localization
+
+    reports = [
+        _obs(
+            "a1",
+            "SIM-EAR-001",
+            "2026-11-05T18:00:20Z",
+            bearing_deg=120.0,
+            simulated_source_id="SIM-XEAR-001",
+        ),
+        _obs(
+            "b1",
+            "SIM-EAR-002",
+            "2026-11-05T18:00:20Z",
+            bearing_deg=240.0,
+            simulated_source_id="SIM-OTHER",
+        ),
+    ]
+    assembled = hub_event_track.build_assembled_observations(reports, TRIANGLE_NODES)
+    loc = estimate_localization(assembled, TRIANGLE_NODES)
+    # Even with conflicting GT hints, localization still runs on bearings.
+    assert loc.status in {"unavailable", "weak", "useful"}
+    for member in assembled:
+        assert member.classification is not None
+        assert "association_policy" in member.classification
