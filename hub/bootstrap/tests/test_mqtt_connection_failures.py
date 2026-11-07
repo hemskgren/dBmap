@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app import mqtt_connection_failures
@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 
 def test_filter_keeps_auth_tls_and_protocol_failures_inside_window() -> None:
-    now = datetime(2026, 11, 1, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 11, 1, 12, 0, 0, tzinfo=UTC)
     lines = [
         "01/Nov/2026 08:00:00: Client x [1.2.3.4:1] disconnected: connection closed by client.",
         "01/Nov/2026 10:00:00: Client y [1.2.3.4:2] disconnected: not authorised.",
@@ -31,7 +31,7 @@ def test_filter_keeps_auth_tls_and_protocol_failures_inside_window() -> None:
 
 def test_read_recent_failures_from_file(tmp_path: Path, monkeypatch) -> None:
     log_path = tmp_path / "mosquitto.log"
-    stamp = datetime.now(timezone.utc).strftime("%d/%b/%Y %H:%M:%S")
+    stamp = datetime.now(UTC).strftime("%d/%b/%Y %H:%M:%S")
     log_path.write_text(
         f"{stamp}: Client z [203.0.113.10:1] disconnected: not authorised.\n"
         f"{stamp}: Client z [203.0.113.10:1] disconnected: connection closed by client.\n",

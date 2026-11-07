@@ -7,7 +7,7 @@ import argparse
 import json
 import sys
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from lib.ear_test.collect import poll_http_once, reconcile_sqlite
 from lib.ear_test.job import JobController

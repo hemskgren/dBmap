@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -126,7 +126,7 @@ def set_owner(
         if owner.status != "active":
             raise InactiveOwner
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if current is not None:
         current.valid_to = now
         db.flush()
@@ -167,10 +167,10 @@ def add_initial_owner(
             owner_type=owner_type,
             owner_user_id=owner_id if owner_type == "user" else None,
             owner_group_id=owner_id if owner_type == "group" else None,
-            valid_from=datetime.now(timezone.utc),
+            valid_from=datetime.now(UTC),
         )
     )
 
 
 def _utc(value: datetime) -> datetime:
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)

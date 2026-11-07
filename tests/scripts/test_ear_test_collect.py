@@ -1,16 +1,15 @@
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 SCRIPT_LIB = Path(__file__).resolve().parents[2] / "scripts"
 if str(SCRIPT_LIB) not in sys.path:
     sys.path.insert(0, str(SCRIPT_LIB))
 
+from lib.ear_test import store
 from lib.ear_test.collect import poll_http_once, reconcile_sqlite
 from lib.ear_test.job import JobController
-from lib.ear_test import store
 
-UTC = timezone.utc
 T0 = datetime(2026, 11, 2, 12, 0, 0, tzinfo=UTC)
 
 

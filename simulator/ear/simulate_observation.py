@@ -7,7 +7,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -15,7 +15,7 @@ from uuid import uuid4
 _SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
-from lib.hub_cli import (  # noqa: E402
+from lib.hub_cli import (
     add_hub_connection_arguments,
     format_hub_http_error,
     load_project_env,
@@ -142,7 +142,7 @@ def make_observation(
     """Build a hierarchical protocol-v1 Observation."""
     from l0_measurements import attach_l0_extension, empty_l0_measurements
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     observation: dict[str, Any] = {
         "protocol_version": 1,
         "message_type": "observation",
@@ -501,13 +501,12 @@ def main() -> int:
             )
             credentials.pop("pending_observation", None)
             save_credentials(credentials_path, credentials)
-            published_ids = [observation_id]
             print(
                 f"01  t=0s  {args.ear}  {observation_id}",
                 flush=True,
             )
         else:
-            published_ids = publish_observation_batch(
+            publish_observation_batch(
                 credentials,
                 args.ca,
                 credentials_path,

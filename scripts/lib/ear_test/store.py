@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from lib.ear_test.associate import associate_observation
 from lib.ear_test.job import JobController

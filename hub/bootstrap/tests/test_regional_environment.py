@@ -1,6 +1,6 @@
 import json
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from queue import Empty
 from uuid import uuid4
@@ -196,11 +196,11 @@ def test_first_observation_triggers_regional_retrieval(monkeypatch) -> None:
 
     def fake_urlopen(request, timeout=None):
         calls.append(request.full_url)
-        hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        hour = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
         return _FakeResponse(_hourly_payload(hour))
 
     _install_urlopen(monkeypatch, fake_urlopen)
-    event_time = datetime.now(timezone.utc)
+    event_time = datetime.now(UTC)
     db = SessionLocal()
     try:
         _make_ear(db, "SIM-EAR-001")
@@ -216,7 +216,7 @@ def test_first_observation_triggers_regional_retrieval(monkeypatch) -> None:
 
 
 def test_multiple_ears_share_same_regional_context(monkeypatch) -> None:
-    hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    hour = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
 
     def fake_urlopen(request, timeout=None):
         return _FakeResponse(_hourly_payload(hour, temperature=9.0))
@@ -244,7 +244,7 @@ def test_multiple_ears_share_same_regional_context(monkeypatch) -> None:
 
 def test_subsequent_observations_reuse_cache(monkeypatch) -> None:
     calls = []
-    hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    hour = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
 
     def fake_urlopen(request, timeout=None):
         calls.append(1)
@@ -268,7 +268,7 @@ def test_subsequent_observations_reuse_cache(monkeypatch) -> None:
 
 def test_cache_expiration_triggers_refresh(monkeypatch) -> None:
     calls = []
-    hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    hour = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
 
     def fake_urlopen(request, timeout=None):
         calls.append(request.full_url)
@@ -279,7 +279,7 @@ def test_cache_expiration_triggers_refresh(monkeypatch) -> None:
     try:
         first, _ = regional_environment.ensure_context(db, hour + timedelta(minutes=1))
         assert first is not None
-        first.fetched_at = datetime.now(timezone.utc) - timedelta(seconds=901)
+        first.fetched_at = datetime.now(UTC) - timedelta(seconds=901)
         db.commit()
         second, from_cache = regional_environment.ensure_context(
             db, hour + timedelta(minutes=2)
@@ -296,7 +296,7 @@ def test_concurrent_requests_do_not_duplicate_retrievals(monkeypatch) -> None:
     calls = []
     started = threading.Event()
     release = threading.Event()
-    hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    hour = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
 
     def fake_urlopen(request, timeout=None):
         calls.append(1)
@@ -332,7 +332,7 @@ def test_provider_failure_does_not_block_observation_ingestion(monkeypatch) -> N
         raise TimeoutError("provider down")
 
     _install_urlopen(monkeypatch, fake_urlopen)
-    event_time = datetime.now(timezone.utc)
+    event_time = datetime.now(UTC)
     db = SessionLocal()
     try:
         _make_ear(db, "SIM-EAR-010")
@@ -350,7 +350,7 @@ def test_provider_failure_does_not_block_observation_ingestion(monkeypatch) -> N
 
 def test_historical_replay_uses_archive_endpoint(monkeypatch) -> None:
     calls = []
-    historical = datetime.now(timezone.utc) - timedelta(days=3)
+    historical = datetime.now(UTC) - timedelta(days=3)
     hour = historical.replace(minute=0, second=0, microsecond=0)
 
     def fake_urlopen(request, timeout=None):
@@ -379,7 +379,7 @@ def test_missing_historical_weather_does_not_use_current(monkeypatch) -> None:
         raise TimeoutError("archive unavailable")
 
     _install_urlopen(monkeypatch, fake_urlopen)
-    historical = datetime.now(timezone.utc) - timedelta(days=10)
+    historical = datetime.now(UTC) - timedelta(days=10)
     db = SessionLocal()
     try:
         row, _ = regional_environment.ensure_context(db, historical)
@@ -394,7 +394,7 @@ def test_missing_historical_weather_does_not_use_current(monkeypatch) -> None:
 
 
 def test_weather_context_does_not_alter_detection_fields(monkeypatch) -> None:
-    hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    hour = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
 
     def fake_urlopen(request, timeout=None):
         return _FakeResponse(_hourly_payload(hour))
@@ -421,7 +421,7 @@ def test_weather_context_does_not_alter_detection_fields(monkeypatch) -> None:
 
 
 def test_environmental_context_api_returns_snapshot(monkeypatch) -> None:
-    hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    hour = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     admin = "test-admin-token-weather-0123456789ab"
     monkeypatch.setattr(settings, "admin_token", admin)
     monkeypatch.setattr(settings, "viewer_token", "test-viewer-token-weather-0123456789ab")

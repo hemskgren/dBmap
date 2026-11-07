@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from lib.ear_test import ASSOCIATION_POLICY_VERSION, RUNNER_VERSION
@@ -18,7 +18,7 @@ from lib.ear_test.models import (
 
 
 def make_job_id(now: datetime | None = None) -> str:
-    stamp = (now or utc_now()).astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = (now or utc_now()).astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"{stamp}-{uuid4().hex[:8]}"
 
 

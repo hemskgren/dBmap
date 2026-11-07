@@ -5,7 +5,7 @@ import os
 import re
 import uuid
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -183,7 +183,7 @@ def validate_upload(
         )
     try:
         build_date = datetime.fromisoformat(
-            metadata["build_date_utc"].replace("Z", "+00:00")
+            metadata["build_date_utc"]
         )
     except (AttributeError, TypeError, ValueError) as exc:
         raise InvalidFirmwareBundle(
@@ -239,7 +239,7 @@ def validate_upload(
             "Firmware upload is not a valid firmware ZIP bundle."
         ) from exc
     metadata["build_date_utc"] = (
-        build_date.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        build_date.astimezone(UTC).isoformat().replace("+00:00", "Z")
     )
     return metadata, actual_digest
 

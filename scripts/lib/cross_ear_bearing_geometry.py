@@ -20,10 +20,11 @@ calibrated angular σ; confidence is not mapped to degrees.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from itertools import combinations
-from typing import Any, Callable
+from typing import Any
 
 EARTH_RADIUS_M = 6_371_000.0
 
@@ -167,12 +168,12 @@ def _observation_time(observation: dict[str, Any]) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         return None
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 @dataclass(frozen=True)

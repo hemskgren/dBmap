@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +46,7 @@ def create_metadata(bundle_path: Path, build_date_utc: str) -> Path:
     ):
         raise HubFirmwareError("Firmware ZIP must be between 1 byte and 128 MiB.")
     try:
-        build_date = datetime.fromisoformat(build_date_utc.replace("Z", "+00:00"))
+        build_date = datetime.fromisoformat(build_date_utc)
     except ValueError as exc:
         raise HubFirmwareError(
             "--build-date-utc must be an ISO-8601 timestamp with a timezone."
@@ -95,7 +95,7 @@ def create_metadata(bundle_path: Path, build_date_utc: str) -> Path:
         )
     metadata = {
         "firmware_id": firmware_id,
-        "build_date_utc": build_date.astimezone(timezone.utc)
+        "build_date_utc": build_date.astimezone(UTC)
         .isoformat()
         .replace("+00:00", "Z"),
         "target": manifest["target"],

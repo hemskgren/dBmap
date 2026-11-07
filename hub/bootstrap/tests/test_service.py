@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -83,7 +83,7 @@ def valid_observation_payload(node_id: str = "SIM-EAR-001") -> dict:
             "sequence_number": 1,
         },
         "context": {
-            "event_time_utc": datetime.now(timezone.utc).isoformat(),
+            "event_time_utc": datetime.now(UTC).isoformat(),
             "capture_timestamp_monotonic_us": 123456,
             "timing_quality": "estimated",
             "clock_offset_ms": None,
@@ -259,7 +259,7 @@ def test_device_summary_status_uses_recent_keepalive() -> None:
     try:
         reported = db.get(ReportedState, node_id)
         assert reported is not None
-        reported.last_seen_at = datetime.now(timezone.utc) - timedelta(
+        reported.last_seen_at = datetime.now(UTC) - timedelta(
             seconds=settings.device_online_window_s + 1
         )
         db.commit()
@@ -874,7 +874,7 @@ def test_output_node_commands(monkeypatch) -> None:
 
     monkeypatch.setattr(mqtt_listener, "publish_json", fake_publish_json)
 
-    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
+    expires_at = (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
     test_cmd = client.post(
         f"/api/v1/nodes/{node_id}/commands",
         json={

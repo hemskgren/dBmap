@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,7 +17,7 @@ SPEC.loader.exec_module(demo)
 
 
 def test_demo_payloads_are_two_related_map_layers() -> None:
-    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     route = demo.helicopter_route_content(start=start)
     analysis = demo.helicopter_analysis_content(start=start)
 
@@ -70,7 +70,7 @@ def test_clear_deletes_map_demo_namespace() -> None:
     ) as mocked:
         assert demo.cmd_clear("https://hub.test", "ca.crt", "token") == 0
         mocked.assert_called_once()
-        _args, kwargs = mocked.call_args
+        _args, _kwargs = mocked.call_args
         assert mocked.call_args.args[3] == "DELETE"
         assert "namespace=map-demo" in mocked.call_args.args[4]
 

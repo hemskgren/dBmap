@@ -1,5 +1,5 @@
-from datetime import datetime, timezone
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 SCRIPT_LIB = Path(__file__).resolve().parents[2] / "scripts"
@@ -10,7 +10,6 @@ import pytest
 from lib.ear_test.job import JobController
 from lib.ear_test.models import JobMetadata
 
-UTC = timezone.utc
 T0 = datetime(2026, 11, 2, 12, 0, 0, tzinfo=UTC)
 
 

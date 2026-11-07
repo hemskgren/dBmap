@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -289,7 +289,7 @@ def test_monitoring_gap_is_unobserved(monkeypatch) -> None:
             .limit(1)
         )
         assert sample is not None
-        sample.observed_at = datetime.now(timezone.utc) - timedelta(hours=2)
+        sample.observed_at = datetime.now(UTC) - timedelta(hours=2)
         db.commit()
         hub_monitor.run_check(db, record_startup_gap=True)
         resumed = [
@@ -301,8 +301,8 @@ def test_monitoring_gap_is_unobserved(monkeypatch) -> None:
         assert resumed
         window = hub_monitor.compute_availability_window(
             list(db.scalars(select(HubMonitorSample))),
-            window_start=datetime.now(timezone.utc) - timedelta(hours=3),
-            window_end=datetime.now(timezone.utc),
+            window_start=datetime.now(UTC) - timedelta(hours=3),
+            window_end=datetime.now(UTC),
             interval_s=60,
         )
         assert window["unobserved_seconds"] > 0
@@ -313,7 +313,7 @@ def test_monitoring_gap_is_unobserved(monkeypatch) -> None:
 
 
 def test_insufficient_history_returns_null_percent() -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     window = hub_monitor.compute_availability_window(
         [],
         window_start=now - timedelta(hours=24),
@@ -326,7 +326,7 @@ def test_insufficient_history_returns_null_percent() -> None:
 
 
 def test_availability_excludes_unobserved_from_denominator() -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     samples = [
         HubMonitorSample(
             sample_id=str(uuid4()),
@@ -365,7 +365,7 @@ def test_retention_cleanup_only_touches_monitor_tables(monkeypatch) -> None:
         old = HubMonitorSample(
             sample_id=str(uuid4()),
             hub_id="local-test",
-            observed_at=datetime.now(timezone.utc) - timedelta(days=120),
+            observed_at=datetime.now(UTC) - timedelta(days=120),
             overall_availability="available",
             overall_health="healthy",
             components_json="{}",
@@ -373,8 +373,8 @@ def test_retention_cleanup_only_touches_monitor_tables(monkeypatch) -> None:
         old_event = HubMonitorEvent(
             event_id=str(uuid4()),
             hub_id="local-test",
-            occurred_at=datetime.now(timezone.utc) - timedelta(days=120),
-            observed_at=datetime.now(timezone.utc) - timedelta(days=120),
+            occurred_at=datetime.now(UTC) - timedelta(days=120),
+            observed_at=datetime.now(UTC) - timedelta(days=120),
             component="hub",
             event_type="health_changed",
             previous_state="degraded",
@@ -548,7 +548,7 @@ def test_dense_history_produces_availability_percent(monkeypatch) -> None:
     _patch_healthy(monkeypatch)
     db = SessionLocal()
     try:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for offset in range(20, 0, -1):
             db.add(
                 HubMonitorSample(
@@ -597,7 +597,7 @@ def _sample(
 
 def test_mqtt_outage_reduces_core_and_mqtt_availability() -> None:
     """Confirmed MQTT downtime must appear in historical metrics (not round to 100%)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     samples: list[HubMonitorSample] = []
     # Dense 20-minute window; minutes 8–9 are MQTT offline (120s unavailable).
     for minute in range(20, 0, -1):
@@ -649,7 +649,7 @@ def test_mqtt_outage_reduces_core_and_mqtt_availability() -> None:
 
 
 def test_short_outage_does_not_round_to_100() -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # Long eligible window with a short outage: without the 100% guard,
     # 120s / ~15h would round to 100.00.
     samples: list[HubMonitorSample] = []
@@ -686,7 +686,7 @@ def test_short_outage_does_not_round_to_100() -> None:
 
 
 def test_unknown_component_intervals_are_not_counted_available() -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     samples = [
         _sample(
             observed_at=now - timedelta(minutes=10),
@@ -760,7 +760,7 @@ def test_firmware_builder_restart_does_not_create_monitor_events(monkeypatch) ->
                     "restart_count": 0,
                 },
             },
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
         )
         # Seed previous signatures then change firmware-builder only.
         hub_monitor._last_docker_signatures["firmware-builder"] = (
@@ -775,7 +775,7 @@ def test_firmware_builder_restart_does_not_create_monitor_events(monkeypatch) ->
                     "restart_count": 4,
                 }
             },
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
         )
         db.commit()
         after = hub_monitor.list_recent_events(db, limit=50)
@@ -809,7 +809,7 @@ def test_service_restart_event_does_not_use_restart_count_as_state(monkeypatch) 
                     "restart_count": 1,
                 }
             },
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
         )
         db.commit()
         events = hub_monitor.list_recent_events(db, limit=10)["events"]
@@ -826,7 +826,7 @@ def test_service_restart_event_does_not_use_restart_count_as_state(monkeypatch) 
 
 
 def test_overlapping_samples_do_not_double_count_downtime() -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # Adjacent unavailable samples covering the same wall-clock span once.
     samples = [
         _sample(
@@ -888,7 +888,7 @@ def test_summary_exposes_independent_component_windows(monkeypatch) -> None:
     _patch_healthy(monkeypatch)
     db = SessionLocal()
     try:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for offset in range(30, 0, -1):
             mqtt_state = "offline" if 10 <= offset <= 12 else "ok"
             availability = "unavailable" if mqtt_state == "offline" else "available"

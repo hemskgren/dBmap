@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import math
 import random
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from itertools import combinations
-from typing import Any, Callable, Literal, Sequence
+from typing import Any, Literal
 
 from lib.cross_ear_bearing_geometry import (
     analyze_pair,
@@ -548,7 +549,7 @@ def estimate_localization(
                 "observation_id": obs.observation_id,
                 "node_id": obs.node_id,
                 "event_time_utc": (
-                    sample.event_time_utc.astimezone(timezone.utc).isoformat()
+                    sample.event_time_utc.astimezone(UTC).isoformat()
                     if sample.event_time_utc is not None
                     else None
                 ),
@@ -786,7 +787,7 @@ def estimate_localization(
                     if stamp is not None:
                         times.append(stamp)
             if times:
-                epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+                epoch = datetime(1970, 1, 1, tzinfo=UTC)
                 mean_s = sum(
                     (stamp - epoch).total_seconds() for stamp in times
                 ) / len(times)
@@ -1113,14 +1114,14 @@ def apply_sensor_imperfections(
             raw = context.get("event_time_utc")
             if isinstance(raw, str):
                 try:
-                    parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                    parsed = datetime.fromisoformat(raw)
                 except ValueError:
                     parsed = None
                 if parsed is not None:
                     if parsed.tzinfo is None:
-                        parsed = parsed.replace(tzinfo=timezone.utc)
+                        parsed = parsed.replace(tzinfo=UTC)
                     shifted = parsed + timedelta(seconds=float(offsets[node_id]))
-                    context["event_time_utc"] = shifted.astimezone(timezone.utc).isoformat()
+                    context["event_time_utc"] = shifted.astimezone(UTC).isoformat()
 
         if isinstance(node_id, str) and node_id in drop_ids:
             spatial.pop("bearing", None)
@@ -1321,9 +1322,9 @@ def analyze_leave_one_ear_out(
     ear_ids = sorted({member.node_id for member in members})
     notes = [
         "Leave-one-EAR-out is a layout diagnostic; it does not change Events.",
-        "Material geometry loss: status demotion, withhold, or displacement "
+        ("Material geometry loss: status demotion, withhold, or displacement "
         f"> {material_displacement_m:g}m vs full solution "
-        "(or large dilution increase).",
+        "(or large dilution increase)."),
         "GT is not used.",
     ]
     trials: list[LeaveOneEarOutTrial] = []

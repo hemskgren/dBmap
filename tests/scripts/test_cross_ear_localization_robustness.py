@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import copy
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
@@ -105,7 +105,7 @@ def _publish_scenario(scenario_path: Path) -> tuple[dict, list[dict], dict]:
         ),
         sleep=lambda _s: None,
         monotonic=lambda: 10**12,
-        started_at_utc=datetime(2026, 11, 5, 18, 0, tzinfo=timezone.utc),
+        started_at_utc=datetime(2026, 11, 5, 18, 0, tzinfo=UTC),
         started_at_monotonic_us=0,
         save=lambda *_a, **_k: None,
         publish_keepalive=lambda *_a, **_k: None,
@@ -407,7 +407,7 @@ def test_single_incorrect_bearing_can_shift_locus_substantially() -> None:
         / "scenarios"
         / "cross_ear_stress_inconsistent_bearing.json"
     )
-    scenario, published, nodes = _publish_scenario(scenario_path)
+    _scenario, published, nodes = _publish_scenario(scenario_path)
     clean = hub_event_track.run_cross_ear_correlation(
         published,
         nodes,

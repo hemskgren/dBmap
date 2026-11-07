@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -267,7 +267,7 @@ class OutputCommandBody(BaseModel):
             return None
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("expires_at_utc must include a timezone")
-        return value.astimezone(timezone.utc)
+        return value.astimezone(UTC)
 
     @field_validator("url")
     @classmethod
@@ -421,7 +421,7 @@ class ObservationContext(BaseModel):
     def require_timezone_and_normalize_utc(cls, value: datetime) -> datetime:
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("event_time_utc must include a timezone")
-        return value.astimezone(timezone.utc)
+        return value.astimezone(UTC)
 
 
 class ObservationSpatial(BaseModel):

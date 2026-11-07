@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock
 
 import pytest
@@ -128,7 +128,7 @@ def test_expired_objects_are_purged_on_access() -> None:
     try:
         row = db.get(ScratchObject, object_id)
         assert row is not None
-        row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
         db.commit()
     finally:
         db.close()

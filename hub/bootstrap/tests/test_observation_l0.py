@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -62,7 +62,7 @@ def _flat_legacy(node_id: str = "EAR-001") -> dict:
         "observation_id": str(uuid4()),
         "node_id": node_id,
         "sequence_number": 1,
-        "event_time_utc": datetime.now(timezone.utc).isoformat(),
+        "event_time_utc": datetime.now(UTC).isoformat(),
         "capture_timestamp_monotonic_us": 123456,
         "timing_quality": "estimated",
         "clock_offset_ms": None,
@@ -118,7 +118,7 @@ def _hierarchical(
     if kind in ("end", "complete") and termination_reason is None:
         termination_reason = "natural"
     context: dict = {
-        "event_time_utc": datetime.now(timezone.utc).isoformat(),
+        "event_time_utc": datetime.now(UTC).isoformat(),
         "capture_timestamp_monotonic_us": 123456,
         "timing_quality": "estimated",
         "clock_offset_ms": None,
@@ -477,7 +477,7 @@ def test_scenario_ear_lifecycle_observations_ingest() -> None:
     """Helicopter scripted points form per-Ear START/PERIODIC/END; Hub accepts them."""
     import sys
     from collections import defaultdict
-    from datetime import datetime, timezone
+    from datetime import datetime
     from importlib.util import module_from_spec, spec_from_file_location
     from pathlib import Path
 
@@ -528,7 +528,7 @@ def test_scenario_ear_lifecycle_observations_ingest() -> None:
                 sequences[node_id],
                 scenario["source_id"],
                 event,
-                datetime(2026, 11, 3, 18, 0, tzinfo=timezone.utc),
+                datetime(2026, 11, 3, 18, 0, tzinfo=UTC),
                 0,
             )
             payload["identity"]["node_id"] = node_id

@@ -10,8 +10,8 @@ import urllib.parse
 import urllib.request
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from itertools import combinations
+from datetime import UTC, datetime, timedelta
+from itertools import combinations, pairwise
 from typing import Any
 
 from lib.cross_ear_bearing_geometry import (
@@ -31,10 +31,8 @@ from lib.cross_ear_event_correlation import (
 )
 from lib.cross_ear_localization import (
     EVALUATION_TARGET_DENSE_M,
-    EVALUATION_TARGET_ERROR_M,
     EVALUATION_TARGET_SPARSE_M,
     GroundTruthEvaluation,
-    evaluate_against_ground_truth,
     format_dilution_m,
 )
 from lib.hub_cli import (
@@ -425,7 +423,7 @@ def fetch_environmental_context(
 ) -> dict[str, Any] | None:
     query: dict[str, str] = {}
     if at is not None:
-        query["at"] = at.astimezone(timezone.utc).isoformat()
+        query["at"] = at.astimezone(UTC).isoformat()
     if ensure:
         query["ensure"] = "true"
     path = "/api/v1/hub/environmental-context"
@@ -522,12 +520,12 @@ def observation_time(observation: dict[str, Any]) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         return None
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 def format_local_datetime(value: datetime | None) -> str:
@@ -541,7 +539,7 @@ def sort_observations(observations: list[dict[str, Any]]) -> list[dict[str, Any]
         observations,
         key=lambda item: (
             observation_time(item) is None,
-            observation_time(item) or datetime.max.replace(tzinfo=timezone.utc),
+            observation_time(item) or datetime.max.replace(tzinfo=UTC),
         ),
     )
 
@@ -857,7 +855,7 @@ def sequence_gap_count(sequences: list[int]) -> int:
         return 0
     uniq = sorted(set(sequences))
     missing = 0
-    for earlier, later in zip(uniq, uniq[1:]):
+    for earlier, later in pairwise(uniq):
         missing += later - earlier - 1
     return missing
 
@@ -1521,7 +1519,7 @@ def report(
                     episode,
                     key=lambda item: (
                         observation_time(item)
-                        or datetime.min.replace(tzinfo=timezone.utc)
+                        or datetime.min.replace(tzinfo=UTC)
                     ),
                 )
                 last_time = observation_time(last_observation)

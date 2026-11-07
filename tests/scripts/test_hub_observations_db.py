@@ -1,5 +1,5 @@
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
@@ -55,11 +55,11 @@ def test_prune_zero_hours_clears_all(monkeypatch) -> None:
 
 def test_parse_stored_utc_accepts_sqlalchemy_space_format() -> None:
     parsed = hub_observations_db.parse_stored_utc("2026-11-01 18:30:00.123456")
-    assert parsed == datetime(2026, 11, 1, 18, 30, 0, 123456, tzinfo=timezone.utc)
+    assert parsed == datetime(2026, 11, 1, 18, 30, 0, 123456, tzinfo=UTC)
 
 
 def test_prune_does_not_delete_fresh_rows_with_space_separated_timestamps() -> None:
-    now = datetime(2026, 11, 1, 18, 32, tzinfo=timezone.utc)
+    now = datetime(2026, 11, 1, 18, 32, tzinfo=UTC)
     cutoff = now - timedelta(hours=1)
     rows = [
         ("fresh", now.strftime("%Y-%m-%d %H:%M:%S.%f")),

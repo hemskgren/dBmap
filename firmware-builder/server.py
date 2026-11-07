@@ -15,7 +15,7 @@ import time
 import uuid
 import zipfile
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -711,7 +711,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 with zipfile.ZipFile(bundle) as archive:
                     manifest = json.loads(archive.read("manifest.json"))
-                started_at = datetime.fromtimestamp(job["started_at"], timezone.utc)
+                started_at = datetime.fromtimestamp(job["started_at"], UTC)
                 firmware_id = _release_firmware_id(manifest, digest)
                 metadata = {
                     "firmware_id": firmware_id,

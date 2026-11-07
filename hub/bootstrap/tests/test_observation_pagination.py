@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -131,7 +131,7 @@ def _seed_reports(
     db = SessionLocal()
     try:
         _ensure_node(db, node_id)
-        base = datetime(2026, 11, 5, 12, 0, 0, tzinfo=timezone.utc)
+        base = datetime(2026, 11, 5, 12, 0, 0, tzinfo=UTC)
         shared_received = base + timedelta(hours=1)
         for i in range(n):
             event_time = base + timedelta(seconds=i)
@@ -348,7 +348,7 @@ def test_snapshot_prevents_duplicates_across_pages_when_inserts_arrive() -> None
                 "EAR-PAG",
                 observation_id=oid,
                 sequence_number=9999,
-                event_time=datetime.now(timezone.utc),
+                event_time=datetime.now(UTC),
             )
         )
         assert ingest_observation(db, "EAR-PAG", body) is True
@@ -410,7 +410,7 @@ def test_frozen_snapshot_immutable_when_late_report_extends_same_observation_id(
                 "EAR-PAG",
                 observation_id=oid,
                 sequence_number=5000,
-                event_time=datetime(2026, 11, 5, 12, 0, 30, tzinfo=timezone.utc),
+                event_time=datetime(2026, 11, 5, 12, 0, 30, tzinfo=UTC),
                 emission_kind="periodic",
             )
         )
@@ -466,7 +466,7 @@ def test_frozen_snapshot_immutable_when_late_report_extends_same_observation_id(
 
 def test_frozen_snapshot_excludes_late_new_observation_id_then_fresh_includes() -> None:
     """Late report that creates a new observation_id stays outside the freeze."""
-    oid_a = _seed_reports(3)
+    _seed_reports(3)
     oid_b = str(uuid4())
     db = SessionLocal()
     try:
@@ -482,7 +482,7 @@ def test_frozen_snapshot_excludes_late_new_observation_id_then_fresh_includes() 
                 "EAR-PAG",
                 observation_id=oid_b,
                 sequence_number=8000,
-                event_time=datetime(2026, 11, 5, 13, 0, 0, tzinfo=timezone.utc),
+                event_time=datetime(2026, 11, 5, 13, 0, 0, tzinfo=UTC),
                 emission_kind="complete",
             )
         )
@@ -538,7 +538,7 @@ def test_duplicate_sequence_does_not_mutate_existing_report_row() -> None:
                 "EAR-PAG",
                 observation_id=oid,
                 sequence_number=1000,
-                event_time=datetime(2026, 11, 5, 12, 0, 0, tzinfo=timezone.utc),
+                event_time=datetime(2026, 11, 5, 12, 0, 0, tzinfo=UTC),
                 emission_kind="start",
             )
         )

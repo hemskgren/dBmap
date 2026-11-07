@@ -989,7 +989,7 @@ def get_hub_environmental_context(
     event_time = None
     if at is not None:
         try:
-            event_time = datetime.fromisoformat(at.replace("Z", "+00:00"))
+            event_time = datetime.fromisoformat(at)
         except ValueError as exc:
             raise HTTPException(
                 status_code=422, detail="at must be an ISO-8601 timestamp"

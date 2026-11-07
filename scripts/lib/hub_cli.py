@@ -28,7 +28,7 @@ def summarize_hub_http_error_body(body: bytes | str, *, max_chars: int = 160) ->
         return ""
 
     lowered = text.lstrip().lower()
-    if lowered.startswith("<!doctype html") or lowered.startswith("<html"):
+    if lowered.startswith(("<!doctype html", "<html")):
         return "Hub temporarily unavailable"
 
     try:

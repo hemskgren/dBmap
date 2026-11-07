@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
@@ -158,7 +158,7 @@ def test_scenario_builds_protocol_observations_with_per_ear_sequences_and_timeli
     tmp_path,
 ) -> None:
     scenario = load_test_scenario(tmp_path)
-    started_at = datetime(2026, 10, 5, 18, 0, tzinfo=timezone.utc)
+    started_at = datetime(2026, 10, 5, 18, 0, tzinfo=UTC)
     credentials = {
         "ear_a": {"node_id": "SIM-EAR-001", "next_sequence_number": 3},
         "ear_b": {"node_id": "SIM-EAR-002", "next_sequence_number": 8},
@@ -276,7 +276,7 @@ def test_retry_pending_reuses_same_observation_id_and_advances_sequence(
         4,
         scenario["source_id"],
         scenario["observations"][0],
-        datetime(2026, 10, 5, 18, 0, tzinfo=timezone.utc),
+        datetime(2026, 10, 5, 18, 0, tzinfo=UTC),
         1_000_000,
     )
     credentials = {
@@ -349,7 +349,7 @@ def test_retry_pending_rejects_observation_for_a_different_ear(tmp_path) -> None
         4,
         scenario["source_id"],
         scenario["observations"][0],
-        datetime(2026, 10, 5, 18, 0, tzinfo=timezone.utc),
+        datetime(2026, 10, 5, 18, 0, tzinfo=UTC),
         1_000_000,
     )
     credentials = {
@@ -419,8 +419,8 @@ def test_independent_detection_evaluates_all_ears_each_step(tmp_path) -> None:
     levels = [event["signal_level_dbfs"] for event in prepared["observations"]]
     assert all(level <= 0 for level in levels)
     distances = [event["source_distance_m"] for event in prepared["observations"]]
-    if len(set(round(d, 3) for d in distances)) > 1:
-        assert len(set(round(level, 6) for level in levels)) > 1
+    if len({round(d, 3) for d in distances}) > 1:
+        assert len({round(level, 6) for level in levels}) > 1
 
 
 def test_independent_detection_is_deterministic(tmp_path) -> None:
@@ -464,7 +464,7 @@ def test_independent_detection_omits_bearing_confidence_in_payload(tmp_path) -> 
         1,
         loaded["source_id"],
         prepared["observations"][0],
-        datetime(2026, 10, 5, 18, 0, tzinfo=timezone.utc),
+        datetime(2026, 10, 5, 18, 0, tzinfo=UTC),
         1_000_000,
     )
     assert "confidence" not in payload["spatial"]["bearing"]
@@ -490,7 +490,7 @@ def test_scripted_detection_defaults_to_complete_lifecycle() -> None:
             "signal_level_dbfs": -34.0,
             "duration_ms": 700,
         },
-        datetime(2026, 11, 3, 18, 0, tzinfo=timezone.utc),
+        datetime(2026, 11, 3, 18, 0, tzinfo=UTC),
         1_000_000,
     )
     assert payload["protocol_version"] == 1
@@ -611,7 +611,7 @@ def test_helicopter_scripted_run_emits_full_lifecycle_per_ear() -> None:
         ),
         sleep=lambda _seconds: None,
         monotonic=lambda: 10**12,
-        started_at_utc=datetime(2026, 11, 3, 18, 0, tzinfo=timezone.utc),
+        started_at_utc=datetime(2026, 11, 3, 18, 0, tzinfo=UTC),
         started_at_monotonic_us=0,
         save=lambda *_args, **_kwargs: None,
         publish_keepalive=lambda *_args, **_kwargs: None,
@@ -642,7 +642,7 @@ def test_helicopter_scripted_run_emits_full_lifecycle_per_ear() -> None:
         ObservationBody.model_validate(payload)
         by_node[payload["identity"]["node_id"]].append(payload)
 
-    for node_id, reports in by_node.items():
+    for reports in by_node.values():
         assert len(reports) == 6
         kinds = [item["context"]["emission_kind"] for item in reports]
         assert kinds == ["start", "periodic", "periodic", "periodic", "periodic", "end"]
@@ -859,7 +859,7 @@ def test_cross_ear_event_pass_scripted_lifecycles_and_overlap() -> None:
         ),
         sleep=lambda _seconds: None,
         monotonic=lambda: 10**12,
-        started_at_utc=datetime(2026, 11, 5, 18, 0, tzinfo=timezone.utc),
+        started_at_utc=datetime(2026, 11, 5, 18, 0, tzinfo=UTC),
         started_at_monotonic_us=0,
         save=lambda *_args, **_kwargs: None,
         publish_keepalive=lambda *_args, **_kwargs: None,

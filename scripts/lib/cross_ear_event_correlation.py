@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import hashlib
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Literal
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal
 
 from lib.cross_ear_bearing_geometry import (
     analyze_pair,
@@ -613,8 +614,8 @@ def _acoustic_relationship(
     del first, second
     return (
         "abstain",
-        "acoustic association abstains "
-        "(scenario/unverified source_family not used for association score)",
+        ("acoustic association abstains "
+        "(scenario/unverified source_family not used for association score)"),
     )
 
 
@@ -623,7 +624,7 @@ def _geometry_input(observation: AssembledObservation) -> dict[str, Any]:
         "observation_id": observation.observation_id,
         "node_id": observation.node_id,
         "event_time_utc": (
-            observation.first_time.astimezone(timezone.utc).isoformat()
+            observation.first_time.astimezone(UTC).isoformat()
             if observation.first_time is not None
             else None
         ),
@@ -664,8 +665,8 @@ def _bearing_relationship(
         # Bearings present but installation/orientation incomplete — abstain.
         return (
             "compatible",
-            "bearings present; geometry ineligible for contradiction check "
-            "(localization will report detail)",
+            ("bearings present; geometry ineligible for contradiction check "
+            "(localization will report detail)"),
             None,
             1,
         )
@@ -679,8 +680,8 @@ def _bearing_relationship(
         )
     return (
         "compatible",
-        "bearings present and not contradictory "
-        "(intersection quality assessed in localization, not association score)",
+        ("bearings present and not contradictory "
+        "(intersection quality assessed in localization, not association score)"),
         pair,
         1,
     )
@@ -1057,7 +1058,7 @@ def correlate_cross_ear_events(
         assembled,
         key=lambda item: (
             item.interval_start is None,
-            item.interval_start or datetime.max.replace(tzinfo=timezone.utc),
+            item.interval_start or datetime.max.replace(tzinfo=UTC),
             item.node_id,
             item.observation_id,
         ),
@@ -1400,8 +1401,8 @@ def correlate_cross_ear_events(
                 ear_ids=sorted({other.node_id, obs.node_id}),
                 members=[other, obs],
                 evidence_notes=[
-                    f"created from {other.observation_id} ({other.node_id}) + "
-                    f"{obs.observation_id} ({obs.node_id})",
+                    (f"created from {other.observation_id} ({other.node_id}) + "
+                    f"{obs.observation_id} ({obs.node_id})"),
                     evidence.reason,
                 ],
                 score=0,

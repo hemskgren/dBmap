@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.config import settings
@@ -43,7 +43,7 @@ _FAIL2BAN_NOTICE = (
 def _parse_stamp(raw: str) -> datetime | None:
     try:
         # Treat broker timestamps as UTC (eclipse-mosquitto default container TZ).
-        return datetime.strptime(raw, "%d/%b/%Y %H:%M:%S").replace(tzinfo=timezone.utc)
+        return datetime.strptime(raw, "%d/%b/%Y %H:%M:%S").replace(tzinfo=UTC)
     except ValueError:
         return None
 
@@ -59,7 +59,7 @@ def filter_failure_lines(
     window_hours: int = FAILURE_WINDOW_HOURS,
 ) -> list[str]:
     """Keep failure lines whose timestamp falls inside the window (when parseable)."""
-    cutoff = (now or datetime.now(timezone.utc)) - timedelta(hours=window_hours)
+    cutoff = (now or datetime.now(UTC)) - timedelta(hours=window_hours)
     matched: list[str] = []
     for line in lines:
         text = line.rstrip("\n")

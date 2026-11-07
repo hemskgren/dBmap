@@ -42,6 +42,13 @@ compose.yaml           Local Hub stack
 
 ## Tests
 
+Repo-wide lint (uses root `ruff.toml`; covers `scripts/`, `simulator/`, tests, etc.):
+
+```bash
+uv sync --group dev
+uv run ruff check
+```
+
 From `hub/bootstrap`:
 
 ```bash

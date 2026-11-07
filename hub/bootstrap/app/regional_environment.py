@@ -9,7 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from queue import Empty, Queue
 from typing import Any
 from uuid import uuid4
@@ -47,8 +47,8 @@ class WeatherProviderError(RuntimeError):
 
 def _aware_utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def hour_bucket_utc(event_time: datetime) -> datetime:
@@ -62,7 +62,7 @@ def choose_source_mode(
     now: datetime | None = None,
     live_max_age_hours: float | None = None,
 ) -> str:
-    now_utc = _aware_utc(now or datetime.now(timezone.utc))
+    now_utc = _aware_utc(now or datetime.now(UTC))
     event_utc = _aware_utc(event_time)
     max_age = (
         settings.weather_live_max_age_hours
@@ -103,7 +103,7 @@ def context_is_fresh(
 ) -> bool:
     if row.availability != "ok":
         return False
-    now_utc = _aware_utc(now or datetime.now(timezone.utc))
+    now_utc = _aware_utc(now or datetime.now(UTC))
     fetched = _aware_utc(row.fetched_at)
     ttl = settings.weather_cache_ttl_s if ttl_s is None else ttl_s
     return (now_utc - fetched) <= timedelta(seconds=ttl)
@@ -115,7 +115,7 @@ def context_to_dict(
     from_cache: bool,
     requested_at: datetime | None = None,
 ) -> dict[str, Any]:
-    now = _aware_utc(requested_at or datetime.now(timezone.utc))
+    now = _aware_utc(requested_at or datetime.now(UTC))
     if row is None:
         return {
             "region_id": settings.weather_region_id,
@@ -261,7 +261,7 @@ def _persist_snapshot(
         provider=settings.weather_provider,
         latitude=settings.weather_region_latitude,
         longitude=settings.weather_region_longitude,
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
         valid_from=values["valid_from"],
         valid_until=values["valid_until"],
         temperature_c=values.get("temperature_c"),
@@ -293,7 +293,7 @@ def ensure_context(
     """
     if not settings.weather_enabled:
         return None, False
-    now_utc = _aware_utc(now or datetime.now(timezone.utc))
+    now_utc = _aware_utc(now or datetime.now(UTC))
     hour = hour_bucket_utc(event_time)
     source_mode = choose_source_mode(event_time, now=now_utc)
     existing = find_covering_context(db, event_time)
@@ -358,7 +358,7 @@ def get_context_for_analysis(
     ensure: bool = False,
 ) -> dict[str, Any]:
     """Resolve regional weather for analysis consumers (informational only)."""
-    target = _aware_utc(event_time or datetime.now(timezone.utc))
+    target = _aware_utc(event_time or datetime.now(UTC))
     if ensure:
         row, from_cache = ensure_context(db, target)
     else:

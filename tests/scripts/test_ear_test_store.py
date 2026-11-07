@@ -1,6 +1,5 @@
-import json
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -9,11 +8,9 @@ SCRIPT_LIB = Path(__file__).resolve().parents[2] / "scripts"
 if str(SCRIPT_LIB) not in sys.path:
     sys.path.insert(0, str(SCRIPT_LIB))
 
-from lib.ear_test.job import JobController
 from lib.ear_test import store
+from lib.ear_test.job import JobController
 
-
-UTC = timezone.utc
 T0 = datetime(2026, 11, 2, 12, 0, 0, tzinfo=UTC)
 
 

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -152,7 +152,7 @@ def set_member_role(db: Session, group_id: str, user_id: str, role: str) -> Grou
         return _group_view(db, group)
     if current is not None:
         _ensure_not_last_owner(db, group_id, current)
-        current.valid_to = datetime.now(timezone.utc)
+        current.valid_to = datetime.now(UTC)
         db.flush()
     db.add(GroupMembership(group_id=group_id, user_id=user_id, role=role))
     db.commit()
@@ -167,7 +167,7 @@ def remove_member(db: Session, group_id: str, user_id: str) -> GroupView:
     if current is None:
         return _group_view(db, group)
     _ensure_not_last_owner(db, group_id, current)
-    current.valid_to = datetime.now(timezone.utc)
+    current.valid_to = datetime.now(UTC)
     db.commit()
     return _group_view(db, group)
 
@@ -253,4 +253,4 @@ def _group_view(db: Session, group: Group) -> GroupView:
 
 
 def _utc(value: datetime) -> datetime:
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)

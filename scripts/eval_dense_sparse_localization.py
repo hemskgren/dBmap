@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from typing import Any
@@ -20,7 +20,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib.cross_ear_localization import (  # noqa: E402
+from lib.cross_ear_localization import (
     analyze_bearing_sensitivity,
     analyze_leave_one_ear_out,
     apply_sensor_imperfections,
@@ -243,7 +243,7 @@ def publish_scenario(sim, scenario: dict[str, Any]) -> tuple[list[dict], dict]:
         ),
         sleep=lambda _s: None,
         monotonic=lambda: 10**12,
-        started_at_utc=datetime(2026, 11, 5, 18, 0, tzinfo=timezone.utc),
+        started_at_utc=datetime(2026, 11, 5, 18, 0, tzinfo=UTC),
         started_at_monotonic_us=0,
         save=lambda *_a, **_k: None,
         publish_keepalive=lambda *_a, **_k: None,
@@ -347,7 +347,7 @@ def evaluate_row(
     )
     if loc.latitude is None or loc.evaluation_time_utc is None:
         return row
-    started = datetime(2026, 11, 5, 18, 0, tzinfo=timezone.utc)
+    started = datetime(2026, 11, 5, 18, 0, tzinfo=UTC)
     at_seconds = (loc.evaluation_time_utc - started).total_seconds()
     gt_lat, gt_lon = source_position_on_route(
         scenario["movement"]["start"],
@@ -599,7 +599,7 @@ def run() -> int:
     print("======== SUMMARY BY NETWORK (do not pool dense+sparse) ========")
     for network, rows in by_network.items():
         _summarize(network.upper(), rows)
-        located = [row for row in rows if row.get("error_m") is not None]
+        [row for row in rows if row.get("error_m") is not None]
         names = sorted({row["scenario"] for row in rows})
         for name in names:
             subset = [row for row in rows if row["scenario"] == name]

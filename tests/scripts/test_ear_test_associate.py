@@ -1,6 +1,6 @@
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
 import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 SCRIPT_LIB = Path(__file__).resolve().parents[2] / "scripts"
 if str(SCRIPT_LIB) not in sys.path:
@@ -9,7 +9,6 @@ if str(SCRIPT_LIB) not in sys.path:
 from lib.ear_test.associate import associate_observation
 from lib.ear_test.models import PauseRecord, PeriodRecord
 
-UTC = timezone.utc
 T0 = datetime(2026, 11, 2, 12, 0, 0, tzinfo=UTC)
 
 

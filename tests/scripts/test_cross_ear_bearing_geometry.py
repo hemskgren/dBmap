@@ -1,6 +1,6 @@
 import math
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "scripts"))
@@ -225,19 +225,19 @@ def test_temporal_compatibility_with_different_time_gaps() -> None:
     close_a = geometry.ObservationGeometry(
         observation_id="a",
         node_id="EAR-A",
-        event_time_utc=datetime(2026, 10, 5, 18, 0, 0, tzinfo=timezone.utc),
+        event_time_utc=datetime(2026, 10, 5, 18, 0, 0, tzinfo=UTC),
         **base,
     )
     close_b = geometry.ObservationGeometry(
         observation_id="b",
         node_id="EAR-B",
-        event_time_utc=datetime(2026, 10, 5, 18, 0, 10, tzinfo=timezone.utc),
+        event_time_utc=datetime(2026, 10, 5, 18, 0, 10, tzinfo=UTC),
         **{**base, "longitude": 0.01, "geographic_bearing_deg": 0.0},
     )
     far_b = geometry.ObservationGeometry(
         observation_id="c",
         node_id="EAR-B",
-        event_time_utc=datetime(2026, 10, 5, 18, 5, 0, tzinfo=timezone.utc),
+        event_time_utc=datetime(2026, 10, 5, 18, 5, 0, tzinfo=UTC),
         **{**base, "longitude": 0.01, "geographic_bearing_deg": 0.0},
     )
     ok, delta, notes = geometry.assess_temporal_compatibility(

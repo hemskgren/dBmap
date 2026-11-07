@@ -1,6 +1,6 @@
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
@@ -1500,7 +1500,7 @@ def test_cross_ear_event_pass_scenario_end_to_end() -> None:
         ),
         sleep=lambda _seconds: None,
         monotonic=lambda: 10**12,
-        started_at_utc=datetime(2026, 11, 5, 18, 0, tzinfo=timezone.utc),
+        started_at_utc=datetime(2026, 11, 5, 18, 0, tzinfo=UTC),
         started_at_monotonic_us=0,
         save=lambda *_args, **_kwargs: None,
         publish_keepalive=lambda *_args, **_kwargs: None,
@@ -1679,7 +1679,7 @@ def _publish_cross_ear_event_pass():
         ),
         sleep=lambda _seconds: None,
         monotonic=lambda: 10**12,
-        started_at_utc=datetime(2026, 11, 5, 18, 0, tzinfo=timezone.utc),
+        started_at_utc=datetime(2026, 11, 5, 18, 0, tzinfo=UTC),
         started_at_monotonic_us=0,
         save=lambda *_args, **_kwargs: None,
         publish_keepalive=lambda *_args, **_kwargs: None,
@@ -1715,11 +1715,9 @@ def _publish_cross_ear_event_pass():
 def test_timing_offsets_preserve_event_and_degrade_localization() -> None:
     from lib.cross_ear_localization import (
         apply_sensor_imperfections,
-        evaluate_against_ground_truth,
-        source_position_on_route,
     )
 
-    scenario, published, nodes = _publish_cross_ear_event_pass()
+    _scenario, published, nodes = _publish_cross_ear_event_pass()
     main = [
         item
         for item in published
@@ -1801,7 +1799,7 @@ def test_bearing_noise_and_gt_evaluation_do_not_affect_association() -> None:
     # GT evaluation is post-hoc only.
     loc = baseline.events[0].localization
     assert loc is not None and loc.evaluation_time_utc is not None
-    started = datetime(2026, 11, 5, 18, 0, tzinfo=timezone.utc)
+    started = datetime(2026, 11, 5, 18, 0, tzinfo=UTC)
     at_seconds = (loc.evaluation_time_utc - started).total_seconds()
     gt_lat, gt_lon = source_position_on_route(
         scenario["movement"]["start"],
@@ -1888,7 +1886,7 @@ def test_cross_ear_dense_pass_event_and_dense_localization_class() -> None:
         ),
         sleep=lambda _seconds: None,
         monotonic=lambda: 10**12,
-        started_at_utc=datetime(2026, 11, 5, 18, 0, tzinfo=timezone.utc),
+        started_at_utc=datetime(2026, 11, 5, 18, 0, tzinfo=UTC),
         started_at_monotonic_us=0,
         save=lambda *_args, **_kwargs: None,
         publish_keepalive=lambda *_args, **_kwargs: None,
@@ -1935,7 +1933,7 @@ def test_cross_ear_dense_pass_event_and_dense_localization_class() -> None:
     assert loc.details.get("network_class") == "dense"
     assert loc.details.get("evaluation_target_m") == 100.0
     assert loc.latitude is not None
-    started = datetime(2026, 11, 5, 18, 0, tzinfo=timezone.utc)
+    started = datetime(2026, 11, 5, 18, 0, tzinfo=UTC)
     assert loc.evaluation_time_utc is not None
     at_seconds = (loc.evaluation_time_utc - started).total_seconds()
     gt_lat, gt_lon = source_position_on_route(

@@ -157,7 +157,7 @@ def parse_kconfig_dbmap_defaults(text: str) -> dict[str, Any]:
 
     for raw in text.splitlines():
         stripped = raw.strip()
-        if not stripped or stripped.startswith("help") or stripped.startswith("#"):
+        if not stripped or stripped.startswith(("help", "#")):
             continue
         if stripped.startswith("choice "):
             close_choice()

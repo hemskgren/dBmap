@@ -10,7 +10,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -195,7 +195,7 @@ def helicopter_analysis_content(*, start: datetime) -> dict[str, Any]:
 
 
 def cmd_upload(base_url: str, ca_file: str, token: str, ttl_seconds: int) -> int:
-    start = datetime.now(timezone.utc).replace(microsecond=0)
+    start = datetime.now(UTC).replace(microsecond=0)
     created: list[dict[str, Any]] = []
     for layer_name, content in (
         ("helicopter_route", helicopter_route_content(start=start)),
