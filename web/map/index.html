@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>dBmap · Device map</title>
+    <title>dBmap · Map</title>
     <link rel="stylesheet" href="./vendor/leaflet/leaflet.css" />
     <style>
       :root {
@@ -28,49 +28,100 @@
         display: flex;
         flex-wrap: wrap;
         align-items: center;
-        gap: 0.75rem 1rem;
-        padding: 0.7rem 1rem;
+        gap: 0.4rem 0.55rem;
+        padding: 0.4rem 0.75rem;
         border-bottom: 1px solid var(--line);
         background: #14223b;
         color: #f8fafc;
       }
-      header h1 { margin: 0; font-size: 1.1rem; font-weight: 700; }
-      header p { margin: 0; color: #cbd5e1; font-size: 0.88rem; }
-      header .actions { margin-left: auto; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+      header h1 {
+        margin: 0; font-size: 0.98rem; font-weight: 700; letter-spacing: 0.02em;
+        flex: 0 0 auto;
+      }
+      header .view-cluster {
+        display: flex; align-items: center; gap: 0.45rem; min-width: 0; flex: 1 1 auto;
+      }
+      header .actions {
+        margin-left: auto; display: flex; gap: 0.4rem; align-items: center;
+        flex: 0 0 auto; flex-wrap: nowrap;
+      }
       button {
-        border: 0; border-radius: 7px; padding: 0.4rem 0.7rem; cursor: pointer;
-        color: #fff; background: #2457a7; font: inherit; font-weight: 600;
+        border: 0; border-radius: 6px; padding: 0.28rem 0.55rem; cursor: pointer;
+        color: #fff; background: #2457a7; font: inherit; font-size: 0.82rem; font-weight: 600;
       }
       button.secondary { color: #183153; background: #e6edf7; }
-      #dataset-wrap {
-        display: none; align-items: center; gap: 0.35rem; color: #cbd5e1; font-size: 0.88rem;
+      #view-select {
+        border: 1px solid #334155; border-radius: 6px; padding: 0.22rem 0.4rem;
+        background: #0f172a; color: #f8fafc; font: inherit; font-size: 0.8rem;
+        max-width: 11rem; flex: 0 0 auto;
       }
-      #dataset-wrap.visible { display: flex; }
-      #dataset-select {
-        border: 1px solid #334155; border-radius: 7px; padding: 0.35rem 0.5rem;
-        background: #0f172a; color: #f8fafc; font: inherit;
+      #view-meta {
+        color: #94a3b8; font-size: 0.8rem; white-space: nowrap; overflow: hidden;
+        text-overflow: ellipsis; min-width: 0;
       }
-      #status { min-width: 12rem; color: #cbd5e1; font-size: 0.88rem; }
+      #status {
+        color: #94a3b8; font-size: 0.8rem; white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+      }
       #map { width: 100%; height: 100%; min-height: 320px; }
       .notice {
         margin: 1rem; padding: 0.85rem 1rem; border: 1px solid var(--line);
         border-radius: 10px; background: var(--panel); color: var(--muted);
       }
       .notice.error { color: #8b1e2d; border-color: #f0c4cb; background: #fff5f6; }
-      .popup-title { font-weight: 700; margin: 0.15rem 0 0; }
-      .popup-meta { margin: 0; color: var(--muted); font-size: 0.9rem; }
+      .popup-title { font-weight: 700; margin: 0; font-size: 0.95rem; line-height: 1.25; }
+      .popup-meta { margin: 0.1rem 0 0; color: var(--muted); font-size: 0.88rem; font-variant-numeric: tabular-nums; }
+      .popup-section { margin: 0.4rem 0 0; }
+      .popup-section-title {
+        margin: 0 0 0.12rem; font-size: 0.72rem; font-weight: 700;
+        letter-spacing: 0.02em; text-transform: uppercase; color: var(--muted);
+      }
+      .popup-row { margin: 0.06rem 0; font-size: 0.84rem; line-height: 1.3; }
+      .popup-note { margin: 0.15rem 0 0; color: var(--muted); font-size: 0.76rem; line-height: 1.3; }
+      .popup-head {
+        display: flex; align-items: flex-start; justify-content: space-between;
+        gap: 0.5rem; margin: 0;
+      }
+      .popup-copy {
+        flex: 0 0 auto; margin: 0; padding: 0.15rem 0.45rem;
+        border: 1px solid var(--line); border-radius: 6px;
+        background: #f8fafc; color: var(--ink); font: inherit; font-size: 0.75rem;
+        font-weight: 650; cursor: pointer; line-height: 1.2;
+      }
+      .popup-copy:hover { background: #eef2f7; }
+      .popup-copy.is-copied { border-color: #86efac; background: #f0fdf4; }
+      .analysis-popup { max-width: 18rem; }
       .status-online { color: var(--online); font-weight: 650; }
       .status-offline { color: var(--offline); font-weight: 650; }
       .popup-list { margin: 0.25rem 0 0; padding-left: 1.05rem; }
       .popup-list li { margin: 0.15rem 0; }
+      .leaflet-popup-content { min-width: 12rem; max-width: min(18rem, 72vw); margin: 0.55rem 0.7rem !important; }
+      .leaflet-popup-content-wrapper { border-radius: 10px; }
       .legend {
-        position: absolute; z-index: 500; left: 0.75rem; bottom: 0.75rem;
-        padding: 0.55rem 0.7rem; border-radius: 8px; background: rgb(255 255 255 / 92%);
-        border: 1px solid var(--line); font-size: 0.85rem; box-shadow: 0 4px 12px rgb(15 23 42 / 10%);
+        position: absolute; z-index: 500; left: 0.75rem; bottom: 2.6rem;
+        max-width: min(18rem, calc(100% - 1.5rem));
+        border-radius: 8px; background: rgb(255 255 255 / 94%);
+        border: 1px solid var(--line); font-size: 0.82rem;
+        box-shadow: 0 4px 12px rgb(15 23 42 / 10%);
+        overflow: hidden;
       }
-      .legend div { display: flex; align-items: center; gap: 0.4rem; margin: 0.15rem 0; }
+      .legend-toggle {
+        display: flex; align-items: center; justify-content: space-between; gap: 0.6rem;
+        width: 100%; margin: 0; border: 0; border-radius: 0; padding: 0.4rem 0.65rem;
+        background: transparent; color: var(--ink); font: inherit; font-weight: 650;
+        cursor: pointer; text-align: left;
+      }
+      .legend-toggle:hover { background: #f1f5f9; }
+      .legend-toggle .chevron { color: var(--muted); font-size: 0.75rem; }
+      .legend-body {
+        display: none;
+        padding: 0 0.65rem 0.5rem;
+        border-top: 1px solid var(--line);
+      }
+      .legend.is-open .legend-body { display: block; }
+      .legend-body > div { display: flex; align-items: center; gap: 0.4rem; margin: 0.28rem 0; }
       .legend-pin {
-        width: 0.85rem; height: 1.15rem; display: inline-block; vertical-align: middle;
+        width: 0.85rem; height: 1.15rem; display: inline-block; vertical-align: middle; flex: 0 0 auto;
       }
       .map-pin {
         position: relative;
@@ -126,19 +177,16 @@
   </head>
   <body>
     <header>
-      <div>
-        <h1>Device map</h1>
-        <p>Active devices with installation coordinates · observations in the last 15 min · OpenStreetMap</p>
+      <h1>dBmap</h1>
+      <div class="view-cluster">
+        <select id="view-select" aria-label="Map view">
+          <option value="">Live</option>
+        </select>
+        <span id="view-meta" aria-live="polite"></span>
       </div>
       <div class="actions">
-        <label id="dataset-wrap" for="dataset-select">
-          Dataset
-          <select id="dataset-select" aria-label="Temporary analysis dataset">
-            <option value="">Devices (default)</option>
-          </select>
-        </label>
         <span id="status" role="status">Waiting for Hub session…</span>
-        <button id="fit-view" class="secondary" type="button" hidden>Fit devices</button>
+        <button id="fit-view" class="secondary" type="button" hidden>Fit</button>
         <button id="refresh" class="secondary" type="button" hidden>Refresh</button>
       </div>
     </header>
@@ -154,10 +202,10 @@
       const OBSERVATION_WINDOW_MS = 15 * 60 * 1000;
       const MAP_DEMO_NAMESPACE = 'map-demo';
       const statusEl = document.getElementById('status');
+      const viewMetaEl = document.getElementById('view-meta');
       const refreshBtn = document.getElementById('refresh');
       const fitViewBtn = document.getElementById('fit-view');
-      const datasetWrap = document.getElementById('dataset-wrap');
-      const datasetSelect = document.getElementById('dataset-select');
+      const viewSelect = document.getElementById('view-select');
       const mapRoot = document.getElementById('map-root');
       let map;
       let markerLayer;
@@ -168,10 +216,132 @@
       let lastBounds = [];
       let availableDatasets = [];
       let selectedDatasetId = '';
-      let analysisNotice = '';
+      let viewMetaNotice = '';
+      let liveUpdatedAtMs = null;
 
       function setStatus(text) {
         statusEl.textContent = text;
+      }
+
+      function pad2(value) {
+        return String(value).padStart(2, '0');
+      }
+
+      function formatClockUtc(ms, { withSeconds = false } = {}) {
+        if (!Number.isFinite(ms)) return '';
+        const stamp = new Date(ms);
+        const hh = pad2(stamp.getUTCHours());
+        const mm = pad2(stamp.getUTCMinutes());
+        if (!withSeconds) return `${hh}:${mm}Z`;
+        return `${hh}:${mm}:${pad2(stamp.getUTCSeconds())}Z`;
+      }
+
+      function formatDateUtc(ms) {
+        if (!Number.isFinite(ms)) return '';
+        const stamp = new Date(ms);
+        return `${stamp.getUTCFullYear()}-${pad2(stamp.getUTCMonth() + 1)}-${pad2(stamp.getUTCDate())}`;
+      }
+
+      function formatViewTime(iso, { withSeconds = false } = {}) {
+        if (!iso || typeof iso !== 'string') return '';
+        const ms = Date.parse(iso);
+        if (!Number.isFinite(ms)) return iso;
+        return `${formatDateUtc(ms)} ${formatClockUtc(ms, { withSeconds })}`;
+      }
+
+      function formatTimeSpan(startIso, endIso) {
+        const startMs = Date.parse(startIso || '');
+        const endMs = Date.parse(endIso || '');
+        if (!Number.isFinite(startMs) && !Number.isFinite(endMs)) return '';
+        if (!Number.isFinite(endMs) || startMs === endMs) {
+          return formatViewTime(startIso || endIso);
+        }
+        if (!Number.isFinite(startMs)) return formatViewTime(endIso);
+        const sameDay = formatDateUtc(startMs) === formatDateUtc(endMs);
+        if (sameDay) {
+          return `${formatDateUtc(startMs)} ${formatClockUtc(startMs)}–${formatClockUtc(endMs)}`;
+        }
+        return `${formatViewTime(startIso)} → ${formatViewTime(endIso)}`;
+      }
+
+      function collectLayerTimeIsos(...contents) {
+        const times = [];
+        for (const content of contents) {
+          if (!content || typeof content !== 'object') continue;
+          for (const point of content.points || []) {
+            if (point && typeof point.time_utc === 'string' && point.time_utc) {
+              times.push(point.time_utc);
+            }
+          }
+          for (const key of ['observations', 'events', 'localizations']) {
+            for (const item of content[key] || []) {
+              if (item && typeof item.time_utc === 'string' && item.time_utc) {
+                times.push(item.time_utc);
+              }
+            }
+          }
+        }
+        return times;
+      }
+
+      function layerTimeSpan(times) {
+        if (!times.length) return { startUtc: '', endUtc: '' };
+        let startMs = Infinity;
+        let endMs = -Infinity;
+        let startUtc = '';
+        let endUtc = '';
+        for (const iso of times) {
+          const ms = Date.parse(iso);
+          if (!Number.isFinite(ms)) continue;
+          if (ms < startMs) {
+            startMs = ms;
+            startUtc = iso;
+          }
+          if (ms > endMs) {
+            endMs = ms;
+            endUtc = iso;
+          }
+        }
+        return { startUtc, endUtc };
+      }
+
+      function setViewMeta({ title = '', startUtc = '', endUtc = '', notice = '' } = {}) {
+        if (notice) {
+          viewMetaEl.textContent = notice;
+          return;
+        }
+        if (!title) {
+          const updated = liveUpdatedAtMs == null
+            ? ''
+            : formatClockUtc(liveUpdatedAtMs, { withSeconds: true });
+          viewMetaEl.textContent = updated
+            ? `Live · updated ${updated}`
+            : 'Live · waiting for update';
+          return;
+        }
+        const span = formatTimeSpan(startUtc, endUtc);
+        viewMetaEl.textContent = span ? `${title} · ${span}` : title;
+      }
+
+      function syncViewMetaFromSelection() {
+        if (viewMetaNotice) {
+          setViewMeta({ notice: viewMetaNotice });
+          return;
+        }
+        if (!selectedDatasetId) {
+          setViewMeta({});
+          return;
+        }
+        const dataset = availableDatasets.find((item) => item.id === selectedDatasetId);
+        if (!dataset) {
+          setViewMeta({ notice: 'Selected view expired or unavailable' });
+          return;
+        }
+        setViewMeta({
+          title: dataset.title,
+          startUtc: dataset.timeStartUtc || dataset.runTimestampUtc || '',
+          endUtc: dataset.timeEndUtc || dataset.timeStartUtc || dataset.runTimestampUtc || '',
+        });
       }
 
       function readSessionFromOpener() {
@@ -314,17 +484,42 @@
         const legend = document.createElement('div');
         legend.className = 'legend';
         legend.innerHTML = [
+          '<button type="button" class="legend-toggle" aria-expanded="false" aria-controls="map-legend-body">',
+          '<span>Legend</span><span class="chevron" aria-hidden="true">▸</span>',
+          '</button>',
+          '<div id="map-legend-body" class="legend-body" hidden>',
           `<div>${legendPin('ear')} Ear</div>`,
           `<div>${legendPin('output')} Output</div>`,
           `<div>${legendPin('mixed')} Mixed site (device-count badge)</div>`,
-          '<div>Orange pulse ring = observations in last 15 min</div>',
-          '<div>Orange badge on one Ear = observation count</div>',
-          '<div>Dimmed pin = all offline at that point</div>',
-          '<div style="margin-top:0.35rem;padding-top:0.35rem;border-top:1px solid #d8e0eb">Analysis dataset (optional)</div>',
-          '<div>Green dashed = simulated ground-truth route</div>',
-          '<div>Blue = simulated observations · Orange = event</div>',
-          '<div>Purple diamond = estimated localization</div>',
+          '<div>Orange pulse = obs in last 15 min</div>',
+          '<div>Orange badge = observation count</div>',
+          '<div>Dimmed pin = all offline</div>',
+          '<div style="margin-top:0.35rem;padding-top:0.35rem;border-top:1px solid #d8e0eb">Analysis overlay</div>',
+          '<div>Green dashed = ground-truth route</div>',
+          '<div>Blue circle = Observation (EAR install)</div>',
+          '<div>Orange circle = Event (published estimate when available)</div>',
+          '<div>Purple diamond = Estimated localization (not ground truth)</div>',
+          '</div>',
         ].join('');
+        const legendToggle = legend.querySelector('.legend-toggle');
+        const legendBody = legend.querySelector('.legend-body');
+        const legendChevron = legend.querySelector('.chevron');
+        const LEGEND_OPEN_KEY = 'dbmap.map.legendOpen';
+        const setLegendOpen = (open) => {
+          legend.classList.toggle('is-open', open);
+          legendBody.hidden = !open;
+          legendToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+          legendChevron.textContent = open ? '▾' : '▸';
+          try { sessionStorage.setItem(LEGEND_OPEN_KEY, open ? '1' : '0'); } catch (_) { /* ignore */ }
+        };
+        legendToggle.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setLegendOpen(!legend.classList.contains('is-open'));
+        });
+        let startOpen = false;
+        try { startOpen = sessionStorage.getItem(LEGEND_OPEN_KEY) === '1'; } catch (_) { /* ignore */ }
+        setLegendOpen(startOpen);
         mapRoot.append(legend);
         mapRoot.style.position = 'relative';
 
@@ -333,8 +528,14 @@
           maxZoom: 19,
           attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
         }).addTo(map);
+        L.control.scale({
+          metric: true,
+          imperial: false,
+          position: 'bottomleft',
+        }).addTo(map);
         markerLayer = L.layerGroup().addTo(map);
         analysisLayer = L.layerGroup().addTo(map);
+        wireAnalysisPopupCopy(map);
         map.setView([59.91, 10.75], 6);
         refreshBtn.hidden = false;
         fitViewBtn.hidden = false;
@@ -344,11 +545,333 @@
         if (analysisLayer) analysisLayer.clearLayers();
       }
 
+      const ANALYSIS_POPUP_OPTS = {
+        maxWidth: 288,
+        maxHeight: 260,
+        autoPanPadding: [16, 16],
+        className: 'analysis-leaflet-popup',
+      };
+
       function circleMarker(lat, lon, options, popupHtml) {
         const marker = L.circleMarker([lat, lon], options);
-        if (popupHtml) marker.bindPopup(popupHtml);
+        if (popupHtml) marker.bindPopup(popupHtml, ANALYSIS_POPUP_OPTS);
         marker.addTo(analysisLayer);
         return marker;
+      }
+
+      function formatCoordPair(lat, lon, digits = 5) {
+        const la = Number(lat);
+        const lo = Number(lon);
+        if (!Number.isFinite(la) || !Number.isFinite(lo)) return '';
+        return `${la.toFixed(digits)}, ${lo.toFixed(digits)}`;
+      }
+
+      function popupRow(label, value) {
+        if (value == null || value === '') return '';
+        return `<p class="popup-row"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(String(value))}</p>`;
+      }
+
+      function popupIdList(label, ids) {
+        if (!Array.isArray(ids)) {
+          return popupRow(label, 'unavailable');
+        }
+        if (!ids.length) {
+          return popupRow(label, 'none');
+        }
+        return popupRow(label, ids.join(', '));
+      }
+
+      function copyLine(label, value) {
+        if (value == null || value === '') return '';
+        return `${label}: ${value}`;
+      }
+
+      function localizationStatusExplanation(status) {
+        if (status === 'useful') {
+          return 'Meets current quality rules — not a calibrated accuracy claim.';
+        }
+        if (status === 'weak') {
+          return 'Position available, but evidence has limitations — not a calibrated accuracy claim.';
+        }
+        if (status === 'unavailable') {
+          return 'No publishable estimated position.';
+        }
+        return 'Published estimate — not ground truth.';
+      }
+
+      function formatExclusionRows(rows) {
+        if (!Array.isArray(rows)) return 'unavailable';
+        if (!rows.length) return 'none';
+        return rows.map((row) => {
+          if (!row || typeof row !== 'object') return '';
+          const ear = row.ear_id || '?';
+          const reason = row.reason ? ` (${row.reason})` : '';
+          return `${ear}${reason}`;
+        }).filter(Boolean).join('; ');
+      }
+
+      function wrapAnalysisPopup(title, coordsText, bodyHtml, copyLines) {
+        const copyText = [title, coordsText, '', ...copyLines]
+          .filter((line) => line != null && line !== '')
+          .join('\n');
+        return [
+          '<div class="analysis-popup">',
+          '<div class="popup-head">',
+          `<p class="popup-title">${escapeHtml(title)}</p>`,
+          `<button type="button" class="popup-copy" data-copy="${encodeURIComponent(copyText)}">Copy</button>`,
+          '</div>',
+          coordsText ? `<p class="popup-meta">${escapeHtml(coordsText)}</p>` : '',
+          bodyHtml,
+          '</div>',
+        ].join('');
+      }
+
+      function wireAnalysisPopupCopy(mapInstance) {
+        mapInstance.on('popupopen', (event) => {
+          const root = event.popup && event.popup.getElement
+            ? event.popup.getElement()
+            : null;
+          if (!root) return;
+          const button = root.querySelector('.popup-copy');
+          if (!button || button.dataset.wired === '1') return;
+          button.dataset.wired = '1';
+          button.addEventListener('click', async (clickEvent) => {
+            clickEvent.preventDefault();
+            clickEvent.stopPropagation();
+            const text = decodeURIComponent(button.getAttribute('data-copy') || '');
+            if (!text) return;
+            let ok = false;
+            try {
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(text);
+                ok = true;
+              }
+            } catch (_) { /* fall through */ }
+            if (!ok) {
+              const area = document.createElement('textarea');
+              area.value = text;
+              area.setAttribute('readonly', '');
+              area.style.position = 'fixed';
+              area.style.left = '-9999px';
+              document.body.appendChild(area);
+              area.select();
+              try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+              area.remove();
+            }
+            const previous = button.textContent;
+            button.textContent = ok ? 'Copied' : 'Copy failed';
+            button.classList.toggle('is-copied', ok);
+            window.setTimeout(() => {
+              button.textContent = previous || 'Copy';
+              button.classList.remove('is-copied');
+            }, 1200);
+          });
+        });
+      }
+
+      function observationAnalysisPopup(obs) {
+        const coords = formatCoordPair(obs.lat, obs.lon);
+        const interval = formatTimeSpan(obs.interval_start_utc, obs.interval_end_utc)
+          || formatViewTime(obs.time_utc, { withSeconds: true });
+        const signal = obs.signal_level_dbfs != null
+          && Number.isFinite(Number(obs.signal_level_dbfs))
+          ? Number(obs.signal_level_dbfs).toFixed(1)
+          : null;
+        const membership = obs.event_id || 'none';
+        const body = [
+          '<p class="popup-note">EAR install coordinates — not a source estimate.</p>',
+          popupRow('EAR', obs.node_id),
+          popupRow('Observation', obs.id),
+          popupRow('Interval', interval),
+          popupRow('Reports', obs.report_count),
+          popupRow('Signal (dBFS)', signal),
+          popupRow('Event', membership),
+        ].join('');
+        return wrapAnalysisPopup(
+          obs.label || 'Observation',
+          coords,
+          body,
+          [
+            copyLine('EAR', obs.node_id),
+            copyLine('Observation', obs.id),
+            copyLine('Interval', interval),
+            copyLine('Reports', obs.report_count),
+            copyLine('Signal (dBFS)', signal),
+            copyLine('Event', membership),
+            copyLine('Install coordinates', coords),
+          ],
+        );
+      }
+
+      function eventAnalysisPopup(event) {
+        const coords = Number.isFinite(Number(event.lat)) && Number.isFinite(Number(event.lon))
+          ? formatCoordPair(event.lat, event.lon)
+          : '';
+        const memberObs = event.membership_observation_count != null
+          ? event.membership_observation_count
+          : (Array.isArray(event.membership_observation_ids)
+            ? event.membership_observation_ids.length
+            : null);
+        const memberEars = event.membership_ear_count != null
+          ? event.membership_ear_count
+          : (Array.isArray(event.membership_ear_ids)
+            ? event.membership_ear_ids.length
+            : event.member_count);
+        const contribCount = event.localization_contributing_ear_count != null
+          ? event.localization_contributing_ear_count
+          : (Array.isArray(event.localization_contributing_ears)
+            ? event.localization_contributing_ears.length
+            : null);
+        const memberIds = Array.isArray(event.membership_ear_ids)
+          ? event.membership_ear_ids.join(', ')
+          : null;
+        const contribIds = Array.isArray(event.localization_contributing_ears)
+          ? event.localization_contributing_ears.join(', ')
+          : null;
+        const status = event.localization_status || 'unavailable';
+        const promoted = event.time_utc
+          ? formatViewTime(event.time_utc, { withSeconds: true })
+          : '';
+        const body = [
+          event.position_withheld
+            ? '<p class="popup-note">Estimate withheld/unavailable. Membership ≠ contributors.</p>'
+            : '<p class="popup-note">Published estimate — not ground truth. Membership ≠ contributors.</p>',
+          '<div class="popup-section"><p class="popup-section-title">Membership</p>',
+          popupRow('Observations', memberObs),
+          popupRow('EARs', memberEars),
+          popupIdList('EAR IDs', event.membership_ear_ids),
+          '</div>',
+          '<div class="popup-section"><p class="popup-section-title">Localization</p>',
+          popupRow('Status', status),
+          popupRow('Contributors', contribCount),
+          popupIdList('Contributor IDs', event.localization_contributing_ears),
+          '</div>',
+          popupRow('Promoted', promoted),
+        ].join('');
+        return wrapAnalysisPopup(
+          event.label || event.id || 'Event',
+          coords,
+          body,
+          [
+            copyLine('Coordinates', coords),
+            copyLine('Member observations', memberObs),
+            copyLine('Member EARs', memberEars),
+            copyLine('Member EAR IDs', memberIds),
+            copyLine('Localization status', status),
+            copyLine('Contributing EARs', contribCount),
+            copyLine('Contributing EAR IDs', contribIds),
+            copyLine('Promoted', promoted),
+          ],
+        );
+      }
+
+      function localizationAnalysisPopup(loc) {
+        const status = loc.status || '';
+        const coords = formatCoordPair(loc.lat, loc.lon);
+        const contribCount = loc.contributing_ear_count != null
+          ? loc.contributing_ear_count
+          : (Array.isArray(loc.contributing_ears) ? loc.contributing_ears.length : null);
+        const memberCount = loc.membership_ear_count != null
+          ? loc.membership_ear_count
+          : (Array.isArray(loc.membership_ear_ids) ? loc.membership_ear_ids.length : null);
+        const contribIds = Array.isArray(loc.contributing_ears)
+          ? loc.contributing_ears.join(', ')
+          : null;
+        const memberIds = Array.isArray(loc.membership_ear_ids)
+          ? loc.membership_ear_ids.join(', ')
+          : null;
+        const bodyParts = [
+          '<p class="popup-note">Published estimate only — not ground truth.</p>',
+          popupRow('Status', status || 'unavailable'),
+          `<p class="popup-note">${escapeHtml(localizationStatusExplanation(status))}</p>`,
+          '<div class="popup-section"><p class="popup-section-title">Evidence</p>',
+          popupRow('Contributors', contribCount),
+          popupRow('Event members', memberCount),
+          popupIdList('Contributor IDs', loc.contributing_ears),
+          popupIdList('Member EAR IDs', loc.membership_ear_ids),
+        ];
+        const copyLines = [
+          copyLine('Coordinates', coords),
+          copyLine('Status', status || 'unavailable'),
+          localizationStatusExplanation(status),
+          copyLine('Contributing EARs', contribCount),
+          copyLine('Event member EARs', memberCount),
+          copyLine('Contributing EAR IDs', contribIds),
+          copyLine('Event member EAR IDs', memberIds),
+        ];
+        if (Object.prototype.hasOwnProperty.call(loc, 'bearing_selection_mode')) {
+          const mode = loc.bearing_selection_mode || 'unavailable';
+          bodyParts.push(popupRow('Bearing mode', mode));
+          copyLines.push(copyLine('Bearing selection mode', mode));
+        }
+        if (Object.prototype.hasOwnProperty.call(loc, 'common_epoch_utc')) {
+          const epoch = loc.common_epoch_utc
+            ? formatViewTime(loc.common_epoch_utc, { withSeconds: true })
+            : 'unavailable';
+          bodyParts.push(popupRow('Common epoch', epoch));
+          copyLines.push(copyLine('Common epoch', epoch));
+        }
+        if (Object.prototype.hasOwnProperty.call(loc, 'forward_pair_count')) {
+          bodyParts.push(popupRow('Forward pairs', loc.forward_pair_count));
+          copyLines.push(copyLine('Forward intersections', loc.forward_pair_count));
+        }
+        if (Object.prototype.hasOwnProperty.call(loc, 'aligned_forward_pair_count')) {
+          bodyParts.push(popupRow('Aligned pairs', loc.aligned_forward_pair_count));
+          copyLines.push(copyLine('Aligned forward intersections', loc.aligned_forward_pair_count));
+        }
+        if (Object.prototype.hasOwnProperty.call(loc, 'consensus_pair_count')) {
+          bodyParts.push(popupRow('Consensus pairs', loc.consensus_pair_count));
+          copyLines.push(copyLine('Consensus-selected pairs', loc.consensus_pair_count));
+        }
+        if (Object.prototype.hasOwnProperty.call(loc, 'consensus_selected_ears')) {
+          bodyParts.push(popupIdList('Consensus EARs', loc.consensus_selected_ears));
+          copyLines.push(copyLine(
+            'Consensus-selected EARs',
+            Array.isArray(loc.consensus_selected_ears)
+              ? loc.consensus_selected_ears.join(', ')
+              : 'unavailable',
+          ));
+        }
+        if (Object.prototype.hasOwnProperty.call(loc, 'outlier_pairs')) {
+          bodyParts.push(popupIdList('Outliers', loc.outlier_pairs));
+          copyLines.push(copyLine(
+            'Outlier pairs',
+            Array.isArray(loc.outlier_pairs) ? loc.outlier_pairs.join(', ') : 'unavailable',
+          ));
+        }
+        if (Object.prototype.hasOwnProperty.call(loc, 'network_geometric_sensitivity_m')) {
+          const sens = Number(loc.network_geometric_sensitivity_m);
+          const sensText = Number.isFinite(sens) ? sens.toFixed(1) : 'unavailable';
+          bodyParts.push(popupRow('Geom. sensitivity (m)', sensText));
+          bodyParts.push('<p class="popup-note">Geometric sensitivity indicator only — not position accuracy.</p>');
+          copyLines.push(copyLine('Geometric sensitivity (m)', sensText));
+        }
+        if (Object.prototype.hasOwnProperty.call(loc, 'common_epoch_excluded_ears')) {
+          const excluded = formatExclusionRows(loc.common_epoch_excluded_ears);
+          bodyParts.push(popupRow('Excluded', excluded));
+          copyLines.push(copyLine('Excluded EARs', excluded));
+        }
+        if (loc.selection_method) {
+          bodyParts.push(popupRow('Selection', loc.selection_method));
+          copyLines.push(copyLine('Selection method', loc.selection_method));
+        }
+        if (loc.calibrated_uncertainty_m != null
+            && Number.isFinite(Number(loc.calibrated_uncertainty_m))) {
+          const unc = Number(loc.calibrated_uncertainty_m).toFixed(1);
+          bodyParts.push(popupRow('Calibrated unc. (m)', unc));
+          copyLines.push(copyLine('Calibrated uncertainty (m)', unc));
+        }
+        if (loc.event_id) {
+          bodyParts.push(popupRow('Event', loc.event_id));
+          copyLines.push(copyLine('Event', loc.event_id));
+        }
+        if (loc.time_utc) {
+          const evaluated = formatViewTime(loc.time_utc, { withSeconds: true });
+          bodyParts.push(popupRow('Evaluated', evaluated));
+          copyLines.push(copyLine('Evaluation time', evaluated));
+        }
+        bodyParts.push('</div>');
+        return wrapAnalysisPopup('Estimated position', coords, bodyParts.join(''), copyLines);
       }
 
       function drawHelicopterLayers(routeContent, analysisContent) {
@@ -389,9 +912,7 @@
               fillColor: '#3b82f6',
               fillOpacity: 0.9,
               weight: 2,
-            }, `<strong>${escapeHtml(obs.label || 'Observation')}</strong>`
-              + `<br>${escapeHtml(obs.node_id || '')}`
-              + `<br>${escapeHtml(obs.time_utc || '')}`);
+            }, observationAnalysisPopup(obs));
           }
           for (const event of analysisContent.events || []) {
             const lat = Number(event.lat);
@@ -404,9 +925,7 @@
               fillColor: '#ea580c',
               fillOpacity: 0.95,
               weight: 2,
-            }, `<strong>Event: ${escapeHtml(event.label || event.id || '')}</strong>`
-              + `<br>${escapeHtml(event.status || '')}`
-              + `<br>${escapeHtml(event.time_utc || '')}`);
+            }, eventAnalysisPopup(event));
           }
           for (const loc of analysisContent.localizations || []) {
             const lat = Number(loc.lat);
@@ -417,13 +936,11 @@
               className: '',
               iconSize: [16, 16],
               iconAnchor: [8, 8],
-              html: '<div style="width:14px;height:14px;background:#7c3aed;border:2px solid #fff;transform:rotate(45deg);box-shadow:0 1px 2px rgb(15 23 42 / 35%)"></div>',
+              html: '<div style="width:14px;height:14px;background:#7c3aed;border:2px solid #fff;transform:rotate(45deg);box-shadow:0 1px 2px rgb(15 23 42 / 35%)" title="Estimated localization"></div>',
             });
             L.marker([lat, lon], { icon }).bindPopup(
-              `<strong>${escapeHtml(loc.label || 'Localization')}</strong>`
-              + `<br>Estimated (not ground truth)`
-              + (loc.confidence != null ? `<br>confidence ${escapeHtml(String(loc.confidence))}` : '')
-              + `<br>${escapeHtml(loc.time_utc || '')}`,
+              localizationAnalysisPopup(loc),
+              ANALYSIS_POPUP_OPTS,
             ).addTo(analysisLayer);
           }
         }
@@ -431,6 +948,12 @@
         if (bounds.length) {
           map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
         }
+      }
+
+      function provenanceRunTimestamp(meta) {
+        const provenance = meta && typeof meta.provenance === 'object' ? meta.provenance : null;
+        const stamp = provenance && provenance.run_timestamp_utc;
+        return typeof stamp === 'string' && stamp ? stamp : '';
       }
 
       function datasetsFromScratchList(objects) {
@@ -445,6 +968,9 @@
             entry = {
               id: datasetId,
               title: meta.dataset_title || datasetId,
+              runTimestampUtc: '',
+              timeStartUtc: '',
+              timeEndUtc: '',
               layers: [],
             };
             byDataset.set(datasetId, entry);
@@ -456,25 +982,35 @@
             role: meta.role || '',
           });
           if (meta.dataset_title) entry.title = meta.dataset_title;
+          const runAt = provenanceRunTimestamp(meta)
+            || (typeof item.created_at === 'string' ? item.created_at : '');
+          if (runAt && (!entry.runTimestampUtc || runAt > entry.runTimestampUtc)) {
+            entry.runTimestampUtc = runAt;
+          }
         }
         return [...byDataset.values()].sort((a, b) => a.title.localeCompare(b.title));
       }
 
-      function syncDatasetSelector(datasets) {
+      function liveViewOptionHtml() {
+        return '<option value="">Live</option>';
+      }
+
+      function syncViewSelector(datasets, { notice = '' } = {}) {
         availableDatasets = datasets;
         const previous = selectedDatasetId;
-        const options = ['<option value="">Devices (default)</option>'];
+        const options = [liveViewOptionHtml()];
         for (const dataset of datasets) {
           options.push(
             `<option value="${escapeHtml(dataset.id)}">${escapeHtml(dataset.title)}</option>`,
           );
         }
-        datasetSelect.innerHTML = options.join('');
+        viewSelect.innerHTML = options.join('');
         const stillThere = datasets.some((dataset) => dataset.id === previous);
         selectedDatasetId = stillThere ? previous : '';
-        datasetSelect.value = selectedDatasetId;
-        datasetWrap.classList.toggle('visible', datasets.length > 0);
+        viewSelect.value = selectedDatasetId;
         if (!stillThere) clearAnalysisOverlays();
+        viewMetaNotice = notice;
+        syncViewMetaFromSelection();
       }
 
       async function discoverDatasets() {
@@ -485,31 +1021,35 @@
           if (!body || typeof body !== 'object' || !Array.isArray(body.objects)) {
             throw new Error('invalid scratch list');
           }
-          syncDatasetSelector(datasetsFromScratchList(body.objects));
-          analysisNotice = '';
-        } catch (error) {
+          const datasets = datasetsFromScratchList(body.objects);
+          syncViewSelector(datasets, {
+            notice: datasets.length ? '' : 'No layers found',
+          });
+        } catch (_error) {
           availableDatasets = [];
           selectedDatasetId = '';
-          datasetSelect.innerHTML = '<option value="">Devices (default)</option>';
-          datasetWrap.classList.remove('visible');
+          viewSelect.innerHTML = liveViewOptionHtml();
           clearAnalysisOverlays();
-          const message = error && error.message ? String(error.message) : String(error);
-          analysisNotice = /503|unavailable|Analysis/i.test(message)
-            ? 'Analysis unavailable'
-            : '';
+          // Keep the selector visible with Live only.
+          viewMetaNotice = 'Analysis unavailable';
+          syncViewMetaFromSelection();
         }
       }
 
       async function loadSelectedDataset() {
         if (!selectedDatasetId) {
           clearAnalysisOverlays();
+          viewMetaNotice = '';
+          syncViewMetaFromSelection();
           return;
         }
         const dataset = availableDatasets.find((item) => item.id === selectedDatasetId);
         if (!dataset || !dataset.layers.length) {
           clearAnalysisOverlays();
           selectedDatasetId = '';
-          datasetSelect.value = '';
+          viewSelect.value = '';
+          viewMetaNotice = '';
+          syncViewMetaFromSelection();
           return;
         }
         try {
@@ -525,16 +1065,26 @@
           const analysis = payloads.find((item) => item.layer === 'analysis')?.content || null;
           if (!route && !analysis) {
             clearAnalysisOverlays();
-            analysisNotice = 'Selected dataset has no drawable layers';
+            viewMetaNotice = 'Selected view has no drawable layers';
+            syncViewMetaFromSelection();
             return;
           }
+          const runAt = provenanceRunTimestamp(analysis)
+            || provenanceRunTimestamp(route)
+            || dataset.runTimestampUtc;
+          if (runAt) dataset.runTimestampUtc = runAt;
+          const span = layerTimeSpan(collectLayerTimeIsos(route, analysis));
+          dataset.timeStartUtc = span.startUtc || runAt || '';
+          dataset.timeEndUtc = span.endUtc || span.startUtc || runAt || '';
           drawHelicopterLayers(route, analysis);
-          analysisNotice = `${dataset.title} overlay`;
+          viewMetaNotice = '';
+          syncViewMetaFromSelection();
         } catch (error) {
           clearAnalysisOverlays();
           selectedDatasetId = '';
-          datasetSelect.value = '';
-          analysisNotice = 'Selected dataset expired or unavailable';
+          viewSelect.value = '';
+          viewMetaNotice = 'Selected view expired or unavailable';
+          syncViewMetaFromSelection();
           await discoverDatasets();
         }
       }
@@ -630,11 +1180,16 @@
           fitDevices(bounds);
         }
         const siteLabel = groups.length === 1 ? 'site' : 'sites';
-        const obsLabel = `${recentObsTotal} observation${recentObsTotal === 1 ? '' : 's'} in last 15 min`;
-        const hubStatus = points.length
-          ? `${points.length} device${points.length === 1 ? '' : 's'} on ${groups.length} ${siteLabel} · ${obsLabel}`
-          : `No active devices with installation coordinates · ${obsLabel}`;
-        setStatus(analysisNotice ? `${hubStatus} · ${analysisNotice}` : hubStatus);
+        const obsLabel = `${recentObsTotal} obs (15m)`;
+        liveUpdatedAtMs = Date.now();
+        if (!selectedDatasetId && !viewMetaNotice) {
+          syncViewMetaFromSelection();
+        }
+        setStatus(
+          points.length
+            ? `${points.length} device${points.length === 1 ? '' : 's'} · ${groups.length} ${siteLabel} · ${obsLabel}`
+            : `No mapped devices · ${obsLabel}`,
+        );
       }
 
       function escapeHtml(value) {
@@ -724,16 +1279,19 @@
         if (map && lastBounds.length) fitDevices(lastBounds);
       });
 
-      datasetSelect.addEventListener('change', async () => {
-        selectedDatasetId = datasetSelect.value || '';
+      viewSelect.addEventListener('change', async () => {
+        selectedDatasetId = viewSelect.value || '';
+        viewMetaNotice = '';
         if (!selectedDatasetId) {
           clearAnalysisOverlays();
-          analysisNotice = '';
+          if (!availableDatasets.length) viewMetaNotice = 'No layers found';
+          syncViewMetaFromSelection();
           await refresh();
           return;
         }
+        syncViewMetaFromSelection();
         await loadSelectedDataset();
-        // Refresh Hub status line with overlay notice without re-fitting devices.
+        // Refresh Hub counts without re-fitting devices.
         try {
           const [devices, observations] = await Promise.all([
             fetchDevices(),

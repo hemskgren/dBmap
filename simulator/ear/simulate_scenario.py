@@ -18,6 +18,12 @@ _SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 for _path in (_EAR_DIR, _SCRIPTS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
+from ear_profile import (
+    EarProfileError,
+    load_ear_profile,
+    profile_summary,
+    resolve_profile_credential_paths,
+)
 from independent_detection import (
     DEFAULT_OBSERVATION_INTERVAL_S,
     DEFAULT_PATH_LOSS_EXPONENT,
@@ -32,6 +38,11 @@ from independent_detection import (
 from lib.hub_cli import (
     load_project_env,
     print_help_without_arguments,
+)
+from scripted_cadence_profile import (
+    ScriptedCadenceProfileError,
+    apply_scripted_cadence_profile,
+    known_scripted_cadence_profile_ids,
 )
 
 _simulator_module = None
@@ -164,6 +175,8 @@ _OBSERVATION_FIELDS = {
     "at_seconds",
     "ear",
     "bearing_confidence",
+    "bearing_available",
+    "bearing_bias_deg",
     "classification_confidence",
     "signal_level_dbfs",
     "duration_ms",
@@ -343,16 +356,46 @@ def load_scenario(path: Path) -> dict[str, Any]:
         if not isinstance(observation, dict):
             raise ScenarioError(f"observations[{index}] must be an object")
         unexpected = set(observation) - _OBSERVATION_FIELDS
-        missing = {
-            "at_seconds",
-            "ear",
-            "bearing_confidence",
-            "classification_confidence",
-        } - set(observation)
-        if unexpected or missing:
+        if unexpected:
             raise ScenarioError(
                 f"observations[{index}] fields mismatch; "
-                f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+                f"unexpected={sorted(unexpected)}"
+            )
+        bearing_available = True
+        if "bearing_available" in observation:
+            raw_available = observation["bearing_available"]
+            if not isinstance(raw_available, bool):
+                raise ScenarioError(
+                    f"observations[{index}].bearing_available must be a boolean"
+                )
+            bearing_available = raw_available
+        required = {
+            "at_seconds",
+            "ear",
+            "classification_confidence",
+        }
+        if bearing_available:
+            required.add("bearing_confidence")
+        missing = required - set(observation)
+        if missing:
+            raise ScenarioError(
+                f"observations[{index}] fields mismatch; "
+                f"missing={sorted(missing)}"
+            )
+        if not bearing_available and "bearing_confidence" in observation:
+            raise ScenarioError(
+                f"observations[{index}]: bearing_confidence must be omitted when "
+                "bearing_available is false"
+            )
+        if not bearing_available and "bearing_bias_deg" in observation:
+            raise ScenarioError(
+                f"observations[{index}]: bearing_bias_deg requires bearing_available"
+            )
+        bearing_bias_deg = 0.0
+        if "bearing_bias_deg" in observation:
+            bearing_bias_deg = _finite_number(
+                observation["bearing_bias_deg"],
+                f"observations[{index}].bearing_bias_deg",
             )
         at_seconds = _finite_number(
             observation["at_seconds"],
@@ -374,7 +417,11 @@ def load_scenario(path: Path) -> dict[str, Any]:
                 f"observations[{index}].at_seconds exceeds source movement duration "
                 f"({route_duration_seconds:.3f}s)"
             )
-        item = {"at_seconds": at_seconds, "ear": ear}
+        item = {
+            "at_seconds": at_seconds,
+            "ear": ear,
+            "bearing_available": bearing_available,
+        }
         item["source_family"] = source_family
         classification_confidence = _finite_number(
             observation["classification_confidence"],
@@ -386,16 +433,6 @@ def load_scenario(path: Path) -> dict[str, Any]:
                 f"observations[{index}].classification_confidence must be at most 1"
             )
         item["classification_confidence"] = classification_confidence
-        bearing_confidence = _finite_number(
-            observation["bearing_confidence"],
-            f"observations[{index}].bearing_confidence",
-            minimum=0,
-        )
-        if bearing_confidence > 1:
-            raise ScenarioError(
-                f"observations[{index}].bearing_confidence must be at most 1"
-            )
-        item["bearing_confidence"] = bearing_confidence
         source_position = _position_on_route(
             start,
             end,
@@ -408,9 +445,27 @@ def load_scenario(path: Path) -> dict[str, Any]:
                 f"observations[{index}] source position coincides with Ear position; "
                 "bearing is undefined"
             )
-        true_bearing = _bearing_deg(ear_position, source_position)
-        item["bearing_deg"] = (true_bearing - ear_position["orientation_deg"]) % 360
         item["source_distance_m"] = distance_m
+        if bearing_available:
+            bearing_confidence = _finite_number(
+                observation["bearing_confidence"],
+                f"observations[{index}].bearing_confidence",
+                minimum=0,
+            )
+            if bearing_confidence > 1:
+                raise ScenarioError(
+                    f"observations[{index}].bearing_confidence must be at most 1"
+                )
+            item["bearing_confidence"] = bearing_confidence
+            true_bearing = _bearing_deg(ear_position, source_position)
+            node_relative = (true_bearing - ear_position["orientation_deg"]) % 360
+            # Optional systematic sensor bias on the emitted node-relative bearing only.
+            # Ground-truth geometry is unchanged; bias is diagnostic experiment metadata.
+            item["bearing_deg"] = (node_relative + bearing_bias_deg) % 360
+            if bearing_bias_deg != 0.0:
+                item["bearing_bias_deg"] = bearing_bias_deg
+        # When bearing_available is false, omit bearing_deg so the MQTT payload
+        # reuses the existing spatial.bearing=null emission path (no fabricated deg).
         if "signal_level_dbfs" in observation:
             signal_level = _finite_number(
                 observation["signal_level_dbfs"],
@@ -458,6 +513,27 @@ def parse_ear_arguments(values: list[str]) -> dict[str, Path]:
     return ears
 
 
+def resolve_scenario_ear_paths(args: argparse.Namespace) -> dict[str, Path]:
+    """Resolve Ear credential paths from ``--ear`` or ``--ear-profile`` (not both)."""
+    ear_values = list(getattr(args, "ear", None) or [])
+    profile_path = getattr(args, "ear_profile", None)
+    if profile_path and ear_values:
+        raise ScenarioError("use either --ear-profile or --ear, not both")
+    if profile_path:
+        try:
+            profile = load_ear_profile(profile_path)
+            paths = resolve_profile_credential_paths(profile, require_files=True)
+        except EarProfileError as exc:
+            raise ScenarioError(str(exc)) from exc
+        print(f"EAR profile: {profile_summary(profile)}", flush=True)
+        return paths
+    if not ear_values:
+        raise ScenarioError(
+            "provide --ear ALIAS=CREDENTIALS_FILE and/or --ear-profile PATH"
+        )
+    return parse_ear_arguments(ear_values)
+
+
 def validate_ear_aliases(
     scenario: dict[str, Any],
     ears: dict[str, Path],
@@ -474,6 +550,23 @@ def validate_ear_aliases(
         raise ScenarioError(
             f"Ear aliases mismatch; missing={sorted(missing)}, unused={sorted(unused)}"
         )
+
+
+def _saved_observation_sequence_number(saved_observation: dict[str, Any]) -> int | None:
+    """Return the last published sequence from a credentials observation blob.
+
+    Current ObservationBody stores ``identity.sequence_number``. Older simulator
+    credential files used a flat ``sequence_number`` on the observation object.
+    Accept both so ADE (and any Ear provisioned via the nested schema) load.
+    """
+    identity = saved_observation.get("identity")
+    if isinstance(identity, dict) and "sequence_number" in identity:
+        value = identity.get("sequence_number")
+    else:
+        value = saved_observation.get("sequence_number")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 def load_ear_credentials(
@@ -553,12 +646,8 @@ def load_ear_credentials(
         saved_observation = credentials.get("observation")
         if not isinstance(saved_observation, dict):
             raise ScenarioError(f"credentials for {alias} have no saved observation")
-        saved_sequence = saved_observation.get("sequence_number")
-        if (
-            isinstance(saved_sequence, bool)
-            or not isinstance(saved_sequence, int)
-            or saved_sequence < 0
-        ):
+        saved_sequence = _saved_observation_sequence_number(saved_observation)
+        if saved_sequence is None:
             raise ScenarioError(
                 f"credentials for {alias} have an invalid saved sequence number"
             )
@@ -809,6 +898,33 @@ def apply_simulation_mode(
     return prepared, diagnostics
 
 
+def apply_named_scripted_cadence_profile(
+    scenario: dict[str, Any],
+    profile_id: str | None,
+) -> dict[str, Any]:
+    """Optionally resample scripted report times via an explicit named profile.
+
+    Independent of ``independent_detection`` / ``--observation-interval-seconds``.
+    Default (``profile_id is None``) leaves the scenario unchanged.
+    """
+    if profile_id is None:
+        return scenario
+    if scenario.get("simulation_mode", "scripted") != "scripted":
+        raise ScenarioError(
+            "--scripted-cadence-profile applies only with --mode scripted"
+        )
+    try:
+        return apply_scripted_cadence_profile(
+            scenario,
+            profile_id,
+            position_on_route=_position_on_route,
+            distance_m=_distance_m,
+            bearing_deg=_bearing_deg,
+        )
+    except ScriptedCadenceProfileError as exc:
+        raise ScenarioError(str(exc)) from exc
+
+
 def run_scenario(
     scenario: dict[str, Any],
     credentials_by_alias: dict[str, dict[str, Any]],
@@ -927,6 +1043,15 @@ def print_schedule(scenario: dict[str, Any], *, time_scale: float = 1.0) -> None
     )
     print(f"Scenario: {scenario['scenario_id']}")
     print(f"Simulation mode: {mode}")
+    cadence_meta = scenario.get("scripted_cadence_profile")
+    if cadence_meta:
+        print(
+            f"Scripted cadence profile: {cadence_meta['profile_id']} "
+            f"(nominal {cadence_meta['cadence_seconds']:g}s; "
+            f"derived from {cadence_meta['source_scenario_file']}; "
+            f"{cadence_meta['authored_report_count']}→"
+            f"{cadence_meta['resampled_report_count']} reports)"
+        )
     print(
         f"Ground truth source: {scenario['source_id']} "
         f"(test metadata only)"
@@ -961,15 +1086,25 @@ def print_schedule(scenario: dict[str, Any], *, time_scale: float = 1.0) -> None
         )
         return
     for index, event in enumerate(scenario["observations"], start=1):
-        confidence = event.get("bearing_confidence", "not set")
         synthetic = ""
         if event.get("synthetic_fields"):
             synthetic = "  [synthetic level/confidence placeholders]"
+        if "bearing_deg" in event:
+            confidence = event.get("bearing_confidence", "not set")
+            bias = event.get("bearing_bias_deg")
+            bias_text = (
+                f"; bias={bias:+g} deg" if isinstance(bias, (int, float)) else ""
+            )
+            bearing_text = (
+                f"bearing={event['bearing_deg']:.1f} deg "
+                f"(confidence={confidence}{bias_text})"
+            )
+        else:
+            bearing_text = "bearing=unavailable (spatial.bearing=null)"
         print(
             f"{index:02d}  t={event['at_seconds']:g}s  "
             f"{ear_shortname(event['ear'])}  "
-            f"bearing={event['bearing_deg']:.1f} deg "
-            f"(confidence={confidence})  "
+            f"{bearing_text}  "
             f"classification confidence={event['classification_confidence']}  "
             f"ground-truth distance={event['source_distance_m']:.1f}m  "
             f"level={event.get('signal_level_dbfs', 'not set')} dBFS  "
@@ -1080,7 +1215,20 @@ def _add_scenario_common_args(parser: argparse.ArgumentParser) -> None:
         action="append",
         default=[],
         metavar="ALIAS=CREDENTIALS_FILE",
-        help="Map a scenario Ear alias to a private provisioned simulator credentials file",
+        help=(
+            "Map a scenario Ear alias to a private provisioned simulator credentials "
+            "file (repeatable). Cannot combine with --ear-profile."
+        ),
+    )
+    parser.add_argument(
+        "--ear-profile",
+        default=None,
+        metavar="PATH",
+        help=(
+            "JSON profile mapping scenario Ear aliases to simulator slots "
+            "(resolved via sim_ear_slots). Example: "
+            "shared/simulator/ear-profiles/abc.json. Cannot combine with --ear."
+        ),
     )
     parser.add_argument(
         "--ca", default="shared/trust/ca.crt", help="Path to the local hub CA"
@@ -1157,6 +1305,19 @@ def _add_scenario_common_args(parser: argparse.ArgumentParser) -> None:
             f"independent_detection only; default: {DEFAULT_OBSERVATION_INTERVAL_S:g})"
         ),
     )
+    _cadence_choices = known_scripted_cadence_profile_ids()
+    parser.add_argument(
+        "--scripted-cadence-profile",
+        choices=_cadence_choices,
+        default=None,
+        help=(
+            "Optional named scripted report-cadence resampling profile. "
+            "Applies only with --mode scripted. Does not change route, speed, "
+            "detection windows, or the 30 s Observation lifecycle split rule. "
+            f"Known: {', '.join(_cadence_choices) or '(none)'}. "
+            "Omit for the immutable authored baseline."
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1219,7 +1380,7 @@ def main() -> int:
 
     try:
         loaded = load_scenario(Path(args.scenario_file))
-        ear_paths = parse_ear_arguments(args.ear)
+        ear_paths = resolve_scenario_ear_paths(args)
         per_ear_ranges = parse_ear_max_range_arguments(args.ear_max_range)
         validate_ear_aliases(loaded, ear_paths, mode=args.mode)
         scenario, diagnostics = apply_simulation_mode(
@@ -1233,6 +1394,14 @@ def main() -> int:
             path_loss_exponent=args.path_loss_exponent,
             observation_interval_seconds=args.observation_interval_seconds,
         )
+        if getattr(args, "scripted_cadence_profile", None):
+            if args.command == "retry-pending":
+                raise ScenarioError(
+                    "--scripted-cadence-profile is not used with retry-pending"
+                )
+            scenario = apply_named_scripted_cadence_profile(
+                scenario, args.scripted_cadence_profile
+            )
         if args.command == "dry-run":
             if not math.isfinite(args.time_scale) or args.time_scale <= 0:
                 raise ScenarioError("--time-scale must be finite and greater than zero")

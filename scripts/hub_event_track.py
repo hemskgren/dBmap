@@ -1130,6 +1130,25 @@ def format_localization_lines(
     else:
         lines.append("    estimated position: none")
     lines.append(f"    selection: {localization.selection_method}")
+    selection_mode = localization.details.get("bearing_selection_mode")
+    if selection_mode:
+        lines.append(f"    bearing selection mode: {selection_mode}")
+    common_epoch = localization.details.get("common_epoch_utc")
+    if common_epoch:
+        lines.append(f"    common epoch utc: {common_epoch}")
+        participating = localization.details.get("common_epoch_participating_ears") or []
+        if participating:
+            lines.append(
+                "    common-epoch participating ears: " + ", ".join(participating)
+            )
+        excluded = localization.details.get("common_epoch_excluded_ears") or []
+        for item in excluded:
+            ear_id = item.get("ear_id") if isinstance(item, dict) else None
+            reason = item.get("reason") if isinstance(item, dict) else None
+            if ear_id:
+                lines.append(
+                    f"    common-epoch excluded {ear_id}: {reason or 'unspecified'}"
+                )
     if localization.max_bearing_dt_s is not None:
         lines.append(
             f"    max bearing |Δt|: {localization.max_bearing_dt_s:.3f}s "

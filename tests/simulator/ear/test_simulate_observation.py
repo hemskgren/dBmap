@@ -23,6 +23,41 @@ def test_simulator_identity_requires_simulated_ear_prefix() -> None:
         simulate_observation.require_simulator_identity("EAR-001")
 
 
+def test_slot_node_id_mismatch_stops_before_finish_provisioning(
+    monkeypatch, tmp_path
+) -> None:
+    credentials_path = tmp_path / "sim-ear-d.json"
+    args = SimpleNamespace(
+        api_url="https://hub.example",
+        ca="ca.crt",
+        credentials_file=str(credentials_path),
+        ear="d",
+        reuse_credentials=False,
+    )
+    monkeypatch.setattr(
+        simulate_observation,
+        "api_request",
+        lambda *a, **k: {
+            "node_id": "SIM-EAR-008",
+            "bootstrap_token": "tok",
+        },
+    )
+    finish_calls = []
+
+    def boom(*_args, **_kwargs):
+        finish_calls.append(True)
+        raise AssertionError("finish_provisioning must not run on slot mismatch")
+
+    monkeypatch.setattr(simulate_observation, "finish_provisioning", boom)
+
+    with pytest.raises(simulate_observation.SimEarSlotError, match="expects SIM-EAR-004"):
+        simulate_observation.load_or_provision(args, "admin-token")
+    assert finish_calls == []
+    assert credentials_path.is_file()
+    saved = credentials_path.read_text(encoding="utf-8")
+    assert "SIM-EAR-008" in saved
+
+
 def test_old_hub_identity_is_rejected_before_consuming_bootstrap_token(
     monkeypatch,
 ) -> None:

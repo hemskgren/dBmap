@@ -154,6 +154,45 @@ def test_ear_credentials_require_private_file_and_distinct_simulated_nodes(
         simulate_scenario.load_ear_credentials({"ear_b": second})
 
 
+def test_ear_credentials_accept_nested_identity_sequence_number(tmp_path) -> None:
+    """Provisioned Ears may store ObservationBody (identity.sequence_number)."""
+    record = {
+        "state": "provisioned",
+        "node_id": "SIM-EAR-004",
+        "mqtt": {
+            "host": "hub.example",
+            "port": 8883,
+            "use_tls": True,
+            "username": "sim-ear-004",
+            "password": "secret",
+        },
+        "topics": {"observation": "esp-ear/local/sim-ear-004/observation"},
+        "observation": {
+            "protocol_version": 1,
+            "message_type": "observation",
+            "identity": {
+                "node_id": "SIM-EAR-004",
+                "observation_id": "11111111-1111-1111-1111-111111111111",
+                "sequence_number": 1,
+                "hub_id": "hub-test",
+            },
+            "context": {},
+            "spatial": {},
+            "acoustic": {},
+        },
+        "next_sequence_number": 2,
+    }
+    path = tmp_path / "ear-d.json"
+    path.write_text(json.dumps(record))
+    path.chmod(0o600)
+
+    loaded = simulate_scenario.load_ear_credentials({"ear_d": path})
+    assert loaded["ear_d"]["next_sequence_number"] == 2
+    assert (
+        simulate_scenario._saved_observation_sequence_number(record["observation"]) == 1
+    )
+
+
 def test_scenario_builds_protocol_observations_with_per_ear_sequences_and_timeline(
     tmp_path,
 ) -> None:

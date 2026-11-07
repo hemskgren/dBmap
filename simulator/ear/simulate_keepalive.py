@@ -9,23 +9,49 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
+_EAR_DIR = Path(__file__).resolve().parent
 _SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
-if str(_SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS))
+for _path in (_EAR_DIR, _SCRIPTS):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+from ear_profile import (
+    EarProfileError,
+    load_ear_profile,
+    profile_summary,
+    resolve_profile_keepalive_paths,
+)
 from lib.hub_cli import (
     load_project_env,
     print_help_without_arguments,
 )
+from sim_ear_slots import (
+    DEFAULT_EAR,
+    EAR_SLOTS,
+    credentials_file_for_ear,
+    slot_help_text,
+)
 
-DEFAULT_EAR = "a"
-EAR_SLOTS = ("a", "b", "c")
 
-
-def credentials_file_for_ear(ear: str) -> str:
-    return f"shared/simulator/sim-ear-{ear}.json"
+def _cli_has_ear_flag(argv: list[str] | None = None) -> bool:
+    """True when the user passed ``--ear`` / ``--ear=`` (not merely the default)."""
+    tokens = sys.argv[1:] if argv is None else argv
+    return any(token == "--ear" or token.startswith("--ear=") for token in tokens)
 
 
 def resolve_credentials_files(args: argparse.Namespace) -> list[str]:
+    profile_path = getattr(args, "ear_profile", None)
+    if profile_path:
+        if args.credentials_file:
+            raise ValueError("--ear-profile cannot be combined with --credentials-file")
+        if _cli_has_ear_flag():
+            raise ValueError("--ear-profile cannot be combined with --ear")
+        try:
+            profile = load_ear_profile(profile_path)
+            paths = resolve_profile_keepalive_paths(profile, require_files=True)
+        except EarProfileError as exc:
+            raise ValueError(str(exc)) from exc
+        print(f"EAR profile: {profile_summary(profile)}", flush=True)
+        return paths
     if args.credentials_file:
         if args.ear == "all":
             raise ValueError("--credentials-file cannot be combined with --ear all")
@@ -37,8 +63,9 @@ def resolve_credentials_files(args: argparse.Namespace) -> list[str]:
             if Path(credentials_file_for_ear(slot)).is_file()
         ]
         if not paths:
+            letters = ",".join(EAR_SLOTS)
             raise ValueError(
-                "no shared/simulator/sim-ear-{a,b,c}.json files found for --ear all"
+                f"no shared/simulator/sim-ear-{{{letters}}}.json files found for --ear all"
             )
         return paths
     return [credentials_file_for_ear(args.ear)]
@@ -116,9 +143,15 @@ def _add_ear_selection_args(parser: argparse.ArgumentParser) -> None:
         "--ear",
         choices=(*EAR_SLOTS, "all"),
         default=DEFAULT_EAR,
+        help=slot_help_text(include_all=True),
+    )
+    parser.add_argument(
+        "--ear-profile",
+        default=None,
+        metavar="PATH",
         help=(
-            "Sim Ear slot → shared/simulator/sim-ear-{a,b,c}.json "
-            "(default: a; all = every slot that has a credentials file)"
+            "JSON EAR profile; keepalive uses the profile's unique slots "
+            "(via sim_ear_slots). Cannot combine with --ear or --credentials-file."
         ),
     )
     parser.add_argument(
