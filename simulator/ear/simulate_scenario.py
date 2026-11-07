@@ -39,6 +39,19 @@ from lib.hub_cli import (
     load_project_env,
     print_help_without_arguments,
 )
+from lib.scenario_movement import (
+    MovementError,
+    normalize_movement,
+)
+from lib.scenario_movement import (
+    distance_m as _shared_distance_m,
+)
+from lib.scenario_movement import (
+    position_at as movement_position_at,
+)
+from lib.scenario_movement import (
+    position_on_route as _shared_position_on_route,
+)
 from scripted_cadence_profile import (
     ScriptedCadenceProfileError,
     apply_scripted_cadence_profile,
@@ -106,6 +119,13 @@ def run_wall_clock_seconds(scenario: dict[str, Any], time_scale: float) -> float
     return last_at * time_scale
 
 
+def _format_movement_speed(movement: dict[str, Any]) -> str:
+    speed = movement.get("speed_m_s")
+    if speed is None:
+        return "n/a (segmented)"
+    return f"{float(speed):g} m/s"
+
+
 def print_scenario_banner(
     scenario: dict[str, Any],
     *,
@@ -124,7 +144,7 @@ def print_scenario_banner(
     movement = scenario["movement"]
     print(
         f"  source_family={scenario['source_family']}  "
-        f"speed={movement['speed_m_s']:g} m/s  "
+        f"speed={_format_movement_speed(movement)}  "
         f"source={scenario['source_id']}",
         flush=True,
     )
@@ -168,7 +188,6 @@ def publish_keepalives_for_ears(
 
 _SCENARIO_FIELDS = {"scenario_id", "source", "ears", "observations"}
 _SOURCE_FIELDS = {"ground_truth_id", "source_family", "movement"}
-_MOVEMENT_FIELDS = {"start", "end", "speed_m_s"}
 _POINT_FIELDS = {"latitude", "longitude"}
 _EAR_FIELDS = {"latitude", "longitude", "orientation_deg"}
 _OBSERVATION_FIELDS = {
@@ -207,15 +226,7 @@ def _validate_point(value: Any, field: str) -> dict[str, float]:
 
 
 def _distance_m(first: dict[str, float], second: dict[str, float]) -> float:
-    lat1 = math.radians(first["latitude"])
-    lat2 = math.radians(second["latitude"])
-    lat_delta = lat2 - lat1
-    lon_delta = math.radians(second["longitude"] - first["longitude"])
-    haversine = (
-        math.sin(lat_delta / 2) ** 2
-        + math.cos(lat1) * math.cos(lat2) * math.sin(lon_delta / 2) ** 2
-    )
-    return 6_371_000 * 2 * math.asin(math.sqrt(min(1.0, haversine)))
+    return _shared_distance_m(first, second)
 
 
 def _position_on_route(
@@ -223,35 +234,16 @@ def _position_on_route(
     end: dict[str, float],
     fraction: float,
 ) -> dict[str, float]:
-    start_lat = math.radians(start["latitude"])
-    start_lon = math.radians(start["longitude"])
-    end_lat = math.radians(end["latitude"])
-    end_lon = math.radians(end["longitude"])
-    start_vector = (
-        math.cos(start_lat) * math.cos(start_lon),
-        math.cos(start_lat) * math.sin(start_lon),
-        math.sin(start_lat),
-    )
-    end_vector = (
-        math.cos(end_lat) * math.cos(end_lon),
-        math.cos(end_lat) * math.sin(end_lon),
-        math.sin(end_lat),
-    )
-    dot = max(-1.0, min(1.0, sum(a * b for a, b in zip(start_vector, end_vector))))
-    angle = math.acos(dot)
-    if angle < 1e-12:
-        return dict(start)
-    sine = math.sin(angle)
-    first_weight = math.sin((1 - fraction) * angle) / sine
-    second_weight = math.sin(fraction * angle) / sine
-    x, y, z = (
-        first_weight * start_vector[index] + second_weight * end_vector[index]
-        for index in range(3)
-    )
-    return {
-        "latitude": math.degrees(math.atan2(z, math.hypot(x, y))),
-        "longitude": math.degrees(math.atan2(y, x)),
-    }
+    """Legacy single-leg spherical interpolator (kept for call-site compatibility)."""
+    return _shared_position_on_route(start, end, fraction)
+
+
+def position_at(movement: dict[str, Any], t: float) -> dict[str, float]:
+    """Source position at scenario time ``t`` for normalized movement."""
+    try:
+        return movement_position_at(movement, t)
+    except MovementError as exc:
+        raise ScenarioError(str(exc)) from exc
 
 
 def _bearing_deg(first: dict[str, float], second: dict[str, float]) -> float:
@@ -305,22 +297,11 @@ def load_scenario(path: Path) -> dict[str, Any]:
         raise ScenarioError(
             "source.source_family must be a non-empty string of at most 64 characters"
         )
-    movement = source["movement"]
-    if not isinstance(movement, dict) or set(movement) != _MOVEMENT_FIELDS:
-        raise ScenarioError(
-            f"source.movement must contain exactly {sorted(_MOVEMENT_FIELDS)}"
-        )
-    start = _validate_point(movement["start"], "source.movement.start")
-    end = _validate_point(movement["end"], "source.movement.end")
-    speed = _finite_number(
-        movement["speed_m_s"], "source.movement.speed_m_s", minimum=0
-    )
-    if speed == 0:
-        raise ScenarioError("source.movement.speed_m_s must be greater than zero")
-    route_distance_m = _distance_m(start, end)
-    if route_distance_m <= 0:
-        raise ScenarioError("source movement start and end positions must be different")
-    route_duration_seconds = route_distance_m / speed
+    try:
+        movement = normalize_movement(source["movement"], field="source.movement")
+    except MovementError as exc:
+        raise ScenarioError(str(exc)) from exc
+    route_duration_seconds = float(movement["duration_seconds"])
 
     ears_raw = scenario["ears"]
     if not isinstance(ears_raw, dict) or not ears_raw:
@@ -433,11 +414,7 @@ def load_scenario(path: Path) -> dict[str, Any]:
                 f"observations[{index}].classification_confidence must be at most 1"
             )
         item["classification_confidence"] = classification_confidence
-        source_position = _position_on_route(
-            start,
-            end,
-            at_seconds / route_duration_seconds,
-        )
+        source_position = position_at(movement, at_seconds)
         ear_position = ears[ear]
         distance_m = _distance_m(ear_position, source_position)
         if distance_m <= 1e-6:
@@ -487,13 +464,7 @@ def load_scenario(path: Path) -> dict[str, Any]:
         "scenario_id": scenario_id,
         "source_id": source_id,
         "source_family": source_family,
-        "movement": {
-            "start": start,
-            "end": end,
-            "speed_m_s": speed,
-            "distance_m": route_distance_m,
-            "duration_seconds": route_duration_seconds,
-        },
+        "movement": movement,
         "ears": ears,
         "observations": normalized,
     }
@@ -887,7 +858,7 @@ def apply_simulation_mode(
             config=config,
             signal_level_config=signal_level_config,
             emission_policy=emission_policy,
-            position_on_route=_position_on_route,
+            position_at=position_at,
             distance_m=_distance_m,
             bearing_deg=_bearing_deg,
         )
@@ -917,7 +888,7 @@ def apply_named_scripted_cadence_profile(
         return apply_scripted_cadence_profile(
             scenario,
             profile_id,
-            position_on_route=_position_on_route,
+            position_at=position_at,
             distance_m=_distance_m,
             bearing_deg=_bearing_deg,
         )
@@ -1058,7 +1029,7 @@ def print_schedule(scenario: dict[str, Any], *, time_scale: float = 1.0) -> None
     )
     print(
         f"source_family={scenario['source_family']}  "
-        f"speed={movement['speed_m_s']:g} m/s"
+        f"speed={_format_movement_speed(movement)}"
     )
     print(
         f"Movement: {movement['distance_m']:.1f}m over "

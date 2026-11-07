@@ -8,6 +8,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parents[2] / "scripts"))
 
 from lib.helicopter_offline_golden_path import (
@@ -92,7 +94,9 @@ def test_ground_truth_helper_is_derived_from_scenario_movement() -> None:
         scenario["movement"]["end"]["longitude"],
     )
     mid = trajectory.position_at(trajectory.duration_seconds / 2.0)
-    assert start[0] == mid[0]  # constant latitude east-west route
+    # East-west route: spherical mid stays near authored latitude (great-circle
+    # dip is small at this range); longitude progresses westbound.
+    assert mid[0] == pytest.approx(start[0], abs=1e-3)
     assert start[1] > mid[1] > end[1]
 
 

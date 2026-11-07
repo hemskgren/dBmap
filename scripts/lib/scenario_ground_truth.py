@@ -14,30 +14,36 @@ from lib.cross_ear_localization import (
     GroundTruthEvaluation,
     LocalizationResult,
     evaluate_against_ground_truth,
-    source_position_on_route,
 )
+from lib.scenario_movement import MovementError
+from lib.scenario_movement import position_at as movement_position_at
 
 
 @dataclass(frozen=True)
 class ScenarioGroundTruthTrajectory:
-    """Separate ground-truth route for post-hoc localization evaluation."""
+    """Separate ground-truth route for post-hoc localization evaluation.
+
+    Uses the same spherical transit / hold semantics as the simulator via the
+    normalized movement model. ``speed_m_s`` is ``None`` for segmented movement
+    (no single representative speed).
+    """
 
     ground_truth_id: str
     source_family: str
     start: dict[str, float]
     end: dict[str, float]
-    speed_m_s: float
+    speed_m_s: float | None
     distance_m: float
     duration_seconds: float
+    movement: dict[str, Any]
 
     def position_at(self, at_seconds: float) -> tuple[float, float]:
         """Return ground-truth lat/lon at scenario-relative seconds."""
-        return source_position_on_route(
-            self.start,
-            self.end,
-            speed_m_s=self.speed_m_s,
-            at_seconds=at_seconds,
-        )
+        try:
+            point = movement_position_at(self.movement, at_seconds)
+        except MovementError as exc:
+            raise ValueError(str(exc)) from exc
+        return point["latitude"], point["longitude"]
 
     def position_at_wall_time(
         self,
@@ -55,14 +61,16 @@ def ground_truth_from_loaded_scenario(
 ) -> ScenarioGroundTruthTrajectory:
     """Build a GT trajectory from a scenario returned by ``load_scenario``."""
     movement = scenario["movement"]
+    speed = movement.get("speed_m_s")
     return ScenarioGroundTruthTrajectory(
         ground_truth_id=str(scenario["source_id"]),
         source_family=str(scenario["source_family"]),
         start=dict(movement["start"]),
         end=dict(movement["end"]),
-        speed_m_s=float(movement["speed_m_s"]),
+        speed_m_s=None if speed is None else float(speed),
         distance_m=float(movement["distance_m"]),
         duration_seconds=float(movement["duration_seconds"]),
+        movement=dict(movement),
     )
 
 
