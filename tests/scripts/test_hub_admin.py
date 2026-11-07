@@ -17,29 +17,31 @@ hub_admin = module_from_spec(spec)
 spec.loader.exec_module(hub_admin)
 
 
+def _sample_devices() -> list[dict]:
+    return [
+        {
+            "node_id": "OUT-007",
+            "node_type": "output",
+            "status": "online",
+            "provisioning_state": "provisioned",
+            "lifecycle_state": "active",
+            "owner_display_name": None,
+            "installation": {"latitude": 59.91, "longitude": 10.75},
+        },
+        {
+            "node_id": "EAR-001",
+            "node_type": "ear",
+            "status": "offline",
+            "provisioning_state": "pending",
+            "lifecycle_state": "deactivated",
+            "owner_display_name": "Ops",
+            "installation": None,
+        },
+    ]
+
+
 def test_format_device_list_matches_web_columns() -> None:
-    text = hub_admin.format_device_list(
-        [
-            {
-                "node_id": "OUT-007",
-                "node_type": "output",
-                "status": "online",
-                "provisioning_state": "provisioned",
-                "lifecycle_state": "active",
-                "owner_display_name": None,
-                "installation": {"latitude": 59.91, "longitude": 10.75},
-            },
-            {
-                "node_id": "EAR-001",
-                "node_type": "ear",
-                "status": "offline",
-                "provisioning_state": "pending",
-                "lifecycle_state": "deactivated",
-                "owner_display_name": "Ops",
-                "installation": None,
-            },
-        ]
-    )
+    text = hub_admin.format_device_list(_sample_devices())
 
     lines = text.splitlines()
     assert lines[0].startswith("Device")
@@ -59,6 +61,102 @@ def test_format_device_list_matches_web_columns() -> None:
     assert "online" in lines[2]
     assert "Unassigned" in lines[2]
     assert "59.91, 10.75" in lines[2]
+    assert "Reported state" not in text
+    assert "Installation (Hub-managed)" not in text
+
+
+def test_format_device_list_detail_shows_reported_and_installation() -> None:
+    nodes = {
+        "EAR-001": {
+            "reported": {
+                "firmware_version": "0.2.0",
+                "hardware_revision": "EAR-V1",
+                "config_version": 3,
+                "calibration_version": 1,
+                "classifier_version": "rules-2",
+                "uptime_s": 120,
+            },
+            "installation": None,
+        },
+        "OUT-007": {
+            "reported": {
+                "firmware_version": "1.0.0",
+                "hardware_revision": "OUT-V1",
+                "config_version": 0,
+                "calibration_version": 0,
+                "classifier_version": "",
+                "uptime_s": 0,
+            },
+            "installation": {
+                "latitude": 59.91,
+                "longitude": 10.75,
+                "orientation_deg": 180.0,
+                "height_m": 12.5,
+            },
+        },
+    }
+    text = hub_admin.format_device_list_detail(_sample_devices(), nodes)
+    summary = hub_admin.format_device_list(_sample_devices())
+    assert text.startswith(summary)
+    assert "=== EAR-001 ===" in text
+    assert "=== OUT-007 ===" in text
+    assert "Reported state (device)" in text
+    assert "Installation (Hub-managed)" in text
+    assert "Firmware version" in text
+    assert "0.2.0" in text
+    assert "Hardware revision" in text
+    assert "EAR-V1" in text
+    assert "Configuration version" in text
+    assert "Calibration version" in text
+    assert "Classifier version" in text
+    assert "Uptime (s)" in text
+    assert "120" in text
+    assert "Latitude" in text
+    assert "59.91" in text
+    assert "Longitude" in text
+    assert "10.75" in text
+    assert "Orientation (deg)" in text
+    assert "180.0" in text
+    assert "Height (m)" in text
+    assert "12.5" in text
+
+
+def test_format_device_list_detail_missing_values_are_em_dash() -> None:
+    nodes = {
+        "EAR-001": {"reported": {}, "installation": None},
+        "OUT-007": {
+            "reported": {
+                "firmware_version": "",
+                "hardware_revision": "   ",
+                "config_version": None,
+                "calibration_version": None,
+                "classifier_version": None,
+                "uptime_s": None,
+            },
+            "installation": {"latitude": 1.0, "longitude": 2.0},
+        },
+    }
+    text = hub_admin.format_device_list_detail(_sample_devices(), nodes)
+    assert hub_admin.MISSING_VALUE == "—"
+    # EAR-001 has no reported/installation fields populated.
+    ear_block = text.split("=== EAR-001 ===", 1)[1].split("=== OUT-007 ===", 1)[0]
+    assert ear_block.count("—") >= 6
+    assert "Orientation (deg)" in ear_block
+    assert "Height (m)" in ear_block
+    out_block = text.split("=== OUT-007 ===", 1)[1]
+    assert "Firmware version" in out_block
+    assert "—" in out_block
+    assert "1.0" in out_block
+    assert "2.0" in out_block
+
+
+def test_list_parser_accepts_detail_flag() -> None:
+    parser = hub_admin.build_parser()
+    args = parser.parse_args(["list", "--detail"])
+    assert args.command == "list"
+    assert args.detail is True
+    default = parser.parse_args(["list"])
+    assert default.detail is False
 
 
 def test_set_desired_preserves_fields_not_explicitly_changed(monkeypatch) -> None:

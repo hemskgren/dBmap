@@ -72,6 +72,9 @@ def get_node(
     return result
 
 
+MISSING_VALUE = "—"
+
+
 def _format_location(installation: object) -> str:
     if not isinstance(installation, dict):
         return "Not set"
@@ -80,6 +83,22 @@ def _format_location(installation: object) -> str:
     if latitude is None or longitude is None:
         return "Not set"
     return f"{latitude}, {longitude}"
+
+
+def _display_value(value: object) -> str:
+    """Render a Hub field for the terminal; never invent substitutes for missing data."""
+    if value is None:
+        return MISSING_VALUE
+    if isinstance(value, str):
+        text = value.strip()
+        return text if text else MISSING_VALUE
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _sorted_devices(devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(devices, key=lambda item: str(item.get("node_id", "")))
 
 
 def format_device_list(devices: list[dict[str, Any]]) -> str:
@@ -94,7 +113,7 @@ def format_device_list(devices: list[dict[str, Any]]) -> str:
         "Location",
     )
     rows: list[tuple[str, ...]] = [headers]
-    for device in sorted(devices, key=lambda item: str(item.get("node_id", ""))):
+    for device in _sorted_devices(devices):
         rows.append(
             (
                 str(device.get("node_id", "")),
@@ -112,6 +131,62 @@ def format_device_list(devices: list[dict[str, Any]]) -> str:
         for row in rows
     ]
     return "\n".join(lines)
+
+
+def _format_labeled_block(title: str, fields: list[tuple[str, object]]) -> list[str]:
+    label_width = max((len(label) for label, _ in fields), default=0)
+    lines = [title]
+    for label, value in fields:
+        lines.append(f"  {label.ljust(label_width)}  {_display_value(value)}")
+    return lines
+
+
+def format_device_list_detail(
+    devices: list[dict[str, Any]],
+    nodes_by_id: dict[str, dict[str, Any]],
+) -> str:
+    """Summary table plus per-device reported state and Hub installation."""
+    lines = [format_device_list(devices), ""]
+    for device in _sorted_devices(devices):
+        node_id = str(device.get("node_id", ""))
+        node = nodes_by_id.get(node_id) or {}
+        reported = node.get("reported")
+        if not isinstance(reported, dict):
+            reported = {}
+        installation = node.get("installation")
+        if installation is None:
+            installation = device.get("installation")
+        if not isinstance(installation, dict):
+            installation = {}
+
+        lines.append(f"=== {node_id} ===")
+        lines.extend(
+            _format_labeled_block(
+                "Reported state (device)",
+                [
+                    ("Firmware version", reported.get("firmware_version")),
+                    ("Hardware revision", reported.get("hardware_revision")),
+                    ("Configuration version", reported.get("config_version")),
+                    ("Calibration version", reported.get("calibration_version")),
+                    ("Classifier version", reported.get("classifier_version")),
+                    ("Uptime (s)", reported.get("uptime_s")),
+                ],
+            )
+        )
+        lines.append("")
+        lines.extend(
+            _format_labeled_block(
+                "Installation (Hub-managed)",
+                [
+                    ("Latitude", installation.get("latitude")),
+                    ("Longitude", installation.get("longitude")),
+                    ("Orientation (deg)", installation.get("orientation_deg")),
+                    ("Height (m)", installation.get("height_m")),
+                ],
+            )
+        )
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def set_desired(args: argparse.Namespace, base_url: str, admin_token: str) -> Any:
@@ -199,7 +274,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_hub_connection_arguments(parser)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("list", help="List registered nodes")
+    list_cmd = commands.add_parser("list", help="List registered nodes")
+    list_cmd.add_argument(
+        "--detail",
+        action="store_true",
+        help=(
+            "After the summary table, print each node's reported state and "
+            "Hub-managed installation fields"
+        ),
+    )
 
     show = commands.add_parser("show", help="Show one node")
     show.add_argument("node_id")
@@ -266,7 +349,16 @@ def main() -> int:
                 isinstance(device, dict) and "node_id" in device for device in devices
             ):
                 raise HubAdminError("hub returned an invalid device list")
-            print(format_device_list(devices))
+            if args.detail:
+                nodes_by_id: dict[str, dict[str, Any]] = {}
+                for device in _sorted_devices(devices):
+                    node_id = str(device.get("node_id", ""))
+                    nodes_by_id[node_id] = get_node(
+                        base_url, args.ca, admin_token, node_id
+                    )
+                print(format_device_list_detail(devices, nodes_by_id), end="")
+            else:
+                print(format_device_list(devices))
             return 0
         if args.command == "show":
             result = get_node(base_url, args.ca, admin_token, args.node_id)
