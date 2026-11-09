@@ -1,0 +1,4 @@
+# Overlay for opt-in I2S dual-mic capture diagnostics (UART).
+# Use with sdkconfig.defaults — does not change Hub/Observation schemas.
+#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.capture_diag" build
+CONFIG_DBMAP_EAR_MIC_CAPTURE_DIAG=y

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "name": "flyglarm",
+  "description": "TEST ONLY. Play official MCF Flyglarm sample (~1 minute). Not a real warning; do not schedule.",
+  "media_sources": {
+    "flyglarm": {
+      "url": "https://www.mcf.se/contentassets/ffc078def2284745ae47c8282f83839f/03-flyglarm.mp3",
+      "media_content_type": "music"
+    }
+  },
+  "steps": [
+    {
+      "action": "play",
+      "source": "flyglarm"
+    },
+    {
+      "action": "wait",
+      "seconds": 70
+    },
+    {
+      "action": "stop"
+    }
+  ]
+}

@@ -13,6 +13,7 @@
 #include "dbmap_ear_mic.h"
 #include "dbmap_episode_registry.h"
 #include "dbmap_health.h"
+#include "dbmap_lifecycle_v2.h"
 #include "dbmap_mqtt.h"
 #include "dbmap_observation_lifecycle.h"
 #include "dbmap_observation_seq.h"
@@ -69,6 +70,12 @@ static dbmap_obs_emit_gate_t s_emit_gate = DBMAP_OBS_GATE_RUN;
 static bool s_logged_mqtt_drop;
 static uint32_t s_dropped_while_mqtt_down;
 static dbmap_activity_detector_t s_detector;
+#if defined(CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2) && CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2
+static dbmap_lifecycle_v2_t s_lifecycle_v2;
+static uint32_t s_lc_v2_feed_us_last;
+static uint32_t s_lc_v2_feed_us_max;
+static uint32_t s_lc_v2_feed_count;
+#endif
 static dbmap_episode_registry_t s_registry;
 static dbmap_ep_handle_t s_rms_handle;
 static bool s_rms_bound;
@@ -1364,6 +1371,29 @@ static void activity_serial_diag(const dbmap_ear_mic_levels_t *levels, bool leve
 
     if (s_diag_last_counters_us == 0 || (now_us - s_diag_last_counters_us) >= 5000000LL) {
         s_diag_last_counters_us = now_us;
+#if defined(CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2) && CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2
+        ESP_LOGI(
+            TAG,
+            "diag counters v2 start=%lu periodic=%lu end=%lu invalid=%lu "
+            "forced_end_invalid=%lu max_age=%lu sig_end=%lu quiet_end=%lu "
+            "mqtt_drop=%lu windows=%lu boot_settle=%lu "
+            "v2_feed_n=%lu us_last=%lu us_max=%lu",
+            (unsigned long)s_lifecycle_v2.emissions_start,
+            (unsigned long)s_lifecycle_v2.emissions_periodic,
+            (unsigned long)s_lifecycle_v2.emissions_end,
+            (unsigned long)s_lifecycle_v2.windows_invalid,
+            (unsigned long)s_lifecycle_v2.forced_ends_invalid,
+            (unsigned long)s_lifecycle_v2.ends_max_age,
+            (unsigned long)s_lifecycle_v2.ends_signature,
+            (unsigned long)s_lifecycle_v2.ends_quiet,
+            (unsigned long)s_dropped_while_mqtt_down,
+            (unsigned long)s_lifecycle_v2.windows_seen,
+            (unsigned long)s_lifecycle_v2.windows_boot_settle,
+            (unsigned long)s_lc_v2_feed_count,
+            (unsigned long)s_lc_v2_feed_us_last,
+            (unsigned long)s_lc_v2_feed_us_max
+        );
+#else
         ESP_LOGI(
             TAG,
             "diag counters start=%lu periodic=%lu end=%lu invalid=%lu "
@@ -1377,6 +1407,7 @@ static void activity_serial_diag(const dbmap_ear_mic_levels_t *levels, bool leve
             (unsigned long)s_detector.windows_seen,
             (unsigned long)s_detector.windows_boot_settle
         );
+#endif
 #if CONFIG_DBMAP_EAR_OBS_L0
         {
             dbmap_ear_mic_l0_perf_t perf;
@@ -1514,10 +1545,64 @@ static void activity_serial_diag(const dbmap_ear_mic_levels_t *levels, bool leve
 }
 #endif
 
+#if defined(CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2) && CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2
+static void fill_lifecycle_v2_window(
+    dbmap_lifecycle_v2_window_t *win,
+    const dbmap_ear_mic_levels_t *levels
+)
+{
+    memset(win, 0, sizeof(*win));
+    win->sample.has_measurement = true;
+    win->sample.rms_dbfs = levels->rms_dbfs;
+    win->sample.window_ms = levels->window_ms;
+    win->sample.measured_at_us = levels->measured_at_us;
+    win->sample.window_seq = levels->window_seq;
+    win->sample.ms_since_i2s_enable = levels->ms_since_i2s_enable;
+    win->sample.transport_status = levels->transport_status;
+    win->sample.microphone_status = levels->microphone_status;
+
+    dbmap_l0_window_t l0w;
+    dbmap_l1_window_t l1w;
+    dbmap_l2_window_t l2w;
+    const bool have_l0 = (dbmap_ear_mic_get_l0_window(&l0w) == ESP_OK)
+                         && l0w.valid
+                         && l0w.window_end_mono_us == levels->measured_at_us;
+    const bool have_l1 = (dbmap_ear_mic_get_l1_window(&l1w) == ESP_OK)
+                         && l1w.window_end_mono_us == levels->measured_at_us;
+    const bool have_l2 = (dbmap_ear_mic_get_l2_window(&l2w) == ESP_OK)
+                         && l2w.window_end_mono_us == levels->measured_at_us;
+
+    if (have_l0) {
+        win->crest_db = l0w.crest_db;
+    }
+    if (have_l1 && l1w.valid && !l1w.clipped) {
+        win->has_flatness = true;
+        win->flatness = l1w.flatness;
+        win->has_dominant = true;
+        win->dominant_hz = l1w.dominant_hz;
+    }
+    if (have_l2 && l2w.eligible) {
+        if (l2w.has_spectral_flux) {
+            win->has_spectral_flux = true;
+            win->spectral_flux = l2w.spectral_flux;
+        }
+        if (l2w.has_dominant_delta) {
+            win->has_dominant_delta = true;
+            win->dominant_delta_hz = l2w.dominant_delta_hz;
+        }
+    }
+    /* Features valid when L0 crest + L1 tonality inputs are present. */
+    win->features_valid = have_l0 && win->has_flatness;
+}
+#endif
+
 static void activity_task(void *arg)
 {
     (void)arg;
     ESP_LOGI(TAG, "RMS activity task started");
+#if defined(CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2) && CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2
+    ESP_LOGI(TAG, "lifecycle v2 experimental path enabled");
+#endif
 #if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
     ESP_LOGI(TAG, "serial diagnostics enabled (~1 Hz snap, ~5 s counters)");
 #endif
@@ -1552,6 +1637,43 @@ static void activity_task(void *arg)
             continue;
         }
 
+#if defined(CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2) && CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2
+        /*
+         * v2: analyze first so L0/L1/L2 scalars are available for the score,
+         * then feed lifecycle. Baseline (v2 off) keeps detector-before-L0 order.
+         */
+#if CONFIG_DBMAP_EAR_OBS_L0
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+        ear_obs_stack_hwm_checkpoint(
+            "pre_analyze",
+            "none",
+            &s_stack_hwm_bytes_pre_analyze,
+            &s_stack_hwm_have_pre_analyze
+        );
+#endif
+        l0_on_new_window(&levels, levels_ok);
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+        ear_obs_stack_hwm_checkpoint(
+            "post_analyze",
+            "none",
+            &s_stack_hwm_bytes_post_analyze,
+            &s_stack_hwm_have_post_analyze
+        );
+#endif
+#endif
+        if (levels_ok && levels.valid) {
+            dbmap_lifecycle_v2_window_t win;
+            fill_lifecycle_v2_window(&win, &levels);
+            const int64_t t0 = esp_timer_get_time();
+            emission = dbmap_lifecycle_v2_feed(&s_lifecycle_v2, &win);
+            const uint32_t dt = (uint32_t)(esp_timer_get_time() - t0);
+            s_lc_v2_feed_count++;
+            s_lc_v2_feed_us_last = dt;
+            if (dt > s_lc_v2_feed_us_max) {
+                s_lc_v2_feed_us_max = dt;
+            }
+        }
+#else
         if (levels_ok && levels.valid) {
             dbmap_activity_sample_t sample = {
                 .has_measurement = true,
@@ -1595,10 +1717,17 @@ static void activity_task(void *arg)
         }
 #endif
 #endif
+#endif /* LIFECYCLE_V2 */
         handle_emission(&emission);
+#if defined(CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2) && CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2
+        if (dbmap_lifecycle_v2_state(&s_lifecycle_v2) == DBMAP_LC_V2_IDLE) {
+            s_mqtt_episode_rearm_required = false;
+        }
+#else
         if (dbmap_activity_detector_state(&s_detector) == DBMAP_ACTIVITY_IDLE) {
             s_mqtt_episode_rearm_required = false;
         }
+#endif
         if (s_lifecycle_mu != NULL) {
             xSemaphoreGive(s_lifecycle_mu);
         }
@@ -1714,9 +1843,14 @@ static esp_err_t ear_observation_close_for_ota(void)
     xSemaphoreTake(s_lifecycle_mu, portMAX_DELAY);
     s_emit_gate = DBMAP_OBS_GATE_CLOSING;
 
-    /* Force detector idle; registry owns MQTT episode closure. */
+    /* Force detector / v2 idle; registry owns MQTT episode closure. */
+#if defined(CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2) && CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2
+    (void)dbmap_lifecycle_v2_force_end(&s_lifecycle_v2);
+    dbmap_lifecycle_v2_reset_idle(&s_lifecycle_v2);
+#else
     (void)dbmap_activity_detector_force_end(&s_detector);
     dbmap_activity_detector_reset_idle(&s_detector);
+#endif
 
     const int64_t now_us = esp_timer_get_time();
     for (uint8_t i = 0; i < DBMAP_OBS_EPISODE_SLOTS; ++i) {
@@ -1926,6 +2060,48 @@ esp_err_t dbmap_ear_observation_start(const dbmap_effective_t *cfg)
         return ESP_ERR_INVALID_ARG;
     }
     dbmap_activity_detector_init(&s_detector, &act_cfg);
+#if defined(CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2) && CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2
+    {
+        dbmap_lifecycle_v2_config_t v2cfg;
+        dbmap_lifecycle_v2_config_set_defaults(&v2cfg);
+        v2cfg.gate_enter_dbfs = act_cfg.enter_threshold_dbfs;
+        v2cfg.quiet_fallback_dbfs = act_cfg.exit_threshold_dbfs;
+        v2cfg.min_activity_ms = act_cfg.min_activity_ms;
+        v2cfg.boot_settle_ms = act_cfg.boot_settle_ms;
+        v2cfg.observation_interval_ms = act_cfg.observation_interval_ms;
+        v2cfg.max_invalid_hold_ms = act_cfg.max_invalid_hold_ms;
+        v2cfg.pre_trigger_ms = (uint32_t)CONFIG_DBMAP_EAR_OBS_LC_V2_PRE_TRIGGER_MS;
+        v2cfg.max_episode_ms = (uint32_t)CONFIG_DBMAP_EAR_OBS_LC_V2_MAX_EPISODE_MS;
+        v2cfg.score_enter =
+            ((float)CONFIG_DBMAP_EAR_OBS_LC_V2_SCORE_ENTER_X1000) / 1000.0f;
+        v2cfg.score_exit =
+            ((float)CONFIG_DBMAP_EAR_OBS_LC_V2_SCORE_EXIT_X1000) / 1000.0f;
+        v2cfg.persistence_windows =
+            (uint32_t)CONFIG_DBMAP_EAR_OBS_LC_V2_PERSISTENCE_WINDOWS;
+        v2cfg.signature_exit_hold_ms =
+            (uint32_t)CONFIG_DBMAP_EAR_OBS_LC_V2_SIGNATURE_EXIT_HOLD_MS;
+        v2cfg.quiet_exit_hold_ms =
+            (uint32_t)CONFIG_DBMAP_EAR_OBS_LC_V2_QUIET_EXIT_HOLD_MS;
+        if (!dbmap_lifecycle_v2_config_valid(&v2cfg)) {
+            ESP_LOGE(TAG, "invalid lifecycle v2 config");
+            return ESP_ERR_INVALID_ARG;
+        }
+        dbmap_lifecycle_v2_init(&s_lifecycle_v2, &v2cfg);
+        s_lc_v2_feed_us_last = 0;
+        s_lc_v2_feed_us_max = 0;
+        s_lc_v2_feed_count = 0;
+        ESP_LOGI(
+            TAG,
+            "lifecycle v2 ready pre_trigger_ms=%lu max_episode_ms=%lu "
+            "score_enter=%.3f score_exit=%.3f persist=%lu",
+            (unsigned long)v2cfg.pre_trigger_ms,
+            (unsigned long)v2cfg.max_episode_ms,
+            (double)v2cfg.score_enter,
+            (double)v2cfg.score_exit,
+            (unsigned long)v2cfg.persistence_windows
+        );
+    }
+#endif
     dbmap_episode_registry_init(&s_registry);
     s_rms_bound = false;
     s_mqtt_episode_rearm_required = false;

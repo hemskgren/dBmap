@@ -101,4 +101,14 @@ menu "dBmap Ear microphone"
             Reuses the same startup-settle idea as the activity detector
             (ms_since_i2s_enable). Also excludes window_seq == 1.
 
+    config DBMAP_EAR_MIC_CAPTURE_DIAG
+        bool "Opt-in UART capture diagnostics (dual-mic / DMA / RAM)"
+        default n
+        help
+            Periodic console lines with sample-rate, slot mode, per-channel
+            counts/RMS/peak/clip/presence, incomplete stereo frames, DMA
+            descriptor/frame values actually passed to i2s_new_channel, and
+            heap/SPIRAM. Does not change Observation JSON or Hub schemas.
+            Enable for EAR-001 dual-mic bring-up; leave off for fleet images.
+
 endmenu

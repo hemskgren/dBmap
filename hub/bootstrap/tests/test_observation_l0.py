@@ -262,7 +262,7 @@ def test_end_without_termination_reason_rejected() -> None:
 
 
 def test_end_with_termination_reasons_accepted() -> None:
-    for reason in ("natural", "invalid_hold", "ota_reboot"):
+    for reason in ("natural", "invalid_hold", "ota_reboot", "report_rotation"):
         payload = _extended(kind="end")
         payload["context"]["termination_reason"] = reason
         body = ObservationBody.model_validate(payload)

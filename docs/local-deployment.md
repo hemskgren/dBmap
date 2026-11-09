@@ -166,6 +166,9 @@ uv run python scripts/hub_map_analysis.py publish --dataset live-site-a  # Analy
 uv run python scripts/hub_event_track.py list      # Read-only observation/site report (not a tracker)
 uv run python scripts/ear_audio_compare.py list    # Ear mic levels (dBFS)
 uv run python scripts/ear_test_runner.py list      # Physical EAR period-test jobs (see docs/ear-test-runner.md)
+uv run scripts/homeassistant.py ping               # HA API reachability (see docs/homeassistant-audio.md)
+uv run scripts/homeassistant.py status             # HA API + configured media-player probe (read-only)
+uv run scripts/homeassistant.py audio volume       # HA media-player volume / play / pause / resume / stop
 uv run python scripts/hub_observations_db.py prune # Drop old observation rows (SQLite; default >4h)
 ```
 

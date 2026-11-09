@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "name": "beredskapslarm",
+  "description": "TEST ONLY. Play official MCF Beredskapslarm sample (~5 minutes). Not a real warning; do not schedule.",
+  "media_sources": {
+    "beredskapslarm": {
+      "url": "https://www.mcf.se/contentassets/ffc078def2284745ae47c8282f83839f/04-beredskapslarm.mp3",
+      "media_content_type": "music"
+    }
+  },
+  "steps": [
+    {
+      "action": "play",
+      "source": "beredskapslarm"
+    },
+    {
+      "action": "wait",
+      "seconds": 310
+    },
+    {
+      "action": "stop"
+    }
+  ]
+}

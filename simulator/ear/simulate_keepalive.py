@@ -6,6 +6,7 @@ import json
 import ssl
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -106,6 +107,39 @@ def make_keepalive(credentials: dict, uptime_s: int) -> dict:
         "uptime_s": uptime_s,
         "pending_configuration_change": False,
     }
+
+
+def format_cycle_timestamp(when: datetime | None = None) -> str:
+    """Local wall time for cycle headers: YYYY-MM-DD HH:MM:SS."""
+    moment = (
+        datetime.now(UTC).astimezone() if when is None else when
+    )
+    return moment.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def format_keepalive_cycle_report(
+    *,
+    successes: list[tuple[str, str]],
+    failures: list[tuple[str, str, str]],
+    timestamp: str | None = None,
+) -> str:
+    """Group one keepalive cycle under a single timestamped header.
+
+    ``successes`` items are ``(node_id, credentials_path)``.
+    ``failures`` items are ``(node_id, credentials_path, error)``.
+    """
+    stamp = timestamp if timestamp is not None else format_cycle_timestamp()
+    ear_word = "Ear" if len(successes) == 1 else "Ears"
+    lines = [
+        f"[{stamp}] Keepalive published for {len(successes)} simulator {ear_word}:"
+    ]
+    for node_id, path in successes:
+        lines.append(f"  - {node_id} ({path})")
+    if failures:
+        lines.append(f"Failed ({len(failures)}):")
+        for node_id, path, error in failures:
+            lines.append(f"  - {node_id} ({path}): {error}")
+    return "\n".join(lines)
 
 
 def publish_keepalive(credentials: dict, ca_file: str, payload: dict) -> None:
@@ -213,15 +247,28 @@ def main() -> int:
         ]
         started = time.monotonic()
         while True:
+            successes: list[tuple[str, str]] = []
+            failures: list[tuple[str, str, str]] = []
             for path, credentials in loaded:
-                payload = make_keepalive(
-                    credentials, int(time.monotonic() - started)
-                )
-                publish_keepalive(credentials, args.ca, payload)
-                print(
-                    f"Published keepalive for {credentials['node_id']} ({path}).",
-                    flush=True,
-                )
+                node_id = str(credentials["node_id"])
+                try:
+                    payload = make_keepalive(
+                        credentials, int(time.monotonic() - started)
+                    )
+                    publish_keepalive(credentials, args.ca, payload)
+                except (OSError, ValueError, KeyError, RuntimeError) as exc:
+                    failures.append((node_id, path, str(exc)))
+                else:
+                    successes.append((node_id, path))
+            print(
+                format_keepalive_cycle_report(
+                    successes=successes,
+                    failures=failures,
+                ),
+                flush=True,
+            )
+            if failures:
+                return 1
             if args.command != "watch":
                 break
             time.sleep(args.interval_seconds)

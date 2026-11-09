@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "name": "microphone-volume-comparison",
+  "description": "Same stimulus at two media-player volume_level settings for EAR mic comparison. volume_level is not calibrated SPL.",
+  "media_sources": {
+    "test_signal": {
+      "url": "https://example.com/audio/test_signal.wav",
+      "media_content_type": "music"
+    }
+  },
+  "steps": [
+    {
+      "action": "play",
+      "source": "test_signal",
+      "volume": 0.25
+    },
+    {
+      "action": "wait",
+      "seconds": 10
+    },
+    {
+      "action": "play",
+      "source": "test_signal",
+      "volume": 0.5
+    },
+    {
+      "action": "wait",
+      "seconds": 10
+    },
+    {
+      "action": "stop"
+    }
+  ]
+}

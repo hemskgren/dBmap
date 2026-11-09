@@ -6,6 +6,7 @@ Initial Ear application for ESP32-S3 + one I2S MEMS microphone.
 
 - Reuses `node_common` for Wi-Fi, HTTPS provision, MQTT, OTA Desired poll, hello/health.
 - Captures from **one** microphone model per image (currently **INMP441** via `ear_mic`).
+- NVS `microphone_count` **1** → mono LEFT; **2** → Philips stereo on shared DIN0 (mic0=left, mic1=right). Observation / L0 / activity still use **mic 0 only**.
 - Attaches windowed RMS/peak **dBFS** levels on hello/health/keepalive reported state (same path as `wifi_rssi_dbm`). Hub shows them under **Additional reported values** until a dedicated Ear UI exists.
 - JSON uses `audio.microphones[]` / `capabilities.microphones[]` so a later multi-mic Ear can add indexes without a schema break.
 - **Observation publisher** (`ear_observation`): protocol-v1 Observations on the provisioned `…/observation` topic (QoS 1, not retained) with `classification: null` and `bearing: null`.
@@ -185,10 +186,11 @@ Full wiring (Output + Ear, reserved 4-mic map): [`docs/device-wiring-and-pinout.
 |------|-------|--------|
 | Hardware profile | `esp32-s3-n16r8` | **Verified** (ESPConnect): ESP32-S3 QFN56 rev v0.2, 16 MB flash (`0x184068`), 8 MB PSRAM (AP Memory 3.3 V), dual-core up to 240 MHz |
 | Mic model | INMP441 | One model per Ear image |
-| Mic index | **0** (0-based) | First mic only today; indexes 1–3 reserved |
+| Mic index | **0** (0-based); **1** when `mic_count=2` | Indexes 2–3 reserved (DIN1 not read) |
 | I2S pins | BCLK=4, WS=5, DIN0=6; DIN1=7 reserved | Placeholder — verify free GPIOs on this board |
-| Slot alignment | 32-bit Philips, left slot, 24-bit left-justified `>> 8` | Unverified — confirm on scope/logic analyzer |
-| L/R strap (mic 0) | Left (GND) | Unverified on board |
+| Slot alignment | 32-bit Philips; mono LEFT or stereo L/R; 24-bit left-justified `>> 8` | Unverified — confirm on scope/logic analyzer |
+| L/R strap (mic 0 / 1) | Left (GND) / Right (VDD) | Unverified on board |
+| Capture diag | `sdkconfig.defaults.capture_diag` | UART `capture_diag` lines; does not prove dual HW |
 
 ## L0 analysis (optional Observation extension)
 

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "name": "vma-quarterly-test",
+  "description": "TEST ONLY. Reproduce the official quarterly outdoor-warning test sequence: VMA play, then wait 300 seconds measured from that play request (not after the ~2 min VMA audio finishes), then Faran över. Leaves ~3 minutes of silence before Faran över. Not a real warning; do not schedule or automate.",
+  "media_sources": {
+    "vma": {
+      "url": "https://www.mcf.se/contentassets/ffc078def2284745ae47c8282f83839f/01-viktigt-meddelande.mp3",
+      "media_content_type": "music"
+    },
+    "faran_over": {
+      "url": "https://www.mcf.se/contentassets/ffc078def2284745ae47c8282f83839f/02-faran-over-.mp3",
+      "media_content_type": "music"
+    }
+  },
+  "steps": [
+    {
+      "action": "play",
+      "source": "vma"
+    },
+    {
+      "action": "wait",
+      "seconds": 300
+    },
+    {
+      "action": "play",
+      "source": "faran_over"
+    },
+    {
+      "action": "wait",
+      "seconds": 40
+    },
+    {
+      "action": "stop"
+    }
+  ]
+}
