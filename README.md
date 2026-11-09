@@ -25,6 +25,8 @@ Richer map/rules, cross-Ear tracking, and regional Hub pieces are planned, not f
 
 Other docs (authorization, identity, health, security) live under [`docs/`](docs/) and [`SECURITY.md`](SECURITY.md).
 
+Long-term platform direction (shared Sensor Platform, products, Community/Enterprise profiles): [Sensor Platform architecture](docs/sensor-platform-architecture.md) and [ADR 0001](docs/adr/0001-sensor-platform-architecture.md).
+
 ## Repository layout
 
 ```text
