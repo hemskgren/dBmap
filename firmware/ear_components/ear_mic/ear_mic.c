@@ -11,6 +11,8 @@
 #include "dbmap_audio_metrics.h"
 #include "dbmap_background_rms.h"
 #include "dbmap_health.h"
+#include "dbmap_i2s_stereo.h"
+#include "dbmap_mic_count.h"
 #include "driver/i2s_std.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
@@ -26,6 +28,8 @@ static const char *TAG = "ear_mic";
 
 #define EAR_MIC_READ_FRAMES 256
 #define EAR_MIC_TASK_STACK 6144
+/* Max slot words per read: stereo needs 2 words per sample period. */
+#define EAR_MIC_SLOT_BUF_WORDS (EAR_MIC_READ_FRAMES * (int)DBMAP_MIC_COUNT_MAX)
 
 typedef struct {
     float rms_dbfs;
@@ -59,6 +63,9 @@ typedef struct {
     uint32_t raw_slot_max;
     uint32_t slot_zero_count;      /* slot word == 0 before >> 8 */
     uint32_t slot_msb_set_count;   /* bit31 set before >> 8 (→ negative after extract) */
+    /* Presence ≠ health: samples alone do not imply a healthy mic. */
+    char channel_presence[16]; /* no_samples|silent|clipping|active */
+    uint8_t all_zero_window;       /* 1 if sample_count>0 and every sample == 0 */
     char transport_status[16]; /* I2S fill health: ok|degraded|error */
     char microphone_status[24]; /* unavailable|disconnected_suspected|noise_suspected|signal_present|unknown */
     char classification_reason[48];
@@ -67,17 +74,25 @@ typedef struct {
 
 /* Bounded unique-value table for window diagnostics (not a full histogram). */
 #define EAR_UNIQUE_CAP 1024u
-static int32_t s_unique_vals[EAR_UNIQUE_CAP];
-static uint8_t s_unique_occ[EAR_UNIQUE_CAP];
+static int32_t s_unique_vals[DBMAP_MIC_COUNT_MAX][EAR_UNIQUE_CAP];
+static uint8_t s_unique_occ[DBMAP_MIC_COUNT_MAX][EAR_UNIQUE_CAP];
 
-static void unique_reset(void)
+static void unique_reset(uint8_t ch)
 {
-    memset(s_unique_occ, 0, sizeof(s_unique_occ));
+    if (ch >= DBMAP_MIC_COUNT_MAX) {
+        return;
+    }
+    memset(s_unique_occ[ch], 0, sizeof(s_unique_occ[ch]));
 }
 
-static void unique_add(int32_t sample, uint32_t *unique_count, uint8_t *unique_capped)
+static void unique_add(
+    uint8_t ch,
+    int32_t sample,
+    uint32_t *unique_count,
+    uint8_t *unique_capped
+)
 {
-    if (unique_count == NULL || unique_capped == NULL) {
+    if (ch >= DBMAP_MIC_COUNT_MAX || unique_count == NULL || unique_capped == NULL) {
         return;
     }
     if (*unique_count >= EAR_UNIQUE_CAP) {
@@ -87,13 +102,13 @@ static void unique_add(int32_t sample, uint32_t *unique_count, uint8_t *unique_c
     uint32_t hash = (uint32_t)sample * 2654435761u;
     for (uint32_t probe = 0; probe < EAR_UNIQUE_CAP; ++probe) {
         uint32_t idx = (hash + probe) % EAR_UNIQUE_CAP;
-        if (s_unique_occ[idx] == 0) {
-            s_unique_occ[idx] = 1;
-            s_unique_vals[idx] = sample;
+        if (s_unique_occ[ch][idx] == 0) {
+            s_unique_occ[ch][idx] = 1;
+            s_unique_vals[ch][idx] = sample;
             (*unique_count)++;
             return;
         }
-        if (s_unique_vals[idx] == sample) {
+        if (s_unique_vals[ch][idx] == sample) {
             return;
         }
     }
@@ -118,13 +133,26 @@ static dbmap_ear_mic_config_t s_mic_cfg;
 static const dbmap_ear_mic_model_desc_t *s_model;
 static i2s_chan_handle_t s_rx;
 static bool s_rx_ready;
-static ear_audio_snapshot_t s_latest;
+/* Index 0 is primary (Observation / L0 / activity). Index 1 when live_mic_count==2. */
+static ear_audio_snapshot_t s_latest[DBMAP_MIC_COUNT_MAX];
+static uint8_t s_live_mic_count = DBMAP_MIC_COUNT_DEFAULT;
 static char s_status_cache[16] = "unavailable";
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 /* Keep I2S read scratch off the task stack (was overflowing a 4 KiB stack → TG1WDT). */
-static uint32_t s_slot_buf[EAR_MIC_READ_FRAMES];
+static uint32_t s_slot_buf[EAR_MIC_SLOT_BUF_WORDS];
 static int64_t s_i2s_enabled_us;
 static uint32_t s_window_seq;
+/* Values actually passed to i2s_new_channel (not guesses). */
+static uint32_t s_dma_desc_num;
+static uint32_t s_dma_frame_num;
+static uint32_t s_slot_words_per_frame = 1;
+static uint32_t s_request_bytes;
+static uint32_t s_incomplete_stereo_frames_window;
+static uint32_t s_measure_window_us_last;
+static char s_slot_mode_name[16] = "mono_left";
+#if CONFIG_DBMAP_EAR_MIC_CAPTURE_DIAG
+static int64_t s_capture_diag_last_us;
+#endif
 
 #if CONFIG_DBMAP_EAR_MIC_BACKGROUND
 /* Capacity covers configured window at configured analysis period (+margin). */
@@ -203,7 +231,7 @@ const char *dbmap_ear_mic_subsystem_status(void)
     portENTER_CRITICAL(&s_lock);
     strncpy(
         s_status_cache,
-        s_latest.transport_status[0] ? s_latest.transport_status : "unavailable",
+        s_latest[0].transport_status[0] ? s_latest[0].transport_status : "unavailable",
         sizeof(s_status_cache) - 1
     );
     s_status_cache[sizeof(s_status_cache) - 1] = '\0';
@@ -218,22 +246,23 @@ esp_err_t dbmap_ear_mic_get_levels(dbmap_ear_mic_levels_t *out)
     }
     memset(out, 0, sizeof(*out));
     portENTER_CRITICAL(&s_lock);
-    if (s_latest.measured_at_us > 0) {
+    /* Primary path remains mic 0 (left) for Observation / activity compatibility. */
+    if (s_latest[0].measured_at_us > 0) {
         out->valid = true;
-        out->rms_dbfs = s_latest.rms_dbfs;
-        out->peak_dbfs = s_latest.peak_dbfs;
-        out->window_ms = s_latest.window_ms;
-        out->measured_at_us = s_latest.measured_at_us;
-        out->window_seq = s_latest.window_seq;
-        out->ms_since_i2s_enable = s_latest.ms_since_i2s_enable;
+        out->rms_dbfs = s_latest[0].rms_dbfs;
+        out->peak_dbfs = s_latest[0].peak_dbfs;
+        out->window_ms = s_latest[0].window_ms;
+        out->measured_at_us = s_latest[0].measured_at_us;
+        out->window_seq = s_latest[0].window_seq;
+        out->ms_since_i2s_enable = s_latest[0].ms_since_i2s_enable;
         strncpy(
             out->transport_status,
-            s_latest.transport_status[0] ? s_latest.transport_status : "unavailable",
+            s_latest[0].transport_status[0] ? s_latest[0].transport_status : "unavailable",
             sizeof(out->transport_status) - 1
         );
         strncpy(
             out->microphone_status,
-            s_latest.microphone_status[0] ? s_latest.microphone_status : "unavailable",
+            s_latest[0].microphone_status[0] ? s_latest[0].microphone_status : "unavailable",
             sizeof(out->microphone_status) - 1
         );
     }
@@ -558,8 +587,81 @@ static void set_status(ear_audio_snapshot_t *snap, uint32_t expected_samples)
 
 /**
  * Attach Ear fields onto hello/health/keepalive reported state (same path as wifi_rssi_dbm).
- * microphones[] is sized for future multi-mic Ears; this image reports index 0 only.
+ * When live_mic_count==2, reports indexes 0 (left) and 1 (right). Observation path
+ * still consumes mic 0 only — no Observation schema change.
  */
+static void enrich_mic_object(cJSON *mic, const ear_audio_snapshot_t *snap, uint8_t index)
+{
+    if (mic == NULL || snap == NULL || s_model == NULL) {
+        return;
+    }
+    const char *transport =
+        snap->transport_status[0] ? snap->transport_status : "unavailable";
+    const char *mic_status =
+        snap->microphone_status[0] ? snap->microphone_status : "unavailable";
+    const char *presence =
+        snap->channel_presence[0] ? snap->channel_presence : "no_samples";
+
+    cJSON_AddNumberToObject(mic, "index", (double)index);
+    cJSON_AddStringToObject(mic, "model", s_model->id);
+    cJSON_AddNumberToObject(mic, "channels", 1);
+    cJSON_AddStringToObject(mic, "slot", index == 0 ? "left" : "right");
+    cJSON_AddNumberToObject(mic, "rms_dbfs", snap->rms_dbfs);
+    cJSON_AddNumberToObject(mic, "peak_dbfs", snap->peak_dbfs);
+    cJSON_AddNumberToObject(mic, "sample_count", snap->sample_count);
+    cJSON_AddNumberToObject(
+        mic,
+        "expected_sample_count",
+        dbmap_audio_expected_samples((uint32_t)s_mic_cfg.sample_rate_hz, snap->window_ms)
+    );
+    cJSON_AddNumberToObject(mic, "window_ms", snap->window_ms);
+    /* Shared I2S read counters (same DMA stream for both slots). */
+    cJSON_AddNumberToObject(mic, "read_errors", snap->read_errors);
+    cJSON_AddNumberToObject(mic, "timeout_reads", snap->timeout_reads);
+    cJSON_AddNumberToObject(mic, "empty_reads", snap->empty_reads);
+    cJSON_AddNumberToObject(mic, "missing_data", snap->missing_data);
+    cJSON_AddNumberToObject(mic, "clipped_samples", snap->clipped_samples);
+    cJSON_AddBoolToObject(mic, "counters_capped", snap->counters_capped != 0);
+    cJSON_AddBoolToObject(mic, "all_zero_window", snap->all_zero_window != 0);
+    cJSON_AddStringToObject(mic, "channel_presence", presence);
+    cJSON_AddNumberToObject(mic, "raw_min", snap->raw_min);
+    cJSON_AddNumberToObject(mic, "raw_max", snap->raw_max);
+    cJSON_AddNumberToObject(mic, "zero_sample_count", snap->zero_sample_count);
+    cJSON_AddNumberToObject(mic, "full_scale_sample_count", snap->full_scale_sample_count);
+    cJSON_AddNumberToObject(mic, "unique_sample_count", snap->unique_sample_count);
+    cJSON_AddNumberToObject(mic, "consecutive_identical_samples", snap->consecutive_identical_samples);
+    cJSON_AddBoolToObject(mic, "unique_capped", snap->unique_capped != 0);
+    cJSON_AddNumberToObject(mic, "window_seq", snap->window_seq);
+    cJSON_AddNumberToObject(mic, "ms_since_i2s_enable", snap->ms_since_i2s_enable);
+    cJSON_AddNumberToObject(mic, "read_calls", snap->read_calls);
+    cJSON_AddNumberToObject(mic, "bytes_received", snap->bytes_received);
+    cJSON_AddNumberToObject(mic, "complete_frames", snap->complete_frames);
+    cJSON_AddNumberToObject(mic, "partial_reads", snap->partial_reads);
+    cJSON_AddNumberToObject(mic, "raw_slot_min", (double)snap->raw_slot_min);
+    cJSON_AddNumberToObject(mic, "raw_slot_max", (double)snap->raw_slot_max);
+    {
+        char hex[11];
+        snprintf(hex, sizeof(hex), "0x%08lx", (unsigned long)snap->raw_slot_min);
+        cJSON_AddStringToObject(mic, "raw_slot_min_hex", hex);
+        snprintf(hex, sizeof(hex), "0x%08lx", (unsigned long)snap->raw_slot_max);
+        cJSON_AddStringToObject(mic, "raw_slot_max_hex", hex);
+    }
+    cJSON_AddNumberToObject(mic, "slot_zero_count", snap->slot_zero_count);
+    cJSON_AddNumberToObject(mic, "slot_msb_set_count", snap->slot_msb_set_count);
+    cJSON_AddStringToObject(mic, "status", transport);
+    cJSON_AddStringToObject(mic, "microphone_status", mic_status);
+    if (snap->classification_reason[0] != '\0') {
+        cJSON_AddStringToObject(mic, "classification_reason", snap->classification_reason);
+    }
+    if (snap->measured_at_us > 0) {
+        cJSON_AddNumberToObject(
+            mic,
+            "measured_at_uptime_s",
+            (double)(snap->measured_at_us / 1000000LL)
+        );
+    }
+}
+
 static void enrich_health(cJSON *state, const dbmap_effective_t *cfg, bool include_diag)
 {
     (void)include_diag;
@@ -567,27 +669,39 @@ static void enrich_health(cJSON *state, const dbmap_effective_t *cfg, bool inclu
         return;
     }
 
-    ear_audio_snapshot_t snap;
+    ear_audio_snapshot_t snaps[DBMAP_MIC_COUNT_MAX];
+    uint8_t live_count;
+    uint32_t incomplete_stereo;
     portENTER_CRITICAL(&s_lock);
-    snap = s_latest;
+    live_count = s_live_mic_count;
+    incomplete_stereo = s_incomplete_stereo_frames_window;
+    for (uint8_t i = 0; i < DBMAP_MIC_COUNT_MAX; ++i) {
+        snaps[i] = s_latest[i];
+    }
     portEXIT_CRITICAL(&s_lock);
+    if (live_count < 1u || live_count > DBMAP_MIC_COUNT_MAX) {
+        live_count = 1u;
+    }
 
     cJSON *capabilities = cJSON_CreateObject();
     cJSON_AddStringToObject(capabilities, "role", "ear");
     cJSON_AddStringToObject(capabilities, "hardware_profile", cfg->identity.hardware_revision);
 
     cJSON *cap_mics = cJSON_CreateArray();
-    cJSON *cap_mic = cJSON_CreateObject();
-    cJSON_AddNumberToObject(cap_mic, "index", 0);
-    cJSON_AddStringToObject(cap_mic, "model", s_model->id);
-    cJSON_AddItemToArray(cap_mics, cap_mic);
+    for (uint8_t i = 0; i < live_count; ++i) {
+        cJSON *cap_mic = cJSON_CreateObject();
+        cJSON_AddNumberToObject(cap_mic, "index", (double)i);
+        cJSON_AddStringToObject(cap_mic, "model", s_model->id);
+        cJSON_AddStringToObject(cap_mic, "slot", i == 0 ? "left" : "right");
+        cJSON_AddItemToArray(cap_mics, cap_mic);
+    }
     cJSON_AddItemToObject(capabilities, "microphones", cap_mics);
     cJSON_AddItemToObject(state, "capabilities", capabilities);
 
     const char *transport =
-        snap.transport_status[0] ? snap.transport_status : "unavailable";
+        snaps[0].transport_status[0] ? snaps[0].transport_status : "unavailable";
     const char *mic_status =
-        snap.microphone_status[0] ? snap.microphone_status : "unavailable";
+        snaps[0].microphone_status[0] ? snaps[0].microphone_status : "unavailable";
 
     cJSON *audio = cJSON_CreateObject();
     cJSON_AddStringToObject(audio, "units", "dBFS");
@@ -597,99 +711,69 @@ static void enrich_health(cJSON *state, const dbmap_effective_t *cfg, bool inclu
     cJSON_AddStringToObject(audio, "microphone_status", mic_status);
     cJSON_AddNumberToObject(audio, "sample_rate_hz", s_mic_cfg.sample_rate_hz);
     cJSON_AddStringToObject(audio, "sample_format", "int32_from_i2s32_left_justified_24");
+    cJSON_AddStringToObject(audio, "slot_mode", s_slot_mode_name);
+    cJSON_AddNumberToObject(audio, "slot_words_per_frame", (double)s_slot_words_per_frame);
 
-    /* Installation vs live measurement — mono LEFT path only in E2. */
     uint8_t configured = cfg->microphone_count;
     if (!dbmap_mic_count_supported(configured)) {
         configured = DBMAP_MIC_COUNT_DEFAULT;
     }
     cJSON_AddNumberToObject(audio, "configured_microphone_count", (double)configured);
-    const bool mic0_window_valid =
-        snap.measured_at_us > 0 && snap.missing_data == 0 && snap.sample_count > 0;
-    const uint8_t available = mic0_window_valid ? 1u : 0u;
+
+    /* Available = delivered samples this window. Not the same as healthy. */
+    uint8_t available = 0;
+    for (uint8_t i = 0; i < live_count; ++i) {
+        if (snaps[i].measured_at_us > 0
+            && snaps[i].missing_data == 0
+            && snaps[i].sample_count > 0) {
+            available++;
+        }
+    }
     cJSON_AddNumberToObject(audio, "available_microphone_count", (double)available);
     cJSON_AddStringToObject(
         audio,
         "microphone_count_status",
         dbmap_mic_count_status_str(cfg->microphone_count_status)
     );
+    cJSON_AddNumberToObject(audio, "incomplete_stereo_frames", (double)incomplete_stereo);
+    /* DMA values actually configured at i2s_new_channel (measured config, not estimate). */
+    cJSON_AddNumberToObject(audio, "dma_desc_num", (double)s_dma_desc_num);
+    cJSON_AddNumberToObject(audio, "dma_frame_num", (double)s_dma_frame_num);
+    cJSON_AddNumberToObject(audio, "slot_buf_bytes", (double)sizeof(s_slot_buf));
+    cJSON_AddNumberToObject(audio, "i2s_request_bytes", (double)s_request_bytes);
+    /* dma_buffer_bytes = dma_frame_num * slot_words * 4 — IDF formula from configured values. */
+    const uint32_t dma_buf_bytes =
+        s_dma_frame_num * s_slot_words_per_frame * (uint32_t)sizeof(uint32_t);
+    cJSON_AddNumberToObject(audio, "dma_buffer_bytes_formula", (double)dma_buf_bytes);
+    cJSON_AddNumberToObject(audio, "measure_window_us", (double)s_measure_window_us_last);
 
     cJSON *mics = cJSON_CreateArray();
-    /* Mic 0 object preserved for compatibility. Do not add synthetic entries for
-     * configured-but-uninitialized indexes (e.g. mic 1 while capture stays mono). */
-    cJSON *mic = cJSON_CreateObject();
-    cJSON_AddNumberToObject(mic, "index", 0);
-    cJSON_AddStringToObject(mic, "model", s_model->id);
-    cJSON_AddNumberToObject(mic, "channels", 1);
-    cJSON_AddNumberToObject(mic, "rms_dbfs", snap.rms_dbfs);
-    cJSON_AddNumberToObject(mic, "peak_dbfs", snap.peak_dbfs);
-    cJSON_AddNumberToObject(mic, "sample_count", snap.sample_count);
-    cJSON_AddNumberToObject(
-        mic,
-        "expected_sample_count",
-        dbmap_audio_expected_samples((uint32_t)s_mic_cfg.sample_rate_hz, snap.window_ms)
-    );
-    cJSON_AddNumberToObject(mic, "window_ms", snap.window_ms);
-    cJSON_AddNumberToObject(mic, "read_errors", snap.read_errors);
-    cJSON_AddNumberToObject(mic, "timeout_reads", snap.timeout_reads);
-    cJSON_AddNumberToObject(mic, "empty_reads", snap.empty_reads);
-    cJSON_AddNumberToObject(mic, "missing_data", snap.missing_data);
-    cJSON_AddNumberToObject(mic, "clipped_samples", snap.clipped_samples);
-    cJSON_AddBoolToObject(mic, "counters_capped", snap.counters_capped != 0);
-    cJSON_AddNumberToObject(mic, "raw_min", snap.raw_min);
-    cJSON_AddNumberToObject(mic, "raw_max", snap.raw_max);
-    cJSON_AddNumberToObject(mic, "zero_sample_count", snap.zero_sample_count);
-    cJSON_AddNumberToObject(mic, "full_scale_sample_count", snap.full_scale_sample_count);
-    cJSON_AddNumberToObject(mic, "unique_sample_count", snap.unique_sample_count);
-    cJSON_AddNumberToObject(mic, "consecutive_identical_samples", snap.consecutive_identical_samples);
-    cJSON_AddBoolToObject(mic, "unique_capped", snap.unique_capped != 0);
-    cJSON_AddNumberToObject(mic, "window_seq", snap.window_seq);
-    cJSON_AddNumberToObject(mic, "ms_since_i2s_enable", snap.ms_since_i2s_enable);
-    cJSON_AddNumberToObject(mic, "read_calls", snap.read_calls);
-    cJSON_AddNumberToObject(mic, "bytes_received", snap.bytes_received);
-    cJSON_AddNumberToObject(mic, "complete_frames", snap.complete_frames);
-    cJSON_AddNumberToObject(mic, "partial_reads", snap.partial_reads);
-    cJSON_AddNumberToObject(mic, "raw_slot_min", (double)snap.raw_slot_min);
-    cJSON_AddNumberToObject(mic, "raw_slot_max", (double)snap.raw_slot_max);
-    {
-        char hex[11];
-        snprintf(hex, sizeof(hex), "0x%08lx", (unsigned long)snap.raw_slot_min);
-        cJSON_AddStringToObject(mic, "raw_slot_min_hex", hex);
-        snprintf(hex, sizeof(hex), "0x%08lx", (unsigned long)snap.raw_slot_max);
-        cJSON_AddStringToObject(mic, "raw_slot_max_hex", hex);
-    }
-    cJSON_AddNumberToObject(mic, "slot_zero_count", snap.slot_zero_count);
-    cJSON_AddNumberToObject(mic, "slot_msb_set_count", snap.slot_msb_set_count);
-    cJSON_AddStringToObject(mic, "status", transport);
-    cJSON_AddStringToObject(mic, "microphone_status", mic_status);
-    if (snap.classification_reason[0] != '\0') {
-        cJSON_AddStringToObject(mic, "classification_reason", snap.classification_reason);
-    }
-    if (snap.measured_at_us > 0) {
-        cJSON_AddNumberToObject(mic, "measured_at_uptime_s", (double)(snap.measured_at_us / 1000000LL));
-    }
+    for (uint8_t i = 0; i < live_count; ++i) {
+        cJSON *mic = cJSON_CreateObject();
+        enrich_mic_object(mic, &snaps[i], i);
 #if CONFIG_DBMAP_EAR_MIC_BACKGROUND
-    {
-        /* Read-only profile: time-filters in-window samples; does not mutate ring. */
-        dbmap_bg_rms_profile_t bg;
-        portENTER_CRITICAL(&s_lock);
-        dbmap_bg_rms_profile(&s_bg_hist, esp_timer_get_time(), &bg);
-        portEXIT_CRITICAL(&s_lock);
-        if (bg.present) {
-            cJSON *background = cJSON_CreateObject();
-            if (background != NULL) {
-                cJSON_AddNumberToObject(background, "window_ms", (double)bg.window_ms);
-                cJSON_AddNumberToObject(background, "sample_count", (double)bg.sample_count);
-                cJSON_AddStringToObject(background, "status", bg.status);
-                cJSON_AddNumberToObject(background, "rms_min_dbfs", (double)bg.rms_min_dbfs);
-                cJSON_AddNumberToObject(background, "rms_max_dbfs", (double)bg.rms_max_dbfs);
-                cJSON_AddNumberToObject(background, "rms_mean_dbfs", (double)bg.rms_mean_dbfs);
-                cJSON_AddItemToObject(mic, "background", background);
+        if (i == 0) {
+            /* Background RMS remains mic-0 only (Iteration 1). */
+            dbmap_bg_rms_profile_t bg;
+            portENTER_CRITICAL(&s_lock);
+            dbmap_bg_rms_profile(&s_bg_hist, esp_timer_get_time(), &bg);
+            portEXIT_CRITICAL(&s_lock);
+            if (bg.present) {
+                cJSON *background = cJSON_CreateObject();
+                if (background != NULL) {
+                    cJSON_AddNumberToObject(background, "window_ms", (double)bg.window_ms);
+                    cJSON_AddNumberToObject(background, "sample_count", (double)bg.sample_count);
+                    cJSON_AddStringToObject(background, "status", bg.status);
+                    cJSON_AddNumberToObject(background, "rms_min_dbfs", (double)bg.rms_min_dbfs);
+                    cJSON_AddNumberToObject(background, "rms_max_dbfs", (double)bg.rms_max_dbfs);
+                    cJSON_AddNumberToObject(background, "rms_mean_dbfs", (double)bg.rms_mean_dbfs);
+                    cJSON_AddItemToObject(mic, "background", background);
+                }
             }
         }
-    }
 #endif
-    cJSON_AddItemToArray(mics, mic);
+        cJSON_AddItemToArray(mics, mic);
+    }
     cJSON_AddItemToObject(audio, "microphones", mics);
     cJSON_AddItemToObject(state, "audio", audio);
 }
@@ -703,15 +787,35 @@ static esp_err_t init_i2s_rx(void)
         return ESP_ERR_INVALID_ARG;
     }
 
+    const bool stereo = (s_live_mic_count >= 2u);
+    s_slot_words_per_frame = dbmap_i2s_slot_words_per_frame(s_live_mic_count);
+    s_request_bytes =
+        (uint32_t)EAR_MIC_READ_FRAMES * s_slot_words_per_frame * (uint32_t)sizeof(uint32_t);
+    if (s_request_bytes > sizeof(s_slot_buf)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    strncpy(
+        s_slot_mode_name,
+        stereo ? "stereo_lr" : "mono_left",
+        sizeof(s_slot_mode_name) - 1
+    );
+    s_slot_mode_name[sizeof(s_slot_mode_name) - 1] = '\0';
+
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     /* auto_clear_* applies only to TX channels in ESP-IDF 5.4.x (see i2s_new_channel).
      * This image opens RX only (tx_handle=NULL), so the flag is unused; keep false explicitly. */
     chan_cfg.auto_clear = false;
+    /* Record values actually passed (IDF default macro: desc=6, frame=240 unless overridden). */
+    s_dma_desc_num = chan_cfg.dma_desc_num;
+    s_dma_frame_num = chan_cfg.dma_frame_num;
     ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, NULL, &s_rx), TAG, "new rx");
 
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(s_mic_cfg.sample_rate_hz),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
+            I2S_DATA_BIT_WIDTH_32BIT,
+            stereo ? I2S_SLOT_MODE_STEREO : I2S_SLOT_MODE_MONO
+        ),
         .gpio_cfg = {
             .mclk = gpio_or_unused(s_mic_cfg.mclk_gpio),
             .bclk = s_mic_cfg.bclk_gpio,
@@ -725,8 +829,16 @@ static esp_err_t init_i2s_rx(void)
             },
         },
     };
-    /* INMP441 L/R tied to GND → left slot. Unverified until physical strap is checked. */
-    std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
+    /*
+     * ESP32-S3 PHILIPS default sets slot_mask=BOTH even for mono; override mono to LEFT.
+     * Stereo: BOTH — RX buffer order (IDF docs): WS-low then WS-high → left then right.
+     * Software contract: mic0=left (even), mic1=right (odd). Physical L/R straps unverified.
+     */
+    if (stereo) {
+        std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
+    } else {
+        std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
+    }
     std_cfg.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
 
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_rx, &std_cfg), TAG, "std mode");
@@ -737,75 +849,265 @@ static esp_err_t init_i2s_rx(void)
     s_rx_ready = true;
     ESP_LOGW(
         TAG,
-        "I2S RX ready model=%s bclk=%d ws=%d din=%d rate=%d (pins UNVERIFIED)",
+        "I2S RX ready model=%s mode=%s bclk=%d ws=%d din=%d rate=%d "
+        "dma_desc=%lu dma_frame=%lu req_bytes=%lu (pins UNVERIFIED; "
+        "stereo L/R map is IDF-doc contract, not HW proof)",
         s_model->id,
+        s_slot_mode_name,
         s_mic_cfg.bclk_gpio,
         s_mic_cfg.ws_gpio,
         s_mic_cfg.din_gpio,
-        s_mic_cfg.sample_rate_hz
+        s_mic_cfg.sample_rate_hz,
+        (unsigned long)s_dma_desc_num,
+        (unsigned long)s_dma_frame_num,
+        (unsigned long)s_request_bytes
     );
     return ESP_OK;
 }
 
-static void measure_window(ear_audio_snapshot_t *out)
+typedef struct {
+    double sum_sq;
+    int32_t peak_abs;
+    uint32_t pcm_count;
+    uint32_t clipped;
+    int32_t raw_min;
+    int32_t raw_max;
+    uint32_t zero_count;
+    uint32_t full_scale_count;
+    uint32_t unique_count;
+    uint8_t unique_capped;
+    uint32_t max_identical_run;
+    uint32_t cur_identical_run;
+    int32_t prev_sample;
+    bool have_prev;
+    uint32_t slot_min;
+    uint32_t slot_max;
+    uint32_t slot_zero;
+    uint32_t slot_msb;
+    bool have_slot;
+} ear_ch_accum_t;
+
+static void ch_accum_init(ear_ch_accum_t *a, uint8_t ch)
+{
+    memset(a, 0, sizeof(*a));
+    a->raw_min = INT32_MAX;
+    a->raw_max = INT32_MIN;
+    a->slot_min = UINT32_MAX;
+    unique_reset(ch);
+}
+
+static void ch_accum_slot(ear_ch_accum_t *a, uint32_t slot)
+{
+    if (!a->have_slot) {
+        a->slot_min = slot;
+        a->slot_max = slot;
+        a->have_slot = true;
+    } else {
+        if (slot < a->slot_min) {
+            a->slot_min = slot;
+        }
+        if (slot > a->slot_max) {
+            a->slot_max = slot;
+        }
+    }
+    if (slot == 0u) {
+        a->slot_zero++;
+    }
+    if ((slot & 0x80000000u) != 0u) {
+        a->slot_msb++;
+    }
+}
+
+static void ch_accum_sample(
+    ear_ch_accum_t *a,
+    uint8_t ch,
+    int32_t sample,
+    int32_t clip_threshold,
+    int32_t full_scale_mag
+)
+{
+    double v = (double)sample;
+    a->sum_sq += v * v;
+    int32_t abs_v = sample < 0
+        ? (sample == INT32_MIN ? INT32_MAX : -sample)
+        : sample;
+    if (abs_v > a->peak_abs) {
+        a->peak_abs = abs_v;
+    }
+    if (clip_threshold > 0 && abs_v >= clip_threshold) {
+        a->clipped++;
+    }
+    if (sample < a->raw_min) {
+        a->raw_min = sample;
+    }
+    if (sample > a->raw_max) {
+        a->raw_max = sample;
+    }
+    if (sample == 0) {
+        a->zero_count++;
+    }
+    if (full_scale_mag > 0 && abs_v >= full_scale_mag) {
+        a->full_scale_count++;
+    }
+    unique_add(ch, sample, &a->unique_count, &a->unique_capped);
+    if (!a->have_prev || sample != a->prev_sample) {
+        a->cur_identical_run = 1;
+        a->prev_sample = sample;
+        a->have_prev = true;
+    } else {
+        a->cur_identical_run++;
+    }
+    if (a->cur_identical_run > a->max_identical_run) {
+        a->max_identical_run = a->cur_identical_run;
+    }
+    a->pcm_count++;
+}
+
+static void finalize_channel(
+    ear_audio_snapshot_t *out,
+    const ear_ch_accum_t *a,
+    uint32_t expected,
+    uint32_t window_ms,
+    int useful_bits,
+    uint32_t read_errors,
+    uint32_t timeout_reads,
+    uint32_t empty_reads,
+    uint8_t counters_capped,
+    uint32_t read_calls,
+    uint32_t bytes_received,
+    uint32_t partial_reads,
+    uint32_t window_seq,
+    uint32_t ms_since_i2s_enable,
+    int64_t measured_at_us
+)
 {
     memset(out, 0, sizeof(*out));
     strncpy(out->transport_status, "unavailable", sizeof(out->transport_status) - 1);
     strncpy(out->microphone_status, "unavailable", sizeof(out->microphone_status) - 1);
+    strncpy(out->channel_presence, "no_samples", sizeof(out->channel_presence) - 1);
 
+    out->window_ms = window_ms;
+    out->window_seq = window_seq;
+    out->ms_since_i2s_enable = ms_since_i2s_enable;
+    out->read_calls = read_calls;
+    out->bytes_received = bytes_received;
+    out->partial_reads = partial_reads;
+    out->read_errors = read_errors;
+    out->timeout_reads = timeout_reads;
+    out->empty_reads = empty_reads;
+    out->counters_capped = counters_capped;
+    out->measured_at_us = measured_at_us;
+    out->raw_slot_min = a->have_slot ? a->slot_min : 0;
+    out->raw_slot_max = a->have_slot ? a->slot_max : 0;
+    out->slot_zero_count = a->slot_zero;
+    out->slot_msb_set_count = a->slot_msb;
+    out->complete_frames = a->pcm_count;
+    out->sample_count = a->pcm_count;
+    out->clipped_samples = a->clipped;
+
+    if (a->pcm_count == 0) {
+        out->missing_data = 1;
+        out->rms_dbfs = -120.0f;
+        out->peak_dbfs = -120.0f;
+        out->raw_min = 0;
+        out->raw_max = 0;
+        out->all_zero_window = 0;
+        set_status(out, expected);
+        const dbmap_ear_channel_presence_t p =
+            dbmap_ear_channel_presence(0, 0, 0);
+        strncpy(
+            out->channel_presence,
+            dbmap_ear_channel_presence_str(p),
+            sizeof(out->channel_presence) - 1
+        );
+        return;
+    }
+
+    out->raw_min = a->raw_min;
+    out->raw_max = a->raw_max;
+    out->zero_sample_count = a->zero_count;
+    out->full_scale_sample_count = a->full_scale_count;
+    out->unique_sample_count = a->unique_count;
+    out->consecutive_identical_samples = a->max_identical_run;
+    out->unique_capped = a->unique_capped;
+    out->all_zero_window = (a->zero_count >= a->pcm_count) ? 1u : 0u;
+
+    int32_t rms_proxy = (int32_t)(sqrt(a->sum_sq / (double)a->pcm_count) + 0.5);
+    out->rms_dbfs = dbmap_audio_rms_dbfs(&rms_proxy, 1, useful_bits);
+    out->peak_dbfs = dbmap_audio_peak_dbfs(&a->peak_abs, 1, useful_bits);
+    set_status(out, expected);
+
+    const dbmap_ear_channel_presence_t presence = dbmap_ear_channel_presence(
+        out->sample_count,
+        out->zero_sample_count,
+        out->clipped_samples
+    );
+    strncpy(
+        out->channel_presence,
+        dbmap_ear_channel_presence_str(presence),
+        sizeof(out->channel_presence) - 1
+    );
+}
+
+/**
+ * Fill out[0..live_mic_count). Shared transport counters are identical across channels;
+ * per-channel RMS/peak/clip/presence differ. L0 PCM stores mic0/left only.
+ */
+static void measure_window(ear_audio_snapshot_t *out, uint8_t live_count)
+{
     const uint32_t window_ms = (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS;
     const uint32_t expected = dbmap_audio_expected_samples(
         (uint32_t)s_mic_cfg.sample_rate_hz,
         window_ms
     );
+    const int64_t t_measure0 = esp_timer_get_time();
+
+    if (live_count < 1u || live_count > DBMAP_MIC_COUNT_MAX) {
+        live_count = 1u;
+    }
+    for (uint8_t i = 0; i < DBMAP_MIC_COUNT_MAX; ++i) {
+        memset(&out[i], 0, sizeof(out[i]));
+        strncpy(out[i].transport_status, "unavailable", sizeof(out[i].transport_status) - 1);
+        strncpy(out[i].microphone_status, "unavailable", sizeof(out[i].microphone_status) - 1);
+        strncpy(out[i].channel_presence, "no_samples", sizeof(out[i].channel_presence) - 1);
+        out[i].window_ms = window_ms;
+        out[i].rms_dbfs = -120.0f;
+        out[i].peak_dbfs = -120.0f;
+    }
 
     if (!s_rx_ready || s_model == NULL) {
-        out->missing_data = 1;
-        out->window_ms = window_ms;
-        out->rms_dbfs = -120.0f;
-        out->peak_dbfs = -120.0f;
-        set_status(out, expected);
+        for (uint8_t i = 0; i < live_count; ++i) {
+            out[i].missing_data = 1;
+            set_status(&out[i], expected);
+        }
+        s_measure_window_us_last = (uint32_t)(esp_timer_get_time() - t_measure0);
         return;
     }
 
-    const int64_t deadline_us = esp_timer_get_time() + ((int64_t)window_ms * 1000LL);
+    const bool stereo = (live_count >= 2u);
     const int useful_bits = s_model->useful_bits;
     const double full_scale = (double)(1LL << (useful_bits > 1 ? useful_bits - 1 : 1));
     const int32_t clip_threshold = (int32_t)(full_scale * 0.99);
     const int32_t full_scale_mag = (int32_t)full_scale;
-    double sum_sq = 0.0;
-    int32_t peak_abs = 0;
-    uint32_t pcm_count = 0;
-    uint32_t clipped = 0;
-    int32_t raw_min = INT32_MAX;
-    int32_t raw_max = INT32_MIN;
-    uint32_t zero_count = 0;
-    uint32_t full_scale_count = 0;
-    uint32_t unique_count = 0;
-    uint8_t unique_capped = 0;
-    uint32_t max_identical_run = 0;
-    uint32_t cur_identical_run = 0;
-    int32_t prev_sample = 0;
-    bool have_prev = false;
+    const size_t request_bytes = s_request_bytes > 0 ? s_request_bytes : sizeof(s_slot_buf);
+    const int64_t deadline_us = t_measure0 + ((int64_t)window_ms * 1000LL);
 
-    unique_reset();
+    ear_ch_accum_t acc[DBMAP_MIC_COUNT_MAX];
+    for (uint8_t i = 0; i < live_count; ++i) {
+        ch_accum_init(&acc[i], i);
+    }
 
+    uint32_t read_errors = 0;
+    uint32_t timeout_reads = 0;
+    uint32_t empty_reads = 0;
+    uint8_t counters_capped = 0;
     uint32_t read_calls = 0;
     uint32_t bytes_received = 0;
     uint32_t partial_reads = 0;
-    uint32_t slot_min = UINT32_MAX;
-    uint32_t slot_max = 0;
-    uint32_t slot_zero = 0;
-    uint32_t slot_msb = 0;
-    bool have_slot = false;
-    const size_t request_bytes = sizeof(s_slot_buf);
+    uint32_t incomplete_stereo = 0;
 
-    /* Accumulate stats in-stream so a 1 s window does not need an 8 KiB PCM buffer.
-     * Only frames covered by bytes_read are processed (driver memcpy into s_slot_buf).
-     * Stale words beyond bytes_read are ignored. */
     while (esp_timer_get_time() < deadline_us) {
         size_t bytes_read = 0;
-        /* timeout_ms is milliseconds: i2s_channel_read applies pdMS_TO_TICKS itself. */
         esp_err_t err = i2s_channel_read(
             s_rx,
             s_slot_buf,
@@ -820,84 +1122,55 @@ static void measure_window(ear_audio_snapshot_t *out)
         }
 
         if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
-            bump_counter(&out->read_errors, &out->counters_capped);
+            bump_counter(&read_errors, &counters_capped);
             taskYIELD();
             continue;
         }
 
-        const size_t frames = bytes_read / sizeof(uint32_t);
-        for (size_t i = 0; i < frames; ++i) {
-            const uint32_t slot = s_slot_buf[i];
-            if (!have_slot) {
-                slot_min = slot;
-                slot_max = slot;
-                have_slot = true;
-            } else {
-                if (slot < slot_min) {
-                    slot_min = slot;
-                }
-                if (slot > slot_max) {
-                    slot_max = slot;
-                }
-            }
-            if (slot == 0u) {
-                slot_zero++;
-            }
-            if ((slot & 0x80000000u) != 0u) {
-                slot_msb++;
-            }
-
-            /* INMP441 path: (int32_t)slot >> 8 — left-justified 24-bit, arithmetic sign extend. */
-            int32_t sample = s_model->extract(slot);
-            double v = (double)sample;
-            sum_sq += v * v;
-            int32_t abs_v = sample < 0
-                ? (sample == INT32_MIN ? INT32_MAX : -sample)
-                : sample;
-            if (abs_v > peak_abs) {
-                peak_abs = abs_v;
-            }
-            if (clip_threshold > 0 && abs_v >= clip_threshold) {
-                clipped++;
-            }
-            if (sample < raw_min) {
-                raw_min = sample;
-            }
-            if (sample > raw_max) {
-                raw_max = sample;
-            }
-            if (sample == 0) {
-                zero_count++;
-            }
-            if (full_scale_mag > 0 && abs_v >= full_scale_mag) {
-                full_scale_count++;
-            }
-            unique_add(sample, &unique_count, &unique_capped);
-            if (!have_prev || sample != prev_sample) {
-                cur_identical_run = 1;
-                prev_sample = sample;
-                have_prev = true;
-            } else {
-                cur_identical_run++;
-            }
-            if (cur_identical_run > max_identical_run) {
-                max_identical_run = cur_identical_run;
-            }
+        const size_t slot_words = bytes_read / sizeof(uint32_t);
+        if (stereo) {
+            incomplete_stereo += dbmap_i2s_stereo_incomplete_trailing(slot_words);
+            const size_t pairs = dbmap_i2s_stereo_complete_pairs(slot_words);
+            for (size_t p = 0; p < pairs; ++p) {
+                const uint32_t left_slot = s_slot_buf[p * 2u];
+                const uint32_t right_slot = s_slot_buf[p * 2u + 1u];
+                ch_accum_slot(&acc[0], left_slot);
+                ch_accum_slot(&acc[1], right_slot);
+                const int32_t left = s_model->extract(left_slot);
+                const int32_t right = s_model->extract(right_slot);
+                ch_accum_sample(&acc[0], 0, left, clip_threshold, full_scale_mag);
+                ch_accum_sample(&acc[1], 1, right, clip_threshold, full_scale_mag);
 #if CONFIG_DBMAP_EAR_MIC_L0
-            /* Store for offline L0; never allocate here. Cap at expected window. */
-            if (s_l0_pcm_ready && s_l0_pcm[s_l0_fill_idx] != NULL && pcm_count < s_l0_pcm_cap) {
-                s_l0_pcm[s_l0_fill_idx][pcm_count] = sample;
-            }
+                /* L0 / Observation remain mic0 (left) only. */
+                if (s_l0_pcm_ready && s_l0_pcm[s_l0_fill_idx] != NULL
+                    && acc[0].pcm_count <= s_l0_pcm_cap
+                    && (acc[0].pcm_count - 1u) < s_l0_pcm_cap) {
+                    s_l0_pcm[s_l0_fill_idx][acc[0].pcm_count - 1u] = left;
+                }
 #endif
-            pcm_count++;
+            }
+        } else {
+            for (size_t i = 0; i < slot_words; ++i) {
+                const uint32_t slot = s_slot_buf[i];
+                ch_accum_slot(&acc[0], slot);
+                const int32_t sample = s_model->extract(slot);
+                ch_accum_sample(&acc[0], 0, sample, clip_threshold, full_scale_mag);
+#if CONFIG_DBMAP_EAR_MIC_L0
+                if (s_l0_pcm_ready && s_l0_pcm[s_l0_fill_idx] != NULL
+                    && acc[0].pcm_count <= s_l0_pcm_cap
+                    && (acc[0].pcm_count - 1u) < s_l0_pcm_cap) {
+                    s_l0_pcm[s_l0_fill_idx][acc[0].pcm_count - 1u] = sample;
+                }
+#endif
+            }
         }
 
         if (err == ESP_ERR_TIMEOUT) {
-            bump_counter(&out->timeout_reads, &out->counters_capped);
+            bump_counter(&timeout_reads, &counters_capped);
             continue;
         }
-        if (frames == 0) {
-            bump_counter(&out->empty_reads, &out->counters_capped);
+        if (slot_words == 0) {
+            bump_counter(&empty_reads, &counters_capped);
             taskYIELD();
             continue;
         }
@@ -906,54 +1179,38 @@ static void measure_window(ear_audio_snapshot_t *out)
     if (s_window_seq < UINT32_MAX) {
         s_window_seq++;
     }
-    out->window_seq = s_window_seq;
+    uint32_t ms_since = 0;
     if (s_i2s_enabled_us > 0) {
         int64_t elapsed_ms = (esp_timer_get_time() - s_i2s_enabled_us) / 1000;
-        out->ms_since_i2s_enable = elapsed_ms > 0 ? (uint32_t)elapsed_ms : 0;
+        ms_since = elapsed_ms > 0 ? (uint32_t)elapsed_ms : 0;
     }
-    out->read_calls = read_calls;
-    out->bytes_received = bytes_received;
-    out->complete_frames = pcm_count;
-    out->partial_reads = partial_reads;
-    out->raw_slot_min = have_slot ? slot_min : 0;
-    out->raw_slot_max = have_slot ? slot_max : 0;
-    out->slot_zero_count = slot_zero;
-    out->slot_msb_set_count = slot_msb;
+    const int64_t measured_at = esp_timer_get_time();
+    s_incomplete_stereo_frames_window = incomplete_stereo;
 
-    out->window_ms = window_ms;
-    out->sample_count = pcm_count;
-    out->clipped_samples = clipped;
-    out->measured_at_us = esp_timer_get_time();
-    if (pcm_count == 0) {
-        out->missing_data = 1;
-        out->rms_dbfs = -120.0f;
-        out->peak_dbfs = -120.0f;
-        out->raw_min = 0;
-        out->raw_max = 0;
-        set_status(out, expected);
-        return;
+    for (uint8_t i = 0; i < live_count; ++i) {
+        finalize_channel(
+            &out[i],
+            &acc[i],
+            expected,
+            window_ms,
+            useful_bits,
+            read_errors,
+            timeout_reads,
+            empty_reads,
+            counters_capped,
+            read_calls,
+            bytes_received,
+            partial_reads,
+            s_window_seq,
+            ms_since,
+            measured_at
+        );
     }
-
-    out->raw_min = raw_min;
-    out->raw_max = raw_max;
-    out->zero_sample_count = zero_count;
-    out->full_scale_sample_count = full_scale_count;
-    out->unique_sample_count = unique_count;
-    out->consecutive_identical_samples = max_identical_run;
-    out->unique_capped = unique_capped;
-
-    /* Single-sample helpers for numerically consistent dBFS conversion.
-     * peak_dbfs == 0 means at least one |sample| >= 2^(useful_bits-1). */
-    int32_t rms_proxy = (int32_t)(sqrt(sum_sq / (double)pcm_count) + 0.5);
-    out->rms_dbfs = dbmap_audio_rms_dbfs(&rms_proxy, 1, useful_bits);
-    out->peak_dbfs = dbmap_audio_peak_dbfs(&peak_abs, 1, useful_bits);
-    set_status(out, expected);
 
 #if CONFIG_DBMAP_EAR_MIC_L0
-    /* Hand filled buffer to L0 poller; flip fill index so next window is independent.
-     * Detector path above is unchanged — L0 is not consulted for activity. */
-    if (s_l0_pcm_ready && pcm_count > 0) {
-        const size_t stored = pcm_count < s_l0_pcm_cap ? pcm_count : s_l0_pcm_cap;
+    if (s_l0_pcm_ready && acc[0].pcm_count > 0) {
+        const size_t stored =
+            acc[0].pcm_count < s_l0_pcm_cap ? acc[0].pcm_count : s_l0_pcm_cap;
         portENTER_CRITICAL(&s_lock);
         if (s_l0_pending.pending) {
             s_l0_pending_overwrite++;
@@ -962,54 +1219,130 @@ static void measure_window(ear_audio_snapshot_t *out)
         s_l0_pending.buf_idx = s_l0_fill_idx;
         s_l0_pending.sample_count = stored;
         s_l0_pending.window_ms = window_ms;
-        s_l0_pending.window_end_mono_us = out->measured_at_us;
+        s_l0_pending.window_end_mono_us = measured_at;
         s_l0_pending.full_scale_bits = useful_bits;
         s_l0_fill_idx ^= 1;
         portEXIT_CRITICAL(&s_lock);
     }
 #endif
 
-    /* Bounded startup log: first 30 windows only (≈30 s at 1 s windows). */
-    if (out->window_seq <= 30u) {
+    s_measure_window_us_last = (uint32_t)(esp_timer_get_time() - t_measure0);
+
+    if (out[0].window_seq <= 30u) {
         ESP_LOGI(
             TAG,
-            "win#%lu t+%lums reads=%lu bytes=%lu frames=%lu partial=%lu timeout=%lu "
-            "zero=%lu fs=%lu slot_msb=%lu slot=[0x%08lx..0x%08lx] rms=%.1f peak=%.1f",
-            (unsigned long)out->window_seq,
-            (unsigned long)out->ms_since_i2s_enable,
-            (unsigned long)out->read_calls,
-            (unsigned long)out->bytes_received,
-            (unsigned long)out->complete_frames,
-            (unsigned long)out->partial_reads,
-            (unsigned long)out->timeout_reads,
-            (unsigned long)out->zero_sample_count,
-            (unsigned long)out->full_scale_sample_count,
-            (unsigned long)out->slot_msb_set_count,
-            (unsigned long)out->raw_slot_min,
-            (unsigned long)out->raw_slot_max,
-            (double)out->rms_dbfs,
-            (double)out->peak_dbfs
+            "win#%lu mode=%s t+%lums reads=%lu bytes=%lu ch0_n=%lu ch1_n=%lu "
+            "timeout=%lu incomplete=%lu rms0=%.1f rms1=%.1f peak0=%.1f peak1=%.1f "
+            "pres0=%s pres1=%s measure_us=%lu",
+            (unsigned long)out[0].window_seq,
+            s_slot_mode_name,
+            (unsigned long)out[0].ms_since_i2s_enable,
+            (unsigned long)out[0].read_calls,
+            (unsigned long)out[0].bytes_received,
+            (unsigned long)out[0].sample_count,
+            (unsigned long)(live_count > 1 ? out[1].sample_count : 0),
+            (unsigned long)out[0].timeout_reads,
+            (unsigned long)incomplete_stereo,
+            (double)out[0].rms_dbfs,
+            (double)(live_count > 1 ? out[1].rms_dbfs : -120.0f),
+            (double)out[0].peak_dbfs,
+            (double)(live_count > 1 ? out[1].peak_dbfs : -120.0f),
+            out[0].channel_presence,
+            live_count > 1 ? out[1].channel_presence : "n/a",
+            (unsigned long)s_measure_window_us_last
         );
     }
 }
+
+#if CONFIG_DBMAP_EAR_MIC_CAPTURE_DIAG
+static void capture_diag_maybe_log(const ear_audio_snapshot_t *snaps, uint8_t live_count)
+{
+    const int64_t now = esp_timer_get_time();
+    if (s_capture_diag_last_us != 0 && (now - s_capture_diag_last_us) < 5000000LL) {
+        return;
+    }
+    s_capture_diag_last_us = now;
+
+    const uint32_t dma_buf_bytes =
+        s_dma_frame_num * s_slot_words_per_frame * (uint32_t)sizeof(uint32_t);
+    /* Mono comparison: same DMA frame count with 1 slot word — configured formula, not a
+     * second live measurement on this boot. */
+    const uint32_t mono_dma_buf_bytes =
+        s_dma_frame_num * 1u * (uint32_t)sizeof(uint32_t);
+    const uint32_t mono_slot_buf_bytes =
+        (uint32_t)EAR_MIC_READ_FRAMES * (uint32_t)sizeof(uint32_t);
+    const uint32_t free_heap = (uint32_t)esp_get_free_heap_size();
+    const uint32_t free_spiram = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+
+    ESP_LOGI(
+        TAG,
+        "capture_diag rate=%d fmt=int32_from_i2s32_left_justified_24 mode=%s "
+        "words/frame=%lu live=%u dma_desc=%lu dma_frame=%lu "
+        "dma_buf_bytes_formula=%lu (mono_formula=%lu) slot_buf=%lu "
+        "(mono_equiv=%lu) req_bytes=%lu measure_us=%lu incomplete=%lu "
+        "free_heap=%lu free_spiram=%lu",
+        s_mic_cfg.sample_rate_hz,
+        s_slot_mode_name,
+        (unsigned long)s_slot_words_per_frame,
+        (unsigned)live_count,
+        (unsigned long)s_dma_desc_num,
+        (unsigned long)s_dma_frame_num,
+        (unsigned long)dma_buf_bytes,
+        (unsigned long)mono_dma_buf_bytes,
+        (unsigned long)sizeof(s_slot_buf),
+        (unsigned long)mono_slot_buf_bytes,
+        (unsigned long)s_request_bytes,
+        (unsigned long)s_measure_window_us_last,
+        (unsigned long)s_incomplete_stereo_frames_window,
+        (unsigned long)free_heap,
+        (unsigned long)free_spiram
+    );
+    for (uint8_t i = 0; i < live_count; ++i) {
+        ESP_LOGI(
+            TAG,
+            "capture_diag ch%u slot=%s n=%lu expect=%lu rms=%.1f peak=%.1f "
+            "clip=%lu zero=%lu all_zero=%u presence=%s mic=%s xport=%s "
+            "timeout=%lu empty=%lu err=%lu",
+            (unsigned)i,
+            i == 0 ? "left" : "right",
+            (unsigned long)snaps[i].sample_count,
+            (unsigned long)dbmap_audio_expected_samples(
+                (uint32_t)s_mic_cfg.sample_rate_hz,
+                snaps[i].window_ms
+            ),
+            (double)snaps[i].rms_dbfs,
+            (double)snaps[i].peak_dbfs,
+            (unsigned long)snaps[i].clipped_samples,
+            (unsigned long)snaps[i].zero_sample_count,
+            (unsigned)snaps[i].all_zero_window,
+            snaps[i].channel_presence,
+            snaps[i].microphone_status[0] ? snaps[i].microphone_status : "unavailable",
+            snaps[i].transport_status[0] ? snaps[i].transport_status : "unavailable",
+            (unsigned long)snaps[i].timeout_reads,
+            (unsigned long)snaps[i].empty_reads,
+            (unsigned long)snaps[i].read_errors
+        );
+    }
+}
+#endif
 
 static void ear_mic_task(void *arg)
 {
     (void)arg;
     while (1) {
-        ear_audio_snapshot_t snap;
-        measure_window(&snap);
+        ear_audio_snapshot_t snaps[DBMAP_MIC_COUNT_MAX];
+        measure_window(snaps, s_live_mic_count);
 
 #if CONFIG_DBMAP_EAR_MIC_BACKGROUND
         dbmap_bg_rms_candidate_t cand = {
-            .levels_valid = (snap.missing_data == 0 && snap.sample_count > 0),
-            .rms_dbfs = snap.rms_dbfs,
-            .peak_dbfs = snap.peak_dbfs,
-            .clipped_samples = snap.clipped_samples,
-            .window_seq = snap.window_seq,
-            .ms_since_i2s_enable = snap.ms_since_i2s_enable,
-            .transport_status = snap.transport_status,
-            .microphone_status = snap.microphone_status,
+            .levels_valid = (snaps[0].missing_data == 0 && snaps[0].sample_count > 0),
+            .rms_dbfs = snaps[0].rms_dbfs,
+            .peak_dbfs = snaps[0].peak_dbfs,
+            .clipped_samples = snaps[0].clipped_samples,
+            .window_seq = snaps[0].window_seq,
+            .ms_since_i2s_enable = snaps[0].ms_since_i2s_enable,
+            .transport_status = snaps[0].transport_status,
+            .microphone_status = snaps[0].microphone_status,
         };
         const bool include = dbmap_bg_rms_should_include(
             &cand, (uint32_t)CONFIG_DBMAP_EAR_MIC_BACKGROUND_BOOT_SETTLE_MS
@@ -1017,13 +1350,19 @@ static void ear_mic_task(void *arg)
 #endif
 
         portENTER_CRITICAL(&s_lock);
-        s_latest = snap;
+        for (uint8_t i = 0; i < DBMAP_MIC_COUNT_MAX; ++i) {
+            s_latest[i] = snaps[i];
+        }
 #if CONFIG_DBMAP_EAR_MIC_BACKGROUND
         if (include) {
-            dbmap_bg_rms_push(&s_bg_hist, snap.rms_dbfs, snap.measured_at_us);
+            dbmap_bg_rms_push(&s_bg_hist, snaps[0].rms_dbfs, snaps[0].measured_at_us);
         }
 #endif
         portEXIT_CRITICAL(&s_lock);
+
+#if CONFIG_DBMAP_EAR_MIC_CAPTURE_DIAG
+        capture_diag_maybe_log(snaps, s_live_mic_count);
+#endif
 
         /* Yield so MQTT / OTA / health stay responsive. Latest levels ride on hello/health. */
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -1053,9 +1392,37 @@ esp_err_t dbmap_ear_mic_start(const dbmap_effective_t *cfg, const dbmap_ear_mic_
         s_mic_cfg.sample_rate_hz = CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ;
     }
 
-    memset(&s_latest, 0, sizeof(s_latest));
-    strncpy(s_latest.transport_status, "unavailable", sizeof(s_latest.transport_status) - 1);
-    strncpy(s_latest.microphone_status, "unavailable", sizeof(s_latest.microphone_status) - 1);
+    s_live_mic_count = cfg->microphone_count;
+    if (!dbmap_mic_count_supported(s_live_mic_count)) {
+        s_live_mic_count = DBMAP_MIC_COUNT_DEFAULT;
+    }
+    ESP_LOGI(
+        TAG,
+        "live_mic_count=%u (NVS configured=%u status=%s) → %s",
+        (unsigned)s_live_mic_count,
+        (unsigned)cfg->microphone_count,
+        dbmap_mic_count_status_str(cfg->microphone_count_status),
+        s_live_mic_count >= 2u ? "stereo_lr" : "mono_left"
+    );
+
+    memset(s_latest, 0, sizeof(s_latest));
+    for (uint8_t i = 0; i < DBMAP_MIC_COUNT_MAX; ++i) {
+        strncpy(
+            s_latest[i].transport_status,
+            "unavailable",
+            sizeof(s_latest[i].transport_status) - 1
+        );
+        strncpy(
+            s_latest[i].microphone_status,
+            "unavailable",
+            sizeof(s_latest[i].microphone_status) - 1
+        );
+        strncpy(
+            s_latest[i].channel_presence,
+            "no_samples",
+            sizeof(s_latest[i].channel_presence) - 1
+        );
+    }
 
 #if CONFIG_DBMAP_EAR_MIC_BACKGROUND
     dbmap_bg_rms_hist_init(
@@ -1156,8 +1523,18 @@ esp_err_t dbmap_ear_mic_start(const dbmap_effective_t *cfg, const dbmap_ear_mic_
 
     esp_err_t err = init_i2s_rx();
     if (err != ESP_OK) {
-        strncpy(s_latest.transport_status, "error", sizeof(s_latest.transport_status) - 1);
-        strncpy(s_latest.microphone_status, "unavailable", sizeof(s_latest.microphone_status) - 1);
+        for (uint8_t i = 0; i < DBMAP_MIC_COUNT_MAX; ++i) {
+            strncpy(
+                s_latest[i].transport_status,
+                "error",
+                sizeof(s_latest[i].transport_status) - 1
+            );
+            strncpy(
+                s_latest[i].microphone_status,
+                "unavailable",
+                sizeof(s_latest[i].microphone_status) - 1
+            );
+        }
         dbmap_health_set_enricher(enrich_health);
         ESP_LOGE(TAG, "I2S init failed: %s", esp_err_to_name(err));
         return err;

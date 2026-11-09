@@ -3764,11 +3764,51 @@ components:
         classification:
           $ref: "#/components/schemas/ObservationClassification"
           nullable: true
+        assessment:
+          $ref: "#/components/schemas/ObservationAssessment"
+          nullable: true
+        evidence:
+          $ref: "#/components/schemas/ObservationEvidence"
+          nullable: true
+        debug:
+          $ref: "#/components/schemas/ObservationDebug"
+          nullable: true
       additionalProperties: false
       type: object
       required:
         - measurements
       title: ObservationAcoustic
+    ObservationAssessment:
+      properties:
+        schema:
+          type: string
+          enum:
+            - ear_hyp_v1
+          title: Schema
+        version:
+          type: integer
+          enum:
+            - 1
+          title: Version
+          default: 1
+        primary:
+          $ref: "#/components/schemas/ObservationHypothesisItem"
+        alternates:
+          items:
+            $ref: "#/components/schemas/ObservationHypothesisItem"
+          type: array
+          maxItems: 8
+          title: Alternates
+        clutter:
+          $ref: "#/components/schemas/ObservationHypothesisItem"
+          nullable: true
+      additionalProperties: false
+      type: object
+      required:
+        - schema
+        - primary
+      title: ObservationAssessment
+      description: EAR preliminary assessment (schema ear_hyp_v1). Not Hub classification.
     ObservationBearing:
       properties:
         deg:
@@ -3875,6 +3915,7 @@ components:
             - natural
             - invalid_hold
             - ota_reboot
+            - report_rotation
           nullable: true
       additionalProperties: false
       type: object
@@ -3905,6 +3946,186 @@ components:
         - unique_observations
       title: ObservationCountView
       description: Observation report rows and distinct observation_id values (optional node filter).
+    ObservationDebug:
+      properties:
+        schema:
+          type: string
+          enum:
+            - ear_dbg_v1
+          title: Schema
+        version:
+          type: integer
+          enum:
+            - 1
+          title: Version
+          default: 1
+        background_rms_dbfs:
+          title: Background Rms Dbfs
+          type: number
+          maximum: 0.0
+          nullable: true
+        gate:
+          title: Gate
+          type: string
+          maxLength: 64
+          minLength: 1
+          nullable: true
+        lifecycle_decision:
+          title: Lifecycle Decision
+          type: string
+          maxLength: 64
+          minLength: 1
+          nullable: true
+        window_snapshots:
+          items:
+            $ref: "#/components/schemas/ObservationDebugWindowSnapshot"
+          type: array
+          maxItems: 64
+          title: Window Snapshots
+      additionalProperties: false
+      type: object
+      required:
+        - schema
+      title: ObservationDebug
+      description: Development-only diagnostics (schema ear_dbg_v1). Not for production assessment.
+    ObservationDebugWindowSnapshot:
+      properties:
+        seq:
+          type: integer
+          minimum: 0.0
+          title: Seq
+        rms:
+          title: Rms
+          type: number
+          nullable: true
+        crest:
+          title: Crest
+          type: number
+          nullable: true
+        flatness:
+          title: Flatness
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          nullable: true
+        flux:
+          title: Flux
+          type: number
+          minimum: 0.0
+          nullable: true
+        dom:
+          title: Dom
+          type: number
+          minimum: 0.0
+          nullable: true
+      additionalProperties: false
+      type: object
+      required:
+        - seq
+      title: ObservationDebugWindowSnapshot
+      description: One analysis-window snapshot for development diagnostics.
+    ObservationEvidence:
+      properties:
+        schema:
+          type: string
+          enum:
+            - ear_ev_v1
+          title: Schema
+        version:
+          type: integer
+          enum:
+            - 1
+          title: Version
+          default: 1
+        contrast_to_background_db:
+          title: Contrast To Background Db
+          type: number
+          nullable: true
+        duration_ms_so_far:
+          title: Duration Ms So Far
+          type: integer
+          minimum: 0.0
+          nullable: true
+        path_votes:
+          $ref: "#/components/schemas/ObservationEvidencePathVotes"
+          nullable: true
+        crest_max_db:
+          title: Crest Max Db
+          type: number
+          nullable: true
+        flatness_mean:
+          title: Flatness Mean
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          nullable: true
+        dominant_hz_mean:
+          title: Dominant Hz Mean
+          type: number
+          minimum: 0.0
+          nullable: true
+        spectral_flux_mean:
+          title: Spectral Flux Mean
+          type: number
+          minimum: 0.0
+          nullable: true
+      additionalProperties: false
+      type: object
+      required:
+        - schema
+      title: ObservationEvidence
+      description: Compact structured evidence supporting assessment (schema ear_ev_v1).
+    ObservationEvidencePathVotes:
+      properties:
+        impulse:
+          type: integer
+          maximum: 1.0
+          minimum: 0.0
+          title: Impulse
+        sustained:
+          type: integer
+          maximum: 1.0
+          minimum: 0.0
+          title: Sustained
+        modulated:
+          type: integer
+          maximum: 1.0
+          minimum: 0.0
+          title: Modulated
+        long_tone:
+          type: integer
+          maximum: 1.0
+          minimum: 0.0
+          title: Long Tone
+      additionalProperties: false
+      type: object
+      required:
+        - impulse
+        - sustained
+        - modulated
+        - long_tone
+      title: ObservationEvidencePathVotes
+      description: Compact detection-path votes (0/1 in v1; stronger scores later via schema bump).
+    ObservationHypothesisItem:
+      properties:
+        family:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Family
+        tier:
+          type: string
+          enum:
+            - possible
+            - probable
+          title: Tier
+      additionalProperties: false
+      type: object
+      required:
+        - family
+        - tier
+      title: ObservationHypothesisItem
+      description: One EAR-local source/event hypothesis (tier is not a calibrated probability).
     ObservationIdentity:
       properties:
         observation_id:
@@ -3925,6 +4146,11 @@ components:
           type: integer
           minimum: 0.0
           title: Sequence Number
+        track_id:
+          title: Track Id
+          type: string
+          format: uuid
+          nullable: true
       additionalProperties: false
       type: object
       required:

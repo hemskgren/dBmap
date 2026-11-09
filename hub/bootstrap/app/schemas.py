@@ -401,6 +401,9 @@ class ObservationIdentity(BaseModel):
     node_id: str = Field(min_length=1, max_length=64)
     hub_id: str = Field(default="", max_length=64)
     sequence_number: int = Field(ge=0)
+    # Optional physical/acoustic continuity across Observation report episodes.
+    # Omitted or null on older firmware; Hub does not mint or manage tracks.
+    track_id: UUID | None = None
 
 
 class ObservationContext(BaseModel):
@@ -414,7 +417,9 @@ class ObservationContext(BaseModel):
     interval_duration_ms: float = Field(ge=0, allow_inf_nan=False)
     episode_duration_ms: float = Field(ge=0, allow_inf_nan=False)
     emission_kind: Literal["start", "periodic", "end", "complete"]
-    termination_reason: Literal["natural", "invalid_hold", "ota_reboot"] | None = None
+    termination_reason: (
+        Literal["natural", "invalid_hold", "ota_reboot", "report_rotation"] | None
+    ) = None
 
     @field_validator("event_time_utc")
     @classmethod
@@ -601,6 +606,82 @@ class ObservationL2Dynamics(BaseModel):
         return self
 
 
+class ObservationHypothesisItem(BaseModel):
+    """One EAR-local source/event hypothesis (tier is not a calibrated probability)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    family: str = Field(min_length=1, max_length=64)
+    tier: Literal["possible", "probable"]
+
+
+class ObservationAssessment(BaseModel):
+    """EAR preliminary assessment (schema ear_hyp_v1). Not Hub classification."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    assessment_schema: Literal["ear_hyp_v1"] = Field(alias="schema")
+    version: Literal[1] = 1
+    primary: ObservationHypothesisItem
+    alternates: list[ObservationHypothesisItem] = Field(default_factory=list, max_length=8)
+    clutter: ObservationHypothesisItem | None = None
+
+
+class ObservationEvidencePathVotes(BaseModel):
+    """Compact detection-path votes (0/1 in v1; stronger scores later via schema bump)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    impulse: int = Field(ge=0, le=1)
+    sustained: int = Field(ge=0, le=1)
+    modulated: int = Field(ge=0, le=1)
+    long_tone: int = Field(ge=0, le=1)
+
+
+class ObservationEvidence(BaseModel):
+    """Compact structured evidence supporting assessment (schema ear_ev_v1)."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    evidence_schema: Literal["ear_ev_v1"] = Field(alias="schema")
+    version: Literal[1] = 1
+    contrast_to_background_db: float | None = Field(default=None, allow_inf_nan=False)
+    duration_ms_so_far: int | None = Field(default=None, ge=0)
+    path_votes: ObservationEvidencePathVotes | None = None
+    crest_max_db: float | None = Field(default=None, allow_inf_nan=False)
+    flatness_mean: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    dominant_hz_mean: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    spectral_flux_mean: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+class ObservationDebugWindowSnapshot(BaseModel):
+    """One analysis-window snapshot for development diagnostics."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    seq: int = Field(ge=0)
+    rms: float | None = Field(default=None, allow_inf_nan=False)
+    crest: float | None = Field(default=None, allow_inf_nan=False)
+    flatness: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    flux: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    dom: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+class ObservationDebug(BaseModel):
+    """Development-only diagnostics (schema ear_dbg_v1). Not for production assessment."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    debug_schema: Literal["ear_dbg_v1"] = Field(alias="schema")
+    version: Literal[1] = 1
+    background_rms_dbfs: float | None = Field(default=None, le=0, allow_inf_nan=False)
+    gate: str | None = Field(default=None, min_length=1, max_length=64)
+    lifecycle_decision: str | None = Field(default=None, min_length=1, max_length=64)
+    window_snapshots: list[ObservationDebugWindowSnapshot] = Field(
+        default_factory=list, max_length=64
+    )
+
+
 class ObservationAcoustic(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -609,6 +690,9 @@ class ObservationAcoustic(BaseModel):
     signature: ObservationL1Signature | None = None
     dynamics: ObservationL2Dynamics | None = None
     classification: ObservationClassification | None = None
+    assessment: ObservationAssessment | None = None
+    evidence: ObservationEvidence | None = None
+    debug: ObservationDebug | None = None
 
 
 class ObservationBody(BaseModel):

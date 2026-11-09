@@ -315,20 +315,26 @@
         width: min(92vw, 880px);
         max-height: min(90vh, 720px);
       }
+      /* USB log console: wider than shared dialog chrome so long firmware lines wrap less. */
+      #usb-console-dialog {
+        width: min(96vw, 1280px);
+        max-height: min(92vh, 860px);
+      }
       dialog.usb-console-dialog::backdrop { background: rgba(15, 23, 42, 0.45); }
       dialog.usb-console-dialog h3 { margin: 0 0 0.35rem; }
       dialog.usb-console-dialog > .notice { margin: 0 0 0.65rem; }
       #usb-console-output {
         margin: 0.65rem 0 0;
-        max-height: min(55vh, 28rem);
+        max-height: min(62vh, 36rem);
         overflow: auto;
         padding: 0.75rem;
         border-radius: 7px;
         background: #0f172a;
         color: #e2e8f0;
         font: 0.78rem/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
+        /* Prefer horizontal scroll over wrapping long ESP log lines; still usable on narrow viewports. */
+        white-space: pre;
+        overflow-wrap: normal;
       }
       #usb-console-output:empty::before { content: "USB serial output will appear here."; color: #94a3b8; }
       #browser-flash-panel input[type="checkbox"] { width: auto; }
@@ -609,10 +615,9 @@
             <!-- Keep outside collapsed registration <details>; a modal dialog there freezes the page behind an invisible backdrop. -->
             <dialog id="usb-console-dialog" class="usb-console-dialog" aria-labelledby="usb-console-title">
               <h3 id="usb-console-title">USB: Console &amp; Logs</h3>
-              <p class="notice">Live serial at 115200 baud. Close this before ESP Web Tools or USB provisioning needs the port; reopen afterward to watch Wi-Fi, mDNS, and Hub call-home.</p>
+              <p class="notice">Live serial at 115200 baud. In-browser log retention is about 460&nbsp;KiB, then oldest lines are dropped. Close this before ESP Web Tools or USB provisioning needs the port.</p>
               <div class="actions">
                 <button id="usb-console-open" class="secondary" type="button">Open USB console</button>
-                <button id="usb-console-reset" class="secondary" type="button" disabled>Reset device</button>
                 <button id="usb-console-clear" class="secondary" type="button" disabled>Clear</button>
                 <button id="usb-console-download" class="secondary" type="button" disabled>Download logs</button>
                 <button id="usb-console-close" class="secondary" type="button" disabled>Close console</button>
@@ -3150,9 +3155,11 @@
       const usbConsoleStatus = document.getElementById('usb-console-status');
       const usbConsoleOpenButton = document.getElementById('usb-console-open');
       const usbConsoleCloseButton = document.getElementById('usb-console-close');
-      const usbConsoleResetButton = document.getElementById('usb-console-reset');
       const usbConsoleClearButton = document.getElementById('usb-console-clear');
       const usbConsoleDownloadButton = document.getElementById('usb-console-download');
+      /* Bounded in-DOM log retention (UTF-16 code units ≈ bytes for ASCII firmware logs). */
+      const USB_CONSOLE_LOG_KEEP_CHARS = 460 * 1024; /* 460 KiB retained after trim */
+      const USB_CONSOLE_LOG_TRIM_AT_CHARS = Math.floor(USB_CONSOLE_LOG_KEEP_CHARS * 1.25);
 
       function showUsbConsoleDialog() {
         if (!usbConsoleDialog.open) usbConsoleDialog.showModal();
@@ -3161,7 +3168,6 @@
       function syncUsbConsoleControls(open) {
         usbConsoleOpenButton.disabled = open || !navigator.serial;
         usbConsoleCloseButton.disabled = !open;
-        usbConsoleResetButton.disabled = !open;
         usbConsoleClearButton.disabled = usbConsoleOutput.textContent.length === 0;
         usbConsoleDownloadButton.disabled = usbConsoleOutput.textContent.length === 0;
       }
@@ -3169,8 +3175,8 @@
       function appendUsbConsoleText(text) {
         if (!text) return;
         usbConsoleOutput.textContent += text;
-        if (usbConsoleOutput.textContent.length > 200000) {
-          usbConsoleOutput.textContent = usbConsoleOutput.textContent.slice(-160000);
+        if (usbConsoleOutput.textContent.length > USB_CONSOLE_LOG_TRIM_AT_CHARS) {
+          usbConsoleOutput.textContent = usbConsoleOutput.textContent.slice(-USB_CONSOLE_LOG_KEEP_CHARS);
         }
         usbConsoleOutput.scrollTop = usbConsoleOutput.scrollHeight;
         syncUsbConsoleControls(Boolean(usbConsolePort));
@@ -3227,7 +3233,8 @@
           usbConsolePort = port;
           usbConsoleReader = port.readable.getReader();
           usbConsoleKeepReading = true;
-          usbConsoleStatus.textContent = 'USB console open at 115200 baud. Press Reset on the board if logs do not appear.';
+          usbConsoleStatus.textContent =
+            'Console open. Press Reset on the board if logs do not appear.';
           usbConsoleStatus.className = 'notice';
           syncUsbConsoleControls(true);
           readUsbConsoleLoop();
@@ -3263,19 +3270,6 @@
         link.download = 'dbmap-usb-console.txt';
         link.click();
         URL.revokeObjectURL(url);
-      });
-      usbConsoleResetButton.addEventListener('click', async () => {
-        if (!usbConsolePort?.setSignals) return;
-        try {
-          await usbConsolePort.setSignals({ dataTerminalReady: false, requestToSend: true });
-          await new Promise((resolve) => window.setTimeout(resolve, 100));
-          await usbConsolePort.setSignals({ dataTerminalReady: true, requestToSend: false });
-          usbConsoleStatus.textContent = 'Reset pulse sent. Waiting for device serial output…';
-          usbConsoleStatus.className = 'notice';
-        } catch (error) {
-          usbConsoleStatus.textContent = `Could not reset device: ${error.message}`;
-          usbConsoleStatus.className = 'notice error';
-        }
       });
       if (!navigator.serial) {
         usbConsoleLaunchButton.disabled = true;

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "name": "faran-over",
+  "description": "TEST ONLY. Play official MCF Faran över sample (continuous ~30 s). Not a real warning; do not schedule.",
+  "media_sources": {
+    "faran_over": {
+      "url": "https://www.mcf.se/contentassets/ffc078def2284745ae47c8282f83839f/02-faran-over-.mp3",
+      "media_content_type": "music"
+    }
+  },
+  "steps": [
+    {
+      "action": "play",
+      "source": "faran_over",
+      "volume": 0.25
+    },
+    {
+      "action": "wait",
+      "seconds": 40
+    },
+    {
+      "action": "stop"
+    }
+  ]
+}

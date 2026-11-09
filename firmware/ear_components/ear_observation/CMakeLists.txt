@@ -5,6 +5,7 @@ idf_component_register(
         "observation_lifecycle.c"
         "episode_registry.c"
         "activity_detector.c"
+        "lifecycle_v2.c"
         "ear_observation.c"
     INCLUDE_DIRS "include"
     REQUIRES

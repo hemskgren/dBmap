@@ -28,7 +28,7 @@ unknown versions rather than silently interpreting them as version 1.
 | Observation ID | UUID in `identity.observation_id`. It labels one observation episode on the Ear; the same ID may appear on multiple MQTT payloads when emissions share an episode (different `sequence_number` values). |
 | Sequence number | Monotonic per Ear in `identity.sequence_number`. Together with `identity.node_id` it is the hub deduplication key: re-publishing the same pair does not create another row. A conflicting `observation_id` for an already stored sequence is rejected. |
 | Event ID | Reserved for a future hub-correlated event. No event message, allocation rule, or API is currently implemented. |
-| Track ID | Reserved for a future source track. No track message, allocation rule, or API is currently implemented. |
+| Track ID | Optional UUID in `identity.track_id`. Labels physical or acoustic continuity across Observation report episodes on one Ear. Omitted or null on older firmware. Hub accepts and stores the value; it does not mint tracks or correlate Events from it yet. Report rotation keeps the same `track_id` while minting a new `observation_id`. |
 
 Simulator identities are deliberately separate from physical Ear identities.
 Only simulated Ear registrations may request a `SIM-EAR-*` identity; Output
@@ -82,7 +82,8 @@ identity, and Ear registration before persistence.
     "observation_id": "00000000-0000-0000-0000-000000000001",
     "node_id": "SIM-EAR-001",
     "hub_id": "",
-    "sequence_number": 1
+    "sequence_number": 1,
+    "track_id": null
   },
   "context": {
     "event_time_utc": "2026-10-05T15:00:00Z",
@@ -130,7 +131,10 @@ identity, and Ear registration before persistence.
       "source_family": "vehicle",
       "confidence": 0.72,
       "hints": { "simulated_source_id": "SIM-VEHICLE-001" }
-    }
+    },
+    "assessment": null,
+    "evidence": null,
+    "debug": null
   },
   "spatial": {
     "bearing": {
@@ -153,8 +157,11 @@ slots may be JSON null when insufficient data. Unknown keys inside
 [L1 signature contract](./ear-l1-signature-contract.md).
 
 `context.termination_reason` is required when `emission_kind` is `end` or
-`complete`. Allowed values: `natural`, `invalid_hold`, `ota_reboot`. The hub
-rejects the field on other emission kinds.
+`complete`. Allowed values: `natural`, `invalid_hold`, `ota_reboot`,
+`report_rotation`. `report_rotation` means the Observation report episode ended
+because of a reporting budget/interval rotation; physical track continuity is
+conveyed by a stable `identity.track_id`, not inferred from the reason alone.
+The hub rejects `termination_reason` on other emission kinds.
 
 `context.event_time_utc` must include a timezone and marks the beginning of
 the observation interval; the hub normalizes it to UTC.
@@ -162,7 +169,14 @@ the observation interval; the hub normalizes it to UTC.
 `episode_duration_ms` spans the Ear episode when emissions share an
 `observation_id`. `timing_quality` is `synchronized`, `estimated`, or
 `unsynchronized`. `acoustic.classification` (schema `l2`) and `spatial.bearing`
-may be `null`. `spatial.position` is reserved (currently `null`).
+may be `null`. Optional EAR fields `acoustic.assessment` (`schema: ear_hyp_v1`),
+`acoustic.evidence` (`schema: ear_ev_v1`), and development-only
+`acoustic.debug` (`schema: ear_dbg_v1`) may be omitted or null; when present they
+use strict nested objects (`extra` forbidden). Do not place EAR hypotheses in
+`classification.hints`. `spatial.position` is reserved (currently `null`).
+A future `unique_tracks` API metric (distinct `track_id`) is a separate
+follow-up; `unique_observations` continues to count distinct `observation_id`
+values only.
 
 Retained observations are rejected. Duplicate MQTT delivery is safe when the
 same `(node_id, sequence_number)` pair is reused. Stored `payload_json` preserves

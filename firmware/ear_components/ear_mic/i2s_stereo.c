@@ -1,0 +1,94 @@
+#include "dbmap_i2s_stereo.h"
+
+#include <stddef.h>
+
+uint32_t dbmap_i2s_slot_words_per_frame(uint8_t channel_count)
+{
+    return channel_count >= 2u ? 2u : 1u;
+}
+
+size_t dbmap_i2s_stereo_complete_pairs(size_t slot_word_count)
+{
+    return slot_word_count / 2u;
+}
+
+uint32_t dbmap_i2s_stereo_incomplete_trailing(size_t slot_word_count)
+{
+    return (slot_word_count & 1u) != 0u ? 1u : 0u;
+}
+
+uint8_t dbmap_i2s_stereo_channel_index(size_t slot_word_index)
+{
+    return (uint8_t)(slot_word_index & 1u);
+}
+
+size_t dbmap_i2s_unpack_stereo_slots(
+    const uint32_t *slots,
+    size_t slot_word_count,
+    dbmap_i2s_extract_fn extract,
+    int32_t *left_out,
+    int32_t *right_out,
+    size_t max_pairs,
+    uint32_t *out_incomplete
+)
+{
+    if (out_incomplete != NULL) {
+        *out_incomplete = dbmap_i2s_stereo_incomplete_trailing(slot_word_count);
+    }
+    if (slots == NULL || extract == NULL) {
+        return 0;
+    }
+
+    size_t pairs = dbmap_i2s_stereo_complete_pairs(slot_word_count);
+    if (pairs > max_pairs) {
+        pairs = max_pairs;
+    }
+
+    for (size_t i = 0; i < pairs; ++i) {
+        const uint32_t left_slot = slots[i * 2u];
+        const uint32_t right_slot = slots[i * 2u + 1u];
+        const int32_t left = extract(left_slot);
+        const int32_t right = extract(right_slot);
+        if (left_out != NULL) {
+            left_out[i] = left;
+        }
+        if (right_out != NULL) {
+            right_out[i] = right;
+        }
+    }
+    return pairs;
+}
+
+dbmap_ear_channel_presence_t dbmap_ear_channel_presence(
+    uint32_t sample_count,
+    uint32_t zero_sample_count,
+    uint32_t clipped_samples
+)
+{
+    if (sample_count == 0u) {
+        return DBMAP_EAR_CH_NO_SAMPLES;
+    }
+    if (zero_sample_count >= sample_count) {
+        return DBMAP_EAR_CH_SILENT;
+    }
+    if (clipped_samples > 0u) {
+        return DBMAP_EAR_CH_CLIPPING;
+    }
+    return DBMAP_EAR_CH_ACTIVE;
+}
+
+const char *dbmap_ear_channel_presence_str(dbmap_ear_channel_presence_t p)
+{
+    switch (p) {
+    case DBMAP_EAR_CH_NO_SAMPLES:
+        return "no_samples";
+    case DBMAP_EAR_CH_SILENT:
+        return "silent";
+    case DBMAP_EAR_CH_CLIPPING:
+        return "clipping";
+    case DBMAP_EAR_CH_ACTIVE:
+        return "active";
+    default:
+        return "no_samples";
+    }
+}

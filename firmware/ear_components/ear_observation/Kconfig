@@ -236,4 +236,59 @@ menu "dBmap Ear Observation"
             timing, or Observation emission. Do not enable in production fleet
             images.
 
+    config DBMAP_EAR_OBS_LIFECYCLE_V2
+        bool "Experimental Observation lifecycle v2 (signature persistence)"
+        default n
+        depends on DBMAP_EAR_OBS_RMS_ACTIVITY && DBMAP_EAR_OBS_L0 && DBMAP_EAR_OBS_L1 && DBMAP_EAR_OBS_L2
+        help
+            Experimental: replace absolute-RMS-only END with signature-score
+            persistence, quiet fallback, max episode age, and START pre-trigger
+            lookback using existing L0/L1/L2 scalar rings. Keep disabled until
+            offline comparison and review complete. When disabled, Phase-2 RMS
+            detector behavior is unchanged.
+
+    config DBMAP_EAR_OBS_LC_V2_PRE_TRIGGER_MS
+        int "Lifecycle v2 START pre-trigger lookback (ms)"
+        range 1000 3000
+        default 2000
+        depends on DBMAP_EAR_OBS_LIFECYCLE_V2
+
+    config DBMAP_EAR_OBS_LC_V2_MAX_EPISODE_MS
+        int "Lifecycle v2 maximum Observation age (ms)"
+        range 10000 3600000
+        default 120000
+        depends on DBMAP_EAR_OBS_LIFECYCLE_V2
+        help
+            Hard END (termination_reason natural) after this episode age.
+
+    config DBMAP_EAR_OBS_LC_V2_SCORE_ENTER_X1000
+        int "Lifecycle v2 signature score enter (×1000)"
+        range 0 1000
+        default 400
+        depends on DBMAP_EAR_OBS_LIFECYCLE_V2
+
+    config DBMAP_EAR_OBS_LC_V2_SCORE_EXIT_X1000
+        int "Lifecycle v2 signature score exit (×1000)"
+        range 0 1000
+        default 320
+        depends on DBMAP_EAR_OBS_LIFECYCLE_V2
+
+    config DBMAP_EAR_OBS_LC_V2_PERSISTENCE_WINDOWS
+        int "Lifecycle v2 persistent score window count"
+        range 1 8
+        default 3
+        depends on DBMAP_EAR_OBS_LIFECYCLE_V2
+
+    config DBMAP_EAR_OBS_LC_V2_SIGNATURE_EXIT_HOLD_MS
+        int "Lifecycle v2 signature exit hold (ms)"
+        range 100 60000
+        default 2000
+        depends on DBMAP_EAR_OBS_LIFECYCLE_V2
+
+    config DBMAP_EAR_OBS_LC_V2_QUIET_EXIT_HOLD_MS
+        int "Lifecycle v2 quiet-fallback exit hold (ms)"
+        range 100 60000
+        default 1000
+        depends on DBMAP_EAR_OBS_LIFECYCLE_V2
+
 endmenu

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "name": "vma-signal",
+  "description": "TEST ONLY. Play official MCF outdoor VMA (Viktigt meddelande) sample. Not a real warning; do not schedule. Hesa Fredrik is the outdoor system nickname, not a separate signal.",
+  "media_sources": {
+    "vma": {
+      "url": "https://www.mcf.se/contentassets/ffc078def2284745ae47c8282f83839f/01-viktigt-meddelande.mp3",
+      "media_content_type": "music"
+    }
+  },
+  "steps": [
+    {
+      "action": "play",
+      "source": "vma"
+    },
+    {
+      "action": "wait",
+      "seconds": 130
+    },
+    {
+      "action": "stop"
+    }
+  ]
+}

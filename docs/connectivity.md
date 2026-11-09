@@ -146,7 +146,7 @@ flowchart LR
   hub -->|"SELECT"| db
 ```
 
-Ingest checks that the topic is `esp-ear/local/<node-id>/observation`, the payload is protocol version 1, and the node is an active Ear. Optional `emission_kind` + `measurements` (L0) are validated together when present; legacy payloads without them remain accepted. Optional `termination_reason` (`natural` | `invalid_hold` | `ota_reboot`) is allowed only on `emission_kind: end`. It does not call OPA. The Observations tab and `scripts/hub_event_track.py` read the stored rows through the API. The script prints pairwise Ear site distances from installation rows; it does not subscribe to MQTT and it does not create events or tracks.
+Ingest checks that the topic is `esp-ear/local/<node-id>/observation`, the payload is protocol version 1, and the node is an active Ear. Optional `emission_kind` + `measurements` (L0) are validated together when present; legacy payloads without them remain accepted. Optional `termination_reason` (`natural` | `invalid_hold` | `ota_reboot` | `report_rotation`) is allowed only on `emission_kind: end` or `complete`. It does not call OPA. The Observations tab and `scripts/hub_event_track.py` read the stored rows through the API. The script prints pairwise Ear site distances from installation rows; it does not subscribe to MQTT and it does not create events or tracks.
 
 ## Output command
 

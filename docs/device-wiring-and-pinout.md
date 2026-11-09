@@ -38,7 +38,7 @@ Target image: `esp-ear` / catalog `ear-esp32-s3`. Hardware profile string: `esp3
 | Mic 2 | 2 | Third (second DIN pair) |
 | Mic 3 | 3 | Fourth (second DIN pair) |
 
-Current firmware captures and reports **index 0 only**. Schema already uses `microphones[]` so 2–4 mics can be added without a Hub protocol break.
+Firmware captures **index 0** in mono when NVS `microphone_count=1`. When `microphone_count=2`, it opens Philips stereo on DIN0 and reports indexes **0 (left)** and **1 (right)**. Pins and L/R straps remain **placeholder / unverified** until bench confirmation. DIN1 (indexes 2–3) is still not read.
 
 ### Shared I2S bus (preferred for up to 4× INMP441)
 
@@ -52,11 +52,11 @@ INMP441 is I2S MEMS with an L/R select pin. Best practice on one controller:
 | --- | ---: | --- | --- |
 | I2S BCLK | **4** | Shared | Placeholder (Kconfig) |
 | I2S WS / LRCLK | **5** | Shared | Placeholder (Kconfig) |
-| I2S DIN0 | **6** | Mic **0** (L) + reserved Mic **1** (R) | Placeholder; only L/mic0 used today |
+| I2S DIN0 | **6** | Mic **0** (L) + Mic **1** (R) when `mic_count=2` | Placeholder; stereo firmware path exists |
 | I2S DIN1 | **7** | Reserved Mic **2** (L) + Mic **3** (R) | Reserved — not read yet |
 | I2S MCLK | — | Unused (`-1`) | — |
 | Mic 0 L/R | GND | Left slot → `index` 0 | Unverified on board |
-| Mic 1 L/R | VDD | Right slot → `index` 1 | Future |
+| Mic 1 L/R | VDD | Right slot → `index` 1 | Required for dual capture; unverified |
 | Mic 2 L/R | GND | Left on DIN1 → `index` 2 | Future |
 | Mic 3 L/R | VDD | Right on DIN1 → `index` 3 | Future |
 

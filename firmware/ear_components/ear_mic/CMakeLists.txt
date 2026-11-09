@@ -5,6 +5,7 @@ idf_component_register(
         "acoustic_l2.c"
         "audio_metrics.c"
         "background_rms.c"
+        "i2s_stereo.c"
         "mic_model.c"
         "ear_mic.c"
     INCLUDE_DIRS "include"
