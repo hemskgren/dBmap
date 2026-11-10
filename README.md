@@ -27,6 +27,8 @@ Other docs (authorization, identity, health, security) live under [`docs/`](docs
 
 Long-term platform direction (shared Sensor Platform, products, Community/Enterprise profiles): [Sensor Platform architecture](docs/sensor-platform-architecture.md) and [ADR 0001](docs/adr/0001-sensor-platform-architecture.md).
 
+AI coding agents: follow [`AGENTS.md`](AGENTS.md) for data-access, live-system safety, and related working rules (do not duplicate that file here).
+
 ## Repository layout
 
 ```text
@@ -39,6 +41,7 @@ firmware-builder/      Optional ESP-IDF build service
 simulator/             Ear and scenario tools
 scripts/               Ops CLIs (`lib/` = shared helpers; `ear_test_runner.py` for physical EAR period tests — see `docs/ear-test-runner.md`; `hub_map_analysis.py` for Hub→analyze→map scratch — see `docs/hub-map-analysis.md`)
 docs/                  How to run and how it fits together
+AGENTS.md              Canonical AI agent working instructions
 compose.yaml           Local Hub stack
 ```
 
