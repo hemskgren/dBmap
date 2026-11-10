@@ -15,9 +15,13 @@ def test_usb_console_log_capacity_is_bounded_at_460_kib() -> None:
     assert "Live serial at 115200 baud" in html
     assert "In-browser log retention is about 460" in html
     assert "Log buffer ~460 KiB" not in html
-    assert "Console open. Press Reset on the board if logs do not appear." in html
+    assert "Console open · ${id}. Reset board if no logs." in html
+    assert "setUsbConsoleOpenStatus" in html
+    assert "resolveUsbConsoleDeviceId" in html
+    assert "usb-console-notice-aside" in html
     assert "USB console open at 115200 baud" not in html
     assert "USB_APP_SERIAL_BAUD_RATE" not in html
+    assert "Console open. Press Reset on the board if logs do not appear." not in html
 
 
 def test_usb_console_has_no_reset_device_control() -> None:
@@ -34,3 +38,24 @@ def test_usb_console_dialog_is_wider_than_shared_dialog_chrome() -> None:
     assert "min(96vw, 1280px)" in html
     assert "#usb-console-output" in html
     assert "white-space: pre;" in html
+
+
+def test_usb_console_has_persistent_multi_term_highlight() -> None:
+    html = HUB_INDEX.read_text(encoding="utf-8")
+    assert 'id="usb-console-find-0"' in html
+    assert 'id="usb-console-find-1"' in html
+    assert 'id="usb-console-find-2"' in html
+    assert "usbConsoleBuffer" in html
+    assert "collectUsbConsoleHighlights" in html
+    assert "mark.usb-hl-0" in html
+    assert "usb-console-hint" in html
+    assert "usb-console-find" in html
+
+
+def test_usb_console_has_buffer_meter() -> None:
+    html = HUB_INDEX.read_text(encoding="utf-8")
+    assert 'id="usb-console-meter"' in html
+    assert "updateUsbConsoleMeter" in html
+    assert "formatUsbConsoleAge" in html
+    assert "setInterval(updateUsbConsoleMeter, 5000)" in html
+    assert "usb-console-meter-full" in html
