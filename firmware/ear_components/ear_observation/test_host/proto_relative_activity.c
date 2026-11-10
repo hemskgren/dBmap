@@ -86,7 +86,9 @@ static bool below_exit_active(proto_relative_detector_t *det, float rms)
         return rms < det->cfg.abs_cfg.exit_threshold_dbfs;
     }
     if (relative_ready(det)) {
-        return below_relative_primary(det, rms) || below_relative_secondary(det, rms);
+        /* Match production v1: absolute remains available while relatively armed. */
+        return below_relative_primary(det, rms) || below_relative_secondary(det, rms) ||
+               (rms < det->cfg.abs_cfg.exit_threshold_dbfs);
     }
     if (det->baseline.frozen && det->baseline.reliable && !det->relative_armed &&
         below_relative_primary(det, rms)) {
@@ -168,7 +170,16 @@ static void reset_episode_tracking(proto_relative_detector_t *det)
     det->secondary_ambient_dbfs = 0.0f;
     det->amb_stable_count = 0;
     det->last_end_used_secondary = false;
+    det->last_end_used_refresh = false;
+    det->last_end_used_below_enter = false;
     det->reused_prior_baseline = false;
+    det->recent_count = 0;
+    det->recent_head = 0;
+    det->episode_usable_n = 0;
+    memset(det->recent_rms, 0, sizeof(det->recent_rms));
+    det->below_enter_anchor_us = 0;
+    det->below_enter_anchor_valid = false;
+    det->below_enter_elapsed_us = 0;
 }
 
 static void try_arm_contrast(proto_relative_detector_t *det)
@@ -198,12 +209,41 @@ static void try_arm_contrast(proto_relative_detector_t *det)
         det->event_peak_dbfs = event_level;
     } else if (det->cfg.contrast_method == PROTO_CONTRAST_START_WINDOW) {
         event_level = det->event_peak_dbfs;
+    } else if (det->cfg.contrast_method == PROTO_CONTRAST_EPISODE_PEAK) {
+        event_level = det->event_peak_dbfs;
+        if (det->cfg.recent_peak_windows > 0 && det->recent_count > 0) {
+            uint32_t n = det->cfg.recent_peak_windows;
+            if (n > 16) {
+                n = 16;
+            }
+            if (n > det->recent_count) {
+                n = det->recent_count;
+            }
+            event_level = -120.0f;
+            for (uint32_t i = 0; i < n; ++i) {
+                const uint32_t idx =
+                    (det->recent_head + 16 - n + i) % 16;
+                if (det->recent_rms[idx] > event_level) {
+                    event_level = det->recent_rms[idx];
+                }
+            }
+        }
     }
 
     det->measured_contrast_db = event_level - det->baseline.frozen_baseline_dbfs;
     if (det->measured_contrast_db >= det->cfg.min_event_contrast_db) {
         det->relative_armed = true;
     }
+}
+
+static void note_recent_rms(proto_relative_detector_t *det, float rms)
+{
+    det->recent_rms[det->recent_head] = rms;
+    det->recent_head = (det->recent_head + 1u) % 16;
+    if (det->recent_count < 16) {
+        det->recent_count++;
+    }
+    det->episode_usable_n++;
 }
 
 static void note_event_rms(proto_relative_detector_t *det, float rms)
@@ -218,6 +258,14 @@ static void note_event_rms(proto_relative_detector_t *det, float rms)
     if (rms > det->event_peak_dbfs) {
         det->event_peak_dbfs = rms;
     }
+    note_recent_rms(det, rms);
+
+    if (det->cfg.contrast_method == PROTO_CONTRAST_EPISODE_PEAK) {
+        /* Re-evaluate every window from peak (or recent peak window). */
+        try_arm_contrast(det);
+        return;
+    }
+
     uint32_t need = det->cfg.contrast_arming_windows;
     if (need == 0) {
         need = 1;
@@ -295,6 +343,12 @@ static void update_ambient_indicator(proto_relative_detector_t *det, float rms)
     det->ambient_shift_suspected = true;
     det->secondary_ambient_dbfs = med;
     det->secondary_ambient_valid = true;
+
+    if (det->cfg.ambient_policy == PROTO_AMBIENT_POLICY_REFRESH_BASELINE) {
+        /* Rewrite freeze so primary relative entry tracks new ambient. */
+        det->baseline.frozen_baseline_dbfs = med;
+        det->secondary_ambient_valid = false; /* primary path owns EXIT after refresh */
+    }
 }
 
 static void on_start(proto_relative_detector_t *det, int64_t episode_start_us, float start_rms)
@@ -495,6 +549,37 @@ dbmap_activity_emission_t proto_relative_detector_feed(
     case DBMAP_ACTIVITY_ACTIVE:
         note_event_rms(det, rms);
         update_ambient_indicator(det, rms);
+        /* Alt3b: continuous below-enter dwell END (unarmed stuck band). */
+        if (det->cfg.below_enter_end_hold_ms > 0 && !above_enter(det, rms)) {
+            if (!det->below_enter_anchor_valid) {
+                det->below_enter_anchor_us = t;
+                det->below_enter_anchor_valid = true;
+                det->below_enter_elapsed_us = 0;
+            } else {
+                const int64_t d = t - det->below_enter_anchor_us;
+                if (d > 0 && d <= ((int64_t)window_ms * 1000 * 3 / 2)) {
+                    det->below_enter_elapsed_us += d;
+                }
+                det->below_enter_anchor_us = t;
+            }
+            if (det->below_enter_elapsed_us >=
+                ((int64_t)det->cfg.below_enter_end_hold_ms * 1000LL)) {
+                int64_t start = det->last_emit_us;
+                mark_end_path(det, rms);
+                det->last_end_used_below_enter = true;
+                det->state = DBMAP_ACTIVITY_IDLE;
+                det->pending_since_us = 0;
+                det->last_emit_us = t;
+                det->emissions_end += 1;
+                on_end_clear(det, t);
+                return make_emission(
+                    DBMAP_ACTIVITY_EMIT_END, DBMAP_ACTIVITY_TERM_NATURAL, rms, start, t
+                );
+            }
+        } else {
+            det->below_enter_anchor_valid = false;
+            det->below_enter_elapsed_us = 0;
+        }
         if (below_exit_active(det, rms)) {
             det->state = DBMAP_ACTIVITY_PENDING_EXIT;
             det->pending_since_us = t;
@@ -504,6 +589,8 @@ dbmap_activity_emission_t proto_relative_detector_feed(
     case DBMAP_ACTIVITY_PENDING_EXIT:
         note_event_rms(det, rms);
         update_ambient_indicator(det, rms);
+        det->below_enter_anchor_valid = false;
+        det->below_enter_elapsed_us = 0;
         if (!still_below_exit(det, rms)) {
             det->state = DBMAP_ACTIVITY_ACTIVE;
             det->pending_since_us = 0;

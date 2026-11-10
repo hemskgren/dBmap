@@ -28,11 +28,15 @@ typedef enum {
     PROTO_CONTRAST_ARMING_MAX = 2,
     /** Median RMS over the first arming_windows usable samples of the episode. */
     PROTO_CONTRAST_ARMING_MEDIAN = 3,
+    /**
+     * Design alt1 (host study): arm from episode peak so far while ACTIVE.
+     * Uses event_peak_dbfs updated every usable ACTIVE/PENDING_EXIT window.
+     */
+    PROTO_CONTRAST_EPISODE_PEAK = 4,
 } proto_contrast_method_t;
 
 /**
- * Ambient-increase policy while ACTIVE (Investigation B).
- * Frozen pre-event baseline is never modified.
+ * Ambient-increase policy while ACTIVE (Investigation B / Rel END v2 study).
  */
 typedef enum {
     PROTO_AMBIENT_POLICY_NONE = 0,       /* accept delayed/missing relative END */
@@ -43,6 +47,12 @@ typedef enum {
      * Does not rewrite frozen_baseline_dbfs.
      */
     PROTO_AMBIENT_POLICY_SECONDARY_EXIT = 2,
+    /**
+     * Design alt2 (host study): same stability/jump gate as secondary, but
+     * rewrites frozen_baseline_dbfs to the stable median (refresh). Relative
+     * entry/cancel then use the refreshed baseline.
+     */
+    PROTO_AMBIENT_POLICY_REFRESH_BASELINE = 3,
 } proto_ambient_policy_t;
 
 typedef struct {
@@ -58,11 +68,24 @@ typedef struct {
     float min_event_contrast_db;
     uint32_t contrast_arming_windows; /* for MAX/MEDIAN; typically 2–3 */
 
-    /* Investigation B — ambient shift (does not mutate frozen baseline) */
+    /* Investigation B — ambient shift */
     proto_ambient_policy_t ambient_policy;
-    float ambient_jump_db;           /* secondary path needs level >= baseline + this */
+    float ambient_jump_db;           /* secondary/refresh needs level >= baseline + this */
     uint32_t ambient_stable_windows;  /* consecutive below-enter windows */
     float ambient_stable_range_db;    /* max-min within stable window set */
+
+    /**
+     * Alt1 safety: for EPISODE_PEAK, only arm when the peak sample is among the
+     * last recent_peak_windows usable episode windows (0 = any-time peak).
+     */
+    uint32_t recent_peak_windows;
+
+    /**
+     * Alt3b (host study): while ACTIVE, if rms < enter for this many ms of
+     * continuous below-enter dwell, emit natural END even when unarmed.
+     * 0 disables. Intended for absolute-hysteresis stuck cases (E3/E5).
+     */
+    uint32_t below_enter_end_hold_ms;
 
     /**
      * Investigation C — optional reuse of prior freeze when new freeze unreliable.
@@ -101,6 +124,19 @@ typedef struct {
     float amb_stable_rms[8];
     uint32_t amb_stable_count;
     bool last_end_used_secondary;
+    bool last_end_used_refresh;
+    bool last_end_used_below_enter;
+
+    /* EPISODE_PEAK recent-window ring (host study). */
+    float recent_rms[16];
+    uint32_t recent_count;
+    uint32_t recent_head;
+    uint32_t episode_usable_n;
+
+    /* below-enter dwell END (alt3b) */
+    int64_t below_enter_anchor_us;
+    bool below_enter_anchor_valid;
+    int64_t below_enter_elapsed_us;
 
     /* Prior baseline reuse across END→START */
     bool have_prior_baseline;

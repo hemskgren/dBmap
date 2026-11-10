@@ -14,8 +14,10 @@ extern "C" {
  * Detects one aggregate activity stream per Ear. Does not classify sources,
  * estimate bearing, or separate simultaneous sounds.
  *
- * Optional Relative END (v1): freeze a pre-event RMS baseline at START and end
- * when level returns near that baseline, while keeping absolute exit as fallback.
+ * Optional Relative END (v1 + v2 A3): freeze a pre-event RMS baseline at START
+ * and end when level returns near that baseline, while keeping absolute exit as
+ * fallback. v2 A3 adds Secondary Ambient Exit against a stable raised-ambient
+ * reference without rewriting the frozen baseline.
  * When relative_end_enabled is false, behavior matches the absolute-only detector.
  *
  * Detection evaluation is independent of MQTT / Observation emission success.
@@ -35,23 +37,39 @@ typedef enum {
     DBMAP_ACTIVITY_EMIT_END,
 } dbmap_activity_emit_kind_t;
 
-/** Meaningful on END emissions only (OTA reason is applied by the Observation layer). */
+/**
+ * Meaningful on END emissions only (OTA reason is applied by the Observation layer).
+ * SECONDARY_AMBIENT is diagnostically distinct at the detector; MQTT may still
+ * publish protocol termination_reason "natural" until the Hub contract expands.
+ */
 typedef enum {
     DBMAP_ACTIVITY_TERM_NONE = 0,
     DBMAP_ACTIVITY_TERM_NATURAL,
     DBMAP_ACTIVITY_TERM_INVALID_HOLD,
+    DBMAP_ACTIVITY_TERM_SECONDARY_AMBIENT,
 } dbmap_activity_termination_t;
 
-/** Latched at PENDING_EXIT entry; fixed for that exit attempt (Relative END v1). */
+/** Latched at PENDING_EXIT entry; fixed for that exit attempt. */
 typedef enum {
     DBMAP_ACTIVITY_EXIT_LATCH_NONE = 0,
     DBMAP_ACTIVITY_EXIT_LATCH_ABSOLUTE = 1,
     DBMAP_ACTIVITY_EXIT_LATCH_RELATIVE = 2,
+    /** Rel END v2 A3: exit against secondary ambient reference (not frozen baseline). */
+    DBMAP_ACTIVITY_EXIT_LATCH_SECONDARY = 3,
 } dbmap_activity_exit_latch_t;
 
 #define DBMAP_ACTIVITY_BASELINE_CAP 5u
 #define DBMAP_ACTIVITY_BASELINE_MIN_SAMPLES 3u
 #define DBMAP_ACTIVITY_ARMING_WINDOWS 2u
+#define DBMAP_ACTIVITY_LATE_ARM_STREAK 2u
+#define DBMAP_ACTIVITY_AMB_STABLE_CAP 8u
+
+/** How Relative END became armed (diagnostics). */
+typedef enum {
+    DBMAP_ACTIVITY_ARM_SRC_NONE = 0,
+    DBMAP_ACTIVITY_ARM_SRC_INIT = 1, /* first-two episode windows */
+    DBMAP_ACTIVITY_ARM_SRC_LATE = 2, /* late sustained contrast (flagged) */
+} dbmap_activity_arm_src_t;
 
 typedef struct {
     /** Enter when rms_dbfs >= enter_threshold_dbfs (provisional, not calibrated). */
@@ -84,6 +102,26 @@ typedef struct {
     float min_event_contrast_db;
     /** Drop baseline candidates older than this before freeze; 0 disables. */
     uint32_t baseline_stale_ms;
+    /**
+     * Rel END late sustained contrast arm (ignored unless relative_end_enabled).
+     * When false (default), arming matches v1 first-two windows only.
+     * When true, also arm after two consecutive usable ACTIVE windows each
+     * meeting frozen_baseline + min_event_contrast_db (see activity_detector.c).
+     */
+    bool relative_end_late_arm_enabled;
+
+    /**
+     * Rel END v2 A3 — Secondary Ambient Exit (ignored unless relative_end_enabled).
+     * When enabled, a stable below-enter plateau well above the frozen baseline
+     * may arm a secondary exit reference. Does not modify frozen_baseline_dbfs.
+     */
+    bool secondary_ambient_enabled;
+    /** Secondary requires stable median >= frozen_baseline + ambient_jump_db. */
+    float ambient_jump_db;
+    /** Consecutive below-enter windows required (1..DBMAP_ACTIVITY_AMB_STABLE_CAP). */
+    uint32_t ambient_stable_windows;
+    /** Max (max-min) dB across the stable window set. */
+    float ambient_stable_range_db;
 } dbmap_activity_config_t;
 
 typedef struct {
@@ -110,6 +148,8 @@ typedef struct {
 typedef struct {
     dbmap_activity_emit_kind_t kind;
     dbmap_activity_termination_t termination;
+    /** Meaningful on END: which exit latch completed (none if forced without latch). */
+    dbmap_activity_exit_latch_t end_latch;
     float signal_level_dbfs;
     double duration_ms;
     int64_t interval_start_mono_us;
@@ -167,6 +207,20 @@ typedef struct {
     uint32_t arming_count;
     float measured_contrast_db;
     dbmap_activity_exit_latch_t exit_latch;
+    /** Late-arm consecutive qualifying usable ACTIVE streak (0..2). */
+    uint32_t late_arm_streak;
+    float late_arm_last_qual_rms;
+    dbmap_activity_arm_src_t arm_src;
+    bool contrast_init_valid;
+    float contrast_init_db;
+    bool contrast_late_valid;
+    float contrast_late_db;
+
+    /* Rel END v2 A3 secondary ambient (unused unless secondary_ambient_enabled). */
+    bool secondary_ambient_valid;
+    float secondary_ambient_dbfs;
+    float amb_stable_rms[DBMAP_ACTIVITY_AMB_STABLE_CAP];
+    uint32_t amb_stable_count;
 
     /** Diagnostic counters (do not affect detector decisions). */
     uint32_t pending_exit_enters;
@@ -187,12 +241,18 @@ typedef struct {
 typedef struct {
     dbmap_activity_state_t state;
     bool relative_end_enabled;
+    bool relative_end_late_arm_enabled;
     bool relative_armed;
     bool baseline_frozen;
     bool baseline_reliable;
     float frozen_baseline_dbfs;
     uint32_t frozen_baseline_n;
     float measured_contrast_db;
+    dbmap_activity_arm_src_t arm_src;
+    bool contrast_init_valid;
+    float contrast_init_db;
+    bool contrast_late_valid;
+    float contrast_late_db;
     /** Absolute enter/exit from cfg (unchanged). */
     float abs_enter_dbfs;
     float abs_exit_dbfs;
@@ -203,6 +263,12 @@ typedef struct {
     bool rel_thresholds_valid;
     float rel_exit_dbfs;
     float rel_cancel_dbfs;
+    /** A3 secondary ambient reference (valid only when secondary_ambient_valid). */
+    bool secondary_ambient_enabled;
+    bool secondary_ambient_valid;
+    float secondary_ambient_dbfs;
+    float sec_exit_dbfs;
+    float sec_cancel_dbfs;
     dbmap_activity_exit_latch_t exit_latch;
     int64_t exit_hold_elapsed_us;
     int64_t exit_hold_elapsed_us_max;
@@ -253,6 +319,9 @@ void dbmap_activity_detector_fill_diag(
 
 /** Short name for exit latch (absolute / relative / none). */
 const char *dbmap_activity_exit_latch_name(dbmap_activity_exit_latch_t latch);
+
+/** Short name for arm source (none / init / late). */
+const char *dbmap_activity_arm_src_name(dbmap_activity_arm_src_t src);
 
 /**
  * Format Relative END fields for serial diagnostics into ``buf``.

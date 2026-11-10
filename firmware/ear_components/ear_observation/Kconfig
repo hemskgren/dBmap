@@ -135,6 +135,55 @@ menu "dBmap Ear Observation"
             Drop IDLE baseline candidates older than this before freeze.
             0 disables staleness filtering. Provisional field-test value.
 
+    config DBMAP_EAR_OBS_REL_LATE_ARM
+        bool "Relative END: late sustained contrast arm"
+        default n
+        depends on DBMAP_EAR_OBS_RELATIVE_END
+        help
+            When enabled, Relative END may arm after the first-two-window
+            decision if two consecutive usable ACTIVE windows each meet
+            frozen_baseline + min_event_contrast. Default disabled preserves
+            shipped v1 arming (first two windows only). Does not change A3,
+            latch, cancel, or hold rules once armed. Field-test feature.
+
+    config DBMAP_EAR_OBS_REL_SECONDARY_AMBIENT
+        bool "Relative END v2 A3: Secondary Ambient Exit"
+        default y
+        depends on DBMAP_EAR_OBS_RELATIVE_END
+        help
+            When enabled, a stable below-enter plateau that sits well above the
+            frozen pre-event baseline can end an episode via a separate secondary
+            exit latch. Does not rewrite the frozen baseline. Primary relative
+            and absolute END paths are unchanged. Default enabled for EAR field
+            validation of quiet-baseline → raised-ambient stick cases.
+
+    config DBMAP_EAR_OBS_REL_AMB_JUMP_DB_X1000
+        int "Secondary ambient jump threshold (dB × 1000)"
+        range 0 60000
+        default 10000
+        depends on DBMAP_EAR_OBS_REL_SECONDARY_AMBIENT
+        help
+            Provisional (10000 → 10.0 dB). Secondary ambient median must be at
+            least this far above the frozen baseline.
+
+    config DBMAP_EAR_OBS_REL_AMB_STABLE_WINDOWS
+        int "Secondary ambient stable window count"
+        range 1 8
+        default 5
+        depends on DBMAP_EAR_OBS_REL_SECONDARY_AMBIENT
+        help
+            Consecutive below-enter usable windows required before evaluating
+            secondary ambient stability.
+
+    config DBMAP_EAR_OBS_REL_AMB_STABLE_RANGE_DB_X1000
+        int "Secondary ambient stable range (dB × 1000)"
+        range 0 20000
+        default 3000
+        depends on DBMAP_EAR_OBS_REL_SECONDARY_AMBIENT
+        help
+            Provisional (3000 → 3.0 dB). Max-minus-min across the stable window
+            set must be at most this value.
+
     config DBMAP_EAR_OBS_TEST_PUBLISH_ONCE
         bool "Phase 1: publish one test Observation after MQTT connects"
         default n

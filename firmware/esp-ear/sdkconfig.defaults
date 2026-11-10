@@ -30,6 +30,10 @@ CONFIG_DBMAP_EAR_OBS_TEST_PUBLISH_ONCE=n
 CONFIG_DBMAP_EAR_OBS_SEQ_BLOCK_SIZE=64
 # Relative END v1: freeze pre-event RMS baseline for exit (provisional params).
 CONFIG_DBMAP_EAR_OBS_RELATIVE_END=y
+# Rel END late sustained contrast arm (two consecutive ACTIVE windows ≥ min contrast).
+CONFIG_DBMAP_EAR_OBS_REL_LATE_ARM=y
+# Rel END v2 A3 Secondary Ambient Exit (Kconfig defaults: jump 10 dB, 5 windows, range 3 dB).
+CONFIG_DBMAP_EAR_OBS_REL_SECONDARY_AMBIENT=y
 # L0 analysis on-device; MQTT protocol v1 with emission_kind + measurements.
 CONFIG_DBMAP_EAR_MIC_L0=y
 CONFIG_DBMAP_EAR_OBS_L0=y
