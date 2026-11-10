@@ -177,9 +177,9 @@ def test_web_lifecycle_matches_cli_summary_semantics() -> None:
     web_summary = web.summarize_observation_lifecycles(observations)
     cli_summary = cli.summarize_observation_lifecycles(observations)
 
-    assert web_summary.combined.unique_observations == cli_summary.combined.unique_observations == 3
+    assert web_summary.combined.unique_observations == cli_summary.combined.unique_observations == 4
     assert web_summary.combined.completed_observations == cli_summary.combined.completed_observations == 2
-    assert web_summary.combined.open_observations == cli_summary.combined.open_observations == 1
+    assert web_summary.combined.open_observations == cli_summary.combined.open_observations == 2
     assert web_summary.combined.shortest_completed_ms == cli_summary.combined.shortest_completed_ms == 2500.0
     assert web_summary.combined.longest_completed_ms == cli_summary.combined.longest_completed_ms == 5080.0
     assert web_summary.combined.total_completed_ms == cli_summary.combined.total_completed_ms == 7580.0
@@ -191,11 +191,14 @@ def test_web_lifecycle_matches_cli_summary_semantics() -> None:
     assert web_by_device["EAR-001"].unique_observations == 2
     assert web_by_device["EAR-001"].completed_observations == 1
     assert web_by_device["EAR-001"].open_observations == 1
-    assert web_by_device["EAR-002"].unique_observations == 1
-    assert any("without START/COMPLETE" in note for note in web_summary.quality_notes)
+    assert web_by_device["EAR-002"].unique_observations == 2
+    assert any(
+        "incomplete retained history; still counted as unique" in note
+        for note in web_summary.quality_notes
+    )
 
 
-def test_periodic_never_increments_unique_and_complete_kind_counts() -> None:
+def test_periodic_only_counts_unique_open_and_complete_kind_counts() -> None:
     web = _load_web_lifecycle()
     periodic_only = [
         _hierarchical_report(
@@ -207,9 +210,13 @@ def test_periodic_never_increments_unique_and_complete_kind_counts() -> None:
         )
     ]
     summary = web.summarize_observation_lifecycles(periodic_only)
-    assert summary.combined.unique_observations == 0
+    assert summary.combined.unique_observations == 1
     assert summary.combined.completed_observations == 0
-    assert any("without START/COMPLETE" in note for note in summary.quality_notes)
+    assert summary.combined.open_observations == 1
+    assert any(
+        "incomplete retained history; still counted as unique" in note
+        for note in summary.quality_notes
+    )
 
     complete_only = [
         _hierarchical_report(
@@ -269,9 +276,58 @@ def test_raw_report_counts_differ_from_unique_lifecycles() -> None:
     assert report_counts["EAR-002"] == 3
     by_device = {item.node_id: item for item in summary.devices}
     assert by_device["EAR-001"].unique_observations == 2
-    assert by_device["EAR-002"].unique_observations == 1
+    assert by_device["EAR-002"].unique_observations == 2
     assert report_counts["EAR-001"] != by_device["EAR-001"].unique_observations
     assert sum(report_counts.values()) == summary.report_count == 8
+
+
+def test_pruned_history_lifecycle_cases() -> None:
+    web = _load_web_lifecycle()
+    cli = _load_hub_event_track()
+
+    periodic_end = [
+        _hierarchical_report(
+            observation_id="22222222-2222-4222-8222-222222222222",
+            node_id="EAR-001",
+            sequence_number=1,
+            event_time_utc="2026-11-10T14:52:18Z",
+            emission_kind="periodic",
+            episode_duration_ms=80000.0,
+        ),
+        _hierarchical_report(
+            observation_id="22222222-2222-4222-8222-222222222222",
+            node_id="EAR-001",
+            sequence_number=2,
+            event_time_utc="2026-11-10T14:52:33Z",
+            emission_kind="end",
+            episode_duration_ms=100000.0,
+        ),
+    ]
+    end_only = [
+        _hierarchical_report(
+            observation_id="44444444-4444-4444-8444-444444444444",
+            node_id="EAR-003",
+            sequence_number=1,
+            event_time_utc="2026-11-10T15:10:00Z",
+            emission_kind="end",
+            episode_duration_ms=42000.0,
+        )
+    ]
+    for observations, unique, completed, open_count, total_ms in (
+        (periodic_end, 1, 1, 0, 100000.0),
+        (end_only, 1, 1, 0, 42000.0),
+    ):
+        web_summary = web.summarize_observation_lifecycles(observations)
+        cli_summary = cli.summarize_observation_lifecycles(observations)
+        assert web_summary.combined.unique_observations == cli_summary.combined.unique_observations == unique
+        assert (
+            web_summary.combined.completed_observations
+            == cli_summary.combined.completed_observations
+            == completed
+        )
+        assert web_summary.combined.open_observations == cli_summary.combined.open_observations == open_count
+        assert web_summary.combined.total_completed_ms == cli_summary.combined.total_completed_ms == total_ms
+        assert any("incomplete retained history" in note for note in web_summary.quality_notes)
 
 
 def test_snapshot_completeness_and_dedupe() -> None:

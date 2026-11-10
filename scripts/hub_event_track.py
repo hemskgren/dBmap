@@ -606,12 +606,15 @@ class DeviceObservationStats:
 
 @dataclass
 class ObservationLifecycleSummary:
-    """START/END lifecycle stats over Hub observation reports.
+    """Lifecycle stats over Hub retained observation reports.
 
-    Unique observations are counted by distinct ``(node_id, observation_id)``
-    that include at least one START (or COMPLETE). PERIODIC never creates a
-    new observation. Completed durations use END/COMPLETE ``episode_duration_ms``
-    only — never MQTT/Hub arrival timestamps.
+    Unique observations are distinct ``(node_id, observation_id)`` identities
+    present in the retained snapshot (START need not remain after prune/clear).
+    Multiple PERIODIC/END reports for the same identity count once.
+    Completed = retained END or COMPLETE. Open = identity present without a
+    retained END/COMPLETE (status can be uncertain after history pruning).
+    Completed durations use END/COMPLETE ``episode_duration_ms`` only — never
+    MQTT/Hub arrival timestamps, and never invent duration when START is absent.
     """
 
     devices: list[DeviceObservationStats]
@@ -688,7 +691,7 @@ def summarize_observation_lifecycles(
 
     per_device: dict[str, DeviceObservationStats] = {}
     combined = DeviceObservationStats(node_id="ALL")
-    no_start_count = 0
+    missing_start_count = 0
     duplicate_start_count = 0
     duplicate_end_count = 0
     missing_episode_ms_count = 0
@@ -729,14 +732,15 @@ def summarize_observation_lifecycles(
             counts["end"] > 0 and counts["complete"] > 0
         ) or counts["complete"] > 1:
             duplicate_end_count += 1
-        if not has_start:
-            no_start_count += 1
-            continue
 
+        # Count every retained observation identity once, even when START was
+        # pruned/cleared while PERIODIC/END remained.
         device.unique_observations += 1
         combined.unique_observations += 1
+        if not has_start:
+            missing_start_count += 1
 
-        if has_start and has_end:
+        if has_end:
             device.completed_observations += 1
             combined.completed_observations += 1
             duration_ms = pick_terminal_episode_ms(group["terminal_candidates"])
@@ -771,10 +775,10 @@ def summarize_observation_lifecycles(
             device.open_observations += 1
             combined.open_observations += 1
 
-    if no_start_count:
+    if missing_start_count:
         quality_notes.append(
-            f"{no_start_count} observation_id group(s) had PERIODIC/END/unknown "
-            "reports without START/COMPLETE (excluded from unique count)"
+            f"{missing_start_count} observation_id group(s) lack retained "
+            "START/COMPLETE (incomplete retained history; still counted as unique)"
         )
     if duplicate_start_count:
         quality_notes.append(
@@ -896,8 +900,9 @@ def format_observation_lifecycle_summary(
         )
     lines.append("")
     lines.append(
-        "Unique = START/COMPLETE observation_ids; "
-        "Completed = START+END or COMPLETE; "
+        "Unique = distinct (node_id, observation_id); "
+        "Completed = retained END or COMPLETE; "
+        "Open = no retained END/COMPLETE (may be uncertain after prune); "
         "durations from END/COMPLETE episode_duration_ms."
     )
 

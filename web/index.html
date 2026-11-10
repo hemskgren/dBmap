@@ -963,7 +963,7 @@
               <p id="observation-stats-status" class="notice" aria-live="polite">Expand to load complete retained-history statistics.</p>
               <div id="observation-stats-table-wrap" class="table-wrap"></div>
               <p id="observation-stats-legend" class="notice" hidden>
-                Unique = START/COMPLETE observation_ids; Completed = START+END or COMPLETE; durations from END/COMPLETE episode_duration_ms.
+                Unique = distinct (node_id, observation_id); Completed = retained END or COMPLETE; Open = no retained END/COMPLETE (may be uncertain after prune); durations from END/COMPLETE episode_duration_ms.
               </p>
               <ul id="observation-stats-notes" aria-live="polite"></ul>
             </div>
