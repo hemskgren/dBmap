@@ -29,7 +29,8 @@ extern "C" {
  * Desired operation (including dbmap_desired_boot_check). Returns an explicit
  * error if registration cannot be installed; callers must not proceed to OTA
  * paths as if it succeeded. Safe before dbmap_ear_observation_start (close is a
- * no-op until an episode exists).
+ * no-op until an episode exists). Close ends observation episodes only; it does
+ * not stop I2S/microphone capture (Design B may already have mic running).
  */
 esp_err_t dbmap_ear_observation_register_ota_close(void);
 

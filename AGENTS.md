@@ -160,7 +160,8 @@ Also:
 
 - Distinguish **raw report/row counts** from **unique lifecycle counts**.
 - For observation lifecycle stats, match `hub_event_track.py summary` semantics
-  (START-backed unique; COMPLETE rules; durations from END/COMPLETE
+  (unique by retained `(node_id, observation_id)` even if START was pruned;
+  completed = retained END/COMPLETE; durations from END/COMPLETE
   `episode_duration_ms` only) unless the user asks for a different definition.
 - Keep machine output in UTC ISO; format local display only at the edges.
 - Surface data-quality notes (missing START, duplicate START/END, incomplete snapshot).

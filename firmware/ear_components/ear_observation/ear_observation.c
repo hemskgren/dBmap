@@ -475,8 +475,35 @@ static void observation_enrich(cJSON *state, const dbmap_effective_t *cfg, bool 
         "EAR_OBS_REL_BASELINE_STALE_MS",
         (double)CONFIG_DBMAP_EAR_OBS_REL_BASELINE_STALE_MS
     );
+#if defined(CONFIG_DBMAP_EAR_OBS_REL_LATE_ARM) && CONFIG_DBMAP_EAR_OBS_REL_LATE_ARM
+    cJSON_AddBoolToObject(observation, "EAR_OBS_REL_LATE_ARM", true);
+#else
+    cJSON_AddBoolToObject(observation, "EAR_OBS_REL_LATE_ARM", false);
+#endif
+#if defined(CONFIG_DBMAP_EAR_OBS_REL_SECONDARY_AMBIENT) \
+    && CONFIG_DBMAP_EAR_OBS_REL_SECONDARY_AMBIENT
+    cJSON_AddBoolToObject(observation, "EAR_OBS_REL_SECONDARY_AMBIENT", true);
+    cJSON_AddNumberToObject(
+        observation,
+        "EAR_OBS_REL_AMB_JUMP_DB_X1000",
+        (double)CONFIG_DBMAP_EAR_OBS_REL_AMB_JUMP_DB_X1000
+    );
+    cJSON_AddNumberToObject(
+        observation,
+        "EAR_OBS_REL_AMB_STABLE_WINDOWS",
+        (double)CONFIG_DBMAP_EAR_OBS_REL_AMB_STABLE_WINDOWS
+    );
+    cJSON_AddNumberToObject(
+        observation,
+        "EAR_OBS_REL_AMB_STABLE_RANGE_DB_X1000",
+        (double)CONFIG_DBMAP_EAR_OBS_REL_AMB_STABLE_RANGE_DB_X1000
+    );
+#else
+    cJSON_AddBoolToObject(observation, "EAR_OBS_REL_SECONDARY_AMBIENT", false);
+#endif
 #else
     cJSON_AddBoolToObject(observation, "EAR_OBS_RELATIVE_END", false);
+    cJSON_AddBoolToObject(observation, "EAR_OBS_REL_LATE_ARM", false);
 #endif
     cJSON_AddItemToObject(capabilities, "observation", observation);
 }
@@ -907,6 +934,10 @@ static const char *termination_reason_for_emission(const dbmap_activity_emission
     switch (emission->termination) {
     case DBMAP_ACTIVITY_TERM_INVALID_HOLD:
         return "invalid_hold";
+    case DBMAP_ACTIVITY_TERM_SECONDARY_AMBIENT:
+        /* Protocol currently allows natural|invalid_hold|ota_reboot|report_rotation.
+         * Secondary ambient is diagnostically distinct via end_latch/serial diag. */
+        return "natural";
     case DBMAP_ACTIVITY_TERM_NATURAL:
         return "natural";
     default:
@@ -2052,8 +2083,26 @@ esp_err_t dbmap_ear_observation_start(const dbmap_effective_t *cfg)
         .min_event_contrast_db =
             ((float)CONFIG_DBMAP_EAR_OBS_REL_MIN_CONTRAST_DB_X1000) / 1000.0f,
         .baseline_stale_ms = (uint32_t)CONFIG_DBMAP_EAR_OBS_REL_BASELINE_STALE_MS,
+#if defined(CONFIG_DBMAP_EAR_OBS_REL_LATE_ARM) && CONFIG_DBMAP_EAR_OBS_REL_LATE_ARM
+        .relative_end_late_arm_enabled = true,
+#else
+        .relative_end_late_arm_enabled = false,
+#endif
+#if defined(CONFIG_DBMAP_EAR_OBS_REL_SECONDARY_AMBIENT) \
+    && CONFIG_DBMAP_EAR_OBS_REL_SECONDARY_AMBIENT
+        .secondary_ambient_enabled = true,
+        .ambient_jump_db =
+            ((float)CONFIG_DBMAP_EAR_OBS_REL_AMB_JUMP_DB_X1000) / 1000.0f,
+        .ambient_stable_windows = (uint32_t)CONFIG_DBMAP_EAR_OBS_REL_AMB_STABLE_WINDOWS,
+        .ambient_stable_range_db =
+            ((float)CONFIG_DBMAP_EAR_OBS_REL_AMB_STABLE_RANGE_DB_X1000) / 1000.0f,
+#else
+        .secondary_ambient_enabled = false,
+#endif
 #else
         .relative_end_enabled = false,
+        .relative_end_late_arm_enabled = false,
+        .secondary_ambient_enabled = false,
 #endif
     };
     if (!dbmap_activity_config_valid(&act_cfg)) {
@@ -2165,12 +2214,14 @@ esp_err_t dbmap_ear_observation_start(const dbmap_effective_t *cfg)
     }
     ESP_LOGI(
         TAG,
-        "RMS activity detector ready enter=%.1f exit=%.1f min_ms=%lu interval_ms=%lu relative_end=%d",
+        "RMS activity detector ready enter=%.1f exit=%.1f min_ms=%lu interval_ms=%lu "
+        "relative_end=%d late_arm=%d",
         (double)act_cfg.enter_threshold_dbfs,
         (double)act_cfg.exit_threshold_dbfs,
         (unsigned long)act_cfg.min_activity_ms,
         (unsigned long)act_cfg.observation_interval_ms,
-        act_cfg.relative_end_enabled ? 1 : 0
+        act_cfg.relative_end_enabled ? 1 : 0,
+        act_cfg.relative_end_late_arm_enabled ? 1 : 0
     );
 #endif
 

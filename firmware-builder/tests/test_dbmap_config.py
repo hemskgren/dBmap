@@ -64,6 +64,7 @@ def test_relative_end_kconfig_default_is_enabled():
     assert defaults["EAR_OBS_REL_CANCEL_HYST_DB_X1000"] == 1500
     assert defaults["EAR_OBS_REL_MIN_CONTRAST_DB_X1000"] == 5000
     assert defaults["EAR_OBS_REL_BASELINE_STALE_MS"] == 15000
+    assert defaults["EAR_OBS_REL_LATE_ARM"] is False
 
 
 def test_builder_does_not_disable_relative_end(real_firmware_targets):
@@ -93,6 +94,7 @@ def test_ear_effective_config_highlights_defaults_overrides(real_firmware_target
     assert observation["EAR_OBS_REL_CANCEL_HYST_DB_X1000"] == 1500
     assert observation["EAR_OBS_REL_MIN_CONTRAST_DB_X1000"] == 5000
     assert observation["EAR_OBS_REL_BASELINE_STALE_MS"] == 15000
+    assert observation["EAR_OBS_REL_LATE_ARM"] is True
     assert payload["dbmap_config"]["node"]["NODE_TYPE_EAR"] is True
     assert payload["dbmap_config"]["node"]["WIFI_SSID"] == ""
     assert payload["dbmap_config"]["node"]["NTP_SERVER"] == "se.pool.ntp.org"
@@ -137,6 +139,7 @@ def test_defaults_file_dbmap_config_is_overrides_only(real_firmware_targets):
     assert ear["observation"]["EAR_OBS_L2"] is True
     assert ear["observation"]["EAR_OBS_L2_PUBLISH"] is True
     assert ear["observation"]["EAR_OBS_RELATIVE_END"] is True
+    assert ear["observation"]["EAR_OBS_REL_LATE_ARM"] is True
     # Dependent Relative END ints come from Kconfig defaults, not sdkconfig.defaults.
     assert "EAR_OBS_REL_RETURN_MARGIN_DB_X1000" not in ear["observation"]
     assert "EAR_MIC_SAMPLE_RATE_HZ" not in ear.get("mic", {})

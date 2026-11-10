@@ -1,8 +1,8 @@
 /**
  * Observation lifecycle summary helpers for Hub Web.
  * Keep in sync with web/observation_lifecycle.py and CLI hub_event_track summary.
- * Unique = START/COMPLETE observation_ids; Completed = START+END or COMPLETE;
- * durations from END/COMPLETE episode_duration_ms only.
+ * Unique = distinct (node_id, observation_id); Completed = retained END or COMPLETE;
+ * Open = no retained END/COMPLETE; durations from END/COMPLETE episode_duration_ms only.
  */
 (function (global) {
   function observationFields(observation) {
@@ -233,7 +233,7 @@
 
     const perDevice = new Map();
     const combined = emptyDeviceStats('ALL');
-    let noStartCount = 0;
+    let missingStartCount = 0;
     let duplicateStartCount = 0;
     let duplicateEndCount = 0;
     let missingEpisodeMsCount = 0;
@@ -261,15 +261,14 @@
       ) {
         duplicateEndCount += 1;
       }
-      if (!hasStart) {
-        noStartCount += 1;
-        continue;
-      }
 
+      // Count every retained observation identity once, even when START was
+      // pruned/cleared while PERIODIC/END remained.
       device.unique_observations += 1;
       combined.unique_observations += 1;
+      if (!hasStart) missingStartCount += 1;
 
-      if (hasStart && hasEnd) {
+      if (hasEnd) {
         device.completed_observations += 1;
         combined.completed_observations += 1;
         const durationMs = pickTerminalEpisodeMs(group.terminal_candidates);
@@ -299,10 +298,10 @@
       }
     }
 
-    if (noStartCount) {
+    if (missingStartCount) {
       qualityNotes.push(
-        `${noStartCount} observation_id group(s) had PERIODIC/END/unknown `
-        + 'reports without START/COMPLETE (excluded from unique count)'
+        `${missingStartCount} observation_id group(s) lack retained `
+        + 'START/COMPLETE (incomplete retained history; still counted as unique)'
       );
     }
     if (duplicateStartCount) {

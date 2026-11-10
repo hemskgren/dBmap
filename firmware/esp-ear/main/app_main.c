@@ -15,6 +15,7 @@
 #include "dbmap_time.h"
 #include "dbmap_types.h"
 #include "dbmap_wifi.h"
+#include "ear_boot_order.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -23,15 +24,23 @@
 
 static const char *TAG = "esp-ear";
 static dbmap_effective_t s_cfg;
-/** One-shot gate: Acoustic Monitor starts only after boot OTA handling. */
-static bool s_acoustic_started;
 
-static void start_acoustic_monitor_once(void)
+/** Design B one-shots: mic after IPv4; observation after Desired. */
+static bool s_mic_start_attempted;
+static bool s_obs_start_attempted;
+
+static void start_ear_mic_once(void)
 {
-    if (s_acoustic_started) {
+    dbmap_ear_boot_state_t st = {
+        .has_ipv4 = dbmap_wifi_has_ip(),
+        .mic_start_attempted = s_mic_start_attempted,
+        .desired_boot_done = false,
+        .obs_start_attempted = s_obs_start_attempted,
+    };
+    if (!dbmap_ear_boot_allow_mic_start(&st)) {
         return;
     }
-    s_acoustic_started = true;
+    s_mic_start_attempted = true;
 
     dbmap_ear_mic_config_t mic_cfg = {
         .model = DBMAP_EAR_MIC_MODEL_INMP441,
@@ -48,14 +57,37 @@ static void start_acoustic_monitor_once(void)
             "microphone init failed (%s); continuing without audio capture",
             esp_err_to_name(mic_err)
         );
+    } else {
+        ESP_LOGI(
+            TAG,
+            "microphone/I2S started early (Design B); settle overlaps MQTT/OTA/Desired"
+        );
     }
+}
+
+static void start_ear_observation_once(void)
+{
+    dbmap_ear_boot_state_t st = {
+        .has_ipv4 = dbmap_wifi_has_ip(),
+        .mic_start_attempted = s_mic_start_attempted,
+        .desired_boot_done = true, /* caller invokes only after Desired */
+        .obs_start_attempted = s_obs_start_attempted,
+    };
+    if (!dbmap_ear_boot_allow_obs_start(&st)) {
+        return;
+    }
+    s_obs_start_attempted = true;
 
     /* Observation publisher after mic so health enrichers chain (mic then observation). */
     esp_err_t obs_err = dbmap_ear_observation_start(&s_cfg);
     if (obs_err != ESP_OK) {
         ESP_LOGW(TAG, "observation publisher init failed (%s)", esp_err_to_name(obs_err));
     } else {
-        ESP_LOGI(TAG, "Acoustic Monitor started (I2S + RMS + L0); independent of later MQTT/Wi-Fi drops");
+        ESP_LOGI(
+            TAG,
+            "Acoustic Monitor observation started (detector after Desired); "
+            "independent of later MQTT/Wi-Fi drops"
+        );
     }
 }
 
@@ -137,19 +169,29 @@ void app_main(void)
         }
     }
 
-    /* Network + OTA path first; Acoustic Monitor waits until boot Desired is done. */
+    /*
+     * Design B: start I2S/mic as soon as IPv4 is available so hardware settle
+     * overlaps MQTT, OTA registration, and boot Desired. Observation/detector
+     * still wait until Desired completes. Boot-time Desired OTA may now run
+     * while I2S/DMA and ear_mic are active (no mic stop API).
+     */
+    start_ear_mic_once();
+
     ESP_ERROR_CHECK(dbmap_mqtt_start(&s_cfg, NULL, NULL));
     /*
      * Register OTA acoustic-close before any OTA-capable Desired path (including
      * synchronous boot Desired). Failure must not continue as if registered.
+     * Close ends observation episodes only — it does not stop I2S/mic.
      */
     ESP_ERROR_CHECK(dbmap_ear_observation_register_ota_close());
     dbmap_ota_mark_valid_after_mqtt(&s_cfg);
     dbmap_desired_boot_check(&s_cfg);
 
-    start_acoustic_monitor_once();
+    /* If IPv4 arrived late (after the pre-MQTT attempt), start mic before obs. */
+    start_ear_mic_once();
+    start_ear_observation_once();
 
-    /* Periodic Desired only — must not restart Acoustic Monitor on later polls. */
+    /* Periodic Desired only — must not restart mic or observation on later polls. */
     dbmap_desired_poll_start(&s_cfg);
 
     int backoff_ms = 1000;

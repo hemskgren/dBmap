@@ -2066,9 +2066,10 @@ def test_observation_lifecycle_summary_multi_device_open_and_periodic() -> None:
     ]
 
     summary = hub_event_track.summarize_observation_lifecycles(observations)
-    assert summary.combined.unique_observations == 3
+    # Includes PERIODIC-only identity (no START) as unique+open after prune-tolerant rules.
+    assert summary.combined.unique_observations == 4
     assert summary.combined.completed_observations == 2
-    assert summary.combined.open_observations == 1
+    assert summary.combined.open_observations == 2
     assert summary.combined.shortest_completed_ms == 2500.0
     assert summary.combined.longest_completed_ms == 5080.0
     assert summary.combined.total_completed_ms == 7580.0
@@ -2079,12 +2080,15 @@ def test_observation_lifecycle_summary_multi_device_open_and_periodic() -> None:
     assert by_device["EAR-001"].open_observations == 1
     assert by_device["EAR-001"].shortest_completed_ms == 5080.0
     assert by_device["EAR-001"].total_completed_ms == 5080.0
-    assert by_device["EAR-002"].unique_observations == 1
+    assert by_device["EAR-002"].unique_observations == 2
     assert by_device["EAR-002"].completed_observations == 1
-    assert by_device["EAR-002"].open_observations == 0
+    assert by_device["EAR-002"].open_observations == 1
     assert by_device["EAR-002"].total_completed_ms == 2500.0
 
-    assert any("without START/COMPLETE" in note for note in summary.quality_notes)
+    assert any(
+        "incomplete retained history; still counted as unique" in note
+        for note in summary.quality_notes
+    )
     assert summary.oldest_report_event_time is not None
     assert summary.oldest_report_event_time.isoformat(timespec="seconds") == (
         "2026-11-10T10:00:00+00:00"
@@ -2117,7 +2121,7 @@ def test_observation_lifecycle_summary_multi_device_open_and_periodic() -> None:
     assert payload["report_count"] == 8
     assert payload["oldest_report_event_time_utc"] == "2026-11-10T10:00:00+00:00"
     assert payload["fetched_at_utc"] == "2026-11-10T12:24:15+00:00"
-    assert payload["combined"]["unique_observations"] == 3
+    assert payload["combined"]["unique_observations"] == 4
     assert payload["combined"]["total_completed_ms"] == 7580.0
     assert payload["hub_snapshot_id"] == 42
     assert len(payload["devices"]) == 2
@@ -2181,3 +2185,236 @@ def test_observation_lifecycle_summary_complete_kind_counts_as_completed() -> No
     assert summary.combined.completed_observations == 1
     assert summary.combined.open_observations == 0
     assert summary.combined.total_completed_ms == 4000.0
+
+
+def test_lifecycle_summary_full_start_periodic_end() -> None:
+    oid = "11111111-1111-4111-8111-111111111111"
+    observations = [
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=1,
+            event_time_utc="2026-11-10T14:00:00Z",
+            emission_kind="start",
+            episode_duration_ms=2000.0,
+        ),
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=2,
+            event_time_utc="2026-11-10T14:00:05Z",
+            emission_kind="periodic",
+            episode_duration_ms=7000.0,
+        ),
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=3,
+            event_time_utc="2026-11-10T14:00:08Z",
+            emission_kind="end",
+            episode_duration_ms=10000.0,
+        ),
+    ]
+    summary = hub_event_track.summarize_observation_lifecycles(observations)
+    assert summary.combined.unique_observations == 1
+    assert summary.combined.completed_observations == 1
+    assert summary.combined.open_observations == 0
+    assert summary.combined.total_completed_ms == 10000.0
+    assert summary.quality_notes == []
+
+
+def test_lifecycle_summary_periodic_end_after_start_pruned() -> None:
+    """Hub clear/prune may drop START while later PERIODIC/END remain."""
+    oid = "22222222-2222-4222-8222-222222222222"
+    observations = [
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=72533,
+            event_time_utc="2026-11-10T14:52:18Z",
+            emission_kind="periodic",
+            episode_duration_ms=88720.005,
+        ),
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=72534,
+            event_time_utc="2026-11-10T14:52:23Z",
+            emission_kind="periodic",
+            episode_duration_ms=93820.002,
+        ),
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=72535,
+            event_time_utc="2026-11-10T14:52:28Z",
+            emission_kind="periodic",
+            episode_duration_ms=98920.006,
+        ),
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=72536,
+            event_time_utc="2026-11-10T14:52:33Z",
+            emission_kind="end",
+            episode_duration_ms=100960.01,
+        ),
+    ]
+    summary = hub_event_track.summarize_observation_lifecycles(observations)
+    assert summary.combined.unique_observations == 1
+    assert summary.combined.completed_observations == 1
+    assert summary.combined.open_observations == 0
+    assert summary.combined.total_completed_ms == 100960.01
+    assert summary.combined.shortest_completed_ms == 100960.01
+    assert any("incomplete retained history" in note for note in summary.quality_notes)
+    assert not any("excluded from unique" in note for note in summary.quality_notes)
+
+
+def test_lifecycle_summary_periodic_only_after_start_pruned() -> None:
+    oid = "33333333-3333-4333-8333-333333333333"
+    observations = [
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=10,
+            event_time_utc="2026-11-10T15:00:00Z",
+            emission_kind="periodic",
+            episode_duration_ms=15000.0,
+        ),
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=11,
+            event_time_utc="2026-11-10T15:00:05Z",
+            emission_kind="periodic",
+            episode_duration_ms=20000.0,
+        ),
+    ]
+    summary = hub_event_track.summarize_observation_lifecycles(observations)
+    assert summary.combined.unique_observations == 1
+    assert summary.combined.completed_observations == 0
+    assert summary.combined.open_observations == 1
+    assert summary.combined.completed_with_duration == 0
+    assert summary.combined.total_completed_ms == 0.0
+    assert any("incomplete retained history" in note for note in summary.quality_notes)
+
+
+def test_lifecycle_summary_end_only_after_start_pruned() -> None:
+    oid = "44444444-4444-4444-8444-444444444444"
+    observations = [
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-001",
+            sequence_number=20,
+            event_time_utc="2026-11-10T15:10:00Z",
+            emission_kind="end",
+            episode_duration_ms=42000.0,
+        )
+    ]
+    summary = hub_event_track.summarize_observation_lifecycles(observations)
+    assert summary.combined.unique_observations == 1
+    assert summary.combined.completed_observations == 1
+    assert summary.combined.open_observations == 0
+    assert summary.combined.total_completed_ms == 42000.0
+    assert any("incomplete retained history" in note for note in summary.quality_notes)
+
+
+def test_lifecycle_summary_six_report_pruned_plus_complete_snapshot() -> None:
+    """Matches the post-clear Hub window: orphan PERIODIC→END + short START→END."""
+    orphan = "993a119b-ba43-424d-8921-4394a8aa3168"
+    complete = "c0d8fa77-6ff4-49c3-bb4e-b67ca889c4df"
+    observations = [
+        _hierarchical_report(
+            observation_id=orphan,
+            node_id="EAR-001",
+            sequence_number=72533,
+            event_time_utc="2026-11-10T14:52:18Z",
+            emission_kind="periodic",
+            episode_duration_ms=88720.005,
+        ),
+        _hierarchical_report(
+            observation_id=orphan,
+            node_id="EAR-001",
+            sequence_number=72534,
+            event_time_utc="2026-11-10T14:52:23Z",
+            emission_kind="periodic",
+            episode_duration_ms=93820.002,
+        ),
+        _hierarchical_report(
+            observation_id=orphan,
+            node_id="EAR-001",
+            sequence_number=72535,
+            event_time_utc="2026-11-10T14:52:28Z",
+            emission_kind="periodic",
+            episode_duration_ms=98920.006,
+        ),
+        _hierarchical_report(
+            observation_id=orphan,
+            node_id="EAR-001",
+            sequence_number=72536,
+            event_time_utc="2026-11-10T14:52:33Z",
+            emission_kind="end",
+            episode_duration_ms=100960.01,
+        ),
+        _hierarchical_report(
+            observation_id=complete,
+            node_id="EAR-001",
+            sequence_number=72537,
+            event_time_utc="2026-11-10T14:57:59Z",
+            emission_kind="start",
+            episode_duration_ms=2020.073,
+        ),
+        _hierarchical_report(
+            observation_id=complete,
+            node_id="EAR-001",
+            sequence_number=72538,
+            event_time_utc="2026-11-10T14:58:01Z",
+            emission_kind="end",
+            episode_duration_ms=5080.003,
+        ),
+    ]
+    summary = hub_event_track.summarize_observation_lifecycles(observations)
+    assert summary.report_count == 6
+    assert summary.combined.unique_observations == 2
+    assert summary.combined.completed_observations == 2
+    assert summary.combined.open_observations == 0
+    assert summary.combined.shortest_completed_ms == 5080.003
+    assert summary.combined.longest_completed_ms == 100960.01
+    assert summary.combined.total_completed_ms == pytest.approx(5080.003 + 100960.01)
+    assert any("incomplete retained history" in note for note in summary.quality_notes)
+
+
+def test_lifecycle_summary_duplicate_end_uses_latest_sequence_duration() -> None:
+    oid = "55555555-5555-4555-8555-555555555555"
+    observations = [
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-005",
+            sequence_number=1,
+            event_time_utc="2026-11-10T16:00:00Z",
+            emission_kind="start",
+            episode_duration_ms=1000.0,
+        ),
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-005",
+            sequence_number=2,
+            event_time_utc="2026-11-10T16:00:05Z",
+            emission_kind="end",
+            episode_duration_ms=5000.0,
+        ),
+        # Retransmit / duplicate terminal with higher sequence wins duration.
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-005",
+            sequence_number=3,
+            event_time_utc="2026-11-10T16:00:06Z",
+            emission_kind="end",
+            episode_duration_ms=5100.0,
+        ),
+    ]
+    summary = hub_event_track.summarize_observation_lifecycles(observations)
+    assert summary.combined.unique_observations == 1
+    assert summary.combined.completed_observations == 1
+    assert summary.combined.total_completed_ms == 5100.0
+    assert any("duplicate END/COMPLETE" in note for note in summary.quality_notes)

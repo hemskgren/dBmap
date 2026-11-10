@@ -47,6 +47,7 @@ static dbmap_activity_config_t rel_cfg(void)
     cfg.relative_exit_hold_ms = 2000;
     cfg.min_event_contrast_db = 5.0f;
     cfg.baseline_stale_ms = 15000;
+    cfg.relative_end_late_arm_enabled = false; /* v1 default */
     cfg.min_activity_ms = 2000; /* START after two loud windows typically */
     return cfg;
 }
@@ -912,6 +913,389 @@ static void test_comparator_boundaries(void)
     EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
 }
 
+/**
+ * Long-episode risk: IDLE candidates older than baseline_stale_ms are dropped
+ * at freeze → unreliable → absolute-only; ambient above abs exit never END.
+ */
+static void test_stale_baseline_ambient_sticks(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = rel_cfg();
+    dbmap_activity_detector_init(&det, &cfg);
+    uint32_t seq = 0;
+    int64_t t = 0;
+
+    seed_baseline_m51(&det, &seq, &t);
+    t += 20000000; /* > baseline_stale_ms before START */
+
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -30.0f);
+    EXPECT(det.state == DBMAP_ACTIVITY_PENDING_ENTER);
+    seq++;
+    t += 1000000;
+    EXPECT(feed(&det, seq, t, -30.0f).kind == DBMAP_ACTIVITY_EMIT_START);
+    EXPECT(det.baseline_frozen);
+    EXPECT(!det.baseline_reliable);
+    EXPECT(det.frozen_baseline_n == 0);
+
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -30.0f);
+    EXPECT(!det.relative_armed);
+
+    for (int i = 0; i < 6; ++i) {
+        seq++;
+        t += 1000000;
+        EXPECT(feed(&det, seq, t, -51.0f).kind != DBMAP_ACTIVITY_EMIT_END);
+    }
+    EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
+    EXPECT(det.emissions_end == 0);
+}
+
+/**
+ * Long-episode risk: invalid windows during IDLE do not refresh baseline;
+ * after stale_ms the freeze is empty → same absolute-only stick.
+ */
+static void test_invalid_idle_then_event_unreliable(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = rel_cfg();
+    dbmap_activity_detector_init(&det, &cfg);
+    uint32_t seq = 0;
+    int64_t t = 0;
+
+    seed_baseline_m51(&det, &seq, &t);
+    for (int i = 0; i < 16; ++i) {
+        seq++;
+        t += 1000000;
+        EXPECT(feed_invalid(&det, seq, t).kind == DBMAP_ACTIVITY_EMIT_NONE);
+        EXPECT(det.state == DBMAP_ACTIVITY_IDLE);
+    }
+
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -30.0f);
+    seq++;
+    t += 1000000;
+    EXPECT(feed(&det, seq, t, -30.0f).kind == DBMAP_ACTIVITY_EMIT_START);
+    EXPECT(!det.baseline_reliable);
+    EXPECT(!det.relative_armed);
+
+    for (int i = 0; i < 4; ++i) {
+        seq++;
+        t += 1000000;
+        EXPECT(feed(&det, seq, t, -51.0f).kind != DBMAP_ACTIVITY_EMIT_END);
+    }
+    EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
+}
+
+/**
+ * Long-episode risk: first-two contrast below min_event_contrast_db never arms;
+ * ambient above abs exit → ACTIVE indefinitely (accepted v1 limitation).
+ */
+static void test_weak_contrast_ambient_sticks(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = rel_cfg();
+    dbmap_activity_detector_init(&det, &cfg);
+    uint32_t seq = 0;
+    int64_t t = 0;
+
+    for (int i = 0; i < 3; ++i) {
+        seq++;
+        t += 1000000;
+        feed(&det, seq, t, -48.0f);
+    }
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -44.0f);
+    seq++;
+    t += 1000000;
+    EXPECT(feed(&det, seq, t, -44.0f).kind == DBMAP_ACTIVITY_EMIT_START);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -44.0f);
+    EXPECT(det.baseline_reliable);
+    EXPECT(!det.relative_armed);
+    EXPECT(det.measured_contrast_db < cfg.min_event_contrast_db);
+
+    for (int i = 0; i < 8; ++i) {
+        seq++;
+        t += 1000000;
+        EXPECT(feed(&det, seq, t, -48.0f).kind != DBMAP_ACTIVITY_EMIT_END);
+    }
+    EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
+    EXPECT(det.emissions_end == 0);
+}
+
+/**
+ * With late-arm flag off (v1): arming peak is fixed to the first two episode
+ * windows; later loud is ignored.
+ */
+static void test_late_loud_does_not_rearm(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = rel_cfg();
+    EXPECT(!cfg.relative_end_late_arm_enabled);
+    dbmap_activity_detector_init(&det, &cfg);
+    uint32_t seq = 0;
+    int64_t t = 0;
+
+    for (int i = 0; i < 3; ++i) {
+        seq++;
+        t += 1000000;
+        feed(&det, seq, t, -48.0f);
+    }
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -44.0f);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -44.0f);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -44.0f);
+    EXPECT(!det.relative_armed);
+
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -25.0f);
+    EXPECT(!det.relative_armed);
+    EXPECT(det.measured_contrast_db < cfg.min_event_contrast_db);
+
+    /* Even two consecutive late loud windows stay unarmed when flag is off. */
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -25.0f);
+    EXPECT(!det.relative_armed);
+
+    for (int i = 0; i < 4; ++i) {
+        seq++;
+        t += 1000000;
+        EXPECT(feed(&det, seq, t, -48.0f).kind != DBMAP_ACTIVITY_EMIT_END);
+    }
+    EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
+}
+
+/** Late-arm flag on: two consecutive late loud windows arm Relative END. */
+static void test_late_sustained_arm_when_enabled(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = rel_cfg();
+    cfg.relative_end_late_arm_enabled = true;
+    dbmap_activity_detector_init(&det, &cfg);
+    uint32_t seq = 0;
+    int64_t t = 0;
+
+    for (int i = 0; i < 3; ++i) {
+        seq++;
+        t += 1000000;
+        feed(&det, seq, t, -48.0f);
+    }
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -44.0f);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -44.0f);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -44.0f);
+    EXPECT(!det.relative_armed);
+
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -25.0f);
+    EXPECT(!det.relative_armed);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -25.0f);
+    EXPECT(det.relative_armed);
+    EXPECT(det.arm_src == DBMAP_ACTIVITY_ARM_SRC_LATE);
+
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -48.0f);
+    EXPECT(det.state == DBMAP_ACTIVITY_PENDING_EXIT);
+    EXPECT(det.exit_latch == DBMAP_ACTIVITY_EXIT_LATCH_RELATIVE);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -48.0f);
+    seq++;
+    t += 1000000;
+    dbmap_activity_emission_t e = feed(&det, seq, t, -48.0f);
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_END);
+    EXPECT(e.end_latch == DBMAP_ACTIVITY_EXIT_LATCH_RELATIVE);
+}
+
+/**
+ * Accepted v1 limitation: quiet frozen baseline + raised ambient meets neither
+ * relative entry nor absolute exit.
+ */
+static void test_quiet_baseline_raised_ambient_sticks(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = rel_cfg();
+    dbmap_activity_detector_init(&det, &cfg);
+    uint32_t seq = 0;
+    int64_t t = 0;
+
+    for (int i = 0; i < 3; ++i) {
+        seq++;
+        t += 1000000;
+        feed(&det, seq, t, -70.0f);
+    }
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -30.0f);
+    seq++;
+    t += 1000000;
+    EXPECT(feed(&det, seq, t, -30.0f).kind == DBMAP_ACTIVITY_EMIT_START);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -30.0f);
+    EXPECT(det.relative_armed);
+    EXPECT(fabsf(det.frozen_baseline_dbfs - (-70.0f)) < 0.01f);
+
+    for (int i = 0; i < 8; ++i) {
+        seq++;
+        t += 1000000;
+        EXPECT(feed(&det, seq, t, -50.0f).kind != DBMAP_ACTIVITY_EMIT_END);
+        EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
+        EXPECT(det.exit_latch == DBMAP_ACTIVITY_EXIT_LATCH_NONE);
+    }
+    EXPECT(det.emissions_end == 0);
+}
+
+/**
+ * Relative deadband: louder than baseline+margin but below enter — no
+ * PENDING_EXIT while armed (must reach <= baseline+margin).
+ */
+static void test_relative_deadband_no_pending_exit(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = rel_cfg();
+    dbmap_activity_detector_init(&det, &cfg);
+    uint32_t seq = 0;
+    int64_t t = 0;
+
+    seed_baseline_m51(&det, &seq, &t);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -30.0f);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -30.0f);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -30.0f);
+    EXPECT(det.relative_armed);
+
+    for (int i = 0; i < 6; ++i) {
+        seq++;
+        t += 1000000;
+        EXPECT(feed(&det, seq, t, -46.0f).kind != DBMAP_ACTIVITY_EMIT_END);
+        EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
+    }
+    EXPECT(det.pending_exit_enters == 0);
+}
+
+/**
+ * Oscillation around relative cancel clears hold each cycle; uninterrupted
+ * ambient afterward still reaches relative END.
+ */
+static void test_oscillate_then_settle_relative_end(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = rel_cfg();
+    dbmap_activity_detector_init(&det, &cfg);
+    uint32_t seq = 0;
+    int64_t t = 0;
+
+    seed_baseline_m51(&det, &seq, &t);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -30.0f);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -30.0f);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -30.0f);
+    EXPECT(det.relative_armed);
+
+    for (int i = 0; i < 4; ++i) {
+        seq++;
+        t += 1000000;
+        feed(&det, seq, t, -48.0f);
+        EXPECT(det.state == DBMAP_ACTIVITY_PENDING_EXIT);
+        EXPECT(det.exit_latch == DBMAP_ACTIVITY_EXIT_LATCH_RELATIVE);
+
+        seq++;
+        t += 1000000;
+        feed(&det, seq, t, -44.0f);
+        EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
+        EXPECT(det.exit_hold_elapsed_us == 0);
+    }
+    EXPECT(det.pending_exit_cancels >= 4);
+    EXPECT(det.emissions_end == 0);
+
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -51.0f);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -51.0f);
+    seq++;
+    t += 1000000;
+    dbmap_activity_emission_t e = feed(&det, seq, t, -51.0f);
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_END);
+    EXPECT(e.termination == DBMAP_ACTIVITY_TERM_NATURAL);
+}
+
+/**
+ * Strong event then gradual decay through relative entry → natural END
+ * without requiring absolute silence.
+ */
+static void test_gradual_decay_relative_end(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = rel_cfg();
+    dbmap_activity_detector_init(&det, &cfg);
+    uint32_t seq = 0;
+    int64_t t = 0;
+
+    seed_baseline_m51(&det, &seq, &t);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -30.0f);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -30.0f);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -30.0f);
+    EXPECT(det.relative_armed);
+
+    const float steps[] = {
+        -35.0f, -40.0f, -44.0f, -46.0f, -48.0f, -50.0f, -51.0f, -51.0f, -51.0f
+    };
+    int ended = 0;
+    for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); ++i) {
+        seq++;
+        t += 1000000;
+        dbmap_activity_emission_t e = feed(&det, seq, t, steps[i]);
+        if (e.kind == DBMAP_ACTIVITY_EMIT_END) {
+            ended = 1;
+            EXPECT(e.termination == DBMAP_ACTIVITY_TERM_NATURAL);
+            break;
+        }
+    }
+    EXPECT(ended);
+    EXPECT(det.state == DBMAP_ACTIVITY_IDLE);
+}
+
 int main(void)
 {
     test_ear001_loud_to_ambient();
@@ -934,6 +1318,15 @@ int main(void)
     test_rel_backward_seq_and_timestamp();
     test_rel_diag_snapshot_and_format();
     test_rel_diag_disabled_format();
+    test_stale_baseline_ambient_sticks();
+    test_invalid_idle_then_event_unreliable();
+    test_weak_contrast_ambient_sticks();
+    test_late_loud_does_not_rearm();
+    test_late_sustained_arm_when_enabled();
+    test_quiet_baseline_raised_ambient_sticks();
+    test_relative_deadband_no_pending_exit();
+    test_oscillate_then_settle_relative_end();
+    test_gradual_decay_relative_end();
 
     if (g_failures != 0) {
         fprintf(stderr, "%d failure(s)\n", g_failures);
