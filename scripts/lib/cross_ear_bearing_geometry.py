@@ -637,9 +637,9 @@ def analyze_cross_ear_geometry(
 
 
 def _format_time(value: datetime | None) -> str:
-    if value is None:
-        return "unknown"
-    return value.astimezone().strftime("%d/%m/%Y %H:%M:%S %Z")
+    from lib.hub_cli import format_display_datetime
+
+    return format_display_datetime(value, empty="unknown")
 
 
 def format_cross_ear_geometry_lines(

@@ -1,5 +1,11 @@
 # User identity and operating modes
 
+Platform direction for Community/Enterprise profiles, multi-IdP users, and
+tenancy is recorded in [ADR 0001](./adr/0001-sensor-platform-architecture.md)
+and [Sensor Platform architecture](./sensor-platform-architecture.md). Those
+capabilities are **not implemented** here; this document describes **current**
+Hub behaviour.
+
 ## Current implementation
 
 - A Local Hub has a stable configured `hub_id` (`DBMAP_HUB_ID`, default `local-01`). The ID belongs to the Hub, not to a user. Nodes are identified by `node_id` in this Hub's database; there is no per-node `hub_id` column or hub hierarchy yet—this deployment is the association boundary. Devices store that Hub ID in NVS (`identity.hub_id`) from USB configuration and from `POST /api/v1/provision` (`hub_id` in the response), and announce it at boot as `DBMAP_HUB_ID=…` beside `DBMAP_DEVICE_ID`. That lets inspect/UI show which Hub a board was last associated with when its `node_id` is missing from this Hub. Observation payloads do not yet carry `hub_id`; include it later when Ear observations are forwarded local-Hub → regional-Hub.

@@ -1678,6 +1678,7 @@ static void activity_task(void *arg)
             dbmap_activity_sample_t sample = {
                 .has_measurement = true,
                 .rms_dbfs = levels.rms_dbfs,
+                .peak_dbfs = levels.peak_dbfs,
                 .window_ms = levels.window_ms,
                 .measured_at_us = levels.measured_at_us,
                 .window_seq = levels.window_seq,

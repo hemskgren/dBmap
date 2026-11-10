@@ -2,6 +2,8 @@
 
 **Purpose:** Make the Local Hub and ESP-Output path solid so later sensor work can focus on hardware, calibration, and tracking — not on Hub, MQTT, identity, or deployment basics.
 
+**Later platform direction:** For the shared Sensor Platform (products, Community/Enterprise profiles), see [Sensor Platform architecture](./sensor-platform-architecture.md) and [ADR 0001](./adr/0001-sensor-platform-architecture.md). This readiness review remains a historical Hub/Output checklist and is not superseded as an implementation status log.
+
 **Scope of this document:** the **whole git repository** on `main` (including merged PRs through **#16**), compared with the six instruction files in `.ruff_cache/`. This is not a PR-16-only diff.
 
 **Out of scope here (do not reply on these in this file):** sensor-node DSP/firmware, microphone experiments, calibrated direction estimation, event/track engine, Acoustic Monitors, raw-audio capture, Home Assistant, Regional Hub federation. Those stay for later hardware-focused work.

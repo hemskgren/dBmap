@@ -37,6 +37,7 @@ from lib.cross_ear_localization import (
 )
 from lib.hub_cli import (
     add_hub_connection_arguments,
+    format_display_datetime,
     format_hub_http_error,
     load_project_env,
     print_help_without_arguments,
@@ -511,6 +512,7 @@ def observation_fields(observation: dict[str, Any]) -> dict[str, Any]:
             "sequence_number": identity.get("sequence_number"),
             "event_time_utc": context.get("event_time_utc"),
             "duration_ms": context.get("interval_duration_ms"),
+            "episode_duration_ms": context.get("episode_duration_ms"),
             "emission_kind": context.get("emission_kind"),
             "classification": classification,
             "bearing": bearing,
@@ -534,9 +536,7 @@ def observation_time(observation: dict[str, Any]) -> datetime | None:
 
 
 def format_local_datetime(value: datetime | None) -> str:
-    if value is None:
-        return "unknown"
-    return value.astimezone().strftime("%d/%m/%Y %H:%M:%S %Z")
+    return format_display_datetime(value, empty="unknown")
 
 
 def sort_observations(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -562,6 +562,416 @@ def unique_observation_count(observations: list[dict[str, Any]]) -> int:
         if isinstance(observation_id, str) and observation_id:
             ids.add(observation_id)
     return len(ids)
+
+
+def _emission_kind_token(value: Any) -> str:
+    if not isinstance(value, str):
+        return "unknown"
+    token = value.strip().lower()
+    if token in {"start", "periodic", "end", "complete"}:
+        return token
+    return "unknown"
+
+
+def _finite_nonnegative_ms(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return float(value)
+
+
+def format_duration_ms(duration_ms: float) -> str:
+    if duration_ms < 1000:
+        return f"{duration_ms:.0f} ms"
+    seconds = duration_ms / 1000.0
+    if seconds < 60:
+        return f"{duration_ms:.0f} ms ({seconds:.1f}s)"
+    minutes = seconds / 60.0
+    return f"{duration_ms:.0f} ms ({minutes:.1f} min)"
+
+
+@dataclass
+class DeviceObservationStats:
+    node_id: str
+    unique_observations: int = 0
+    completed_observations: int = 0
+    open_observations: int = 0
+    shortest_completed_ms: float | None = None
+    longest_completed_ms: float | None = None
+    total_completed_ms: float = 0.0
+    completed_with_duration: int = 0
+    quality_notes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ObservationLifecycleSummary:
+    """START/END lifecycle stats over Hub observation reports.
+
+    Unique observations are counted by distinct ``(node_id, observation_id)``
+    that include at least one START (or COMPLETE). PERIODIC never creates a
+    new observation. Completed durations use END/COMPLETE ``episode_duration_ms``
+    only — never MQTT/Hub arrival timestamps.
+    """
+
+    devices: list[DeviceObservationStats]
+    combined: DeviceObservationStats
+    report_count: int
+    oldest_report_event_time: datetime | None = None
+    fetched_at: datetime | None = None
+    quality_notes: list[str] = field(default_factory=list)
+
+
+def summarize_observation_lifecycles(
+    observations: list[dict[str, Any]],
+    *,
+    fetched_at: datetime | None = None,
+) -> ObservationLifecycleSummary:
+    """Aggregate per-device and combined observation lifecycle statistics."""
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    group_order: list[tuple[str, str]] = []
+    quality_notes: list[str] = []
+    skipped_missing_identity = 0
+    oldest_report_event_time: datetime | None = None
+
+    for item in observations:
+        fields = observation_fields(item)
+        event_stamp = observation_time(item)
+        if event_stamp is not None and (
+            oldest_report_event_time is None or event_stamp < oldest_report_event_time
+        ):
+            oldest_report_event_time = event_stamp
+        node_id = fields.get("node_id")
+        observation_id = fields.get("observation_id")
+        if not isinstance(node_id, str) or not node_id:
+            skipped_missing_identity += 1
+            continue
+        if not isinstance(observation_id, str) or not observation_id:
+            skipped_missing_identity += 1
+            continue
+        key = (node_id, observation_id)
+        group = groups.get(key)
+        if group is None:
+            group = {
+                "node_id": node_id,
+                "observation_id": observation_id,
+                "counts": {
+                    "start": 0,
+                    "periodic": 0,
+                    "end": 0,
+                    "complete": 0,
+                    "unknown": 0,
+                },
+                "terminal_candidates": [],
+            }
+            groups[key] = group
+            group_order.append(key)
+        kind = _emission_kind_token(fields.get("emission_kind"))
+        group["counts"][kind] += 1
+        if kind in {"end", "complete"}:
+            group["terminal_candidates"].append(
+                {
+                    "kind": kind,
+                    "sequence": _valid_sequence_number(fields.get("sequence_number")),
+                    "episode_duration_ms": _finite_nonnegative_ms(
+                        fields.get("episode_duration_ms")
+                    ),
+                    "event_time": event_stamp,
+                }
+            )
+
+    if skipped_missing_identity:
+        quality_notes.append(
+            f"skipped {skipped_missing_identity} report(s) missing node_id "
+            "or observation_id"
+        )
+
+    per_device: dict[str, DeviceObservationStats] = {}
+    combined = DeviceObservationStats(node_id="ALL")
+    no_start_count = 0
+    duplicate_start_count = 0
+    duplicate_end_count = 0
+    missing_episode_ms_count = 0
+
+    def ensure_device(node_id: str) -> DeviceObservationStats:
+        stats = per_device.get(node_id)
+        if stats is None:
+            stats = DeviceObservationStats(node_id=node_id)
+            per_device[node_id] = stats
+        return stats
+
+    def pick_terminal_episode_ms(
+        candidates: list[dict[str, Any]],
+    ) -> float | None:
+        if not candidates:
+            return None
+        ranked = sorted(
+            candidates,
+            key=lambda row: (
+                row["sequence"] is None,
+                row["sequence"] if row["sequence"] is not None else -1,
+                row["event_time"] is None,
+                row["event_time"] or datetime.min.replace(tzinfo=UTC),
+            ),
+        )
+        chosen = ranked[-1]
+        return chosen["episode_duration_ms"]
+
+    for key in group_order:
+        group = groups[key]
+        counts = group["counts"]
+        device = ensure_device(group["node_id"])
+        has_start = counts["start"] > 0 or counts["complete"] > 0
+        has_end = counts["end"] > 0 or counts["complete"] > 0
+        if counts["start"] > 1:
+            duplicate_start_count += 1
+        if counts["end"] > 1 or (
+            counts["end"] > 0 and counts["complete"] > 0
+        ) or counts["complete"] > 1:
+            duplicate_end_count += 1
+        if not has_start:
+            no_start_count += 1
+            continue
+
+        device.unique_observations += 1
+        combined.unique_observations += 1
+
+        if has_start and has_end:
+            device.completed_observations += 1
+            combined.completed_observations += 1
+            duration_ms = pick_terminal_episode_ms(group["terminal_candidates"])
+            if duration_ms is None:
+                missing_episode_ms_count += 1
+                continue
+            device.completed_with_duration += 1
+            combined.completed_with_duration += 1
+            device.total_completed_ms += duration_ms
+            combined.total_completed_ms += duration_ms
+            if (
+                device.shortest_completed_ms is None
+                or duration_ms < device.shortest_completed_ms
+            ):
+                device.shortest_completed_ms = duration_ms
+            if (
+                device.longest_completed_ms is None
+                or duration_ms > device.longest_completed_ms
+            ):
+                device.longest_completed_ms = duration_ms
+            if (
+                combined.shortest_completed_ms is None
+                or duration_ms < combined.shortest_completed_ms
+            ):
+                combined.shortest_completed_ms = duration_ms
+            if (
+                combined.longest_completed_ms is None
+                or duration_ms > combined.longest_completed_ms
+            ):
+                combined.longest_completed_ms = duration_ms
+        else:
+            device.open_observations += 1
+            combined.open_observations += 1
+
+    if no_start_count:
+        quality_notes.append(
+            f"{no_start_count} observation_id group(s) had PERIODIC/END/unknown "
+            "reports without START/COMPLETE (excluded from unique count)"
+        )
+    if duplicate_start_count:
+        quality_notes.append(
+            f"{duplicate_start_count} observation_id group(s) had duplicate START "
+            "reports (counted once)"
+        )
+    if duplicate_end_count:
+        quality_notes.append(
+            f"{duplicate_end_count} observation_id group(s) had duplicate "
+            "END/COMPLETE reports (duration taken from latest sequence)"
+        )
+    if missing_episode_ms_count:
+        quality_notes.append(
+            f"{missing_episode_ms_count} completed observation(s) lacked usable "
+            "END/COMPLETE episode_duration_ms (excluded from duration stats)"
+        )
+
+    devices = [per_device[node_id] for node_id in sorted(per_device)]
+    return ObservationLifecycleSummary(
+        devices=devices,
+        combined=combined,
+        report_count=len(observations),
+        oldest_report_event_time=oldest_report_event_time,
+        fetched_at=fetched_at,
+        quality_notes=quality_notes,
+    )
+
+
+def _duration_cell(stats: DeviceObservationStats, which: str) -> str:
+    if which == "shortest":
+        value = stats.shortest_completed_ms
+    elif which == "longest":
+        value = stats.longest_completed_ms
+    else:
+        value = stats.total_completed_ms if stats.completed_with_duration else None
+    if value is None:
+        return "n/a"
+    return format_duration_ms(value)
+
+
+def _pad_table_cell(value: str, width: int) -> str:
+    return value.ljust(width)
+
+
+def format_observation_lifecycle_summary(
+    summary: ObservationLifecycleSummary,
+    *,
+    fetch_meta: dict[str, Any] | None = None,
+) -> list[str]:
+    lines = [
+        "Observation lifecycle summary",
+        (
+            "  source: Hub /api/v1/observations retained history "
+            "(frozen multi-page snapshot; not limited to this CLI session)"
+        ),
+        f"  oldest report: {format_local_datetime(summary.oldest_report_event_time)}",
+        f"  fetched at:    {format_local_datetime(summary.fetched_at)}",
+        f"  reports:       {summary.report_count}",
+    ]
+    if fetch_meta:
+        snapshot_id = fetch_meta.get("snapshot_id")
+        if snapshot_id is not None:
+            lines.append(f"  hub_snapshot_id: {snapshot_id}")
+        if fetch_meta.get("complete_snapshot") is False:
+            warning = fetch_meta.get("completeness_warning") or (
+                "snapshot may be incomplete versus Hub total_count"
+            )
+            lines.append(f"  warning: {warning}")
+        dropped = fetch_meta.get("duplicate_delivery_dropped")
+        if isinstance(dropped, int) and dropped > 0:
+            lines.append(
+                f"  note: dropped {dropped} duplicate "
+                "(node_id, sequence_number) delivery(ies) while fetching"
+            )
+
+    rows: list[DeviceObservationStats] = [summary.combined, *summary.devices]
+    headers = (
+        "Device",
+        "Unique",
+        "Completed",
+        "Open",
+        "Shortest",
+        "Longest",
+        "Total",
+    )
+    table_rows = [
+        (
+            stats.node_id,
+            str(stats.unique_observations),
+            str(stats.completed_observations),
+            str(stats.open_observations),
+            _duration_cell(stats, "shortest"),
+            _duration_cell(stats, "longest"),
+            _duration_cell(stats, "total"),
+        )
+        for stats in rows
+    ]
+    widths = [len(header) for header in headers]
+    for row in table_rows:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(cell))
+
+    lines.append("")
+    lines.append(
+        "  ".join(
+            _pad_table_cell(header, widths[index])
+            for index, header in enumerate(headers)
+        )
+    )
+    lines.append(
+        "  ".join("-" * widths[index] for index in range(len(headers)))
+    )
+    for row in table_rows:
+        lines.append(
+            "  ".join(
+                _pad_table_cell(cell, widths[index])
+                for index, cell in enumerate(row)
+            )
+        )
+    lines.append("")
+    lines.append(
+        "Unique = START/COMPLETE observation_ids; "
+        "Completed = START+END or COMPLETE; "
+        "durations from END/COMPLETE episode_duration_ms."
+    )
+
+    notes = list(summary.quality_notes)
+    if notes:
+        lines.append("")
+        lines.append("Data-quality notes")
+        for note in notes:
+            lines.append(f"  - {note}")
+    return lines
+
+
+def device_observation_stats_to_dict(stats: DeviceObservationStats) -> dict[str, Any]:
+    return {
+        "node_id": stats.node_id,
+        "unique_observations": stats.unique_observations,
+        "completed_observations": stats.completed_observations,
+        "open_observations": stats.open_observations,
+        "shortest_completed_ms": stats.shortest_completed_ms,
+        "longest_completed_ms": stats.longest_completed_ms,
+        "total_completed_ms": (
+            stats.total_completed_ms if stats.completed_with_duration else None
+        ),
+        "completed_with_duration": stats.completed_with_duration,
+    }
+
+
+def observation_lifecycle_summary_to_dict(
+    summary: ObservationLifecycleSummary,
+    *,
+    fetch_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    oldest = summary.oldest_report_event_time
+    fetched = summary.fetched_at
+    payload: dict[str, Any] = {
+        "report_count": summary.report_count,
+        "oldest_report_event_time_utc": (
+            oldest.astimezone(UTC).isoformat(timespec="seconds")
+            if oldest is not None
+            else None
+        ),
+        "fetched_at_utc": (
+            fetched.astimezone(UTC).isoformat(timespec="seconds")
+            if fetched is not None
+            else None
+        ),
+        "combined": device_observation_stats_to_dict(summary.combined),
+        "devices": [
+            device_observation_stats_to_dict(device) for device in summary.devices
+        ],
+        "quality_notes": list(summary.quality_notes),
+    }
+    if fetch_meta:
+        payload["hub_snapshot_id"] = fetch_meta.get("snapshot_id")
+        payload["complete_snapshot"] = fetch_meta.get("complete_snapshot")
+        if fetch_meta.get("completeness_warning"):
+            payload["completeness_warning"] = fetch_meta.get("completeness_warning")
+        dropped = fetch_meta.get("duplicate_delivery_dropped")
+        if isinstance(dropped, int) and dropped > 0:
+            payload["duplicate_delivery_dropped"] = dropped
+    return payload
+
+
+def format_observation_lifecycle_summary_json(
+    summary: ObservationLifecycleSummary,
+    *,
+    fetch_meta: dict[str, Any] | None = None,
+) -> str:
+    return json.dumps(
+        observation_lifecycle_summary_to_dict(summary, fetch_meta=fetch_meta),
+        indent=2,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
 
 
 def filter_observations(
@@ -1424,7 +1834,7 @@ def report(
     if hub_snapshot_id is not None:
         fetch_note += f"; hub_snapshot_id={hub_snapshot_id}"
     lines = [
-        f"Observation analysis at {format_local_datetime(datetime.now().astimezone())} (local time)",
+        f"Observation analysis at {format_local_datetime(datetime.now(tz=UTC))} (Europe/Stockholm)",
         f"Observation reports: {len(observations)} ({fetch_note})",
         f"Unique observations: {unique_observation_count(observations)}",
         (
@@ -1642,6 +2052,31 @@ def main() -> int:
     watch_command = commands.add_parser(
         "watch", help="Re-fetch and report new observations"
     )
+    summary_command = commands.add_parser(
+        "summary",
+        help=(
+            "Summarize unique/completed/open observations and completed "
+            "episode durations from Hub retained observation history"
+        ),
+    )
+    summary_command.add_argument(
+        "--node-id",
+        action="append",
+        default=[],
+        metavar="NODE_ID",
+        help=(
+            "Filter reports by Node ID (repeatable). "
+            "A single value is also sent to the hub API."
+        ),
+    )
+    summary_command.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "Print the lifecycle summary as JSON "
+            "(machine-readable; skips the human table)"
+        ),
+    )
     for command in (list_command, watch_command):
         command.add_argument(
             "--event-gap-seconds",
@@ -1799,6 +2234,72 @@ def main() -> int:
         return 0
     args = parser.parse_args()
     base_url, admin_token = validate_hub_connection(args, parser)
+    if args.command == "summary":
+        try:
+            summary_node_ids = {item for item in args.node_id if item}
+            fetch_node_id = (
+                next(iter(summary_node_ids)) if len(summary_node_ids) == 1 else None
+            )
+            fetched, fetch_meta = fetch_all_observation_reports(
+                base_url,
+                args.ca,
+                admin_token,
+                fetch_node_id,
+                page_size=MAX_OBSERVATION_PAGE_SIZE,
+                order="oldest",
+            )
+            observations = filter_observations(
+                fetched,
+                node_ids=summary_node_ids or None,
+            )
+            total_count = int(fetch_meta.get("total_count") or len(fetched))
+            print(
+                format_pagination_summary(
+                    total_count=total_count,
+                    page=1,
+                    page_size=MAX_OBSERVATION_PAGE_SIZE,
+                    total_pages=int(fetch_meta.get("total_pages") or 1),
+                    order="oldest",
+                )
+                + f"; complete_snapshot_reports={len(fetched)}"
+                + (
+                    f"; hub_snapshot_id={fetch_meta.get('snapshot_id')}"
+                    if fetch_meta.get("snapshot_id") is not None
+                    else ""
+                ),
+                file=sys.stderr,
+            )
+            if summary_node_ids and not args.json:
+                for line in format_filter_status(
+                    node_ids=summary_node_ids,
+                    observation_ids=set(),
+                    fetched_count=len(fetched),
+                    filtered_count=len(observations),
+                ):
+                    print(line)
+            fetched_at = datetime.now(tz=UTC)
+            summary = summarize_observation_lifecycles(
+                observations,
+                fetched_at=fetched_at,
+            )
+            if args.json:
+                print(
+                    format_observation_lifecycle_summary_json(
+                        summary,
+                        fetch_meta=fetch_meta,
+                    )
+                )
+            else:
+                for line in format_observation_lifecycle_summary(
+                    summary,
+                    fetch_meta=fetch_meta,
+                ):
+                    print(line)
+            return 0
+        except (OSError, ValueError, HubApiError) as exc:
+            print(f"Hub event/track report failed: {exc}", file=sys.stderr)
+            return 1
+
     watching = args.command == "watch"
     intervals = [
         ("event gap", args.event_gap_seconds),

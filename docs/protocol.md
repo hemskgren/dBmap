@@ -28,7 +28,7 @@ unknown versions rather than silently interpreting them as version 1.
 | Observation ID | UUID in `identity.observation_id`. It labels one observation episode on the Ear; the same ID may appear on multiple MQTT payloads when emissions share an episode (different `sequence_number` values). |
 | Sequence number | Monotonic per Ear in `identity.sequence_number`. Together with `identity.node_id` it is the hub deduplication key: re-publishing the same pair does not create another row. A conflicting `observation_id` for an already stored sequence is rejected. |
 | Event ID | Reserved for a future hub-correlated event. No event message, allocation rule, or API is currently implemented. |
-| Track ID | Optional UUID in `identity.track_id`. Labels physical or acoustic continuity across Observation report episodes on one Ear. Omitted or null on older firmware. Hub accepts and stores the value; it does not mint tracks or correlate Events from it yet. Report rotation keeps the same `track_id` while minting a new `observation_id`. |
+| Track ID | Optional UUID in `identity.track_id`. Labels physical or acoustic continuity across Observation report episodes on one Ear. Omitted or null on older firmware. Hub accepts and stores the value; it does not mint tracks or correlate Events from it yet. Report rotation keeps the same `track_id` while minting a new `observation_id`. Platform terminology: [Sensor Platform architecture](./sensor-platform-architecture.md). |
 
 Simulator identities are deliberately separate from physical Ear identities.
 Only simulated Ear registrations may request a `SIM-EAR-*` identity; Output
@@ -172,11 +172,13 @@ the observation interval; the hub normalizes it to UTC.
 may be `null`. Optional EAR fields `acoustic.assessment` (`schema: ear_hyp_v1`),
 `acoustic.evidence` (`schema: ear_ev_v1`), and development-only
 `acoustic.debug` (`schema: ear_dbg_v1`) may be omitted or null; when present they
-use strict nested objects (`extra` forbidden). Do not place EAR hypotheses in
-`classification.hints`. `spatial.position` is reserved (currently `null`).
-A future `unique_tracks` API metric (distinct `track_id`) is a separate
-follow-up; `unique_observations` continues to count distinct `observation_id`
-values only.
+use strict nested objects (`extra` forbidden). These `ear_*` schemas are
+**dBmap-specific** product schemas on the Observation envelope, not universal
+platform requirements ([Sensor Platform architecture](./sensor-platform-architecture.md)).
+Do not place EAR hypotheses in `classification.hints`. `spatial.position` is
+reserved (currently `null`). A future `unique_tracks` API metric (distinct
+`track_id`) is a separate follow-up; `unique_observations` continues to count
+distinct `observation_id` values only.
 
 Retained observations are rejected. Duplicate MQTT delivery is safe when the
 same `(node_id, sequence_number)` pair is reused. Stored `payload_json` preserves

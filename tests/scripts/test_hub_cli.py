@@ -58,10 +58,14 @@ def test_hub_script_without_arguments_prints_help(script_name):
 
 
 @pytest.mark.parametrize(
-    "script_name",
-    ("ear_audio_compare.py", "hub_summary.py", "hub_event_track.py"),
+    "script_name,commands",
+    (
+        ("ear_audio_compare.py", "{list,watch}"),
+        ("hub_summary.py", "{list,watch}"),
+        ("hub_event_track.py", "{list,watch,summary}"),
+    ),
 )
-def test_report_tools_show_list_and_watch_positional_commands(script_name):
+def test_report_tools_show_list_and_watch_positional_commands(script_name, commands):
     result = subprocess.run(
         [sys.executable, str(SCRIPT_DIRECTORY / script_name), "--help"],
         capture_output=True,
@@ -71,4 +75,4 @@ def test_report_tools_show_list_and_watch_positional_commands(script_name):
 
     assert result.returncode == 0
     assert "positional arguments:" in result.stdout
-    assert "{list,watch}" in result.stdout
+    assert commands in result.stdout

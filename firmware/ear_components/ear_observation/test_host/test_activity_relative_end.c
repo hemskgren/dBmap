@@ -818,6 +818,64 @@ static void test_rel_diag_disabled_format(void)
     EXPECT(dbmap_activity_format_rel_diag(&diag, NULL, 8) == -1);
 }
 
+/**
+ * Armed Relative END + absolute-only entry must latch ABSOLUTE and END on
+ * absolute hold (not cancel via relative stay). Needs a quiet baseline so
+ * abs_exit (-55) is above rel_exit (base+4); with base=-51 that band is empty.
+ */
+static void test_armed_absolute_only_entry_latches_absolute(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = rel_cfg();
+    dbmap_activity_detector_init(&det, &cfg);
+    uint32_t seq = 0;
+    int64_t t = 0;
+
+    for (int i = 0; i < 3; ++i) {
+        seq++;
+        t += 1000000;
+        EXPECT(feed(&det, seq, t, -65.0f).kind == DBMAP_ACTIVITY_EMIT_NONE);
+        EXPECT(det.state == DBMAP_ACTIVITY_IDLE);
+    }
+    EXPECT(det.baseline_count >= 3);
+
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -35.0f);
+    EXPECT(det.state == DBMAP_ACTIVITY_PENDING_ENTER);
+
+    seq++;
+    t += 1000000;
+    dbmap_activity_emission_t e = feed(&det, seq, t, -35.0f);
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_START);
+    EXPECT(det.baseline_reliable);
+    EXPECT(fabsf(det.frozen_baseline_dbfs - (-65.0f)) < 0.01f);
+    EXPECT(!det.relative_armed);
+
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -35.0f);
+    EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
+    EXPECT(det.relative_armed);
+
+    /* -58: abs (-58 < -55) yes; rel (-58 <= -61) no. */
+    seq++;
+    t += 1000000;
+    e = feed(&det, seq, t, -58.0f);
+    EXPECT(det.state == DBMAP_ACTIVITY_PENDING_EXIT);
+    EXPECT(det.exit_latch == DBMAP_ACTIVITY_EXIT_LATCH_ABSOLUTE);
+    EXPECT(det.exit_hold_elapsed_us == 0);
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_NONE);
+
+    /* Absolute hold 1000 ms: one consecutive window completes END. */
+    seq++;
+    t += 1000000;
+    e = feed(&det, seq, t, -58.0f);
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_END);
+    EXPECT(e.termination == DBMAP_ACTIVITY_TERM_NATURAL);
+    EXPECT(det.state == DBMAP_ACTIVITY_IDLE);
+}
+
 /** Exact boundary: relative entry <= , cancel > . */
 static void test_comparator_boundaries(void)
 {
@@ -867,6 +925,7 @@ int main(void)
     test_max_invalid_hold_unchanged();
     test_disabled_regression_ambient();
     test_lifecycle_cleanup_next_episode();
+    test_armed_absolute_only_entry_latches_absolute();
     test_comparator_boundaries();
     test_rel_continuous_2s_hold();
     test_rel_missing_seq_gap_and_resume();

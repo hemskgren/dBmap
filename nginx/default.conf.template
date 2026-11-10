@@ -101,9 +101,9 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
     }
 
-    # USB chip inspection helper + vendored esptool-js (needed when public base path is empty;
-    # otherwise the only_base rule would 404 single-segment paths like /usb-chip-inspect.js).
-    location ~ ^(?<chip_request_base>/[^/]+(?:/[^/]+)*)?(?<chip_uri>/(?:usb-chip-inspect\.js|esptool-js(?:/.*)?))$ {
+    # Root-level dbmap-web assets (needed when public base path is empty; otherwise the
+    # only_base rule would 404 single-segment paths like /usb-chip-inspect.js).
+    location ~ ^(?<chip_request_base>/[^/]+(?:/[^/]+)*)?(?<chip_uri>/(?:usb-chip-inspect\.js|display-config\.js|display-time\.js|observation-lifecycle\.js|esptool-js(?:/.*)?))$ {
         if ($chip_request_base != $dbmap_public_base_path) { return 404; }
         proxy_pass https://$dbmap_web_upstream$chip_uri;
         proxy_ssl_server_name on;

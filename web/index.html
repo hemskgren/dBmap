@@ -182,6 +182,57 @@
         margin: 0.25rem 0 0;
         font-size: 0.82rem;
       }
+      #observation-retained-stats {
+        margin-top: 0.6rem;
+        padding: 0.55rem 0.75rem 0.75rem;
+      }
+      #observation-retained-stats > summary {
+        cursor: pointer;
+        font-weight: 650;
+        font-size: 1.02rem;
+      }
+      #observation-retained-stats[open] {
+        padding-bottom: 0.85rem;
+      }
+      #observation-retained-stats .obs-stats-body {
+        margin-top: 0.55rem;
+      }
+      #observation-retained-stats .obs-stats-body > .notice:first-child {
+        margin: 0 0 0.45rem;
+        font-size: 0.82rem;
+      }
+      #observation-retained-stats .obs-stats-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        align-items: center;
+        margin: 0 0 0.45rem;
+      }
+      #observation-stats-status {
+        margin: 0 0 0.45rem;
+        font-size: 0.82rem;
+      }
+      #observation-stats-table th,
+      #observation-stats-table td {
+        padding: 0.4rem 0.5rem;
+        font-size: 0.86rem;
+        white-space: nowrap;
+      }
+      #observation-stats-table tbody tr[data-node="ALL"] {
+        font-weight: 600;
+      }
+      #observation-stats-notes {
+        margin: 0.45rem 0 0;
+        padding-left: 1.1rem;
+        font-size: 0.82rem;
+        color: #526078;
+      }
+      #observation-stats-notes:empty { display: none; }
+      #observation-stats-legend {
+        margin: 0.35rem 0 0;
+        font-size: 0.8rem;
+        color: #526078;
+      }
       .obs-slot-chart {
         margin-top: 0.45rem;
         display: grid;
@@ -323,8 +374,60 @@
       dialog.usb-console-dialog::backdrop { background: rgba(15, 23, 42, 0.45); }
       dialog.usb-console-dialog h3 { margin: 0 0 0.35rem; }
       dialog.usb-console-dialog > .notice { margin: 0 0 0.65rem; }
+      .usb-console-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 0.55rem 1rem;
+      }
+      .usb-console-toolbar > .actions { margin: 0; flex: 1 1 auto; }
+      .usb-console-find {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: flex-end;
+        gap: 0.35rem 0.5rem;
+        margin-left: auto;
+      }
+      .usb-console-find label {
+        display: grid;
+        gap: 0.15rem;
+        margin: 0;
+        font-size: 0.72rem;
+        color: #64748b;
+      }
+      .usb-console-find input[type="search"] {
+        width: 7.5rem;
+        padding: 0.28rem 0.4rem;
+        font-size: 0.8rem;
+      }
+      .usb-console-find input[type="search"]:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .usb-console-find-count {
+        font-size: 0.7rem;
+        color: #64748b;
+        min-height: 1em;
+      }
+      #usb-console-status.usb-console-hint {
+        margin: 0.35rem 0 0;
+        min-height: 0;
+        font-size: 0.72rem;
+        line-height: 1.3;
+        color: #94a3b8;
+      }
+      #usb-console-status.usb-console-hint.error { color: #a83232; }
+      .usb-console-notice-aside {
+        display: inline-block;
+        margin-top: 0.2rem;
+        font-size: 0.72rem;
+        line-height: 1.3;
+        color: #94a3b8;
+      }
       #usb-console-output {
-        margin: 0.65rem 0 0;
+        margin: 0.45rem 0 0;
         max-height: min(62vh, 36rem);
         overflow: auto;
         padding: 0.75rem;
@@ -337,6 +440,25 @@
         overflow-wrap: normal;
       }
       #usb-console-output:empty::before { content: "USB serial output will appear here."; color: #94a3b8; }
+      #usb-console-output mark.usb-hl-0,
+      #usb-console-output mark.usb-hl-1,
+      #usb-console-output mark.usb-hl-2 {
+        color: #0f172a;
+        border-radius: 2px;
+        padding: 0 0.1em;
+      }
+      #usb-console-output mark.usb-hl-0 { background: #facc15; }
+      #usb-console-output mark.usb-hl-1 { background: #34d399; }
+      #usb-console-output mark.usb-hl-2 { background: #60a5fa; }
+      #usb-console-meter {
+        margin: 0.25rem 0 0;
+        text-align: right;
+        font-size: 0.72rem;
+        line-height: 1.3;
+        color: #94a3b8;
+        min-height: 1em;
+      }
+      #usb-console-meter.usb-console-meter-full { color: #b45309; }
       #browser-flash-panel input[type="checkbox"] { width: auto; }
       #browser-flash-history { display: grid; gap: 0.4rem; }
       .deployment-attempt { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem; padding: 0.55rem; border: 1px solid #e3e9f1; border-radius: 7px; }
@@ -615,16 +737,34 @@
             <!-- Keep outside collapsed registration <details>; a modal dialog there freezes the page behind an invisible backdrop. -->
             <dialog id="usb-console-dialog" class="usb-console-dialog" aria-labelledby="usb-console-title">
               <h3 id="usb-console-title">USB: Console &amp; Logs</h3>
-              <p class="notice">Live serial at 115200 baud. In-browser log retention is about 460&nbsp;KiB, then oldest lines are dropped. Close this before ESP Web Tools or USB provisioning needs the port.</p>
-              <div class="actions">
-                <button id="usb-console-open" class="secondary" type="button">Open USB console</button>
-                <button id="usb-console-clear" class="secondary" type="button" disabled>Clear</button>
-                <button id="usb-console-download" class="secondary" type="button" disabled>Download logs</button>
-                <button id="usb-console-close" class="secondary" type="button" disabled>Close console</button>
-                <button id="usb-console-dismiss" class="secondary" type="button">Close</button>
-                <span id="usb-console-status" class="notice" role="status">Console is closed.</span>
+              <p class="notice">Live serial at 115200 baud. In-browser log retention is about 460&nbsp;KiB, then oldest lines are dropped.<br>
+                <span class="usb-console-notice-aside">Close this before ESP Web Tools or USB provisioning needs the port.</span></p>
+              <div class="usb-console-toolbar">
+                <div class="actions">
+                  <button id="usb-console-open" class="secondary" type="button">Open USB console</button>
+                  <button id="usb-console-clear" class="secondary" type="button" disabled>Clear</button>
+                  <button id="usb-console-download" class="secondary" type="button" disabled>Download logs</button>
+                  <button id="usb-console-close" class="secondary" type="button" disabled>Close console</button>
+                  <button id="usb-console-dismiss" class="secondary" type="button">Close</button>
+                </div>
+                <div class="usb-console-find" aria-label="Highlight log terms">
+                  <label>Highlight 1
+                    <input id="usb-console-find-0" type="search" enterkeyhint="search" autocomplete="off" spellcheck="false" disabled>
+                    <span id="usb-console-find-count-0" class="usb-console-find-count"></span>
+                  </label>
+                  <label>Highlight 2
+                    <input id="usb-console-find-1" type="search" enterkeyhint="search" autocomplete="off" spellcheck="false" disabled>
+                    <span id="usb-console-find-count-1" class="usb-console-find-count"></span>
+                  </label>
+                  <label>Highlight 3
+                    <input id="usb-console-find-2" type="search" enterkeyhint="search" autocomplete="off" spellcheck="false" disabled>
+                    <span id="usb-console-find-count-2" class="usb-console-find-count"></span>
+                  </label>
+                </div>
               </div>
+              <p id="usb-console-status" class="notice usb-console-hint" role="status">Console is closed.</p>
               <pre id="usb-console-output" aria-live="polite"></pre>
+              <div id="usb-console-meter" aria-live="polite">0 lines · 0% · —</div>
             </dialog>
             <div class="table-wrap">
               <table>
@@ -813,14 +953,29 @@
             <article class="overview-card"><span>Recent (max 100)</span><strong id="hub-observation-count">—</strong></article>
             <article class="overview-card"><span>Latest</span><strong id="latest-observation-card">—</strong></article>
           </div>
+          <details id="observation-retained-stats" aria-label="Retained observation statistics">
+            <summary>Observation Statistics</summary>
+            <div class="obs-stats-body">
+              <p class="notice">Complete retained Observation history under a frozen Hub snapshot (CLI <code>hub_event_track summary</code> semantics). Not limited to the recent-100 timeline below. Loads only when you expand this panel (can be slow on large history).</p>
+              <div class="obs-stats-actions">
+                <button id="refresh-observation-stats" class="secondary" type="button">Refresh statistics</button>
+              </div>
+              <p id="observation-stats-status" class="notice" aria-live="polite">Expand to load complete retained-history statistics.</p>
+              <div id="observation-stats-table-wrap" class="table-wrap"></div>
+              <p id="observation-stats-legend" class="notice" hidden>
+                Unique = START/COMPLETE observation_ids; Completed = START+END or COMPLETE; durations from END/COMPLETE episode_duration_ms.
+              </p>
+              <ul id="observation-stats-notes" aria-live="polite"></ul>
+            </div>
+          </details>
           <section>
             <h3>Observation timeline</h3>
-            <p class="notice">Each list row is one observation report (MQTT payload). Unique observation_id values may span many reports. Bars stack filtered reports into adaptive time slots (height = report count). Amber = selected time slot; darker amber = selected row. Clicking a time slot turns Auto-refresh off; re-check Auto-refresh to return to the live latest view. Expanding the JSON panel alone does not pause refresh.</p>
-            <div id="observation-filters" aria-label="Filter observation reports">
-              <label for="observation-filter-node">Node ID
+            <p class="notice">Recent window only: newest 100 reports globally (not full retained history). Each list row is one observation report (MQTT payload). Node/Observation filter counts are raw report counts inside this recent-100 window — not unique observation lifecycles. Bars stack filtered reports into adaptive time slots (height = report count). Amber = selected time slot; darker amber = selected row. Clicking a time slot turns Auto-refresh off; re-check Auto-refresh to return to the live latest view. Expanding the JSON panel alone does not pause refresh.</p>
+            <div id="observation-filters" aria-label="Filter observation reports in the recent-100 window">
+              <label for="observation-filter-node">Node ID (recent 100 reports)
                 <select id="observation-filter-node" multiple size="4"></select>
               </label>
-              <label for="observation-filter-observation">Observation ID
+              <label for="observation-filter-observation">Observation ID (recent 100 reports)
                 <select id="observation-filter-observation" multiple size="4"></select>
               </label>
               <div class="obs-filter-actions">
@@ -852,6 +1007,16 @@
         </section>
       </div>
     </main>
+    <script>
+      (function () {
+        const base = document.querySelector('meta[name="dbmap-base-path"]')?.content || '';
+        const join = (path) => `${base}${path}`.replace(/\/{2,}/g, '/');
+        // Synchronous loads so formatDisplayDateTime exists before the app script.
+        document.write(`<script src="${join('/display-config.js')}"><\/script>`);
+        document.write(`<script src="${join('/display-time.js')}"><\/script>`);
+        document.write(`<script src="${join('/observation-lifecycle.js')}"><\/script>`);
+      })();
+    </script>
     <script>
       const authToken = { value: '' };
       let currentRole = '';
@@ -924,25 +1089,73 @@
         return body;
       }
 
-      /** Walk a Hub list envelope ({pagination, items|reports}) under one snapshot. */
-      async function fetchAllListItems(path) {
-        const pageSize = 500;
-        const first = await api(`${path}?page=1&page_size=${pageSize}&order=newest`);
+      /**
+       * Walk a Hub list envelope ({pagination, items|reports}) under one snapshot.
+       * Pass { withMeta: true, order: 'oldest', requireSnapshot: true } for
+       * retained-history observation fetches (CLI summary semantics).
+       */
+      async function fetchAllListItems(path, options = {}) {
+        const pageSize = Number(options.pageSize) > 0 ? Number(options.pageSize) : 500;
+        const order = options.order === 'oldest' ? 'oldest' : 'newest';
+        const withMeta = Boolean(options.withMeta);
+        const requireSnapshot = Boolean(options.requireSnapshot);
+        const first = await api(`${path}?page=1&page_size=${pageSize}&order=${order}`);
         const key = Array.isArray(first.items) ? 'items' : 'reports';
         const items = [...(first[key] || [])];
-        const totalPages = first.pagination?.total_pages || 1;
+        const rawTotalPages = Number(first.pagination?.total_pages);
+        const totalPages = Number.isFinite(rawTotalPages) && rawTotalPages > 0
+          ? rawTotalPages
+          : 1;
+        const totalCount = Number(first.pagination?.total_count);
         const snapshotId = first.pagination?.snapshot_id;
         for (let page = 2; page <= totalPages; page += 1) {
+          if (requireSnapshot && snapshotId == null) {
+            throw new Error(
+              'Hub pagination meta omitted snapshot_id; cannot guarantee a complete frozen snapshot across pages'
+            );
+          }
           const query = new URLSearchParams({
             page: String(page),
             page_size: String(pageSize),
-            order: 'newest',
+            order,
           });
           if (snapshotId != null) query.set('snapshot_id', String(snapshotId));
           const body = await api(`${path}?${query}`);
           items.push(...(body[key] || []));
         }
-        return items;
+        if (!withMeta) return items;
+        const resolvedTotalCount = Number.isFinite(totalCount) ? totalCount : items.length;
+        if (typeof finalizeObservationSnapshot === 'function' && key === 'reports') {
+          return finalizeObservationSnapshot({
+            reports: items,
+            totalCount: resolvedTotalCount,
+            totalPages,
+            snapshotId: snapshotId == null ? null : snapshotId,
+            order,
+          });
+        }
+        return {
+          reports: items,
+          items,
+          meta: {
+            fetched_report_count: items.length,
+            total_count: resolvedTotalCount,
+            total_pages: totalPages,
+            complete_snapshot: items.length === resolvedTotalCount
+              && (totalPages <= 1 || snapshotId != null),
+            snapshot_id: snapshotId == null ? null : snapshotId,
+            order,
+          },
+        };
+      }
+
+      async function fetchAllObservationReportsSnapshot() {
+        return fetchAllListItems('/api/v1/observations', {
+          pageSize: 500,
+          order: 'oldest',
+          withMeta: true,
+          requireSnapshot: true,
+        });
       }
 
       function el(tag, text, className) {
@@ -952,20 +1165,33 @@
         return node;
       }
 
-      const EU_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('en-GB', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hourCycle: 'h23',
-      });
-
       function formatSeen(value) {
+        if (typeof formatDisplayDateTime === 'function') {
+          return formatDisplayDateTime(value, { empty: 'Never', invalid: 'Unknown' });
+        }
+        // Fallback if display-time.js failed to load (keeps Hub/Devices usable).
         if (!value) return 'Never';
-        const date = new Date(value);
-        return Number.isNaN(date.getTime()) ? 'Unknown' : EU_DATE_TIME_FORMATTER.format(date);
+        const date = value instanceof Date ? value : new Date(value);
+        if (Number.isNaN(date.getTime())) return 'Unknown';
+        try {
+          const parts = new Intl.DateTimeFormat('en-GB', {
+            timeZone: 'Europe/Stockholm',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hourCycle: 'h23',
+            timeZoneName: 'short',
+          }).formatToParts(date);
+          const byType = Object.fromEntries(
+            parts.filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]),
+          );
+          return `${byType.year}-${byType.month}-${byType.day} ${byType.hour}:${byType.minute}:${byType.second} ${byType.timeZoneName || 'CET'}`;
+        } catch (_err) {
+          return date.toISOString();
+        }
       }
 
       function observationIdentity(observation) {
@@ -1169,6 +1395,15 @@
         detailsOpen: false,
       };
 
+      /* Retained-history statistics (CLI summary semantics). Separate from recent-100 timeline. */
+      let observationStatsState = {
+        status: 'idle', // idle | loading | ready | incomplete | error | empty
+        summary: null,
+        fetchMeta: null,
+        error: null,
+        fetchedAt: null,
+      };
+
       function syncObservationAutoRefreshCheckbox() {
         const box = document.getElementById('observation-auto-refresh');
         if (box) box.checked = observationViewState.autoRefresh;
@@ -1245,13 +1480,13 @@
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([value, count]) => ({
             value,
-            label: `${value} (${count} report${count === 1 ? '' : 's'})`,
+            label: `${value} (${count} report${count === 1 ? '' : 's'} in recent 100)`,
           }));
         const observationValues = [...observationCounts.entries()]
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([value, count]) => ({
             value,
-            label: `${shortObservationId(value)} (${count} report${count === 1 ? '' : 's'})`,
+            label: `${shortObservationId(value)} (${count} report${count === 1 ? '' : 's'} in recent 100)`,
           }));
         observationViewState.filterNodeIds = syncMultiSelect(
           document.getElementById('observation-filter-node'),
@@ -1389,8 +1624,9 @@
           filterStatus.textContent = '';
         } else if (!filtersActive) {
           filterStatus.textContent =
-            `Showing all ${observations.length} recent report${observations.length === 1 ? '' : 's'} `
-            + `(${sourceUnique} unique observation${sourceUnique === 1 ? '' : 's'}). `
+            `Showing all ${observations.length} report${observations.length === 1 ? '' : 's'} `
+            + `in the recent-100 window `
+            + `(${sourceUnique} distinct observation_id${sourceUnique === 1 ? '' : 's'} in this window). `
             + 'Hold Ctrl/Cmd to multi-select in either filter.';
         } else {
           const parts = [];
@@ -1404,7 +1640,8 @@
           }
           filterStatus.textContent =
             `Filtered to ${visible.length} report${visible.length === 1 ? '' : 's'} `
-            + `(${visibleUnique} unique) of ${observations.length}. `
+            + `(${visibleUnique} distinct observation_id${visibleUnique === 1 ? '' : 's'}) `
+            + `of ${observations.length} in the recent-100 window. `
             + `${parts.join(', ')} selected.`;
         }
 
@@ -1488,6 +1725,184 @@
         }
       }
 
+      function renderObservationStatistics() {
+        const status = document.getElementById('observation-stats-status');
+        const wrap = document.getElementById('observation-stats-table-wrap');
+        const notes = document.getElementById('observation-stats-notes');
+        const legend = document.getElementById('observation-stats-legend');
+        const refreshButton = document.getElementById('refresh-observation-stats');
+        wrap.replaceChildren();
+        notes.replaceChildren();
+        legend.hidden = true;
+        refreshButton.disabled = observationStatsState.status === 'loading';
+
+        if (observationStatsState.status === 'idle') {
+          status.className = 'notice';
+          status.textContent = 'Expand to load complete retained-history statistics.';
+          return;
+        }
+        if (observationStatsState.status === 'loading') {
+          status.className = 'notice';
+          status.textContent = 'Loading complete retained Observation history…';
+          return;
+        }
+        if (observationStatsState.status === 'error') {
+          status.className = 'notice error';
+          status.textContent = observationStatsState.error
+            || 'Could not load Observation Statistics.';
+          return;
+        }
+
+        const summary = observationStatsState.summary;
+        const meta = observationStatsState.fetchMeta || {};
+        const complete = meta.complete_snapshot === true;
+        if (observationStatsState.status === 'empty' || !summary || summary.report_count === 0) {
+          status.className = 'notice';
+          status.textContent = complete
+            ? 'No retained observation reports in Hub history.'
+            : (meta.completeness_warning
+              || 'Snapshot incomplete; no reports available to summarize.');
+          return;
+        }
+
+        const fetchedLabel = observationStatsState.fetchedAt
+          ? formatSeen(observationStatsState.fetchedAt)
+          : 'unknown';
+        const oldestMs = summary.oldest_report_event_time_ms;
+        const oldestLabel = oldestMs != null ? formatSeen(new Date(oldestMs)) : 'unknown';
+        const snapshotPart = meta.snapshot_id != null
+          ? `hub_snapshot_id=${meta.snapshot_id}`
+          : 'hub_snapshot_id=none';
+        if (!complete) {
+          status.className = 'notice error';
+          status.textContent =
+            `Incomplete snapshot — do not treat these figures as complete retained history. `
+            + `${meta.completeness_warning || ''} `
+            + `${summary.report_count} report${summary.report_count === 1 ? '' : 's'} shown · `
+            + `oldest ${oldestLabel} · fetched ${fetchedLabel} · ${snapshotPart}.`;
+        } else {
+          status.className = 'notice';
+          status.textContent =
+            `Complete retained history: ${summary.report_count} report`
+            + `${summary.report_count === 1 ? '' : 's'} · oldest ${oldestLabel} · `
+            + `fetched ${fetchedLabel} · ${snapshotPart}.`;
+        }
+
+        const durationCell = typeof observationLifecycleDurationCell === 'function'
+          ? observationLifecycleDurationCell
+          : (stats, which) => {
+            const value = which === 'shortest'
+              ? stats.shortest_completed_ms
+              : which === 'longest'
+                ? stats.longest_completed_ms
+                : (stats.completed_with_duration ? stats.total_completed_ms : null);
+            if (value == null) return 'n/a';
+            return typeof formatObservationDurationMs === 'function'
+              ? formatObservationDurationMs(value)
+              : String(value);
+          };
+
+        const table = el('table');
+        table.id = 'observation-stats-table';
+        const head = document.createElement('thead');
+        const headRow = el('tr');
+        for (const label of ['Device', 'Unique', 'Completed', 'Open', 'Shortest', 'Longest', 'Total']) {
+          headRow.append(el('th', label));
+        }
+        head.append(headRow);
+        const body = document.createElement('tbody');
+        const rows = [summary.combined, ...(summary.devices || [])];
+        for (const stats of rows) {
+          const row = el('tr');
+          row.dataset.node = stats.node_id;
+          row.append(
+            el('td', stats.node_id),
+            el('td', String(stats.unique_observations)),
+            el('td', String(stats.completed_observations)),
+            el('td', String(stats.open_observations)),
+            el('td', durationCell(stats, 'shortest')),
+            el('td', durationCell(stats, 'longest')),
+            el('td', durationCell(stats, 'total')),
+          );
+          body.append(row);
+        }
+        table.append(head, body);
+        wrap.append(table);
+        legend.hidden = false;
+
+        const qualityNotes = [...(summary.quality_notes || [])];
+        if (typeof meta.duplicate_delivery_dropped === 'number' && meta.duplicate_delivery_dropped > 0) {
+          qualityNotes.push(
+            `dropped ${meta.duplicate_delivery_dropped} duplicate `
+            + '(node_id, sequence_number) delivery(ies) while fetching'
+          );
+        }
+        if (!complete && meta.completeness_warning) {
+          qualityNotes.unshift(meta.completeness_warning);
+        }
+        for (const note of qualityNotes) {
+          notes.append(el('li', note));
+        }
+      }
+
+      async function refreshObservationStatistics(options = {}) {
+        const force = Boolean(options.force);
+        /* Retained-history fetch is on-demand only (panel open / Refresh). */
+        if (!force) {
+          renderObservationStatistics();
+          return;
+        }
+        if (observationStatsState.status === 'loading') {
+          renderObservationStatistics();
+          return;
+        }
+        if (typeof summarizeObservationLifecycles !== 'function') {
+          observationStatsState = {
+            status: 'error',
+            summary: null,
+            fetchMeta: null,
+            error: 'observation-lifecycle.js failed to load; cannot compute statistics.',
+            fetchedAt: null,
+          };
+          renderObservationStatistics();
+          return;
+        }
+
+        observationStatsState = {
+          ...observationStatsState,
+          status: 'loading',
+          error: null,
+        };
+        renderObservationStatistics();
+        try {
+          const snapshot = await fetchAllObservationReportsSnapshot();
+          const reports = snapshot.reports || [];
+          const meta = snapshot.meta || {};
+          const fetchedAt = new Date();
+          const summary = summarizeObservationLifecycles(reports, { fetchedAt });
+          const complete = meta.complete_snapshot === true;
+          let status = 'ready';
+          if (!complete) status = 'incomplete';
+          else if (!reports.length) status = 'empty';
+          observationStatsState = {
+            status,
+            summary,
+            fetchMeta: meta,
+            error: null,
+            fetchedAt,
+          };
+        } catch (error) {
+          observationStatsState = {
+            status: 'error',
+            summary: null,
+            fetchMeta: null,
+            error: error?.message || 'Could not load Observation Statistics.',
+            fetchedAt: null,
+          };
+        }
+        renderObservationStatistics();
+      }
+
       async function refreshObservations(options = {}) {
         const force = Boolean(options.force);
         if (!force && !observationViewState.autoRefresh) {
@@ -1525,12 +1940,10 @@
             ? `${uniqueTotal} unique · ${dbTotal} reports in database`
             : 'database totals unavailable';
           if (followLive) {
-            status.textContent =
-              `Showing ${observations.length} most recent report${observations.length === 1 ? '' : 's'} `
-              + `(maximum 100); ${totalLabel}. Updated ${formatSeen(new Date())}.`;
+            status.textContent = `${totalLabel}. Updated ${formatSeen(new Date())}.`;
           } else {
             status.textContent =
-              `Auto-refresh off (dig-down). Showing ${observations.length} most recent; ${totalLabel}. `
+              `Auto-refresh off (dig-down). ${totalLabel}. `
               + `Re-check Auto-refresh for the live latest view. Updated ${formatSeen(new Date())}.`;
           }
         } catch (error) {
@@ -3157,28 +3570,201 @@
       const usbConsoleCloseButton = document.getElementById('usb-console-close');
       const usbConsoleClearButton = document.getElementById('usb-console-clear');
       const usbConsoleDownloadButton = document.getElementById('usb-console-download');
+      const usbConsoleFindInputs = [0, 1, 2].map((i) => document.getElementById(`usb-console-find-${i}`));
+      const usbConsoleFindCounts = [0, 1, 2].map((i) => document.getElementById(`usb-console-find-count-${i}`));
+      const usbConsoleMeter = document.getElementById('usb-console-meter');
       /* Bounded in-DOM log retention (UTF-16 code units ≈ bytes for ASCII firmware logs). */
       const USB_CONSOLE_LOG_KEEP_CHARS = 460 * 1024; /* 460 KiB retained after trim */
       const USB_CONSOLE_LOG_TRIM_AT_CHARS = Math.floor(USB_CONSOLE_LOG_KEEP_CHARS * 1.25);
+      let usbConsoleBuffer = '';
+      let usbConsoleRenderRaf = 0;
+      let usbConsoleStickBottom = true;
+      let usbConsoleLastAppendMs = 0;
+      let usbConsoleLineCount = 0;
+      let usbConsoleDeviceId = '';
 
       function showUsbConsoleDialog() {
         if (!usbConsoleDialog.open) usbConsoleDialog.showModal();
       }
 
+      function setUsbConsoleStatus(message, isError = false) {
+        usbConsoleStatus.textContent = message;
+        usbConsoleStatus.className = isError ? 'notice usb-console-hint error' : 'notice usb-console-hint';
+      }
+
+      function usbConsolePortUsbLabel(port) {
+        try {
+          const info = port?.getInfo?.() || {};
+          const vid = Number.isInteger(info.usbVendorId)
+            ? `0x${info.usbVendorId.toString(16).padStart(4, '0')}`
+            : null;
+          const pid = Number.isInteger(info.usbProductId)
+            ? `0x${info.usbProductId.toString(16).padStart(4, '0')}`
+            : null;
+          if (vid && pid) return `${vid}:${pid}`;
+        } catch (_) { /* ignore */ }
+        return 'USB serial';
+      }
+
+      function resolveUsbConsoleDeviceId(port) {
+        if (port && port === inspectedSerialPort) {
+          if (detectedNodeId && detectedNodeId !== 'UNPROVISIONED') return detectedNodeId;
+          if (existingRegisteredNode?.node_id) return existingRegisteredNode.node_id;
+          if (inspectedChipInfo?.macAddress) return inspectedChipInfo.macAddress;
+        }
+        return usbConsolePortUsbLabel(port);
+      }
+
+      function setUsbConsoleOpenStatus() {
+        const id = usbConsoleDeviceId || 'unknown';
+        setUsbConsoleStatus(`Console open · ${id}. Reset board if no logs.`);
+      }
+
+      function noteUsbConsoleDeviceIdFromText(text) {
+        if (!text || !usbConsolePort) return;
+        const match = text.match(/DBMAP_DEVICE_ID=([A-Z0-9][A-Z0-9_-]{0,63})/);
+        if (!match) return;
+        if (usbConsoleDeviceId === match[1]) return;
+        usbConsoleDeviceId = match[1];
+        setUsbConsoleOpenStatus();
+      }
+
+      function usbConsoleFindTerms() {
+        return usbConsoleFindInputs.map((input) => (input?.value || '').trim());
+      }
+
+      function usbConsoleHasFindTerms() {
+        return usbConsoleFindTerms().some((term) => term.length > 0);
+      }
+
+      function escapeUsbConsoleHtml(text) {
+        return text
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      function collectUsbConsoleHighlights(text, terms) {
+        const ranges = [];
+        const counts = terms.map(() => 0);
+        const lowerText = text.toLowerCase();
+        terms.forEach((term, termIndex) => {
+          if (!term) return;
+          const lowerTerm = term.toLowerCase();
+          let from = 0;
+          while (from < text.length) {
+            const at = lowerText.indexOf(lowerTerm, from);
+            if (at < 0) break;
+            ranges.push({ start: at, end: at + term.length, termIndex });
+            counts[termIndex] += 1;
+            from = at + Math.max(term.length, 1);
+          }
+        });
+        ranges.sort((a, b) => a.start - b.start || b.end - a.end || a.termIndex - b.termIndex);
+        const accepted = [];
+        let cursor = 0;
+        for (const range of ranges) {
+          if (range.start < cursor) continue;
+          accepted.push(range);
+          cursor = range.end;
+        }
+        /* Counts include overlapping hits; displayed marks skip overlaps (earlier/longer wins). */
+        return { ranges: accepted, counts };
+      }
+
+      function renderUsbConsoleOutput() {
+        const stick = usbConsoleStickBottom
+          || (usbConsoleOutput.scrollTop + usbConsoleOutput.clientHeight
+            >= usbConsoleOutput.scrollHeight - 8);
+        const terms = usbConsoleFindTerms();
+        if (!usbConsoleHasFindTerms()) {
+          usbConsoleOutput.textContent = usbConsoleBuffer;
+          usbConsoleFindCounts.forEach((node) => { if (node) node.textContent = ''; });
+        } else {
+          const { ranges, counts } = collectUsbConsoleHighlights(usbConsoleBuffer, terms);
+          let html = '';
+          let cursor = 0;
+          for (const range of ranges) {
+            html += escapeUsbConsoleHtml(usbConsoleBuffer.slice(cursor, range.start));
+            html += `<mark class="usb-hl-${range.termIndex}">`;
+            html += escapeUsbConsoleHtml(usbConsoleBuffer.slice(range.start, range.end));
+            html += '</mark>';
+            cursor = range.end;
+          }
+          html += escapeUsbConsoleHtml(usbConsoleBuffer.slice(cursor));
+          usbConsoleOutput.innerHTML = html;
+          usbConsoleFindCounts.forEach((node, i) => {
+            if (!node) return;
+            node.textContent = terms[i] ? `${counts[i]} match${counts[i] === 1 ? '' : 'es'}` : '';
+          });
+        }
+        if (stick) usbConsoleOutput.scrollTop = usbConsoleOutput.scrollHeight;
+      }
+
+      function countUsbConsoleLines(text) {
+        if (!text) return 0;
+        let lines = 0;
+        for (let i = 0; i < text.length; i += 1) {
+          if (text.charCodeAt(i) === 10) lines += 1;
+        }
+        if (text.charCodeAt(text.length - 1) !== 10) lines += 1;
+        return lines;
+      }
+
+      function formatUsbConsoleAge(nowMs) {
+        if (!usbConsoleLastAppendMs) return '—';
+        const ageSec = Math.max(0, Math.floor((nowMs - usbConsoleLastAppendMs) / 1000));
+        /* Steady 1–2 Hz logs: avoid a flickering clock; show live instead. */
+        if (ageSec < 3) return 'live';
+        return `${ageSec}s ago`;
+      }
+
+      function updateUsbConsoleMeter() {
+        if (!usbConsoleMeter) return;
+        const pct = Math.min(
+          100,
+          Math.round((100 * usbConsoleBuffer.length) / USB_CONSOLE_LOG_KEEP_CHARS),
+        );
+        const kib = Math.round(usbConsoleBuffer.length / 1024);
+        const age = formatUsbConsoleAge(Date.now());
+        usbConsoleMeter.textContent =
+          `${usbConsoleLineCount.toLocaleString('en-US')} lines · ${pct}% (${kib} KiB) · ${age}`;
+        usbConsoleMeter.classList.toggle('usb-console-meter-full', pct >= 90);
+      }
+
+      function scheduleUsbConsoleRender() {
+        if (usbConsoleRenderRaf) return;
+        usbConsoleRenderRaf = requestAnimationFrame(() => {
+          usbConsoleRenderRaf = 0;
+          renderUsbConsoleOutput();
+          updateUsbConsoleMeter();
+        });
+      }
+
       function syncUsbConsoleControls(open) {
         usbConsoleOpenButton.disabled = open || !navigator.serial;
         usbConsoleCloseButton.disabled = !open;
-        usbConsoleClearButton.disabled = usbConsoleOutput.textContent.length === 0;
-        usbConsoleDownloadButton.disabled = usbConsoleOutput.textContent.length === 0;
+        const empty = usbConsoleBuffer.length === 0;
+        usbConsoleClearButton.disabled = empty;
+        usbConsoleDownloadButton.disabled = empty;
+        /* Highlight inputs stay usable once the console has been opened (or buffer exists). */
+        const findEnabled = open || usbConsoleBuffer.length > 0;
+        usbConsoleFindInputs.forEach((input) => {
+          if (input) input.disabled = !findEnabled;
+        });
       }
 
       function appendUsbConsoleText(text) {
         if (!text) return;
-        usbConsoleOutput.textContent += text;
-        if (usbConsoleOutput.textContent.length > USB_CONSOLE_LOG_TRIM_AT_CHARS) {
-          usbConsoleOutput.textContent = usbConsoleOutput.textContent.slice(-USB_CONSOLE_LOG_KEEP_CHARS);
+        usbConsoleBuffer += text;
+        if (usbConsoleBuffer.length > USB_CONSOLE_LOG_TRIM_AT_CHARS) {
+          usbConsoleBuffer = usbConsoleBuffer.slice(-USB_CONSOLE_LOG_KEEP_CHARS);
         }
-        usbConsoleOutput.scrollTop = usbConsoleOutput.scrollHeight;
+        usbConsoleLineCount = countUsbConsoleLines(usbConsoleBuffer);
+        usbConsoleLastAppendMs = Date.now();
+        noteUsbConsoleDeviceIdFromText(text);
+        scheduleUsbConsoleRender();
         syncUsbConsoleControls(Boolean(usbConsolePort));
       }
 
@@ -3188,6 +3774,7 @@
         const port = usbConsolePort;
         usbConsoleReader = null;
         usbConsolePort = null;
+        usbConsoleDeviceId = '';
         if (reader) {
           try { await reader.cancel(); } catch (_) { /* ignore */ }
           try { reader.releaseLock(); } catch (_) { /* ignore */ }
@@ -3195,8 +3782,7 @@
         if (port) {
           try { await port.close(); } catch (_) { /* ignore */ }
         }
-        usbConsoleStatus.textContent = message;
-        usbConsoleStatus.className = 'notice';
+        setUsbConsoleStatus(message);
         syncUsbConsoleControls(false);
       }
 
@@ -3209,8 +3795,7 @@
             appendUsbConsoleText(decoder.decode(value, { stream: true }));
           } catch (error) {
             if (usbConsoleKeepReading) {
-              usbConsoleStatus.textContent = `USB console stopped: ${error.message}`;
-              usbConsoleStatus.className = 'notice error';
+              setUsbConsoleStatus(`USB console stopped: ${error.message}`, true);
             }
             break;
           }
@@ -3222,8 +3807,7 @@
 
       async function openUsbConsole(preferredPort = null) {
         if (!navigator.serial) {
-          usbConsoleStatus.textContent = 'Web Serial is not available in this browser.';
-          usbConsoleStatus.className = 'notice error';
+          setUsbConsoleStatus('Web Serial is not available in this browser.', true);
           return;
         }
         await stopUsbConsole('Opening USB console…');
@@ -3233,9 +3817,8 @@
           usbConsolePort = port;
           usbConsoleReader = port.readable.getReader();
           usbConsoleKeepReading = true;
-          usbConsoleStatus.textContent =
-            'Console open. Press Reset on the board if logs do not appear.';
-          usbConsoleStatus.className = 'notice';
+          usbConsoleDeviceId = resolveUsbConsoleDeviceId(port);
+          setUsbConsoleOpenStatus();
           syncUsbConsoleControls(true);
           readUsbConsoleLoop();
         } catch (error) {
@@ -3244,7 +3827,7 @@
               ? 'No USB serial port was selected.'
               : `Could not open USB console: ${error.message}`,
           );
-          if (error.name !== 'NotFoundError') usbConsoleStatus.className = 'notice error';
+          if (error.name !== 'NotFoundError') setUsbConsoleStatus(usbConsoleStatus.textContent, true);
         }
       }
 
@@ -3259,11 +3842,15 @@
       usbConsoleOpenButton.addEventListener('click', () => openUsbConsole(inspectedSerialPort));
       usbConsoleCloseButton.addEventListener('click', () => stopUsbConsole('Console is closed.'));
       usbConsoleClearButton.addEventListener('click', () => {
-        usbConsoleOutput.textContent = '';
+        usbConsoleBuffer = '';
+        usbConsoleLineCount = 0;
+        usbConsoleLastAppendMs = 0;
+        renderUsbConsoleOutput();
+        updateUsbConsoleMeter();
         syncUsbConsoleControls(Boolean(usbConsolePort));
       });
       usbConsoleDownloadButton.addEventListener('click', () => {
-        const blob = new Blob([usbConsoleOutput.textContent], { type: 'text/plain' });
+        const blob = new Blob([usbConsoleBuffer], { type: 'text/plain' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
@@ -3271,11 +3858,22 @@
         link.click();
         URL.revokeObjectURL(url);
       });
+      usbConsoleOutput.addEventListener('scroll', () => {
+        usbConsoleStickBottom =
+          usbConsoleOutput.scrollTop + usbConsoleOutput.clientHeight
+          >= usbConsoleOutput.scrollHeight - 8;
+      });
+      usbConsoleFindInputs.forEach((input) => {
+        if (!input) return;
+        input.addEventListener('input', () => scheduleUsbConsoleRender());
+      });
       if (!navigator.serial) {
         usbConsoleLaunchButton.disabled = true;
         usbConsoleOpenButton.disabled = true;
-        usbConsoleStatus.textContent = 'Web Serial is not available. Use a supported Chromium-based browser on a secure connection.';
-        usbConsoleStatus.className = 'notice error';
+        setUsbConsoleStatus(
+          'Web Serial is not available. Use a supported Chromium-based browser on a secure connection.',
+          true,
+        );
       } else {
         navigator.serial.addEventListener('disconnect', (event) => {
           if (event.target === usbConsolePort) {
@@ -3284,6 +3882,9 @@
         });
       }
       syncUsbConsoleControls(false);
+      updateUsbConsoleMeter();
+      /* Age text only needs coarse refresh; hang detection without log spam. */
+      setInterval(updateUsbConsoleMeter, 5000);
 
       function saveDeploymentSession(patch) {
         deploymentSession = { ...(deploymentSession || {}), ...patch, updated_at: new Date().toISOString() };
@@ -5371,6 +5972,17 @@
       document.getElementById('refresh-observations').addEventListener('click', () => {
         if (observationViewState.autoRefresh) clearObservationDigDown();
         refreshObservations({ force: true });
+      });
+      document.getElementById('refresh-observation-stats').addEventListener('click', () => {
+        refreshObservationStatistics({ force: true });
+      });
+      document.getElementById('observation-retained-stats').addEventListener('toggle', (event) => {
+        if (!event.currentTarget.open) return;
+        if (observationStatsState.status === 'idle' || observationStatsState.status === 'error') {
+          refreshObservationStatistics({ force: true });
+        } else {
+          renderObservationStatistics();
+        }
       });
       document.getElementById('observation-filter-node').addEventListener('change', () => {
         readObservationFiltersFromDom();
