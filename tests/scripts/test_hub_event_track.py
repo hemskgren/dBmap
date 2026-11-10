@@ -593,6 +593,7 @@ def _hierarchical_report(
     event_time_utc: str,
     emission_kind: str | None,
     interval_duration_ms: float = 1000.0,
+    episode_duration_ms: float | None = None,
 ) -> dict:
     identity = {
         "observation_id": observation_id,
@@ -608,7 +609,9 @@ def _hierarchical_report(
         "clock_offset_ms": None,
         "timestamp_uncertainty_ms": 10.0,
         "interval_duration_ms": interval_duration_ms,
-        "episode_duration_ms": interval_duration_ms,
+        "episode_duration_ms": (
+            interval_duration_ms if episode_duration_ms is None else episode_duration_ms
+        ),
     }
     if emission_kind is not None:
         context["emission_kind"] = emission_kind
@@ -1980,3 +1983,201 @@ def test_ground_truth_hints_do_not_change_localization_inputs() -> None:
     for member in assembled:
         assert member.classification is not None
         assert "association_policy" in member.classification
+
+
+def test_observation_lifecycle_summary_multi_device_open_and_periodic() -> None:
+    completed_a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    open_a = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    completed_b = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    periodic_only = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    observations = [
+        _hierarchical_report(
+            observation_id=completed_a,
+            node_id="EAR-001",
+            sequence_number=1,
+            event_time_utc="2026-11-10T10:00:00Z",
+            emission_kind="start",
+            interval_duration_ms=2020.0,
+            episode_duration_ms=2020.0,
+        ),
+        _hierarchical_report(
+            observation_id=completed_a,
+            node_id="EAR-001",
+            sequence_number=2,
+            event_time_utc="2026-11-10T10:00:01Z",
+            emission_kind="periodic",
+            interval_duration_ms=1000.0,
+            episode_duration_ms=3020.0,
+        ),
+        _hierarchical_report(
+            observation_id=completed_a,
+            node_id="EAR-001",
+            sequence_number=3,
+            event_time_utc="2026-11-10T10:00:03Z",
+            emission_kind="end",
+            interval_duration_ms=3060.0,
+            episode_duration_ms=5080.0,
+        ),
+        _hierarchical_report(
+            observation_id=open_a,
+            node_id="EAR-001",
+            sequence_number=4,
+            event_time_utc="2026-11-10T10:05:00Z",
+            emission_kind="start",
+            interval_duration_ms=1000.0,
+            episode_duration_ms=1000.0,
+        ),
+        _hierarchical_report(
+            observation_id=open_a,
+            node_id="EAR-001",
+            sequence_number=5,
+            event_time_utc="2026-11-10T10:05:05Z",
+            emission_kind="periodic",
+            interval_duration_ms=1000.0,
+            episode_duration_ms=6000.0,
+        ),
+        _hierarchical_report(
+            observation_id=completed_b,
+            node_id="EAR-002",
+            sequence_number=10,
+            event_time_utc="2026-11-10T10:00:00Z",
+            emission_kind="start",
+            interval_duration_ms=1000.0,
+            episode_duration_ms=1000.0,
+        ),
+        _hierarchical_report(
+            observation_id=completed_b,
+            node_id="EAR-002",
+            sequence_number=11,
+            event_time_utc="2026-11-10T10:00:02Z",
+            emission_kind="end",
+            interval_duration_ms=1500.0,
+            episode_duration_ms=2500.0,
+        ),
+        _hierarchical_report(
+            observation_id=periodic_only,
+            node_id="EAR-002",
+            sequence_number=12,
+            event_time_utc="2026-11-10T10:10:00Z",
+            emission_kind="periodic",
+            interval_duration_ms=1000.0,
+            episode_duration_ms=1000.0,
+        ),
+    ]
+
+    summary = hub_event_track.summarize_observation_lifecycles(observations)
+    assert summary.combined.unique_observations == 3
+    assert summary.combined.completed_observations == 2
+    assert summary.combined.open_observations == 1
+    assert summary.combined.shortest_completed_ms == 2500.0
+    assert summary.combined.longest_completed_ms == 5080.0
+    assert summary.combined.total_completed_ms == 7580.0
+
+    by_device = {item.node_id: item for item in summary.devices}
+    assert by_device["EAR-001"].unique_observations == 2
+    assert by_device["EAR-001"].completed_observations == 1
+    assert by_device["EAR-001"].open_observations == 1
+    assert by_device["EAR-001"].shortest_completed_ms == 5080.0
+    assert by_device["EAR-001"].total_completed_ms == 5080.0
+    assert by_device["EAR-002"].unique_observations == 1
+    assert by_device["EAR-002"].completed_observations == 1
+    assert by_device["EAR-002"].open_observations == 0
+    assert by_device["EAR-002"].total_completed_ms == 2500.0
+
+    assert any("without START/COMPLETE" in note for note in summary.quality_notes)
+    assert summary.oldest_report_event_time is not None
+    assert summary.oldest_report_event_time.isoformat(timespec="seconds") == (
+        "2026-11-10T10:00:00+00:00"
+    )
+
+    fetched_at = datetime(2026, 11, 10, 12, 24, 15, tzinfo=UTC)
+    summary.fetched_at = fetched_at
+    lines = hub_event_track.format_observation_lifecycle_summary(
+        summary,
+        fetch_meta={"snapshot_id": 42, "complete_snapshot": True},
+    )
+    text = "\n".join(lines)
+    assert "Observation lifecycle summary" in text
+    assert "retained history" in text
+    assert "hub_snapshot_id: 42" in text
+    assert "oldest report:" in text
+    assert "fetched at:" in text
+    assert "Device" in text and "Unique" in text and "Completed" in text
+    assert "ALL" in text
+    assert "EAR-001" in text
+    assert "EAR-002" in text
+    assert "5080 ms (5.1s)" in text
+    assert "2500 ms (2.5s)" in text
+    assert "Data-quality notes" in text
+
+    payload = hub_event_track.observation_lifecycle_summary_to_dict(
+        summary,
+        fetch_meta={"snapshot_id": 42, "complete_snapshot": True},
+    )
+    assert payload["report_count"] == 8
+    assert payload["oldest_report_event_time_utc"] == "2026-11-10T10:00:00+00:00"
+    assert payload["fetched_at_utc"] == "2026-11-10T12:24:15+00:00"
+    assert payload["combined"]["unique_observations"] == 3
+    assert payload["combined"]["total_completed_ms"] == 7580.0
+    assert payload["hub_snapshot_id"] == 42
+    assert len(payload["devices"]) == 2
+
+
+def test_observation_lifecycle_summary_ignores_arrival_gap_and_duplicate_start() -> None:
+    oid = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    observations = [
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-003",
+            sequence_number=1,
+            event_time_utc="2026-11-10T11:00:00Z",
+            emission_kind="start",
+            interval_duration_ms=1000.0,
+            episode_duration_ms=1000.0,
+        ),
+        # Duplicate START must not create a second unique observation.
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-003",
+            sequence_number=2,
+            event_time_utc="2026-11-10T11:00:01Z",
+            emission_kind="start",
+            interval_duration_ms=1000.0,
+            episode_duration_ms=2000.0,
+        ),
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-003",
+            sequence_number=3,
+            event_time_utc="2026-11-10T11:00:10Z",
+            emission_kind="end",
+            interval_duration_ms=9000.0,
+            episode_duration_ms=12000.0,
+        ),
+    ]
+    summary = hub_event_track.summarize_observation_lifecycles(observations)
+    assert summary.combined.unique_observations == 1
+    assert summary.combined.completed_observations == 1
+    assert summary.combined.open_observations == 0
+    assert summary.combined.total_completed_ms == 12000.0
+    assert any("duplicate START" in note for note in summary.quality_notes)
+
+
+def test_observation_lifecycle_summary_complete_kind_counts_as_completed() -> None:
+    oid = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    observations = [
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-004",
+            sequence_number=1,
+            event_time_utc="2026-11-10T12:00:00Z",
+            emission_kind="complete",
+            interval_duration_ms=4000.0,
+            episode_duration_ms=4000.0,
+        )
+    ]
+    summary = hub_event_track.summarize_observation_lifecycles(observations)
+    assert summary.combined.unique_observations == 1
+    assert summary.combined.completed_observations == 1
+    assert summary.combined.open_observations == 0
+    assert summary.combined.total_completed_ms == 4000.0
