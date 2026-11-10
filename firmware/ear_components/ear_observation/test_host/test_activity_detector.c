@@ -141,6 +141,28 @@ static void test_boot_settle_and_invalid_hold(void)
     EXPECT(det.state == DBMAP_ACTIVITY_IDLE);
 }
 
+static void test_boot_settle_elapsed_since_i2s_enable(void)
+{
+    /* Design B: I2S may already be warm when the detector starts. Settle is
+     * keyed off ms_since_i2s_enable, not observation-task uptime. */
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = test_cfg();
+    cfg.boot_settle_ms = 5000;
+    cfg.min_activity_ms = 2000;
+    dbmap_activity_detector_init(&det, &cfg);
+
+    dbmap_activity_emission_t e =
+        feed(&det, 1, 6000000, 6000, -40.0f, "ok", "signal_present");
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_NONE);
+    EXPECT(det.windows_boot_settle == 0);
+    EXPECT(det.boot_complete);
+    EXPECT(det.state == DBMAP_ACTIVITY_PENDING_ENTER);
+
+    e = feed(&det, 2, 7000000, 7000, -40.0f, "ok", "signal_present");
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_START);
+    EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
+}
+
 static void test_start_periodic_end(void)
 {
     dbmap_activity_detector_t det;
@@ -500,6 +522,7 @@ int main(void)
     test_usable_allows_unknown_rejects_faults();
     test_weak_unknown_can_enter_via_rms();
     test_boot_settle_and_invalid_hold();
+    test_boot_settle_elapsed_since_i2s_enable();
     test_start_periodic_end();
     test_invalid_does_not_end_as_silence();
     test_forced_end_after_max_invalid_hold();
