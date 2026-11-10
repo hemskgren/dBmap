@@ -7,11 +7,85 @@ import json
 import os
 import re
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+DEFAULT_DISPLAY_TIMEZONE = "Europe/Stockholm"
 
 
 class HubCliError(ValueError):
     pass
+
+
+def resolve_display_timezone(name: str | None = None) -> ZoneInfo:
+    """Return the display timezone; invalid/missing names fall back to Stockholm."""
+    raw = (
+        name
+        if name is not None
+        else os.environ.get("DBMAP_DISPLAY_TIMEZONE", DEFAULT_DISPLAY_TIMEZONE)
+    )
+    if not isinstance(raw, str) or not raw.strip():
+        raw = DEFAULT_DISPLAY_TIMEZONE
+    candidate = raw.strip()
+    try:
+        return ZoneInfo(candidate)
+    except ZoneInfoNotFoundError:
+        if candidate == DEFAULT_DISPLAY_TIMEZONE:
+            raise
+        return ZoneInfo(DEFAULT_DISPLAY_TIMEZONE)
+
+
+def _coerce_display_datetime(value: datetime | str | None) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def format_display_datetime(
+    value: datetime | str | None,
+    *,
+    empty: str = "unknown",
+    invalid: str | None = None,
+    timezone_name: str | None = None,
+) -> str:
+    """Format a timestamp for human CLI/web-aligned display.
+
+    Always ``YYYY-MM-DD HH:MM:SS <tzname>`` in ``Europe/Stockholm`` by default
+    (CET/CEST chosen automatically for the displayed instant). Machine-readable
+    API/MQTT/DB values are not modified by this helper.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return empty
+    parsed = _coerce_display_datetime(value)
+    if parsed is None:
+        if invalid is not None:
+            return invalid
+        return str(value)
+    zone = resolve_display_timezone(timezone_name)
+    local = parsed.astimezone(zone)
+    return local.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def format_display_now(*, timezone_name: str | None = None) -> str:
+    return format_display_datetime(
+        datetime.now(tz=UTC),
+        timezone_name=timezone_name,
+    )
 
 
 def summarize_hub_http_error_body(body: bytes | str, *, max_chars: int = 160) -> str:

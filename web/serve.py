@@ -1,11 +1,16 @@
 """Serve the static dBmap UI over HTTPS inside the Compose network."""
 
 import ipaddress
+import json
 import os
+import re
 import ssl
 import sys
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+DEFAULT_DISPLAY_TIMEZONE = "Europe/Stockholm"
+_SAFE_TZ = re.compile(r"^[A-Za-z0-9_/+-]+$")
 
 
 def _is_client_disconnect(exc: BaseException | None) -> bool:
@@ -36,6 +41,27 @@ def _logged_client_ip(headers, fallback: str) -> str:
     return fallback
 
 
+def resolve_display_timezone_env() -> str:
+    raw = os.environ.get("DBMAP_DISPLAY_TIMEZONE", DEFAULT_DISPLAY_TIMEZONE)
+    if not isinstance(raw, str) or not raw.strip():
+        return DEFAULT_DISPLAY_TIMEZONE
+    candidate = raw.strip()
+    if not _SAFE_TZ.fullmatch(candidate):
+        return DEFAULT_DISPLAY_TIMEZONE
+    return candidate
+
+
+def build_display_config_js(timezone_name: str | None = None) -> bytes:
+    tz = timezone_name if timezone_name is not None else resolve_display_timezone_env()
+    if not _SAFE_TZ.fullmatch(tz):
+        tz = DEFAULT_DISPLAY_TIMEZONE
+    return (
+        "window.DBMAP_DISPLAY_TIMEZONE = "
+        + json.dumps(tz)
+        + ";\n"
+    ).encode("utf-8")
+
+
 class StaticHandler(SimpleHTTPRequestHandler):
     def address_string(self) -> str:
         return _logged_client_ip(getattr(self, "headers", None), self.client_address[0])
@@ -53,15 +79,24 @@ class StaticHandler(SimpleHTTPRequestHandler):
                 raise
 
     def do_GET(self) -> None:
-        if self.path.split("?", 1)[0] != "/health":
-            super().do_GET()
+        path = self.path.split("?", 1)[0]
+        if path == "/health":
+            body = b"ok\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
-        body = b"ok\n"
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        if path == "/display-config.js":
+            body = build_display_config_js()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
 
 
 class ThreadingHTTPSServer(ThreadingHTTPServer):

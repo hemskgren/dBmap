@@ -11,7 +11,12 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from lib.hub_cli import print_help_without_arguments
+from lib.hub_cli import (
+    HubCliError,
+    format_display_now,
+    load_project_env,
+    print_help_without_arguments,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OLDER_THAN_HOURS = 4.0
@@ -210,7 +215,7 @@ print(json.dumps({{
     "deleted": deleted if deleted is not None else before - after,
     "remaining": after,
     "older_than_hours": hours,
-    "cutoff_utc": cutoff.isoformat(),
+    "cutoff_utc": cutoff.isoformat(timespec="seconds"),
 }}))
 """
     return json.loads(_run_python_in_hub(code))
@@ -284,6 +289,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    try:
+        load_project_env()
+    except HubCliError as exc:
+        print(f"Hub configuration failed: {exc}", file=sys.stderr)
+        return 1
     parser = build_parser()
     if print_help_without_arguments(parser):
         return 0
@@ -291,20 +301,23 @@ def main() -> int:
     try:
         if args.command == "clear":
             result = clear_all_observations()
+            cleared_at = format_display_now()
             print(
-                f"Cleared observations: deleted={result['deleted']} "
-                f"remaining={result['remaining']}"
+                f"Cleared observations at {cleared_at}: "
+                f"deleted={result['deleted']} remaining={result['remaining']}"
             )
         elif args.command == "prune":
             result = prune_observations(older_than_hours=args.older_than_hours)
+            pruned_at = format_display_now()
             if result["older_than_hours"] == 0:
                 print(
-                    f"Pruned all observations: "
+                    f"Pruned all observations at {pruned_at}: "
                     f"deleted={result['deleted']} remaining={result['remaining']}"
                 )
             else:
                 print(
-                    f"Pruned observations older than {result['older_than_hours']:g}h "
+                    f"Pruned observations at {pruned_at}: "
+                    f"older than {result['older_than_hours']:g}h "
                     f"(cutoff {result['cutoff_utc']}): "
                     f"deleted={result['deleted']} remaining={result['remaining']}"
                 )

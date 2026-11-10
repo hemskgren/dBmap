@@ -34,6 +34,8 @@ services:
     platform: linux/amd64
     restart: unless-stopped
     logging: *default-logging
+    environment:
+      DBMAP_DISPLAY_TIMEZONE: ${DBMAP_DISPLAY_TIMEZONE:-Europe/Stockholm}
     expose:
       - "443"
     volumes:

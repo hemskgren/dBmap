@@ -9,11 +9,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
-from datetime import UTC, datetime
 from typing import Any
 
 from lib.hub_cli import (
     add_hub_connection_arguments,
+    format_display_datetime,
+    format_display_now,
     format_hub_http_error,
     load_project_env,
     print_help_without_arguments,
@@ -261,13 +262,7 @@ def component_states(status: dict[str, Any]) -> dict[str, str]:
 def _format_local_timestamp(value: Any) -> str:
     if not isinstance(value, str) or not value:
         return "Not reported"
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return value
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone().strftime("%d/%m/%Y %H:%M:%S %Z")
+    return format_display_datetime(value, empty="Not reported", invalid=value)
 
 
 def _format_duration_seconds(seconds: Any) -> str:
@@ -564,7 +559,7 @@ def main() -> int:
                 )
             else:
                 changes = status_changes(previous, current)
-                timestamp = datetime.now().astimezone().strftime("%d/%m/%Y %H:%M:%S %Z")
+                timestamp = format_display_now()
                 if changes:
                     print(f"\n[{timestamp}] Service status changes")
                     for change in changes:
