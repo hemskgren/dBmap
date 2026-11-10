@@ -229,12 +229,14 @@ menu "dBmap Ear Observation"
         help
             When enabled, the activity task prints ~1 Hz measurement/state
             snapshots and ~5 s emission/invalid/MQTT-drop counters on the
-            console UART. When DBMAP_EAR_OBS_L0 is also enabled, prints
-            per-window L0 and per-emission interval L0 summaries, L1 analyze
-            counters (when L1 on), and runtime CPU MHz / heap. Independent
-            of MQTT/HTTPS. Default off. Does not change thresholds, hysteresis,
-            timing, or Observation emission. Do not enable in production fleet
-            images.
+            console UART. Also one-shot: first 5 post-boot-settle usable
+            windows (rms/peak/seq/status) and each Relative END baseline_freeze
+            (accepted samples + frozen median). When DBMAP_EAR_OBS_L0 is also
+            enabled, prints per-window L0 and per-emission interval L0
+            summaries, L1 analyze counters (when L1 on), and runtime CPU MHz /
+            heap. Independent of MQTT/HTTPS. Default off. Does not change
+            thresholds, hysteresis, timing, or Observation emission. Do not
+            enable in production fleet images.
 
     config DBMAP_EAR_OBS_LIFECYCLE_V2
         bool "Experimental Observation lifecycle v2 (signature persistence)"

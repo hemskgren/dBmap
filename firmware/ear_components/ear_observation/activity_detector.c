@@ -5,6 +5,22 @@
 #include <stdint.h>
 #include <string.h>
 
+#if defined(ESP_PLATFORM)
+#include "esp_log.h"
+#include "sdkconfig.h"
+#if defined(CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG) && CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+#define DBMAP_ACTIVITY_SERIAL_DIAG 1
+static const char *TAG = "ear_act";
+#endif
+#endif
+
+#ifndef DBMAP_ACTIVITY_SERIAL_DIAG
+#define DBMAP_ACTIVITY_SERIAL_DIAG 0
+#endif
+
+/** Bounded one-shot log of first usable windows after boot settle. */
+#define DBMAP_ACTIVITY_POST_SETTLE_DIAG_MAX 5u
+
 static void clear_exit_hold(dbmap_activity_detector_t *det)
 {
     det->exit_hold_elapsed_us = 0;
@@ -230,7 +246,12 @@ static void baseline_drop_stale(dbmap_activity_detector_t *det, int64_t now_us)
     }
 }
 
-static void baseline_push(dbmap_activity_detector_t *det, float rms, int64_t t_end_us)
+static void baseline_push(
+    dbmap_activity_detector_t *det,
+    float rms,
+    int64_t t_end_us,
+    uint32_t window_seq
+)
 {
     if (!det->cfg.relative_end_enabled || det->baseline_frozen) {
         return;
@@ -244,6 +265,7 @@ static void baseline_push(dbmap_activity_detector_t *det, float rms, int64_t t_e
     }
     det->baseline_entries[det->baseline_head].rms_dbfs = rms;
     det->baseline_entries[det->baseline_head].t_end_mono_us = t_end_us;
+    det->baseline_entries[det->baseline_head].window_seq = window_seq;
     det->baseline_entries[det->baseline_head].valid = true;
     det->baseline_head = (det->baseline_head + 1u) % DBMAP_ACTIVITY_BASELINE_CAP;
     det->baseline_count++;
@@ -258,6 +280,11 @@ static void baseline_freeze(dbmap_activity_detector_t *det, int64_t episode_star
 
     float vals[DBMAP_ACTIVITY_BASELINE_CAP];
     uint32_t n = 0;
+#if DBMAP_ACTIVITY_SERIAL_DIAG
+    uint32_t accepted_seq[DBMAP_ACTIVITY_BASELINE_CAP];
+    int64_t accepted_t[DBMAP_ACTIVITY_BASELINE_CAP];
+    float accepted_rms[DBMAP_ACTIVITY_BASELINE_CAP];
+#endif
     for (uint32_t i = 0; i < det->baseline_count; ++i) {
         const uint32_t idx =
             (det->baseline_head + DBMAP_ACTIVITY_BASELINE_CAP - det->baseline_count + i)
@@ -270,6 +297,11 @@ static void baseline_freeze(dbmap_activity_detector_t *det, int64_t episode_star
         if (s->t_end_mono_us > episode_start_us) {
             continue;
         }
+#if DBMAP_ACTIVITY_SERIAL_DIAG
+        accepted_rms[n] = s->rms_dbfs;
+        accepted_t[n] = s->t_end_mono_us;
+        accepted_seq[n] = s->window_seq;
+#endif
         vals[n++] = s->rms_dbfs;
     }
 
@@ -282,6 +314,28 @@ static void baseline_freeze(dbmap_activity_detector_t *det, int64_t episode_star
         det->baseline_reliable = false;
         det->frozen_baseline_dbfs = 0.0f;
     }
+
+#if DBMAP_ACTIVITY_SERIAL_DIAG
+    ESP_LOGI(
+        TAG,
+        "diag baseline_freeze n=%lu reliable=%d base=%.2f episode_start_us=%lld",
+        (unsigned long)n,
+        det->baseline_reliable ? 1 : 0,
+        (double)det->frozen_baseline_dbfs,
+        (long long)episode_start_us
+    );
+    for (uint32_t i = 0; i < n; ++i) {
+        ESP_LOGI(
+            TAG,
+            "diag baseline_sample i=%lu/%lu rms_dbfs=%.2f t_end_us=%lld win_seq=%lu",
+            (unsigned long)(i + 1u),
+            (unsigned long)n,
+            (double)accepted_rms[i],
+            (long long)accepted_t[i],
+            (unsigned long)accepted_seq[i]
+        );
+    }
+#endif
 }
 
 static void try_arm_relative(dbmap_activity_detector_t *det)
@@ -646,9 +700,30 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
     det->last_valid_us = t;
     det->has_last_valid = true;
 
+#if DBMAP_ACTIVITY_SERIAL_DIAG
+    /* One-shot: first few usable windows after boot settle (any state). */
+    if (det->post_settle_usable_diag_n < DBMAP_ACTIVITY_POST_SETTLE_DIAG_MAX) {
+        det->post_settle_usable_diag_n += 1;
+        ESP_LOGI(
+            TAG,
+            "diag post_settle i=%lu/%u rms_dbfs=%.2f peak_dbfs=%.2f "
+            "win_seq=%lu t_us=%lld ms_since_i2s=%lu xport=%s mic=%s",
+            (unsigned long)det->post_settle_usable_diag_n,
+            (unsigned)DBMAP_ACTIVITY_POST_SETTLE_DIAG_MAX,
+            (double)rms,
+            (double)sample->peak_dbfs,
+            (unsigned long)sample->window_seq,
+            (long long)t,
+            (unsigned long)sample->ms_since_i2s_enable,
+            sample->transport_status != NULL ? sample->transport_status : "n/a",
+            sample->microphone_status != NULL ? sample->microphone_status : "n/a"
+        );
+    }
+#endif
+
     /* Baseline: IDLE and below enter only. */
     if (det->state == DBMAP_ACTIVITY_IDLE && !above_enter(det, rms)) {
-        baseline_push(det, rms, t);
+        baseline_push(det, rms, t, sample->window_seq);
     }
 
     switch (det->state) {
@@ -699,9 +774,14 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
         /* Call order: arm before exit-entry evaluation. */
         note_arming_rms(det, rms);
         if (should_enter_pending_exit(det, rms)) {
-            det->exit_latch = (det->cfg.relative_end_enabled && det->relative_armed)
-                                  ? DBMAP_ACTIVITY_EXIT_LATCH_RELATIVE
-                                  : DBMAP_ACTIVITY_EXIT_LATCH_ABSOLUTE;
+            /* Latch follows the entry cause: relative only when relative entry
+             * is met (and armed). Absolute-only entry keeps the absolute latch
+             * even if Relative END is already armed. Both true → relative. */
+            det->exit_latch =
+                (det->cfg.relative_end_enabled && det->relative_armed
+                 && below_rel_entry(det, rms))
+                    ? DBMAP_ACTIVITY_EXIT_LATCH_RELATIVE
+                    : DBMAP_ACTIVITY_EXIT_LATCH_ABSOLUTE;
             det->state = DBMAP_ACTIVITY_PENDING_EXIT;
             det->pending_since_us = t; /* diagnostic only; END uses exit_hold_elapsed_us */
             det->pending_exit_enters += 1;

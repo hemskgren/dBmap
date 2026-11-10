@@ -89,6 +89,11 @@ typedef struct {
 typedef struct {
     bool has_measurement;
     float rms_dbfs;
+    /**
+     * Peak dBFS for diagnostics only. Not used by enter/exit/baseline/arming.
+     * Callers may leave at 0 when peak is unavailable (host tests).
+     */
+    float peak_dbfs;
     uint32_t window_ms;
     int64_t measured_at_us;
     uint32_t window_seq;
@@ -114,6 +119,7 @@ typedef struct {
 typedef struct {
     float rms_dbfs;
     int64_t t_end_mono_us;
+    uint32_t window_seq;
     bool valid;
 } dbmap_activity_baseline_sample_t;
 
@@ -167,6 +173,11 @@ typedef struct {
     uint32_t pending_exit_cancels;
     /** Peak continuous exit_hold_elapsed_us observed in any PENDING_EXIT attempt. */
     int64_t exit_hold_elapsed_us_max;
+    /**
+     * SERIAL_DIAG only: count of post-boot-settle usable windows already logged
+     * (capped; does not affect detection).
+     */
+    uint32_t post_settle_usable_diag_n;
 } dbmap_activity_detector_t;
 
 /**
