@@ -7,6 +7,7 @@
 #include "dbmap_acoustic_l0.h"
 #include "dbmap_acoustic_l1.h"
 #include "dbmap_acoustic_l2.h"
+#include "dbmap_ear_mic_channel_api.h"
 #include "dbmap_types.h"
 #include "esp_err.h"
 
@@ -62,10 +63,27 @@ const char *dbmap_ear_mic_model_id(void);
 const char *dbmap_ear_mic_subsystem_status(void);
 
 /**
- * Copy the latest completed measurement window levels.
+ * Copy the latest completed measurement window levels (primary = mic 0).
  * Returns ESP_OK with valid=false when no window has been measured yet.
+ * Field set matches dbmap_ear_mic_get_channel(0) for rms_dbfs / window_seq /
+ * peak / timing / transport / microphone_status.
  */
 esp_err_t dbmap_ear_mic_get_levels(dbmap_ear_mic_levels_t *out);
+
+/**
+ * Copy the latest completed window for one live channel (Stage 1).
+ * index must be < live microphone count; otherwise ESP_ERR_INVALID_ARG.
+ * Both stereo channels share the same window_seq / measured_at_us window.
+ * Does not change Observation / activity — use get_levels() for primary path.
+ */
+esp_err_t dbmap_ear_mic_get_channel(uint8_t index, dbmap_ear_mic_channel_t *out);
+
+/**
+ * Copy shared stream metadata for the latest completed window (Stage 1).
+ * available_mic_count counts channels that delivered samples; it is not a
+ * health verdict (open SD can still yield slot words / silence / noise).
+ */
+esp_err_t dbmap_ear_mic_get_stream(dbmap_ear_mic_stream_t *out);
 
 /**
  * L0 analysis CPU/memory counters (Phase B local validation).

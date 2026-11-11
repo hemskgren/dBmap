@@ -1,4 +1,16 @@
-# Overlay for opt-in I2S dual-mic capture diagnostics (UART).
-# Use with sdkconfig.defaults — does not change Hub/Observation schemas.
+# Bench overlay: dual-mic I2S capture diagnostics on UART (Test A/B/C).
+# NOT a fleet default — do not merge into release/firmware-builder images.
+# Does not change Hub/Observation schemas, detector thresholds, or boot order.
+#
+# Build (reconfigure if an existing sdkconfig already exists):
+#   cd firmware/esp-ear
+#   idf.py fullclean
+#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.capture_diag" set-target esp32s3
 #   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.capture_diag" build
+#
+# After OTA/boot, confirm UART contains:
+#   ear_mic: capture_diag UART enabled (~5s): ...
+# then periodic capture_diag summary + capture_diag ch0/ch1 lines with window_seq.
+#
+# Procedure: docs/diagnostics/ear-stereo-capture-integrity.md
 CONFIG_DBMAP_EAR_MIC_CAPTURE_DIAG=y

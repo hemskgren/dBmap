@@ -192,6 +192,41 @@ Full wiring (Output + Ear, reserved 4-mic map): [`docs/device-wiring-and-pinout.
 | L/R strap (mic 0 / 1) | Left (GND) / Right (VDD) | Unverified on board |
 | Capture diag | `sdkconfig.defaults.capture_diag` | UART `capture_diag` lines; does not prove dual HW |
 
+### Stage 1 stereo capture integrity (bench)
+
+With `microphone_count=2`, health already reports both channels; Observation / activity still use mic 0. Stage 1 adds `dbmap_ear_mic_get_channel` / `dbmap_ear_mic_get_stream` for in-firmware diagnostics and documents a USB-console hardware procedure (1 kHz speaker move, 30 s continuity, power-off SD disconnect):
+
+[`docs/diagnostics/ear-stereo-capture-integrity.md`](../../docs/diagnostics/ear-stereo-capture-integrity.md).
+
+`sdkconfig.defaults` currently enables `CONFIG_DBMAP_EAR_MIC_CAPTURE_DIAG` so USB console shows dual-channel `capture_diag` (with `window_seq`) after `win#` stops at 30. Turn it off in menuconfig / defaults for quieter production fleet UART if unwanted. The `sdkconfig.defaults.capture_diag` overlay remains for rebuilds that start from a tree without the flag.
+
+### Capture diagnostics (dual-mic Test A/B/C)
+
+Build with the project defaults (capture diag on) or force the bench overlay:
+
+```bash
+cd firmware/esp-ear
+idf.py fullclean   # needed if an existing sdkconfig was generated without the overlay
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.capture_diag" set-target esp32s3
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.capture_diag" build
+```
+
+After boot/OTA, confirm:
+
+```text
+ear_mic: capture_diag UART enabled (~5s): per-ch slot/rms/peak/n/expect/window_seq/mic/xport + stream incomplete (bench only; not fleet default)
+```
+
+Then ~every 5 s (raw values, unfiltered):
+
+```text
+ear_mic: capture_diag ... mode=stereo_lr live=2 ... incomplete=0 ...
+ear_mic: capture_diag ch0 slot=left  n=16640 expect=16000 rms=-40.0 peak=-28.0 ... mic=signal_present xport=ok ... window_seq=42
+ear_mic: capture_diag ch1 slot=right n=16640 expect=16000 rms=-52.0 peak=-40.0 ... mic=signal_present xport=ok ... window_seq=42
+```
+
+Do **not** use `ear_obs` `diag snap` for L/R identity (mic0 only). Procedure: [`docs/diagnostics/ear-stereo-capture-integrity.md`](../../docs/diagnostics/ear-stereo-capture-integrity.md).
+
 ## L0 analysis (optional Observation extension)
 
 With `CONFIG_DBMAP_EAR_MIC_L0` / `CONFIG_DBMAP_EAR_OBS_L0` (default y), each 1 s window runs the L0 library; intervals finalize on START/PERIODIC/END (`start < window_end ≤ end`).
