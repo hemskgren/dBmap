@@ -10,6 +10,8 @@
 #include "dbmap_acoustic_l2.h"
 #include "dbmap_audio_metrics.h"
 #include "dbmap_background_rms.h"
+#include "dbmap_ear_mic_capture_diag.h"
+#include "dbmap_ear_mic_channel_api.h"
 #include "dbmap_health.h"
 #include "dbmap_i2s_stereo.h"
 #include "dbmap_mic_count.h"
@@ -239,34 +241,146 @@ const char *dbmap_ear_mic_subsystem_status(void)
     return s_status_cache;
 }
 
+static void snapshot_to_view(const ear_audio_snapshot_t *snap, dbmap_ear_mic_window_view_t *view)
+{
+    memset(view, 0, sizeof(*view));
+    if (snap == NULL) {
+        return;
+    }
+    view->rms_dbfs = snap->rms_dbfs;
+    view->peak_dbfs = snap->peak_dbfs;
+    view->sample_count = snap->sample_count;
+    view->window_ms = snap->window_ms;
+    view->window_seq = snap->window_seq;
+    view->ms_since_i2s_enable = snap->ms_since_i2s_enable;
+    view->measured_at_us = snap->measured_at_us;
+    view->zero_sample_count = snap->zero_sample_count;
+    view->all_zero_window = snap->all_zero_window;
+    view->clipped_samples = snap->clipped_samples;
+    view->read_errors = snap->read_errors;
+    view->timeout_reads = snap->timeout_reads;
+    view->empty_reads = snap->empty_reads;
+    view->missing_data = snap->missing_data;
+    view->counters_capped = snap->counters_capped;
+    view->raw_min = snap->raw_min;
+    view->raw_max = snap->raw_max;
+    view->full_scale_sample_count = snap->full_scale_sample_count;
+    view->unique_sample_count = snap->unique_sample_count;
+    view->consecutive_identical_samples = snap->consecutive_identical_samples;
+    view->unique_capped = snap->unique_capped;
+    view->read_calls = snap->read_calls;
+    view->bytes_received = snap->bytes_received;
+    view->complete_frames = snap->complete_frames;
+    view->partial_reads = snap->partial_reads;
+    view->raw_slot_min = snap->raw_slot_min;
+    view->raw_slot_max = snap->raw_slot_max;
+    view->slot_zero_count = snap->slot_zero_count;
+    view->slot_msb_set_count = snap->slot_msb_set_count;
+    strncpy(view->channel_presence, snap->channel_presence, sizeof(view->channel_presence) - 1);
+    strncpy(view->transport_status, snap->transport_status, sizeof(view->transport_status) - 1);
+    strncpy(view->microphone_status, snap->microphone_status, sizeof(view->microphone_status) - 1);
+    strncpy(
+        view->classification_reason,
+        snap->classification_reason,
+        sizeof(view->classification_reason) - 1
+    );
+}
+
 esp_err_t dbmap_ear_mic_get_levels(dbmap_ear_mic_levels_t *out)
 {
     if (out == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    memset(out, 0, sizeof(*out));
+    dbmap_ear_mic_window_view_t view;
     portENTER_CRITICAL(&s_lock);
     /* Primary path remains mic 0 (left) for Observation / activity compatibility. */
-    if (s_latest[0].measured_at_us > 0) {
-        out->valid = true;
-        out->rms_dbfs = s_latest[0].rms_dbfs;
-        out->peak_dbfs = s_latest[0].peak_dbfs;
-        out->window_ms = s_latest[0].window_ms;
-        out->measured_at_us = s_latest[0].measured_at_us;
-        out->window_seq = s_latest[0].window_seq;
-        out->ms_since_i2s_enable = s_latest[0].ms_since_i2s_enable;
-        strncpy(
-            out->transport_status,
-            s_latest[0].transport_status[0] ? s_latest[0].transport_status : "unavailable",
-            sizeof(out->transport_status) - 1
-        );
-        strncpy(
-            out->microphone_status,
-            s_latest[0].microphone_status[0] ? s_latest[0].microphone_status : "unavailable",
-            sizeof(out->microphone_status) - 1
-        );
+    snapshot_to_view(&s_latest[0], &view);
+    portEXIT_CRITICAL(&s_lock);
+
+    dbmap_ear_mic_primary_levels_t primary;
+    if (dbmap_ear_mic_fill_primary_levels(&view, &primary) != DBMAP_EAR_MIC_API_OK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(out, 0, sizeof(*out));
+    out->valid = primary.valid;
+    out->rms_dbfs = primary.rms_dbfs;
+    out->peak_dbfs = primary.peak_dbfs;
+    out->window_ms = primary.window_ms;
+    out->measured_at_us = primary.measured_at_us;
+    out->window_seq = primary.window_seq;
+    out->ms_since_i2s_enable = primary.ms_since_i2s_enable;
+    strncpy(out->transport_status, primary.transport_status, sizeof(out->transport_status) - 1);
+    strncpy(out->microphone_status, primary.microphone_status, sizeof(out->microphone_status) - 1);
+    return ESP_OK;
+}
+
+esp_err_t dbmap_ear_mic_get_channel(uint8_t index, dbmap_ear_mic_channel_t *out)
+{
+    if (out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    dbmap_ear_mic_window_view_t view;
+    uint8_t live;
+    uint32_t rate_hz;
+    portENTER_CRITICAL(&s_lock);
+    live = s_live_mic_count;
+    rate_hz = (uint32_t)s_mic_cfg.sample_rate_hz;
+    if (live < 1u || live > DBMAP_MIC_COUNT_MAX) {
+        live = 1u;
+    }
+    if (index >= live) {
+        portEXIT_CRITICAL(&s_lock);
+        return ESP_ERR_INVALID_ARG;
+    }
+    snapshot_to_view(&s_latest[index], &view);
+    portEXIT_CRITICAL(&s_lock);
+
+    if (dbmap_ear_mic_fill_channel(index, live, &view, rate_hz, out) != DBMAP_EAR_MIC_API_OK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return ESP_OK;
+}
+
+esp_err_t dbmap_ear_mic_get_stream(dbmap_ear_mic_stream_t *out)
+{
+    if (out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    dbmap_ear_mic_window_view_t views[DBMAP_MIC_COUNT_MAX];
+    uint8_t live;
+    uint8_t configured;
+    uint32_t incomplete;
+    char slot_mode[sizeof(s_slot_mode_name)];
+    portENTER_CRITICAL(&s_lock);
+    live = s_live_mic_count;
+    if (live < 1u || live > DBMAP_MIC_COUNT_MAX) {
+        live = 1u;
+    }
+    configured = (s_cfg != NULL) ? s_cfg->microphone_count : live;
+    incomplete = s_incomplete_stereo_frames_window;
+    strncpy(slot_mode, s_slot_mode_name, sizeof(slot_mode) - 1);
+    slot_mode[sizeof(slot_mode) - 1] = '\0';
+    for (uint8_t i = 0; i < live; ++i) {
+        snapshot_to_view(&s_latest[i], &views[i]);
     }
     portEXIT_CRITICAL(&s_lock);
+
+    if (!dbmap_mic_count_supported(configured)) {
+        configured = DBMAP_MIC_COUNT_DEFAULT;
+    }
+    if (dbmap_ear_mic_fill_stream(
+            live,
+            configured,
+            views,
+            slot_mode,
+            incomplete,
+            out
+        )
+        != DBMAP_EAR_MIC_API_OK) {
+        return ESP_ERR_INVALID_ARG;
+    }
     return ESP_OK;
 }
 
@@ -1276,11 +1390,7 @@ static void capture_diag_maybe_log(const ear_audio_snapshot_t *snaps, uint8_t li
 
     ESP_LOGI(
         TAG,
-        "capture_diag rate=%d fmt=int32_from_i2s32_left_justified_24 mode=%s "
-        "words/frame=%lu live=%u dma_desc=%lu dma_frame=%lu "
-        "dma_buf_bytes_formula=%lu (mono_formula=%lu) slot_buf=%lu "
-        "(mono_equiv=%lu) req_bytes=%lu measure_us=%lu incomplete=%lu "
-        "free_heap=%lu free_spiram=%lu",
+        DBMAP_EAR_MIC_CAPTURE_DIAG_SUMMARY_FMT,
         s_mic_cfg.sample_rate_hz,
         s_slot_mode_name,
         (unsigned long)s_slot_words_per_frame,
@@ -1300,9 +1410,7 @@ static void capture_diag_maybe_log(const ear_audio_snapshot_t *snaps, uint8_t li
     for (uint8_t i = 0; i < live_count; ++i) {
         ESP_LOGI(
             TAG,
-            "capture_diag ch%u slot=%s n=%lu expect=%lu rms=%.1f peak=%.1f "
-            "clip=%lu zero=%lu all_zero=%u presence=%s mic=%s xport=%s "
-            "timeout=%lu empty=%lu err=%lu",
+            DBMAP_EAR_MIC_CAPTURE_DIAG_CH_FMT,
             (unsigned)i,
             i == 0 ? "left" : "right",
             (unsigned long)snaps[i].sample_count,
@@ -1320,7 +1428,8 @@ static void capture_diag_maybe_log(const ear_audio_snapshot_t *snaps, uint8_t li
             snaps[i].transport_status[0] ? snaps[i].transport_status : "unavailable",
             (unsigned long)snaps[i].timeout_reads,
             (unsigned long)snaps[i].empty_reads,
-            (unsigned long)snaps[i].read_errors
+            (unsigned long)snaps[i].read_errors,
+            (unsigned long)snaps[i].window_seq
         );
     }
 }
@@ -1404,6 +1513,9 @@ esp_err_t dbmap_ear_mic_start(const dbmap_effective_t *cfg, const dbmap_ear_mic_
         dbmap_mic_count_status_str(cfg->microphone_count_status),
         s_live_mic_count >= 2u ? "stereo_lr" : "mono_left"
     );
+#if CONFIG_DBMAP_EAR_MIC_CAPTURE_DIAG
+    ESP_LOGI(TAG, "%s", DBMAP_EAR_MIC_CAPTURE_DIAG_BOOT_MSG);
+#endif
 
     memset(s_latest, 0, sizeof(s_latest));
     for (uint8_t i = 0; i < DBMAP_MIC_COUNT_MAX; ++i) {
