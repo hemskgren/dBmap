@@ -132,6 +132,44 @@ static void test_zero_samples_omits(void)
     EXPECT(!p.present);
 }
 
+/** Four independent rings — no leakage of mic0 samples into other profiles. */
+static void test_four_independent_histories(void)
+{
+    enum { N = 4, CAP = 8 };
+    sp_bg_rms_sample_t entries[N][CAP];
+    sp_bg_rms_hist_t hist[N];
+    const float levels[N] = {-40.0f, -50.0f, -60.0f, -70.0f};
+
+    for (int i = 0; i < N; ++i) {
+        sp_bg_rms_hist_init(&hist[i], entries[i], CAP, 180000);
+        sp_bg_rms_push(&hist[i], levels[i], 1000000 + (int64_t)i);
+    }
+
+    for (int i = 0; i < N; ++i) {
+        sp_bg_rms_profile_t p;
+        sp_bg_rms_profile(&hist[i], 2000000, &p);
+        EXPECT(p.present);
+        EXPECT(p.sample_count == 1);
+        EXPECT(fabs((double)p.rms_min_dbfs - (double)levels[i]) < 0.01);
+        EXPECT(fabs((double)p.rms_max_dbfs - (double)levels[i]) < 0.01);
+        EXPECT(fabs((double)p.rms_mean_dbfs - (double)levels[i]) < 0.01);
+    }
+
+    /* Push only into hist[0]; others must stay single-sample at prior level. */
+    sp_bg_rms_push(&hist[0], -35.0f, 1500000);
+    sp_bg_rms_profile_t p0;
+    sp_bg_rms_profile(&hist[0], 2000000, &p0);
+    EXPECT(p0.present && p0.sample_count == 2);
+    EXPECT(fabs((double)p0.rms_max_dbfs - (-35.0)) < 0.01);
+
+    for (int i = 1; i < N; ++i) {
+        sp_bg_rms_profile_t p;
+        sp_bg_rms_profile(&hist[i], 2000000, &p);
+        EXPECT(p.present && p.sample_count == 1);
+        EXPECT(fabs((double)p.rms_mean_dbfs - (double)levels[i]) < 0.01);
+    }
+}
+
 int main(void)
 {
     test_linear_mean_energy();
@@ -139,6 +177,7 @@ int main(void)
     test_snapshot_time_filter_read_only();
     test_partial_vs_full_elapsed();
     test_zero_samples_omits();
+    test_four_independent_histories();
 
     if (g_failures != 0) {
         fprintf(stderr, "%d failure(s)\n", g_failures);

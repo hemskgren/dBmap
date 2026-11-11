@@ -31,7 +31,8 @@ int sp_mic_fill_channel(
 
     memset(out, 0, sizeof(*out));
     out->index = index;
-    strncpy(out->slot, index == 0u ? "left" : "right", sizeof(out->slot) - 1u);
+    /* Even index = left strap, odd = right (per DIN pair). Software contract. */
+    strncpy(out->slot, (index & 1u) == 0u ? "left" : "right", sizeof(out->slot) - 1u);
     out->valid = (view->measured_at_us > 0);
     out->rms_dbfs = view->rms_dbfs;
     out->peak_dbfs = view->peak_dbfs;

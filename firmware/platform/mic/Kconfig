@@ -56,8 +56,9 @@ menu "dBmap Ear microphone"
         default 7
         help
             Reserved second data line for mic indexes 2 (left) and 3 (right).
-            Not read by the current single-mic capture path; keep the pin free
-            when wiring a 4-mic Ear.
+            Current firmware acquires at most two channels on DIN0 (Philips
+            stereo). DIN1 is not opened yet; NVS microphone_count may still be
+            3 or 4 for forward config (acquisition clamps to SP_MIC_ACQUIRE_MAX).
 
     config DBMAP_EAR_MIC_I2S_MCLK_GPIO
         int "I2S MCLK GPIO (-1 unused)"
@@ -74,12 +75,14 @@ menu "dBmap Ear microphone"
             detector. Disable to reclaim SPIRAM (~2 × window PCM) when unused.
 
     config DBMAP_EAR_MIC_BACKGROUND
-        bool "Iteration 1: rolling background RMS on Reported State"
+        bool "Rolling background RMS on Reported State (per live mic)"
         default y
         help
-            Maintain a rolling RMS history and attach audio.microphones[i].background
-            on hello/health/keepalive. Independent of Observation/MQTT. Read-only
-            on publish. Disable to reclaim a few KB of static RAM.
+            Maintain an independent rolling RMS history for each live/acquired
+            microphone and attach audio.microphones[i].background on
+            hello/health/keepalive when that mic has in-window samples.
+            Independent of Observation/MQTT. Read-only on publish. Disable to
+            reclaim static RAM (one hist ring per SP_MIC_COUNT_MAX).
 
     config DBMAP_EAR_MIC_BACKGROUND_WINDOW_MS
         int "Background RMS rolling window (ms)"

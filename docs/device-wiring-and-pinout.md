@@ -38,7 +38,7 @@ Target image: `esp-ear` / catalog `ear-esp32-s3`. Hardware profile string: `esp3
 | Mic 2 | 2 | Third (second DIN pair) |
 | Mic 3 | 3 | Fourth (second DIN pair) |
 
-Firmware captures **index 0** in mono when NVS `microphone_count=1`. When `microphone_count=2`, it opens Philips stereo on DIN0 and reports indexes **0 (left)** and **1 (right)**. Pins and L/R straps remain **placeholder / unverified** until bench confirmation. DIN1 (indexes 2–3) is still not read.
+Firmware installation `microphone_count` may be **1–4** (software). I2S acquisition today opens at most **two** channels on DIN0: mono (`count=1`) or Philips stereo (`count≥2`, indexes **0 left** / **1 right**). If NVS stores 3 or 4, acquisition is clamped (`acquisition_limited` in Reported State); indexes 2–3 are not invented. DIN1 (planned indexes 2–3) is reserved and **not opened**. Pins and L/R straps remain **placeholder / unverified** until bench confirmation. Each live channel has independent RMS/peak and background hist on hello/health.
 
 ### Shared I2S bus (preferred for up to 4× INMP441)
 
