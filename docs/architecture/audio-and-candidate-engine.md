@@ -6,7 +6,7 @@
 **Baseline:** `main` after PR #48 (multi-mic Platform acquisition)  
 **Reference IDF:** ESP-IDF 5.4.4 (no migration)
 
-This document is the reviewable architecture for the next Ear firmware layer. It is grounded in the **current** codebase. Capabilities that are not present today are labelled as **reuse**, **extend**, or **new**.
+This document is the reviewable architecture for the next Ear firmware layer and for how that layer must stay compatible with a reusable, multi-engine Sensor Platform. It is grounded in the **current** codebase. Capabilities are labelled by horizon: **Platform today**, **AE/CE v1 uses**, or **shared Platform later** (also **reuse** / **extend** / **new** where useful).
 
 ---
 
@@ -20,47 +20,59 @@ This document is the reviewable architecture for the next Ear firmware layer. It
 | **Candidate** | On-device tracked hypothesis of a continuing acoustic source/event, accumulating signatures | An Observation; Hub Event/Track |
 | **Classification result** | Product meaning from a future module (ABC, Drone-ML, …) | Produced by Audio or Candidate Engine |
 | **Observation** | Episodic MQTT report (START/PERIODIC/END) with platform envelope + product schemas | Continuous analysis output |
-| **Platform contract** | Versioned, domain-neutral data/API surface produced by Platform (e.g. audio window, sensor sample, status event) | Engine-private features or product labels |
-| **Engine** | Independent consumer of one or more Platform contracts; owns domain interpretation | Platform acquisition; Hub Observation transport |
-| **Module** | Pluggable analyzer/classifier that an Engine or Module Runtime may invoke | Not a second acquisition path |
+| **Platform contract** | Versioned, domain-neutral data/API surface produced by Platform (audio is first; sensor/Omnibus later) | Engine-private features, product labels, or an audio-only private bus |
+| **Engine** | Independent peer consumer of one or more Platform contracts; owns domain interpretation | Platform acquisition; Hub Observation transport; another Engine’s internals |
+| **Module** | Pluggable analyzer/classifier that an Engine or Module Runtime may invoke | Not a second acquisition path; not Platform transport |
 
 ---
 
-## 0. Multi-engine Platform compatibility (architectural requirement)
+## 0. Multi-engine Platform architecture (requirement)
 
-Sensor Platform must remain a **generic foundation** for multiple independent Engines and Modules that consume **different** Platform contracts on the same device.
+### Long-term Platform goal
+
+Sensor Platform must be designed and **progressively developed** as reusable, multi-engine infrastructure. Future Engines and Modules should consume shared generic contracts, transport, lifecycle, and services **without product-specific special paths** wherever reasonably possible.
+
+Audio Engine / Candidate Engine are the **first** Engine pair on that foundation. Their v1 implementation must remain compatible with concurrent non-audio Engines; it must **not** expand into a full Engine Runtime, contract bus, or Module Runtime merely to prove the goal.
+
+This section is an **architectural requirement**. Implementing the shared bus / registry / Engine Runtime is **explicitly deferred**.
+
+### Architectural principles
+
+| # | Principle | Requirement |
+| --- | --- | --- |
+| 1 | **Multiple independent Engines** | Platform must support **concurrent peer Engines** consuming **different** Platform contracts on one device. Example: Audio Engine Light on the audio contract alongside Monitor Engine on sensor + Omnibus contracts. Peers are not multiple audio-processing instances of one Engine. |
+| 2 | **Generic contracts** | Platform contracts must not be *inherently* audio-only as an architecture. Audio is the first concrete contract type. Adding sensor/Omnibus (or other) producers must not require redesigning the Engine integration model. |
+| 3 | **Shared transport (direction)** | Long-term on-device data plane must allow **multiple independent consumers/subscribers**. An audio-only transport or single-consumer mechanism must not be treated as the architectural foundation. Existing pull/notify may serve AE/CE v1 if interfaces can evolve into shared generic transport. |
+| 4 | **Shared lifecycle and services** | Platform owns generic Engine/Module lifecycle foundations, health contribution, time/clock rules, config hooks, and (later) resource policy. Domain thresholds, features, and interpretation stay in Engines/Modules. |
+| 5 | **Clear ownership** | **Platform:** generic acquisition, contracts, shared transport mechanisms, common services. **Engines:** domain processing and derived data. **Candidate Engine** in *this* design remains **audio-signature-specific** unless a separate justified generalization is proposed. Do not move product-specific processing into Platform. |
 
 **Illustrative product mix (not implemented here):**
 
-| Engine | Consumes (Platform contracts) | Owns |
+| Engine | Consumes | Owns (domain) |
 | --- | --- | --- |
-| **Audio Engine** (this design; full or “Light”) | Audio contract (mic windows, channel metrics, optional PCM) | Acoustic features, signatures, history |
-| **Candidate Engine** | Audio Engine signature updates (engine-to-engine), not raw I2S | Candidate identity / lifecycle |
-| **Monitor Engine** (future industrial) | Sensor + Omnibus contracts (values, status, related events) | Monitoring interpretation / thresholds |
-
-Engines **may run concurrently**. Platform must not embed product-specific audio analysis or monitoring logic. This design must **not** invent an audio-only bus or runtime that other Engines cannot share.
-
-This section is a **compatibility requirement**. It does **not** request implementing a full Engine Runtime or all transport infrastructure now.
+| **Audio Engine** (full or “Light”) | Platform **audio** contract | Acoustic features, signatures, history |
+| **Candidate Engine** | AE signature updates (engine-to-engine) | Multi-candidate identity / lifecycle over acoustic signatures |
+| **Monitor Engine** (future) | Platform **sensor** + **Omnibus** contracts | Monitoring interpretation / thresholds |
 
 ### 0.1 Target shape
 
 ```mermaid
 flowchart TB
-  subgraph platform [Sensor Platform]
-    ACQ[Acquisition producers]
-    CTR[Contracts: audio / sensor / omnibus / …]
-    BUS[Shared notify or pull APIs - later bus]
-    LIFE[Lifecycle config time health foundations]
+  subgraph platform [Sensor Platform - progressive shared foundation]
+    ACQ[Generic acquisition producers]
+    CTR[Versioned contracts: audio then sensor omnibus …]
+    BUS[Shared notify or pull - multi-subscriber direction]
+    LIFE[Lifecycle config time health resource foundations]
     ACQ --> CTR
     CTR --> BUS
     LIFE --> BUS
   end
-  subgraph engines [Independent Engines - product or shared app layer]
+  subgraph engines [Independent peer Engines]
     AEL[Audio Engine Light]
     MON[Monitor Engine future]
-    CE[Candidate Engine]
+    CE[Candidate Engine audio-signature v1]
   end
-  subgraph later [Later shared]
+  subgraph later [Later shared Platform capabilities]
     ER[Engine Runtime optional]
     MR[Module Runtime]
   end
@@ -73,63 +85,100 @@ flowchart TB
   MR -.-> CE
 ```
 
-### 0.2 What already exists (reuse)
+### 0.2 Three horizons (do not conflate)
+
+| Horizon | Meaning | In this document |
+| --- | --- | --- |
+| **Platform today** | What the codebase already provides | §0.3 |
+| **AE/CE v1 uses** | What Audio/Candidate Engine may rely on without building the full shared bus | §0.4 |
+| **Shared Platform later** | Capabilities Platform must grow for reusable multi-engine products | §0.5 — design now, implement later |
+
+### 0.3 Platform today (what already exists)
 
 | Capability | Today | Notes |
 | --- | --- | --- |
-| Audio acquisition + window metrics | `firmware/platform/mic` (`sp_mic_*`) | Strong **audio contract seed** (pull APIs + health JSON) |
-| Analysis PCM hand-off | `sp_mic_pcm.h` (`sp_mic_take_pcm_job`) | Single-consumer job queue pattern — mic0 only |
-| Health enricher table | `sp_health_add_enricher` / `sp_health_set_enricher` | Multiple components can contribute Reported State fields |
-| Device lifecycle / config / time | `node_common` (NVS, Desired, NTP/`sp_time`, OTA, MQTT) | Shared across products |
-| Observation foundation | `platform/observation` | Episode/seq/gates — **reporting**, not Engine data plane |
+| Audio acquisition + channel metrics | `firmware/platform/mic` (`sp_mic_*`) | Concrete **audio contract seed** (pull APIs + health JSON) — not yet a versioned multi-contract catalog |
+| Analysis PCM hand-off | `sp_mic_pcm.h` (`sp_mic_take_pcm_job`) | **Single-consumer** job queue — mic0 only; useful pattern, **not** the long-term multi-subscriber foundation |
+| Health enricher table | `sp_health_add_enricher` / `sp_health_set_enricher` | Multi-component Hub Reported State — **not** the on-device Engine data plane |
+| Device lifecycle / config / time | `node_common` (NVS, Desired, NTP/`sp_time`, OTA, MQTT) | Shared device services; not yet an Engine registry |
+| Observation foundation | `platform/observation` | Episode/seq/gates — **Hub reporting**, not Engine contract transport |
 | FreeRTOS / ESP-IDF events | Wi-Fi uses `esp_event`; mic uses task + pull | No unified Platform data-plane bus yet |
 
-**There is no** general Engine registry, cross-contract subscription bus, Omnibus/sensor contract, or Monitor Engine in-tree.
+**Absent today:** general Engine registry, cross-contract multi-subscriber bus, named contract IDs beyond headers, Omnibus/sensor contract producers, Monitor Engine, Module Runtime, Engine Runtime, shared resource policy.
 
-### 0.3 What is missing (gap)
+### 0.4 What AE/CE v1 will use (allowed without expanding Platform scope)
 
-| Gap | Why it matters |
+| AE/CE v1 may | Must not treat as final Platform architecture |
 | --- | --- |
-| Named, versioned **Platform contracts** beyond ad-hoc headers | Audio vs sensor vs omnibus need stable schemas/IDs for multiple Engines |
-| **Multi-subscriber** delivery of contract updates | Today PCM job is single-taker; health is push-to-Hub, not on-device fan-out |
-| Generic **Engine lifecycle** (start/stop/health/deps) | Ear boots mic then obs ad hoc in `app_main` |
-| Shared **resource policy** (CPU/RAM budgets per Engine) | Concurrent Audio + Monitor must not starve I2S |
-| Sensor / Omnibus producers | Required for Monitor Engine; out of scope to invent hardware here |
+| Pull `sp_mic_*` / `sp_mic_take_pcm_job` for audio windows | Single-taker PCM queue as *the* multi-Engine transport |
+| Prefer **listener list or small queue** for AE→CE signatures (engine-local) | An AE-owned global “audio bus” as Platform’s only data plane |
+| Reuse health enrichers for optional AE/CE diag fields | Health MQTT as Engine-to-Engine delivery |
+| Boot/start from product `app_main` / obs loop | Codify Ear-only init order as Platform Engine lifecycle |
+| Run AE poll inside `ear_obs` initially (§10) | Assume AE is the only consumer of Platform CPU after mic |
 
-### 0.4 What to design later as shared Platform capability (not now)
+**v1 scope rule:** do not implement contract catalog, multi-subscriber Platform bus, Engine registry, Module Runtime, or Monitor Engine in AE/CE v1. Do keep interfaces **migratable** (§0.6).
 
-Recommended **future** Platform pieces (separate ADRs when scheduled):
+### 0.5 Shared Platform capabilities — design later, develop progressively
 
-1. **Contract catalog** — e.g. `sp_contract_id_t` + version; audio window snapshot, sensor sample, omnibus status event.
-2. **Data-plane notify/pull** — lightweight pub/sub or multi-listener hooks *inside* the device (not MQTT). Pattern: producers publish small descriptors; consumers pull payloads (mirrors today’s PCM job without single-consumer lock-in).
-3. **Engine descriptor + health** — register name, contracts consumed/produced, task handle, subsystem status string for enrichers.
-4. **Shared clocks** — already partially present (`esp_timer` mono_us, `window_seq`); formalize “contract timestamp” rules for all producers.
+Recommended **future** Platform work (separate ADRs when scheduled). These are **Platform responsibilities**, not Audio Engine features:
 
-**Out of scope for AE/CE v1 implementation:** building that full bus. **In scope for this design:** choose AE↔Platform and AE↔CE shapes that **can migrate** onto it.
+| Later capability | Purpose |
+| --- | --- |
+| **Contract catalog** | Stable `contract_id` + version; payloads for audio window, sensor sample, Omnibus status/event, … New contract types plug in without new Engine wiring models. |
+| **Shared data-plane notify/pull** | On-device multi-subscriber delivery (not MQTT). Producers publish small descriptors; consumers pull payloads. Evolves today’s PCM job **without** locking in single-taker semantics. |
+| **Engine descriptor + lifecycle** | Register name, contracts consumed/produced, start/stop, deps, task handle; generic health string for enrichers. |
+| **Module lifecycle hooks** | Load/enable analyzers against Engine-produced evidence without touching acquisition. |
+| **Shared clock / timestamp rules** | Formalize mono_us + producer sequence (`window_seq` today) as contract-time fields for all producers. |
+| **Resource policy** | CPU/RAM/queue budgets so concurrent Engines cannot starve acquisition (e.g. I2S). |
 
-### 0.5 Compatibility rules for Audio / Candidate Engine
+**Out of scope for AE/CE v1 implementation.** **In scope for this architecture:** AE↔Platform and AE↔CE shapes that can migrate onto the above without redesign.
+
+### 0.6 Compatibility rules (AE/CE must not block generalization)
 
 | Rule | Implication |
 | --- | --- |
-| AE consumes **Platform audio APIs**, not a private I2S path | Other Engines remain free to consume other contracts |
-| AE→CE stays an **engine-to-engine** signature API | Not “the” Platform bus; CE must not require I2S |
-| Do not put CE or L0–L2 inside `firmware/platform/mic` | Keeps Platform free of acoustic product logic |
-| Prefer **pull + small notify** over AE-owned global queues named “audio only” | Same pattern can later generalize to sensor/omnibus |
-| Concurrent Engines | AE must tolerate other tasks; must not assume sole owner of CPU after mic |
-| “Audio Engine Light” | Same contracts, fewer features (e.g. L0-only) — still an Engine, not a Platform fork |
-| Monitor Engine | Independent; shares Platform lifecycle/time/health foundations only |
+| AE consumes **Platform audio APIs**, not a private I2S path | Peer Engines remain free to consume other contracts |
+| Do not put AE/CE/L0–L2 **product processing** inside `firmware/platform/mic` | Platform stays free of acoustic product logic |
+| AE→CE is an **engine-to-engine** signature API | Not a substitute for the future Platform multi-contract bus; CE must not speak I2S |
+| Prefer pull + small multi-listener notify over single global “audio-only” queues owned as Platform | Same pattern generalizes to sensor/Omnibus later |
+| Do not hard-wire Engine integration to “one PCM taker” forever | If v1 uses `sp_mic_take_pcm_job`, wrap behind AE intake so Platform can later fan-out windows |
+| Concurrent Engines | AE must tolerate other tasks; must not assume sole post-mic CPU owner |
+| “Audio Engine Light” | Same audio contract, fewer features — still an Engine, not a Platform fork |
+| Monitor Engine | Independent peer; shares Platform lifecycle/time/health/transport foundations only |
+| Candidate Engine scope | **Audio-signature-specific in this design**; generalizing CE needs a **separate justified proposal** |
 
-### 0.6 How AE/CE map onto the general model
+### 0.7 Ownership map
 
-| Component | Role in multi-engine model |
+| Layer | Owns | Must not own |
+| --- | --- | --- |
+| **Platform** | Generic acquisition, contract producers, shared transport mechanisms (today’s seeds + later bus), common lifecycle/config/time/health foundations, Observation *foundation* APIs | Acoustic analysis, candidate FSM, monitoring thresholds, classifiers, product Observation policy |
+| **Audio Engine** | Features, signatures, signature history, quality flags | I2S/DMA; Candidates; Hub Observations; non-audio contracts |
+| **Candidate Engine** | Multi-candidate identity/lifecycle over **acoustic signatures** | Platform acquisition; MQTT Observation system; product classification |
+| **Future Monitor Engine** | Sensor/Omnibus interpretation | Audio acquisition; AE internals |
+| **Reporting / Observation product path** | Episodic Hub reports from promotions | Continuous Engine tick fan-out |
+
+### 0.8 How AE/CE map onto the general model
+
+| Component | Role |
 | --- | --- |
-| Platform `mic` | **Producer** of the audio contract |
-| Audio Engine | **Engine** consuming audio contract; **producer** of signature updates (engine-local contract) |
-| Candidate Engine | **Engine** consuming signature updates; **producer** of candidate state for promoters / future Module Runtime |
-| Monitor Engine (future) | **Engine** consuming sensor/omnibus contracts — parallel to AE, not behind AE |
-| Observation / Reporting | Downstream of promotion — not the Platform data plane |
+| Platform `mic` | **Producer** of the first concrete Platform contract (audio) |
+| Audio Engine | **Engine** consuming audio contract; **producer** of signature updates (engine-local) |
+| Candidate Engine | **Engine** consuming signatures; **producer** of candidate state for promoters / future Module Runtime |
+| Monitor Engine (future) | **Peer Engine** on sensor/Omnibus — parallel to AE, never behind AE |
+| Observation / Reporting | Downstream of promotion — not the Platform Engine data plane |
 
-Candidate Engine is **not** required to be audio-specific forever: its FSM is “evidence over time.” v1 evidence type is acoustic signatures; a later design could generalize evidence adapters without moving CE into Platform.
+### 0.9 Design choices that could constrain generalization (explicit)
+
+These are accepted for AE/CE v1 **only if** wrapped so Platform can evolve:
+
+| Choice | Constraint risk | Mitigations required by this design |
+| --- | --- | --- |
+| `sp_mic_take_pcm_job` single taker | Blocks a second on-device audio consumer | AE is the sole v1 taker; Platform later adds multi-subscriber window notify without AE rewriting I2S |
+| AE→CE direct callback/queue | Looks like “the” bus if copied for every Engine | Keep AE→CE **engine-local**; Platform contracts stay pull/notify at Platform boundary |
+| Engines under `products/dbmap/ear/` | Suggests product-private Platform | Obey contract rules; relocate under shared Engine tree only after Engine Runtime ADR |
+| Health enrichers as multi-component hook | Easy to misuse as data plane | Enrichers = Hub telemetry only |
+| Polling AE inside `ear_obs` | Couples Engine lifecycle to Observation task | Temporary; dedicated `ae_task` / registry start later |
+| Audio-first contract APIs | Temptation to name Platform APIs `audio_*` globally | Prefer contract-neutral names when introducing catalog/bus (`sp_contract_*`) |
 
 ---
 
@@ -206,13 +255,15 @@ There is **no** Audio Engine or Candidate Engine component. The name “candidat
 
 ## 2. Proposed component responsibilities
 
-### 2.1 Sensor Platform (unchanged ownership)
+### 2.1 Sensor Platform (ownership — progressive multi-engine foundation)
 
-**Owns:** microphone hardware lifecycle, I2S/DMA, windowed acquisition, per-channel measurements/diagnostics, health `audio.*`, analysis-PCM hand-off API.
+**Owns today (audio contract producer + shared services):** microphone hardware lifecycle, I2S/DMA, windowed acquisition, per-channel measurements/diagnostics, health `audio.*`, analysis-PCM hand-off API, device lifecycle/config/time/health foundations (`node_common`), Observation *foundation* APIs.
 
-**Must not:** know acoustic events, candidates, classifiers, or Observation policy.
+**Owns as Platform grows (later, not AE/CE v1):** versioned contract catalog, shared multi-subscriber on-device transport, Engine/Module lifecycle hooks, resource policy (§0.5).
 
-Audio Engine **consumes** Platform via `sp_mic_*` / `sp_mic_pcm_*`. It must not open I2S or duplicate `measure_window`.
+**Must not:** know acoustic events, candidates, monitoring thresholds, classifiers, or product Observation policy. Domain processing stays in Engines/Modules.
+
+Audio Engine **consumes** Platform via `sp_mic_*` / `sp_mic_pcm_*` (v1). It must not open I2S or duplicate `measure_window`. A future Monitor Engine consumes **other** Platform contracts the same way — peer Engines, not forks of AE.
 
 ### 2.2 Audio Engine (new — application / audio-processing)
 
@@ -238,15 +289,16 @@ Audio Engine **consumes** Platform via `sp_mic_*` / `sp_mic_pcm_*`. It must not 
 
 - Multiple simultaneous Candidates.
 - Create / update / expire / reject / promote (lifecycle).
-- Evidence accumulation from signatures.
+- Evidence accumulation from **acoustic signatures** (this design — audio-signature-specific).
 - Candidate identity and continuity heuristics (lightweight).
 - Temporary loss (“coast”) and recovery.
 
 **Must not:**
 
 - Become a second Observation/reporting system.
-- Own audio buffers.
+- Own audio buffers or Platform acquisition.
 - Make final product classification decisions (those belong to future modules / Decision).
+- Be treated as a Platform generic “any-evidence” runtime in v1 — that requires a separate justified generalization proposal (§0 principle 5).
 
 ### 2.4 Existing product pieces after introduction
 
@@ -280,11 +332,13 @@ firmware/products/dbmap/ear/
 # firmware/products/<monitor>/monitor_engine/  # consumes sensor/omnibus contracts
 ```
 
-**Why Engines stay outside Platform acquisition:** Platform ADR forbids product interpretation in drivers/acquisition. Audio Engine and Monitor Engine are peer Engines on shared Platform foundations; only their **contracts** live in Platform.
+**Why Engines stay outside Platform acquisition:** Platform must remain free of product interpretation in drivers/acquisition (§0 ownership). Audio Engine and Monitor Engine are peer Engines on shared Platform foundations; only **contracts and shared services** live in Platform.
 
-**Why not a Platform-only “audio runtime”:** an audio-specific runtime/bus would force Monitor Engine into a second private path and violate the multi-engine requirement (§0).
+**Why not a Platform-only “audio runtime”:** an audio-specific runtime/bus would force Monitor Engine into a second private path and violate the multi-engine Platform goal (§0).
 
-**Alternative considered:** place engines under `firmware/platform/engines/`. Deferred until a second Engine exists and a shared Engine Runtime ADR is accepted; v1 keeps AE/CE under the dBmap Ear product tree while obeying Platform contract rules.
+**Progressive Platform tree (later, not now):** contract catalog / shared notify-pull / Engine registry belong under `firmware/platform/` as generic infrastructure — not under `audio_engine/`.
+
+**Alternative considered:** place engines under `firmware/platform/engines/`. Deferred until a second Engine exists and a shared Engine Runtime ADR is accepted; v1 keeps AE/CE under the dBmap Ear product tree while obeying Platform contract and transport-evolution rules (§0.6, §0.9).
 
 ---
 
@@ -543,6 +597,8 @@ stateDiagram-v2
 - CE is pull-or-queue consumer; never blocks I2S.
 - No shared mutable PCM; no large copies.
 - AE→CE is an **engine-to-engine** contract, not a replacement for the future Platform multi-contract bus (§0). When a shared bus exists, signature updates may be *optionally* mirrored as an “engine-produced” contract without requiring CE to speak I2S.
+- Prefer `ae_add_signature_listener` (multi-listener) over a single hard-wired CE call site so a future Module or promoter can subscribe without redesign.
+- Platform intake for AE remains behind AE wrappers so `sp_mic_take_pcm_job` can later become one of several subscribers to a shared window notify.
 
 ### 9.2 Proposed C API (conceptual)
 
@@ -662,19 +718,22 @@ flowchart TB
   CE -->|promotion bridge| RE
 ```
 
-| Future component | How this design helps |
+These future pieces are **Platform or peer-Engine capabilities**. AE/CE v1 must not implement them; it must not invent private substitutes that block them (§0).
+
+| Future component | How this design helps / preserves the path |
 | --- | --- |
-| Platform contract bus | AE already pulls audio contract; pattern reusable for sensor/omnibus |
-| Engine Runtime | Registers concurrent Engines; AE/CE/Monitor as peers |
+| Platform contract catalog + bus | AE pulls the audio contract via Platform APIs; same Engine integration model must accept sensor/Omnibus later |
+| Shared multi-subscriber transport | AE intake wraps today’s single-taker PCM; AE→CE uses multi-listener signatures — patterns that evolve into Platform notify/pull |
+| Engine Runtime | Registers concurrent Engines; AE/CE/Monitor as peers on shared lifecycle/health |
 | Module Runtime | Runs modules on Candidate evidence / signature hist without touching I2S |
 | Workflow Engine | Enables which modules run; controls promotion policy |
 | Decision/Fusion | Consumes module outputs + candidate identity |
 | ABC / Drone-ML | Classification modules — inputs are signatures/features, not raw MQTT |
 | Spatial | Needs verified multi-mic timing; AE/CE stay unchanged except new feature fields |
-| Monitor Engine | Independent consumer of non-audio contracts; not routed through AE |
+| Monitor Engine | Independent consumer of non-audio contracts; not routed through AE; no audio-special path required |
 | Reporting Engine | Publishes Observations from **promoted** results; must not subscribe to every AE tick |
 
-**Stable concepts for later:** Platform contract IDs/versions, `candidate_id`, signature `window_seq` timeline, quality flags, Engine health strings.
+**Stable concepts for later:** Platform contract IDs/versions, multi-subscriber notify/pull semantics, `candidate_id`, signature `window_seq` timeline, quality flags, Engine health strings, resource-policy hooks.
 
 ---
 
@@ -690,7 +749,7 @@ flowchart TB
 | Confidence number misread as classifier posterior | Document as heuristic; keep schema name `confidence` scoped |
 | Health/MQTT bloat | AE/CE state stays on-device; optional diag only |
 | Enrich background mic0 gate nuance | Unrelated cleanup; do not block this design |
-| Audio-only “runtime” blocking Monitor Engine | Obey §0: shared Platform contracts; AE-private code stays in AE |
+| Audio-only “runtime” / single-consumer foundation blocking Monitor Engine | Obey §0 principles; single-taker PCM and AE→CE stay migratable (§0.9) |
 | Treating health enrichers as the Engine data plane | Enrichers are Hub telemetry; Engines need on-device pull/notify |
 
 ### 12.2 Unresolved (need verification before / during impl)
@@ -701,7 +760,7 @@ flowchart TB
 4. Mapping `candidate_id` → Observation `track_id` / `observation_id` — Reporting design.
 5. Whether L2 publish-to-Hub remains Observation-only (yes for now).
 6. When to schedule the shared Platform contract-bus / Engine registry ADR relative to Monitor Engine needs.
-7. Whether Candidate Engine evidence adapters generalize beyond audio in the same component or split later.
+7. If/when Candidate Engine should generalize beyond acoustic signatures — requires a **separate justified proposal**; not assumed by this design.
 
 ### 12.3 Alternatives considered
 
@@ -719,20 +778,22 @@ flowchart TB
 
 ## 13. Implementation map (when approved — not now)
 
-| Item | Kind |
-| --- | --- |
-| `sp_mic_*` acquisition, health, mic0 PCM (audio contract seed) | **Reuse** |
-| Health enricher table, device config/time/MQTT | **Reuse** (Platform foundations) |
-| L0/L1/L2 analyze functions | **Reuse** |
-| `sp_mic_get_channel` for mic1 pair features | **Reuse** |
-| Stereo PCM hand-off | **Extend** Platform later |
-| Multi-subscriber audio window notify | **Extend** Platform later (toward shared bus) |
-| Versioned Platform contract IDs + Engine registry | **New later** (shared Platform capability) |
-| Sensor / Omnibus producers + Monitor Engine | **New later** (peer Engine) |
-| AE runtime, signature, history | **New** (Engine, not Platform) |
-| CE model + FSM | **New** (Engine, not Platform) |
-| Bridge activity_detector ↔ CE promotion | **Extend** product obs |
-| TDOA / classifiers / Module Runtime / Engine Runtime | **New later** |
+| Item | Horizon | Kind |
+| --- | --- | --- |
+| `sp_mic_*` acquisition, health, mic0 PCM (audio contract seed) | Platform today / AE v1 uses | **Reuse** |
+| Health enricher table, device config/time/MQTT | Platform today | **Reuse** (foundations; not Engine data plane) |
+| L0/L1/L2 analyze functions | AE v1 | **Reuse** (Engine domain math) |
+| `sp_mic_get_channel` for mic1 pair features | AE v1 | **Reuse** |
+| AE intake wrapper over PCM job / listeners for CE | AE/CE v1 | **New** (migratable; not final bus) |
+| Stereo PCM hand-off | Shared Platform later | **Extend** |
+| Multi-subscriber window notify → shared contract transport | Shared Platform later | **Extend** / **New later** |
+| Versioned Platform contract IDs + Engine/Module lifecycle registry | Shared Platform later | **New later** |
+| Resource policy + formal contract timestamps | Shared Platform later | **New later** |
+| Sensor / Omnibus producers + Monitor Engine | Shared Platform later + peer Engine | **New later** |
+| AE runtime, signature, history | AE v1 | **New** (Engine, not Platform) |
+| CE model + FSM (acoustic signatures) | CE v1 | **New** (Engine, not Platform) |
+| Bridge activity_detector ↔ CE promotion | Product v1 | **Extend** |
+| TDOA / classifiers / Module Runtime / Engine Runtime | Later | **New later** |
 
 ### Assumptions still needing verification
 
@@ -744,7 +805,7 @@ flowchart TB
 
 ## 14. Required diagrams (index)
 
-1. Multi-engine Platform contracts — §0.1  
+1. Multi-engine Platform architecture — §0 / §0.1  
 2. Complete audio data flow — §4.1  
 3. Audio Engine internal processing — §4.1 (AE subgraph) + §5  
 4. Candidate lifecycle — §8  
@@ -755,15 +816,19 @@ flowchart TB
 
 ## 15. Review checklist
 
-- [ ] Multi-engine Platform compatibility (§0) accepted  
-- [ ] Exists / missing / later shared Platform capabilities accepted  
+- [ ] Long-term reusable multi-engine Platform goal accepted (§0)  
+- [ ] Five architectural principles accepted (independent Engines, generic contracts, shared transport direction, shared lifecycle/services, clear ownership)  
+- [ ] Three horizons clear: Platform today / AE·CE v1 uses / shared Platform later  
+- [ ] Candidate Engine kept audio-signature-specific unless separately justified  
+- [ ] Constraint mitigations in §0.9 accepted (single-taker PCM, AE→CE locality, etc.)  
 - [ ] Responsibilities Platform / AE / CE accepted  
 - [ ] Glossary distinctions accepted (including contract / Engine / Module)  
 - [ ] 1 s window recommendation accepted or amended  
 - [ ] Feature set v1 accepted (including stereo Δ without TDOA)  
 - [ ] Candidate FSM accepted as non-Observation  
-- [ ] Interface precise enough for independent implementation  
+- [ ] Interface precise enough for independent implementation and future multi-subscriber migration  
 - [ ] Two-mic development constraint accepted  
+- [ ] No Engine Runtime / bus / registry implementation required by AE/CE v1  
 - [ ] No implementation until this design is reviewed  
 
-**Most important outcome:** coherent, implementable boundaries compatible with concurrent non-audio Engines — not the largest feature set.
+**Most important outcome:** coherent AE/CE boundaries that preserve a progressive, reusable multi-engine Sensor Platform — not the largest feature set, and not a premature Platform Runtime.
