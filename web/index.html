@@ -876,11 +876,13 @@
                   </select>
                 </label>
                 <label for="provision-bootstrap-token">Bootstrap token (optional)<input id="provision-bootstrap-token" type="password" maxlength="127" autocomplete="off"></label>
-                <label for="provision-microphone-count">Microphone count (Ear)
+                <label for="provision-microphone-count">Microphone count (Ear, NVS 1–4)
                   <select id="provision-microphone-count">
                     <option value="">Keep existing / default (1)</option>
                     <option value="1">1 microphone</option>
                     <option value="2">2 microphones</option>
+                    <option value="3">3 microphones (config; I2S acquires 2 today)</option>
+                    <option value="4">4 microphones (config; I2S acquires 2 today)</option>
                   </select>
                 </label>
               </div>
@@ -5079,7 +5081,7 @@
         }
         const micSelect = document.getElementById('provision-microphone-count');
         const micRaw = options.microphoneCount ?? (micSelect ? micSelect.value : '');
-        if (micRaw === '1' || micRaw === '2') {
+        if (micRaw === '1' || micRaw === '2' || micRaw === '3' || micRaw === '4') {
           configuration.microphone_count = Number(micRaw);
         }
         return {

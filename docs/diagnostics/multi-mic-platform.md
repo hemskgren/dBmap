@@ -60,6 +60,8 @@ Total sample storage: `SP_MIC_COUNT_MAX × EAR_BG_RMS_CAP × sizeof(sp_bg_rms_sa
 | `acquisition_max` | `SP_MIC_ACQUIRE_MAX` (2) |
 | `acquisition_limited` | true when configured > live |
 
+Hub **Firmware → Browser flashing → Configure device over USB** may write NVS `microphone_count` **1–4**. Values 3–4 are stored as configuration; current firmware still opens at most two I2S channels (`acquisition_limited`).
+
 ### Verification status
 
 | Check | Result |
