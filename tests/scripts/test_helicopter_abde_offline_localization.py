@@ -11,7 +11,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "scripts"))
 
-from lib.cross_ear_localization import BEARING_SELECTION_COMMON_EPOCH, estimate_localization
+from lib.cross_ear_localization import (
+    BEARING_SELECTION_COMMON_EPOCH,
+    estimate_localization,
+)
 
 _ROOT = Path(__file__).parents[2]
 _SCENARIO = _ROOT / "simulator" / "ear" / "scenarios" / "helicopter_abde_overlap.json"
