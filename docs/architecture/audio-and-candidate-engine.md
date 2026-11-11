@@ -20,6 +20,116 @@ This document is the reviewable architecture for the next Ear firmware layer. It
 | **Candidate** | On-device tracked hypothesis of a continuing acoustic source/event, accumulating signatures | An Observation; Hub Event/Track |
 | **Classification result** | Product meaning from a future module (ABC, Drone-ML, …) | Produced by Audio or Candidate Engine |
 | **Observation** | Episodic MQTT report (START/PERIODIC/END) with platform envelope + product schemas | Continuous analysis output |
+| **Platform contract** | Versioned, domain-neutral data/API surface produced by Platform (e.g. audio window, sensor sample, status event) | Engine-private features or product labels |
+| **Engine** | Independent consumer of one or more Platform contracts; owns domain interpretation | Platform acquisition; Hub Observation transport |
+| **Module** | Pluggable analyzer/classifier that an Engine or Module Runtime may invoke | Not a second acquisition path |
+
+---
+
+## 0. Multi-engine Platform compatibility (architectural requirement)
+
+Sensor Platform must remain a **generic foundation** for multiple independent Engines and Modules that consume **different** Platform contracts on the same device.
+
+**Illustrative product mix (not implemented here):**
+
+| Engine | Consumes (Platform contracts) | Owns |
+| --- | --- | --- |
+| **Audio Engine** (this design; full or “Light”) | Audio contract (mic windows, channel metrics, optional PCM) | Acoustic features, signatures, history |
+| **Candidate Engine** | Audio Engine signature updates (engine-to-engine), not raw I2S | Candidate identity / lifecycle |
+| **Monitor Engine** (future industrial) | Sensor + Omnibus contracts (values, status, related events) | Monitoring interpretation / thresholds |
+
+Engines **may run concurrently**. Platform must not embed product-specific audio analysis or monitoring logic. This design must **not** invent an audio-only bus or runtime that other Engines cannot share.
+
+This section is a **compatibility requirement**. It does **not** request implementing a full Engine Runtime or all transport infrastructure now.
+
+### 0.1 Target shape
+
+```mermaid
+flowchart TB
+  subgraph platform [Sensor Platform]
+    ACQ[Acquisition producers]
+    CTR[Contracts: audio / sensor / omnibus / …]
+    BUS[Shared notify or pull APIs - later bus]
+    LIFE[Lifecycle config time health foundations]
+    ACQ --> CTR
+    CTR --> BUS
+    LIFE --> BUS
+  end
+  subgraph engines [Independent Engines - product or shared app layer]
+    AEL[Audio Engine Light]
+    MON[Monitor Engine future]
+    CE[Candidate Engine]
+  end
+  subgraph later [Later shared]
+    ER[Engine Runtime optional]
+    MR[Module Runtime]
+  end
+
+  BUS --> AEL
+  BUS --> MON
+  AEL --> CE
+  ER -.-> AEL
+  ER -.-> MON
+  MR -.-> CE
+```
+
+### 0.2 What already exists (reuse)
+
+| Capability | Today | Notes |
+| --- | --- | --- |
+| Audio acquisition + window metrics | `firmware/platform/mic` (`sp_mic_*`) | Strong **audio contract seed** (pull APIs + health JSON) |
+| Analysis PCM hand-off | `sp_mic_pcm.h` (`sp_mic_take_pcm_job`) | Single-consumer job queue pattern — mic0 only |
+| Health enricher table | `sp_health_add_enricher` / `sp_health_set_enricher` | Multiple components can contribute Reported State fields |
+| Device lifecycle / config / time | `node_common` (NVS, Desired, NTP/`sp_time`, OTA, MQTT) | Shared across products |
+| Observation foundation | `platform/observation` | Episode/seq/gates — **reporting**, not Engine data plane |
+| FreeRTOS / ESP-IDF events | Wi-Fi uses `esp_event`; mic uses task + pull | No unified Platform data-plane bus yet |
+
+**There is no** general Engine registry, cross-contract subscription bus, Omnibus/sensor contract, or Monitor Engine in-tree.
+
+### 0.3 What is missing (gap)
+
+| Gap | Why it matters |
+| --- | --- |
+| Named, versioned **Platform contracts** beyond ad-hoc headers | Audio vs sensor vs omnibus need stable schemas/IDs for multiple Engines |
+| **Multi-subscriber** delivery of contract updates | Today PCM job is single-taker; health is push-to-Hub, not on-device fan-out |
+| Generic **Engine lifecycle** (start/stop/health/deps) | Ear boots mic then obs ad hoc in `app_main` |
+| Shared **resource policy** (CPU/RAM budgets per Engine) | Concurrent Audio + Monitor must not starve I2S |
+| Sensor / Omnibus producers | Required for Monitor Engine; out of scope to invent hardware here |
+
+### 0.4 What to design later as shared Platform capability (not now)
+
+Recommended **future** Platform pieces (separate ADRs when scheduled):
+
+1. **Contract catalog** — e.g. `sp_contract_id_t` + version; audio window snapshot, sensor sample, omnibus status event.
+2. **Data-plane notify/pull** — lightweight pub/sub or multi-listener hooks *inside* the device (not MQTT). Pattern: producers publish small descriptors; consumers pull payloads (mirrors today’s PCM job without single-consumer lock-in).
+3. **Engine descriptor + health** — register name, contracts consumed/produced, task handle, subsystem status string for enrichers.
+4. **Shared clocks** — already partially present (`esp_timer` mono_us, `window_seq`); formalize “contract timestamp” rules for all producers.
+
+**Out of scope for AE/CE v1 implementation:** building that full bus. **In scope for this design:** choose AE↔Platform and AE↔CE shapes that **can migrate** onto it.
+
+### 0.5 Compatibility rules for Audio / Candidate Engine
+
+| Rule | Implication |
+| --- | --- |
+| AE consumes **Platform audio APIs**, not a private I2S path | Other Engines remain free to consume other contracts |
+| AE→CE stays an **engine-to-engine** signature API | Not “the” Platform bus; CE must not require I2S |
+| Do not put CE or L0–L2 inside `firmware/platform/mic` | Keeps Platform free of acoustic product logic |
+| Prefer **pull + small notify** over AE-owned global queues named “audio only” | Same pattern can later generalize to sensor/omnibus |
+| Concurrent Engines | AE must tolerate other tasks; must not assume sole owner of CPU after mic |
+| “Audio Engine Light” | Same contracts, fewer features (e.g. L0-only) — still an Engine, not a Platform fork |
+| Monitor Engine | Independent; shares Platform lifecycle/time/health foundations only |
+
+### 0.6 How AE/CE map onto the general model
+
+| Component | Role in multi-engine model |
+| --- | --- |
+| Platform `mic` | **Producer** of the audio contract |
+| Audio Engine | **Engine** consuming audio contract; **producer** of signature updates (engine-local contract) |
+| Candidate Engine | **Engine** consuming signature updates; **producer** of candidate state for promoters / future Module Runtime |
+| Monitor Engine (future) | **Engine** consuming sensor/omnibus contracts — parallel to AE, not behind AE |
+| Observation / Reporting | Downstream of promotion — not the Platform data plane |
+
+Candidate Engine is **not** required to be audio-specific forever: its FSM is “evidence over time.” v1 evidence type is acoustic signatures; a later design could generalize evidence adapters without moving CE into Platform.
 
 ---
 
@@ -154,19 +264,27 @@ Audio Engine **consumes** Platform via `sp_mic_*` / `sp_mic_pcm_*`. It must not 
 Recommended tree (names indicative — not created in this task):
 
 ```text
-firmware/platform/mic/                 # unchanged ownership
-firmware/platform/observation/         # episode/seq remain Platform
+firmware/platform/
+  mic/                    # audio contract producer (unchanged ownership)
+  observation/            # Observation foundation (reporting), not Engine data plane
+  node_common/            # lifecycle, config, time, health enrichers, MQTT
+  # later (not now): contract bus / engine registry — shared Platform capability
 
 firmware/products/dbmap/ear/
-  ear_acoustic/                        # keep L0/L1/L2 math libs
-  audio_engine/                        # NEW: runtime + signature history + AE→CE API
-  candidate_engine/                    # NEW: candidate model + lifecycle
-  ear_observation/                     # stay episodic MQTT; later consume promotions
+  ear_acoustic/           # L0/L1/L2 math libs (reusable by Audio Engine)
+  audio_engine/           # NEW: Audio Engine (full or Light)
+  candidate_engine/       # NEW: Candidate Engine (v1 evidence = signatures)
+  ear_observation/        # episodic MQTT; later consume promotions
+
+# future industrial product (illustrative)
+# firmware/products/<monitor>/monitor_engine/  # consumes sensor/omnibus contracts
 ```
 
-**Why product tree, not Platform:** signatures and candidates encode *what we listen for over time* in the acoustic product sense, even before classification. Platform ADR forbids product interpretation in acquisition. Shared **math** can stay host-testable under `ear_acoustic`; **engines** are product orchestration.
+**Why Engines stay outside Platform acquisition:** Platform ADR forbids product interpretation in drivers/acquisition. Audio Engine and Monitor Engine are peer Engines on shared Platform foundations; only their **contracts** live in Platform.
 
-**Alternative considered:** place engines under `firmware/platform/audio/`. Rejected for v1 — would pull spectral product schemas and candidate policy into Platform before a second product needs them.
+**Why not a Platform-only “audio runtime”:** an audio-specific runtime/bus would force Monitor Engine into a second private path and violate the multi-engine requirement (§0).
+
+**Alternative considered:** place engines under `firmware/platform/engines/`. Deferred until a second Engine exists and a shared Engine Runtime ADR is accepted; v1 keeps AE/CE under the dBmap Ear product tree while obeying Platform contract rules.
 
 ---
 
@@ -424,6 +542,7 @@ stateDiagram-v2
 - Quality is explicit on every update.
 - CE is pull-or-queue consumer; never blocks I2S.
 - No shared mutable PCM; no large copies.
+- AE→CE is an **engine-to-engine** contract, not a replacement for the future Platform multi-contract bus (§0). When a shared bus exists, signature updates may be *optionally* mirrored as an “engine-produced” contract without requiring CE to speak I2S.
 
 ### 9.2 Proposed C API (conceptual)
 
@@ -509,8 +628,15 @@ sequenceDiagram
 
 ```mermaid
 flowchart TB
+  subgraph platform [Platform contracts]
+    AUD[Audio contract]
+    SEN[Sensor / Omnibus future]
+  end
   AE[Audio Engine]
+  AEL[Audio Engine Light]
+  MON[Monitor Engine future]
   CE[Candidate Engine]
+  ER[Engine Runtime future]
   MR[Module Runtime future]
   WF[Workflow Engine future]
   DF[Decision / Fusion future]
@@ -518,7 +644,14 @@ flowchart TB
   SP[Spatial / TDOA future]
   RE[Reporting / Observation]
 
+  AUD --> AE
+  AUD --> AEL
+  SEN --> MON
   AE --> CE
+  AEL --> CE
+  ER -.-> AE
+  ER -.-> AEL
+  ER -.-> MON
   CE --> MR
   WF --> MR
   MR --> CL
@@ -531,14 +664,17 @@ flowchart TB
 
 | Future component | How this design helps |
 | --- | --- |
-| Module Runtime | Runs modules on Candidate evidence windows / signature hist without touching I2S |
+| Platform contract bus | AE already pulls audio contract; pattern reusable for sensor/omnibus |
+| Engine Runtime | Registers concurrent Engines; AE/CE/Monitor as peers |
+| Module Runtime | Runs modules on Candidate evidence / signature hist without touching I2S |
 | Workflow Engine | Enables which modules run; controls promotion policy |
 | Decision/Fusion | Consumes module outputs + candidate identity |
 | ABC / Drone-ML | Classification modules — inputs are signatures/features, not raw MQTT |
 | Spatial | Needs verified multi-mic timing; AE/CE stay unchanged except new feature fields |
+| Monitor Engine | Independent consumer of non-audio contracts; not routed through AE |
 | Reporting Engine | Publishes Observations from **promoted** results; must not subscribe to every AE tick |
 
-**Stable concepts for later:** `candidate_id`, signature `window_seq` timeline, quality flags.
+**Stable concepts for later:** Platform contract IDs/versions, `candidate_id`, signature `window_seq` timeline, quality flags, Engine health strings.
 
 ---
 
@@ -554,6 +690,8 @@ flowchart TB
 | Confidence number misread as classifier posterior | Document as heuristic; keep schema name `confidence` scoped |
 | Health/MQTT bloat | AE/CE state stays on-device; optional diag only |
 | Enrich background mic0 gate nuance | Unrelated cleanup; do not block this design |
+| Audio-only “runtime” blocking Monitor Engine | Obey §0: shared Platform contracts; AE-private code stays in AE |
+| Treating health enrichers as the Engine data plane | Enrichers are Hub telemetry; Engines need on-device pull/notify |
 
 ### 12.2 Unresolved (need verification before / during impl)
 
@@ -562,16 +700,20 @@ flowchart TB
 3. When Platform should retain stereo PCM (Mic0+Mic1) for AE — recommend a small Platform extension ADR when needed.
 4. Mapping `candidate_id` → Observation `track_id` / `observation_id` — Reporting design.
 5. Whether L2 publish-to-Hub remains Observation-only (yes for now).
+6. When to schedule the shared Platform contract-bus / Engine registry ADR relative to Monitor Engine needs.
+7. Whether Candidate Engine evidence adapters generalize beyond audio in the same component or split later.
 
 ### 12.3 Alternatives considered
 
 | Alternative | Why not preferred |
 | --- | --- |
-| Put Audio Engine in Platform | Violates product/interpretation boundary; blocks non-audio products |
+| Put Audio Engine in Platform | Violates product/interpretation boundary; blocks non-audio Engines |
 | Only extend activity_detector | Remains single-stream; hard to multi-candidate |
 | Signature = L1 JSON blob only | Loses energy/quality/timing unity CE needs |
 | Require 4 mics for AE | Blocks development; contradicted by available hardware |
 | Event-per-window MQTT | Bandwidth + conflates Observation with analysis |
+| Build full Engine Runtime before AE | Over-scopes; §0 allows designing compatibility first |
+| Route Monitor Engine through Audio Engine | Wrong contract; Engines are peers on Platform |
 
 ---
 
@@ -579,14 +721,18 @@ flowchart TB
 
 | Item | Kind |
 | --- | --- |
-| `sp_mic_*` acquisition, health, mic0 PCM | **Reuse** |
+| `sp_mic_*` acquisition, health, mic0 PCM (audio contract seed) | **Reuse** |
+| Health enricher table, device config/time/MQTT | **Reuse** (Platform foundations) |
 | L0/L1/L2 analyze functions | **Reuse** |
 | `sp_mic_get_channel` for mic1 pair features | **Reuse** |
 | Stereo PCM hand-off | **Extend** Platform later |
-| AE runtime, signature, history | **New** |
-| CE model + FSM | **New** |
+| Multi-subscriber audio window notify | **Extend** Platform later (toward shared bus) |
+| Versioned Platform contract IDs + Engine registry | **New later** (shared Platform capability) |
+| Sensor / Omnibus producers + Monitor Engine | **New later** (peer Engine) |
+| AE runtime, signature, history | **New** (Engine, not Platform) |
+| CE model + FSM | **New** (Engine, not Platform) |
 | Bridge activity_detector ↔ CE promotion | **Extend** product obs |
-| TDOA / classifiers / Module Runtime | **New later** |
+| TDOA / classifiers / Module Runtime / Engine Runtime | **New later** |
 
 ### Assumptions still needing verification
 
@@ -598,18 +744,21 @@ flowchart TB
 
 ## 14. Required diagrams (index)
 
-1. Complete audio data flow — §4.1  
-2. Audio Engine internal processing — §4.1 (AE subgraph) + §5  
-3. Candidate lifecycle — §8  
-4. AE ↔ CE interface — §9.3  
-5. Future Module/Workflow/Reporting — §11  
+1. Multi-engine Platform contracts — §0.1  
+2. Complete audio data flow — §4.1  
+3. Audio Engine internal processing — §4.1 (AE subgraph) + §5  
+4. Candidate lifecycle — §8  
+5. AE ↔ CE interface — §9.3  
+6. Future Engine Runtime / Module / Workflow / Reporting — §11  
 
 ---
 
 ## 15. Review checklist
 
+- [ ] Multi-engine Platform compatibility (§0) accepted  
+- [ ] Exists / missing / later shared Platform capabilities accepted  
 - [ ] Responsibilities Platform / AE / CE accepted  
-- [ ] Glossary distinctions accepted  
+- [ ] Glossary distinctions accepted (including contract / Engine / Module)  
 - [ ] 1 s window recommendation accepted or amended  
 - [ ] Feature set v1 accepted (including stereo Δ without TDOA)  
 - [ ] Candidate FSM accepted as non-Observation  
@@ -617,4 +766,4 @@ flowchart TB
 - [ ] Two-mic development constraint accepted  
 - [ ] No implementation until this design is reviewed  
 
-**Most important outcome:** coherent, implementable boundaries — not the largest feature set.
+**Most important outcome:** coherent, implementable boundaries compatible with concurrent non-audio Engines — not the largest feature set.

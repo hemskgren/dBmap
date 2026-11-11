@@ -158,6 +158,7 @@ Identity direction (future): stable internal user UUID; multiple external IdPs; 
 | When `track_id` becomes a Hub Track table/API | Need stable semantics and firmware emit first |
 | When Events become Hub-persisted | Correlation still proven in `scripts/` |
 | Audio Engine + Candidate Engine (on-device continuous analysis vs episodic Observation) | Proposed design: [ADR 0002](./adr/0002-audio-and-candidate-engine.md), [full design](./architecture/audio-and-candidate-engine.md) — not implemented |
+| Multi-engine Platform contracts (audio + future sensor/Omnibus; concurrent Engines) | Compatibility rules in AE/CE design §0; shared contract bus / Engine registry deferred |
 | Making Observation measurements schema-pluggable (non-L0 Ears) | Compatibility work; current Ears use L0 |
 | Rename `DBMAP_*` / topic roots / UI brand | Costly; wait for second product pressure |
 | Tenant model: one Hub per tenant vs multi-Hub orgs | Needs Enterprise customer shape |

@@ -8,22 +8,27 @@
 
 After Sensor Platform Step 1 and multi-mic acquisition (PR #48), Ear firmware still folds continuous acoustic analysis, single-stream activity detection, and MQTT Observation publishing into product modules (`ear_acoustic`, `ear_observation`). That works for today’s mic-0 RMS episodes, but it mixes concepts that must stay separate for multi-source tracking, future classification modules, and Hub reporting.
 
+Sensor Platform must also support **multiple independent Engines** on one device (e.g. Audio Engine Light on the audio contract alongside a future Monitor Engine on sensor/Omnibus contracts). Platform owns contracts and shared foundations; Engines own domain interpretation. The Audio/Candidate design must not invent an audio-only transport/runtime that blocks peer Engines.
+
 ## Decision (proposed)
 
-Introduce two application-layer components **above** Sensor Platform mic acquisition:
+1. Introduce two application-layer components **above** Sensor Platform mic acquisition:
+   - **Audio Engine** — consumes the Platform **audio contract**; produces features, signatures, and signature history. Does not own I2S/DMA. Does not emit Observations.
+   - **Candidate Engine** — consumes signature updates (engine-to-engine); manages multi-candidate identity and lifecycle. Not a second reporting system; not a classifier.
 
-1. **Audio Engine** — transforms Platform audio windows into time-based acoustic features, signatures, and signature history. Does not own I2S/DMA. Does not emit Observations.
-2. **Candidate Engine** — maintains zero or more simultaneous **Candidates** (potential sources/events) fed by signature updates. Manages identity, evidence accumulation, and lifecycle. Does not classify product meaning and is not a second reporting system.
+2. Treat Platform as a **multi-contract foundation** (audio now; sensor/Omnibus later). Shared Platform capabilities to design **later** (not implement in AE/CE v1): versioned contract IDs, multi-subscriber on-device notify/pull, Engine registry/lifecycle/health, resource policy. See companion §0.
 
-Observation publishing, Module Runtime, Workflow Engine, Decision/Fusion, ABC/Drone-ML, and spatial TDOA remain **later** consumers of Candidates (or of promoted results), not owners of acquisition or signature production.
+3. Observation publishing, Module Runtime, Workflow Engine, Decision/Fusion, ABC/Drone-ML, spatial TDOA, Monitor Engine, and full Engine Runtime remain **later** consumers or peers — not owners of acquisition.
 
 ## Consequences
 
-- Platform `mic` stays the sole owner of I2S RX, window capture, health audio telemetry, and PCM hand-off.
-- Existing L0/L1/L2 math libraries are reused inside / beside Audio Engine; Observation JSON schemas stay dBmap product schemas.
+- Platform `mic` stays the sole owner of I2S RX, window capture, health audio telemetry, and PCM hand-off (audio contract producer).
+- AE/CE stay outside Platform acquisition code; L0/L1/L2 math may be reused by Audio Engine.
+- AE→CE is engine-local; it must remain migratable onto a future shared Platform data plane without requiring CE to speak I2S.
 - Development continues with **two physical microphones** (Mic 0/1 on DIN0). Four-channel Platform support is not a dependency for Audio Engine v1.
 - Dual-DIN sample sync / TDOA are **not** assumed.
+- A future Monitor Engine is a **peer** Engine on other contracts, not a child of Audio Engine.
 
 ## Alternatives considered
 
-See companion design §13 (risks and alternatives). Short form: folding Candidates into the existing activity detector would keep a single-stream model; putting Audio Engine into Platform would leak product analysis into shared infrastructure.
+See companion design §0 and §12. Short form: folding Candidates into the activity detector keeps a single-stream model; putting Audio Engine into Platform leaks product analysis and blocks peer Engines; building a full Engine Runtime before AE over-scopes this proposal.
