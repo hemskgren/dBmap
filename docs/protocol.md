@@ -295,9 +295,10 @@ pattern.
 
 The Output firmware synchronizes its UTC clock through SNTP and includes the
 UTC receive time in command console logs. The NTP server is set by
-`DBMAP_NTP_SERVER` at firmware build time; the default is the Swedish NTP Pool
-zone. If the clock has not synchronized yet, the log identifies the timestamp
-as unsynchronized.
+`NTP_SERVER` in the builder environment (default `se.pool.ntp.org` if unset) at
+firmware build time; the value is written into `CONFIG_DBMAP_NTP_SERVER`. If the
+clock has not synchronized yet, the log identifies the timestamp as
+unsynchronized.
 
 The intended versioned command schema includes an absolute `expires_at_utc`
 timestamp:

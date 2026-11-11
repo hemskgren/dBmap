@@ -38,8 +38,8 @@ These are **not** calibrated fleet defaults. Retune only after controlled EAR-00
 
 | Path | What you see |
 | --- | --- |
-| Firmware-builder `GET …/dbmap-config` (effective) | Full Relative END keys under `dbmap_config.observation` (Kconfig defaults + `sdkconfig.defaults`) |
-| Catalog / downloadable metadata `dbmap_config` | Defaults-file overrides — includes `EAR_OBS_RELATIVE_END` / `EAR_OBS_REL_SECONDARY_AMBIENT` when set in esp-ear defaults |
+| Firmware-builder `GET …/dbmap-config` (effective) | Full Relative END keys under `config.product.dbmap.observation` (Kconfig defaults + `sdkconfig.defaults`) |
+| Catalog / downloadable metadata `config` | Defaults-file overrides — includes `EAR_OBS_RELATIVE_END` / `EAR_OBS_REL_SECONDARY_AMBIENT` when set in esp-ear defaults under `config.product.dbmap.observation` |
 | Device hello/health `capabilities.observation` | Compiled Relative END + A3 keys when enabled |
 
 ---

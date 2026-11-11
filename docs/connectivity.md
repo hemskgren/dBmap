@@ -22,7 +22,7 @@ Message fields are in the [protocol reference](./protocol.md). Authorization act
 | SQLite | The `hub-bootstrap` process | File | none | `sqlite:////data/bootstrap.db` |
 | Analysis SQLite | The `analysis` process | File | none | `sqlite:////data/analysis.db` on `analysis-data` |
 | Board USB serial | The laptop browser | Web Serial | 115200 baud | Identity, flash, and NVS provisioning. The Hub is not on this path. |
-| NTP server | The Output board | SNTP, UDP | `123` | `DBMAP_NTP_SERVER`, default `se.pool.ntp.org`. Set at firmware build time. |
+| NTP server | The Output board | SNTP, UDP | `123` | `NTP_SERVER` (platform builder env), default `se.pool.ntp.org` if unset. Set at firmware build time into `CONFIG_DBMAP_NTP_SERVER`. |
 
 `opa-private` and `firmware-private` are internal Compose networks. OPA shares a network with `hub-bootstrap` and the optional `analysis` service. The firmware builder shares `firmware-private` with Nginx and with `hub-bootstrap`, which uses it only for the builder health check. Analysis does not join `firmware-private` and does not mount Hub SQLite.
 

@@ -1,0 +1,324 @@
+#include "sp_desired.h"
+
+#include "sp_diag.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#include "cJSON.h"
+#include "sp_backoff.h"
+#include "sp_hub_http.h"
+#include "sp_ota.h"
+#include "esp_http_client.h"
+#include "esp_log.h"
+#include "esp_random.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "sdkconfig.h"
+
+static const char *TAG = "sp_desired";
+static const int kPollMs = 60 * 60 * 1000;
+static const int kMaxTransientRetries = 3;
+
+enum {
+    kLogNone = 0,
+    kLogAbsent,
+    kLogRejected,
+    kLogDown,
+    kLogEmpty,
+    kLogMatch,
+    kLogMismatch,
+};
+
+static int s_logged = kLogNone;
+static char s_logged_id[64];
+static char s_logged_version[32];
+static sp_backoff_t s_https_backoff;
+/** Set by sp_desired_boot_check so poll_task skips one immediate duplicate. */
+static bool s_skip_next_poll_check;
+
+static int64_t now_ms(void)
+{
+    return esp_timer_get_time() / 1000;
+}
+
+static uint32_t https_rand32(void)
+{
+    return esp_random();
+}
+
+static esp_err_t collect_body(esp_http_client_handle_t client, char *buf, int buf_len)
+{
+    int total = 0;
+    while (total < buf_len - 1) {
+        int n = esp_http_client_read(client, buf + total, buf_len - 1 - total);
+        if (n < 0) {
+            return ESP_FAIL;
+        }
+        if (n == 0) {
+            break;
+        }
+        total += n;
+    }
+    buf[total] = 0;
+    return ESP_OK;
+}
+
+static void log_once(int kind, const char *firmware_id, const char *firmware_version)
+{
+    if (s_logged == kind &&
+        (firmware_id == NULL || strcmp(s_logged_id, firmware_id) == 0) &&
+        (firmware_version == NULL || strcmp(s_logged_version, firmware_version) == 0)) {
+        return;
+    }
+    s_logged = kind;
+    s_logged_id[0] = '\0';
+    s_logged_version[0] = '\0';
+    if (firmware_id != NULL) {
+        strncpy(s_logged_id, firmware_id, sizeof(s_logged_id) - 1);
+    }
+    if (firmware_version != NULL) {
+        strncpy(s_logged_version, firmware_version, sizeof(s_logged_version) - 1);
+    }
+}
+
+static bool http_status_retryable(int status)
+{
+    return status == 408 || status == 425 || status == 429 || status >= 500;
+}
+
+static bool http_status_permanent(int status)
+{
+    return status == 400 || status == 401 || status == 403 || status == 404 || status == 405 ||
+           status == 410 || status == 422;
+}
+
+typedef enum {
+    kDesiredOk = 0,
+    kDesiredTransient,
+    kDesiredPermanent,
+    kDesiredSkip,
+} desired_result_t;
+
+static desired_result_t check_desired_once(sp_effective_t *cfg)
+{
+    if (cfg->device_api_token[0] == '\0') {
+        if (s_logged != kLogAbsent) {
+            ESP_LOGW(TAG, "device API credential absent; desired check skipped");
+            log_once(kLogAbsent, NULL, NULL);
+        }
+        return kDesiredSkip;
+    }
+
+    char url[192];
+    esp_err_t err = sp_hub_format_https_url(cfg->network.hub_http_url, "/api/v1/device/desired-firmware", url, sizeof(url));
+    if (err != ESP_OK) {
+        if (s_logged != kLogDown) {
+            ESP_LOGW(TAG, "desired check skipped; keeping running firmware %s", CONFIG_DBMAP_FIRMWARE_VERSION);
+            log_once(kLogDown, NULL, NULL);
+        }
+        return kDesiredTransient;
+    }
+
+    esp_http_client_config_t http_cfg = {
+        .url = url,
+        .method = HTTP_METHOD_GET,
+        .timeout_ms = 8000,
+        .cert_pem = sp_hub_root_ca(),
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
+    if (client == NULL) {
+        sp_diag_note_desired_failure();
+        if (s_logged != kLogDown) {
+            ESP_LOGW(TAG, "desired check failed; keeping running firmware %s", CONFIG_DBMAP_FIRMWARE_VERSION);
+            log_once(kLogDown, NULL, NULL);
+        }
+        return kDesiredTransient;
+    }
+
+    char authorization[DBMAP_TOKEN_MAX + 8];
+    snprintf(authorization, sizeof(authorization), "Bearer %s", cfg->device_api_token);
+    esp_http_client_set_header(client, "Authorization", authorization);
+    err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        esp_http_client_cleanup(client);
+        sp_diag_note_desired_failure();
+        if (s_logged != kLogDown) {
+            ESP_LOGW(TAG, "desired check unreachable (%s); keeping running firmware %s", esp_err_to_name(err), CONFIG_DBMAP_FIRMWARE_VERSION);
+            log_once(kLogDown, NULL, NULL);
+        }
+        return kDesiredTransient;
+    }
+    (void)esp_http_client_fetch_headers(client);
+    char body[768];
+    if (collect_body(client, body, sizeof(body)) != ESP_OK) {
+        esp_http_client_cleanup(client);
+        sp_diag_note_desired_failure();
+        if (s_logged != kLogDown) {
+            ESP_LOGW(TAG, "desired check response failed; keeping running firmware %s", CONFIG_DBMAP_FIRMWARE_VERSION);
+            log_once(kLogDown, NULL, NULL);
+        }
+        return kDesiredTransient;
+    }
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (http_status_permanent(status)) {
+        sp_diag_note_desired_failure();
+        if (status == 401 || status == 403) {
+            if (s_logged != kLogRejected) {
+                ESP_LOGW(TAG, "desired check rejected (HTTP %d); keeping running firmware %s", status, CONFIG_DBMAP_FIRMWARE_VERSION);
+                log_once(kLogRejected, NULL, NULL);
+            }
+        } else if (s_logged != kLogDown) {
+            ESP_LOGW(TAG, "desired check failed (HTTP %d); keeping running firmware %s", status, CONFIG_DBMAP_FIRMWARE_VERSION);
+            log_once(kLogDown, NULL, NULL);
+        }
+        return kDesiredPermanent;
+    }
+    if (status != 200) {
+        sp_diag_note_desired_failure();
+        if (s_logged != kLogDown) {
+            ESP_LOGW(TAG, "desired check failed (HTTP %d); keeping running firmware %s", status, CONFIG_DBMAP_FIRMWARE_VERSION);
+            log_once(kLogDown, NULL, NULL);
+        }
+        return http_status_retryable(status) ? kDesiredTransient : kDesiredPermanent;
+    }
+
+    cJSON *json = cJSON_Parse(body);
+    if (json == NULL) {
+        if (s_logged != kLogDown) {
+            ESP_LOGW(TAG, "desired check returned invalid JSON; keeping running firmware %s", CONFIG_DBMAP_FIRMWARE_VERSION);
+            log_once(kLogDown, NULL, NULL);
+        }
+        return kDesiredTransient;
+    }
+    const cJSON *firmware_id = cJSON_GetObjectItem(json, "firmware_id");
+    const cJSON *firmware_version = cJSON_GetObjectItem(json, "firmware_version");
+    const cJSON *app_sha256 = cJSON_GetObjectItem(json, "app_sha256");
+    const cJSON *app_size_bytes = cJSON_GetObjectItem(json, "app_size_bytes");
+    const char *desired_id = cJSON_IsString(firmware_id) ? firmware_id->valuestring : "";
+    const char *desired_version = cJSON_IsString(firmware_version) ? firmware_version->valuestring : "";
+    const char *desired_sha = cJSON_IsString(app_sha256) ? app_sha256->valuestring : "";
+    uint32_t desired_size = 0;
+    if (cJSON_IsNumber(app_size_bytes) && app_size_bytes->valuedouble > 0) {
+        desired_size = (uint32_t)app_size_bytes->valuedouble;
+    }
+    if (desired_version[0] == '\0') {
+        if (s_logged != kLogEmpty) {
+            ESP_LOGI(TAG, "desired firmware not set; running %s", CONFIG_DBMAP_FIRMWARE_VERSION);
+            log_once(kLogEmpty, NULL, NULL);
+        }
+        cJSON_Delete(json);
+        return kDesiredOk;
+    }
+    if (strcmp(desired_version, CONFIG_DBMAP_FIRMWARE_VERSION) == 0) {
+        if (s_logged != kLogMatch || strcmp(s_logged_version, desired_version) != 0) {
+            ESP_LOGI(TAG, "desired firmware matches running %s", CONFIG_DBMAP_FIRMWARE_VERSION);
+            log_once(kLogMatch, desired_id, desired_version);
+        }
+        cJSON_Delete(json);
+        return kDesiredOk;
+    }
+
+    if (s_logged != kLogMismatch || strcmp(s_logged_id, desired_id) != 0 || strcmp(s_logged_version, desired_version) != 0) {
+        ESP_LOGW(
+            TAG,
+            "desired firmware differs: running %s, desired %s, firmware_id %s",
+            CONFIG_DBMAP_FIRMWARE_VERSION,
+            desired_version,
+            desired_id[0] != '\0' ? desired_id : "(none)"
+        );
+        log_once(kLogMismatch, desired_id, desired_version);
+    }
+
+    if (desired_id[0] != '\0' && desired_sha[0] != '\0' && desired_size > 0) {
+        ESP_LOGI(TAG, "starting OTA for desired %s (%s)", desired_version, desired_id);
+        esp_err_t ota_err = sp_ota_apply(cfg, desired_id, desired_version, desired_sha, desired_size);
+        if (ota_err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "OTA failed (%s); keeping running firmware %s",
+                esp_err_to_name(ota_err),
+                CONFIG_DBMAP_FIRMWARE_VERSION
+            );
+            cJSON_Delete(json);
+            /* Do not auto-retry OTA in a tight loop; wait for the next poll. */
+            return kDesiredPermanent;
+        }
+    } else {
+        ESP_LOGW(
+            TAG,
+            "desired mismatch without usable id/sha/size (id=%s); keeping running firmware %s",
+            desired_id[0] != '\0' ? desired_id : "(none)",
+            CONFIG_DBMAP_FIRMWARE_VERSION
+        );
+    }
+    cJSON_Delete(json);
+    return kDesiredOk;
+}
+
+static void check_desired(sp_effective_t *cfg)
+{
+    for (int attempt = 0; attempt <= kMaxTransientRetries; ++attempt) {
+        desired_result_t result = check_desired_once(cfg);
+        if (result == kDesiredOk || result == kDesiredSkip) {
+            sp_backoff_reset(&s_https_backoff);
+            return;
+        }
+        if (result == kDesiredPermanent) {
+            sp_backoff_note_failure(&s_https_backoff, now_ms());
+            return;
+        }
+        sp_backoff_note_failure(&s_https_backoff, now_ms());
+        if (attempt == kMaxTransientRetries) {
+            return;
+        }
+        uint32_t delay = sp_backoff_delay_ms(&s_https_backoff, https_rand32);
+        ESP_LOGI(TAG, "desired transient failure; retry in %lu ms", (unsigned long)delay);
+        /* Dedicated Desired task only — does not block audio / MQTT callbacks. */
+        vTaskDelay(pdMS_TO_TICKS(delay));
+    }
+}
+
+static void poll_task(void *arg)
+{
+    sp_effective_t *cfg = arg;
+    sp_backoff_config_t bo_cfg;
+    sp_backoff_config_https(&bo_cfg);
+    sp_backoff_init(&s_https_backoff, &bo_cfg);
+    /* Immediate check when poll_start is used alone (Output). Ear boot_check
+     * sets s_skip_next_poll_check to avoid a duplicate right after audio start. */
+    while (1) {
+        if (s_skip_next_poll_check) {
+            s_skip_next_poll_check = false;
+        } else {
+            check_desired(cfg);
+        }
+        vTaskDelay(pdMS_TO_TICKS(kPollMs));
+    }
+}
+
+void sp_desired_boot_check(sp_effective_t *cfg)
+{
+    if (cfg == NULL || !cfg->provisioned) {
+        return;
+    }
+    sp_backoff_config_t bo_cfg;
+    sp_backoff_config_https(&bo_cfg);
+    sp_backoff_init(&s_https_backoff, &bo_cfg);
+    ESP_LOGI(TAG, "boot Desired-firmware check");
+    check_desired(cfg);
+    s_skip_next_poll_check = true;
+}
+
+void sp_desired_poll_start(sp_effective_t *cfg)
+{
+    if (cfg == NULL || !cfg->provisioned) {
+        return;
+    }
+    if (xTaskCreate(poll_task, "desired", 12288, cfg, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "could not start desired firmware check");
+    }
+}

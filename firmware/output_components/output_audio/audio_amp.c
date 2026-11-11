@@ -1,12 +1,12 @@
 #include "audio_amp.h"
 
-#include "dbmap_i2s.h"
+#include "sp_i2s.h"
 #include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "sdkconfig.h"
 
-static const char *TAG = "dbmap_amp";
+static const char *TAG = "sp_amp";
 
 esp_err_t dbmap_amp_init(void)
 {
@@ -22,14 +22,14 @@ esp_err_t dbmap_amp_init(void)
     ESP_RETURN_ON_ERROR(gpio_set_level(CONFIG_DBMAP_AUDIO_SD_MODE_GPIO, 1), TAG, "SD_MODE high");
 #endif
 
-    dbmap_i2s_pins_t pins = {
+    sp_i2s_pins_t pins = {
         .bclk_gpio = CONFIG_DBMAP_AUDIO_I2S_BCLK_GPIO,
         .ws_gpio = CONFIG_DBMAP_AUDIO_I2S_WS_GPIO,
         .dout_gpio = CONFIG_DBMAP_AUDIO_I2S_DOUT_GPIO,
         .din_gpio = -1,
         .mclk_gpio = -1,
     };
-    esp_err_t err = dbmap_i2s_init_tx(&pins, 44100);
+    esp_err_t err = sp_i2s_init_tx(&pins, 44100);
     if (err != ESP_OK) {
         return err;
     }

@@ -72,8 +72,10 @@ METADATA_FIELDS = {
     "configuration_version",
     "artifact_sha256",
 }
-# Optional nested CONFIG_DBMAP_* snapshot from the builder (hierarchical groups).
+# Optional nested CONFIG_DBMAP_* snapshot from the builder.
+# Prefer "config" (config.sp / config.product.dbmap); keep "dbmap_config" for older sidecars.
 OPTIONAL_METADATA_FIELDS = {
+    "config",
     "dbmap_config",
 }
 
@@ -153,8 +155,12 @@ def validate_upload(
             + ", ".join(sorted(unexpected))
             + "."
         )
+    if "config" in metadata and not isinstance(metadata["config"], dict):
+        raise InvalidFirmwareBundle("config must be a JSON object when present.")
     if "dbmap_config" in metadata and not isinstance(metadata["dbmap_config"], dict):
-        raise InvalidFirmwareBundle("dbmap_config must be a JSON object when present.")
+        raise InvalidFirmwareBundle(
+            "dbmap_config must be a JSON object when present."
+        )
     if metadata["firmware_id"] != firmware_id:
         raise InvalidFirmwareBundle("Filename ID must match metadata firmware_id.")
     for field in (

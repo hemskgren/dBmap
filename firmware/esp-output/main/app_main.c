@@ -2,17 +2,17 @@
 #include <string.h>
 
 #include "dbmap_audio.h"
-#include "dbmap_desired.h"
-#include "dbmap_diag.h"
-#include "dbmap_health.h"
-#include "dbmap_mqtt.h"
-#include "dbmap_nvs.h"
-#include "dbmap_ota.h"
-#include "dbmap_provision.h"
-#include "dbmap_serial_config.h"
-#include "dbmap_time.h"
-#include "dbmap_types.h"
-#include "dbmap_wifi.h"
+#include "sp_desired.h"
+#include "sp_diag.h"
+#include "sp_health.h"
+#include "sp_mqtt.h"
+#include "sp_nvs.h"
+#include "sp_ota.h"
+#include "sp_provision.h"
+#include "sp_serial_config.h"
+#include "sp_time.h"
+#include "sp_types.h"
+#include "sp_wifi.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -20,31 +20,36 @@
 #include "output_command.h"
 
 static const char *TAG = "esp-output";
-static dbmap_effective_t s_cfg;
+static sp_effective_t s_cfg;
 
 void app_main(void)
 {
-    ESP_ERROR_CHECK(dbmap_nvs_init());
-    dbmap_diag_init();
-    dbmap_effective_defaults(&s_cfg);
-    ESP_ERROR_CHECK(dbmap_nvs_load(&s_cfg));
+    ESP_ERROR_CHECK(sp_nvs_init());
+    sp_diag_init();
+    sp_effective_defaults(&s_cfg);
+    ESP_ERROR_CHECK(sp_nvs_load(&s_cfg));
 
     ESP_LOGI(
         TAG,
-        "DBMAP_DEVICE_ID=%s",
+        "node_id=%s",
         s_cfg.identity.node_id[0] != '\0' ? s_cfg.identity.node_id : "UNPROVISIONED"
     );
     ESP_LOGI(
         TAG,
-        "DBMAP_HUB_ID=%s",
+        "hub_id=%s",
         s_cfg.identity.hub_id[0] != '\0' ? s_cfg.identity.hub_id : "UNSET"
     );
     ESP_LOGI(TAG, "boot hardware=%s provisioned=%d", s_cfg.identity.hardware_revision, (int)s_cfg.provisioned);
     ESP_LOGI(TAG, "device API credential %s", s_cfg.device_api_token[0] != '\0' ? "present" : "absent");
 
     if (s_cfg.provisioned) {
-        ESP_LOGI(TAG, "USB configuration window open for 10 seconds");
-        esp_err_t config_err = dbmap_serial_config_wait(&s_cfg, 10);
+        ESP_LOGI(
+            TAG,
+            "USB configuration window open for %d seconds",
+            SP_USB_PROVISIONED_CONFIG_WINDOW_S
+        );
+        esp_err_t config_err =
+            sp_serial_config_wait(&s_cfg, SP_USB_PROVISIONED_CONFIG_WINDOW_S);
         if (config_err == ESP_OK) {
             ESP_LOGI(TAG, "USB configuration saved; restarting");
             esp_restart();
@@ -58,20 +63,20 @@ void app_main(void)
         ESP_LOGI(
             TAG,
             "unprovisioned (missing Wi-Fi or bootstrap token); USB config window %d s then reboot",
-            DBMAP_USB_BOOT_RECOVERY_S
+            SP_USB_BOOT_RECOVERY_S
         );
-        (void)dbmap_serial_config_wait(&s_cfg, DBMAP_USB_BOOT_RECOVERY_S);
+        (void)sp_serial_config_wait(&s_cfg, SP_USB_BOOT_RECOVERY_S);
         esp_restart();
     }
 
-    esp_err_t wifi_err = dbmap_wifi_start(&s_cfg.network);
+    esp_err_t wifi_err = sp_wifi_start(&s_cfg.network);
     if (wifi_err != ESP_OK) {
         /* Keep retrying STA in the background; USB configure stays open.
          * Do not reboot solely because the configured SSID is absent. */
-        (void)dbmap_boot_wait_wifi_ip_or_usb(&s_cfg, 0);
+        (void)sp_boot_wait_wifi_ip_or_usb(&s_cfg, 0);
     }
 
-    esp_err_t time_err = dbmap_time_sync(10000);
+    esp_err_t time_err = sp_time_sync(10000);
     if (time_err == ESP_OK) {
         ESP_LOGI(TAG, "system time synchronized with NTP");
     } else {
@@ -79,35 +84,35 @@ void app_main(void)
     }
 
     if (!s_cfg.provisioned) {
-        esp_err_t perr = dbmap_hub_provision(&s_cfg);
+        esp_err_t perr = sp_hub_provision(&s_cfg);
         if (perr != ESP_OK) {
             ESP_LOGE(
                 TAG,
                 "secure provisioning failed; USB config window %d s then reboot",
-                DBMAP_USB_BOOT_RECOVERY_S
+                SP_USB_BOOT_RECOVERY_S
             );
-            (void)dbmap_serial_config_wait(&s_cfg, DBMAP_USB_BOOT_RECOVERY_S);
+            (void)sp_serial_config_wait(&s_cfg, SP_USB_BOOT_RECOVERY_S);
             esp_restart();
         }
     }
 
     ESP_ERROR_CHECK(output_command_init());
-    esp_err_t audio_err = dbmap_audio_init(s_cfg.network.hub_http_url);
+    esp_err_t audio_err = sp_audio_init(s_cfg.network.hub_http_url);
     if (audio_err != ESP_OK) {
         ESP_LOGW(TAG, "audio init failed (%s); continuing without playback", esp_err_to_name(audio_err));
     }
-    ESP_ERROR_CHECK(dbmap_mqtt_start(&s_cfg, output_handle_command, &s_cfg));
-    dbmap_ota_mark_valid_after_mqtt(&s_cfg);
-    dbmap_desired_poll_start(&s_cfg);
+    ESP_ERROR_CHECK(sp_mqtt_start(&s_cfg, output_handle_command, &s_cfg));
+    sp_ota_mark_valid_after_mqtt(&s_cfg);
+    sp_desired_poll_start(&s_cfg);
 
     int backoff_ms = 1000;
     while (1) {
-        dbmap_ota_report_pending_boot(&s_cfg);
-        if (!dbmap_mqtt_is_connected()) {
-            dbmap_mqtt_request_reconnect();
+        sp_ota_report_pending_boot(&s_cfg);
+        if (!sp_mqtt_is_connected()) {
+            sp_mqtt_request_reconnect();
         }
-        const bool hello_ok = dbmap_publish_hello(&s_cfg) == ESP_OK;
-        dbmap_publish_health(&s_cfg);
+        const bool hello_ok = sp_publish_hello(&s_cfg) == ESP_OK;
+        sp_publish_health(&s_cfg);
         vTaskDelay(pdMS_TO_TICKS(backoff_ms));
         /* Steady 30s hello/health when MQTT publish works. Back off only on failure. */
         if (hello_ok) {

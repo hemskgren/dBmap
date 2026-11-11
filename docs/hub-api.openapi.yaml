@@ -5046,12 +5046,14 @@ components:
           minimum: 0
         artifact_sha256:
           type: string
+        config:
+          type: object
+          description: Optional nested firmware config from sdkconfig.defaults overrides (config.sp Sensor Platform, config.product.dbmap dBmap product). Not the full effective Kconfig merge.
+          additionalProperties: true
         dbmap_config:
           type: object
-          description: Optional hierarchical CONFIG_DBMAP_* values explicitly set in the target sdkconfig.defaults (not the full effective Kconfig merge).
-          additionalProperties:
-            type: object
-            additionalProperties: true
+          description: Legacy optional hierarchical CONFIG_DBMAP_* snapshot; prefer config for new uploads.
+          additionalProperties: true
         status:
           type: string
           enum:

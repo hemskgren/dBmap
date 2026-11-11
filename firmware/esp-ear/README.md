@@ -5,7 +5,7 @@ Initial Ear application for ESP32-S3 + one I2S MEMS microphone.
 ## Scope (first milestone)
 
 - Reuses `node_common` for Wi-Fi, HTTPS provision, MQTT, OTA Desired poll, hello/health.
-- Captures from **one** microphone model per image (currently **INMP441** via `ear_mic`).
+- Captures from **one** microphone model per image (currently **INMP441** via Platform `mic`).
 - NVS `microphone_count` **1** → mono LEFT; **2** → Philips stereo on shared DIN0 (mic0=left, mic1=right). Observation / L0 / activity still use **mic 0 only**.
 - Attaches windowed RMS/peak **dBFS** levels on hello/health/keepalive reported state (same path as `wifi_rssi_dbm`). Hub shows them under **Additional reported values** until a dedicated Ear UI exists.
 - JSON uses `audio.microphones[]` / `capabilities.microphones[]` so a later multi-mic Ear can add indexes without a schema break.
@@ -35,7 +35,7 @@ Avoid one NVS write per Observation:
 
 On boot, `next` starts at the durable `seq_lim`, so any unused remainder of the previous block is **skipped** (gaps OK). A new block is reserved (`seq_lim := next + block_size`, default 64) and written to NVS **before** any number from that block is allocated (failed NVS commit rolls back the RAM limit). Phase 1 key `seq` meant “next to assign” (persisted before publish); when `seq_lim` is absent it migrates to `legacy_seq + block_size` (skip-forward). Overflow saturates at `UINT32_MAX` and stops allocation (no wrap).
 
-**Consumption point:** a sequence number is consumed when `dbmap_obs_seq_allocate()` returns it (the containing block limit is already in NVS). If MQTT publish fails afterward, that number is **not** reused. If MQTT is down when an emission is due, the emission is dropped and **no** sequence number is allocated.
+**Consumption point:** a sequence number is consumed when `sp_obs_seq_allocate()` returns it (the containing block limit is already in NVS). If MQTT publish fails afterward, that number is **not** reused. If MQTT is down when an emission is due, the emission is dropped and **no** sequence number is allocated.
 
 ### RMS activity vs microphone diagnostics
 
@@ -46,7 +46,7 @@ On boot, `next` starts at the durable `seq_lim`, so any unused remainder of the 
 | Acoustic activity | RMS enter/exit thresholds only (not `signal_present` alone) |
 | Invalid / boot windows | Boot-settle ignored; invalid windows **hold** state (not silence); after `max_invalid_hold_ms` force END at last usable sample |
 
-How `microphone_status` is determined: `dbmap_audio_classify_microphone()` uses structure diagnostics (zero ratio, unique values, rail hits)—see [`docs/diagnostics/ear-i2s-read-path-verification.md`](../../docs/diagnostics/ear-i2s-read-path-verification.md). It is **not** an activity detector and **not** `source_family`.
+How `microphone_status` is determined: `sp_audio_classify_microphone()` uses structure diagnostics (zero ratio, unique values, rail hits)—see [`docs/diagnostics/ear-i2s-read-path-verification.md`](../../docs/diagnostics/ear-i2s-read-path-verification.md). It is **not** an activity detector and **not** `source_family`.
 
 Thresholds are **provisional and uncalibrated**. One activity stream per Ear: overlapping sources are not separated.
 
@@ -64,10 +64,15 @@ Each Observation describes an already measured interval `[event_time_utc, event_
 
 ### Boot vs Acoustic Monitor
 
-Startup runs networking and the boot Desired/OTA check **before** starting the
-Acoustic Monitor (I2S capture, RMS detector, L0). The monitor starts **once**
-per boot after that gate. Later MQTT/Wi‑Fi disconnects and Desired polls do
-**not** stop, restart, or reinitialize capture/detector/L0 state.
+Sensor Platform Step 1 boot order (after USB config gates):
+
+1. **Platform mic / I2S** starts (local capture; not gated on Wi‑Fi).
+2. Wi‑Fi → NTP → provision → MQTT → OTA mark-valid → boot Desired.
+3. **dBmap Ear observation** (RMS detector / publisher) starts **once** after Desired.
+
+Later MQTT/Wi‑Fi disconnects and Desired polls do **not** stop, restart, or
+reinitialize capture/detector/L0 state. Console tags: `platform_boot` then
+`wifi_init` / Wi‑Fi logs, then `dbmap_app` for observation.
 
 ### Background RMS (Reported State, Iteration 1)
 
@@ -92,7 +97,7 @@ clear the ring. RAM-only (no reboot persistence).
 
 Before `persist_pending_and_reboot` continues, Ear runs a registered acoustic-close
 callback (explicit registration from `app_main` after MQTT start and **before**
-`dbmap_desired_boot_check`; Output never registers — NULL is an intentional no-op).
+`sp_desired_boot_check`; Output never registers — NULL is an intentional no-op).
 
 | Detector state at OTA close | `s_start_publish_accepted` | Action |
 | --- | --- | --- |
@@ -194,7 +199,7 @@ Full wiring (Output + Ear, reserved 4-mic map): [`docs/device-wiring-and-pinout.
 
 ### Stage 1 stereo capture integrity (bench)
 
-With `microphone_count=2`, health already reports both channels; Observation / activity still use mic 0. Stage 1 adds `dbmap_ear_mic_get_channel` / `dbmap_ear_mic_get_stream` for in-firmware diagnostics and documents a USB-console hardware procedure (1 kHz speaker move, 30 s continuity, power-off SD disconnect):
+With `microphone_count=2`, health already reports both channels; Observation / activity still use mic 0. Stage 1 adds `sp_mic_get_channel` / `sp_mic_get_stream` for in-firmware diagnostics and documents a USB-console hardware procedure (1 kHz speaker move, 30 s continuity, power-off SD disconnect):
 
 [`docs/diagnostics/ear-stereo-capture-integrity.md`](../../docs/diagnostics/ear-stereo-capture-integrity.md).
 
@@ -291,7 +296,7 @@ Expect continuous `diag snap` / `diag counters` lines with Wi-Fi/MQTT disconnect
 
 Prefer the Hub **Firmware → Build reusable firmware** target `ear-esp32-s3` (series `0.7.*`).
 
-The builder container has **no internet**. Ear vendors `espressif/mdns` **1.14.1** at `esp-ear/components/mdns` (local IDF component) so the registry is never contacted. Ear components live under `firmware/ear_components/` (not shared with Output’s Helix/LittleFS tree under `firmware/output_components/`).
+The builder container has **no internet**. Ear vendors `espressif/mdns` **1.14.1** at `esp-ear/components/mdns` (local IDF component) so the registry is never contacted. Shared Platform code lives under `firmware/platform/`; dBmap Ear product modules under `firmware/products/dbmap/ear/` (not shared with Output’s Helix/LittleFS tree under `firmware/output_components/`).
 
 After builder `server.py` / component-tree changes, recreate with a **rebuild**:
 

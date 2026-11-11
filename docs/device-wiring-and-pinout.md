@@ -77,6 +77,6 @@ On octal-flash / octal-PSRAM modules, **do not** use the SPI0/1 flash–PSRAM GP
 | Device | Relay / LED | Audio I2S |
 | --- | --- | --- |
 | Output | `firmware/esp-output/main/output_command.c` (`GPIO_NUM_16`, `GPIO_NUM_2`) | `firmware/output_components/output_audio/Kconfig` |
-| Ear | — | `firmware/ear_components/ear_mic/Kconfig` |
+| Ear | — | `firmware/platform/mic/Kconfig` |
 
 When changing pins, update Kconfig (or the Output command constants), rebuild/flash, and keep this document in sync.

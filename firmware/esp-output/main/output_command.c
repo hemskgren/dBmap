@@ -7,10 +7,10 @@
 
 #include "cJSON.h"
 #include "dbmap_audio.h"
-#include "dbmap_health.h"
-#include "dbmap_mqtt.h"
-#include "dbmap_time.h"
-#include "dbmap_types.h"
+#include "sp_health.h"
+#include "sp_mqtt.h"
+#include "sp_time.h"
+#include "sp_types.h"
 #include "driver/gpio.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -119,14 +119,14 @@ static bool stop_relay(void)
 
 void output_handle_command(const char *payload, int len, void *ctx)
 {
-    const dbmap_effective_t *cfg = ctx;
+    const sp_effective_t *cfg = ctx;
     char buf[768];
     if (payload == NULL || len <= 0) {
         ESP_LOGW(TAG, "received empty MQTT command");
         return;
     }
     char received_at[24];
-    if (dbmap_time_format_utc(received_at, sizeof(received_at)) == ESP_OK) {
+    if (sp_time_format_utc(received_at, sizeof(received_at)) == ESP_OK) {
         ESP_LOGI(TAG, "received_at=%s MQTT command (%d bytes): %.*s", received_at, len, len, payload);
     } else {
         ESP_LOGI(TAG, "received_at=unsynchronized MQTT command (%d bytes): %.*s", len, len, payload);
@@ -165,12 +165,12 @@ void output_handle_command(const char *payload, int len, void *ctx)
     if (cJSON_IsString(expires) && expires->valuestring != NULL) {
         // Parse ISO‑8601 timestamp to epoch microseconds.
         int64_t expires_us = 0;
-        // dbmap_time_parse_iso8601 returns ESP_OK on success (if available)
-        esp_err_t parse_res = dbmap_time_parse_iso8601(expires->valuestring, &expires_us);
+        // sp_time_parse_iso8601 returns ESP_OK on success (if available)
+        esp_err_t parse_res = sp_time_parse_iso8601(expires->valuestring, &expires_us);
         if (parse_res == ESP_OK) {
             // Get current UTC epoch in microseconds.
             int64_t now_us = 0;
-            dbmap_time_get_epoch_us(&now_us);
+            sp_time_get_epoch_us(&now_us);
             if (now_us >= expires_us) {
                 ESP_LOGW(TAG, "received expired command (expires_at_utc=%s); ignoring", expires->valuestring);
                 cJSON_Delete(json);
@@ -208,7 +208,7 @@ void output_handle_command(const char *payload, int len, void *ctx)
         if (https_url[0] == '\0' || strncmp(https_url, "https://", 8) != 0) {
             result = "invalid_url";
         } else {
-            esp_err_t play_err = dbmap_audio_play_https(https_url);
+            esp_err_t play_err = sp_audio_play_https(https_url);
             if (play_err == ESP_OK) {
                 result = "audio_play_started";
             } else if (play_err == ESP_ERR_INVALID_STATE) {
@@ -222,7 +222,7 @@ void output_handle_command(const char *payload, int len, void *ctx)
         if (file_path[0] == '\0' || strstr(file_path, "..") != NULL) {
             result = "invalid_path";
         } else {
-            esp_err_t play_err = dbmap_audio_play_file(file_path);
+            esp_err_t play_err = sp_audio_play_file(file_path);
             if (play_err == ESP_OK) {
                 result = "audio_play_started";
             } else if (play_err == ESP_ERR_NOT_FOUND) {
@@ -234,7 +234,7 @@ void output_handle_command(const char *payload, int len, void *ctx)
             }
         }
     } else if (strcmp(act, "AUDIO_STOP") == 0) {
-        esp_err_t stop_err = dbmap_audio_stop();
+        esp_err_t stop_err = sp_audio_stop();
         result = (stop_err == ESP_OK || stop_err == ESP_ERR_TIMEOUT) ? "audio_stopped" : "audio_stop_failed";
     }
 
@@ -249,8 +249,8 @@ void output_handle_command(const char *payload, int len, void *ctx)
     char *s = cJSON_PrintUnformatted(ack);
     if (s != NULL) {
         ESP_LOGI(TAG, "command result action=%s result=%s", act, result);
-        dbmap_mqtt_publish_json(cfg->topics.ack, s, 1);
-        dbmap_publish_status(cfg, s);
+        sp_mqtt_publish_json(cfg->topics.ack, s, 1);
+        sp_publish_status(cfg, s);
     }
     free(s);
     cJSON_Delete(ack);
