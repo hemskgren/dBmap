@@ -1,0 +1,65 @@
+#include "sp_hub_http.h"
+
+#include <stdbool.h>
+#include <stdio.h>
+#include <strings.h>
+#include <string.h>
+
+#include "sp_resolve.h"
+#include "esp_log.h"
+
+static const char *TAG = "sp_http";
+extern const uint8_t root_ca_pem_start[] asm("_binary_root_ca_pem_start");
+
+const char *sp_hub_root_ca(void)
+{
+    return (const char *)root_ca_pem_start;
+}
+
+esp_err_t sp_hub_format_https_url(const char *hub_http_url, const char *api_path, char *url, size_t url_len)
+{
+    if (hub_http_url == NULL || api_path == NULL || url == NULL || url_len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (strncmp(hub_http_url, "https://", 8) != 0) {
+        ESP_LOGE(TAG, "Hub URL must use HTTPS");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const char *hub_base = hub_http_url;
+    char resolved_base[160];
+    const char *host_start = hub_base + 8;
+    const char *host_end = strpbrk(host_start, ":/");
+    size_t host_len = host_end ? (size_t)(host_end - host_start) : strlen(host_start);
+    if (host_len > 0 && host_len < 128) {
+        char hostname[128];
+        memcpy(hostname, host_start, host_len);
+        hostname[host_len] = '\0';
+        char ip[16];
+        bool is_local = host_len > 6 && strcasecmp(hostname + host_len - 6, ".local") == 0;
+        if (sp_resolve_ipv4(hostname, ip, sizeof(ip)) == ESP_OK) {
+            /* Only rewrite .local to an IP so mDNS works. Public DNS must stay
+             * in the URL so TLS matches the certificate DNS SAN. */
+            if (is_local) {
+                int n = snprintf(resolved_base, sizeof(resolved_base), "https://%s%s", ip,
+                                 host_end ? host_end : "");
+                if (n > 0 && (size_t)n < sizeof(resolved_base)) {
+                    hub_base = resolved_base;
+                    ESP_LOGI(TAG, "call-home HTTPS via %s (%s)", ip, hostname);
+                }
+            } else {
+                ESP_LOGI(TAG, "call-home HTTPS %s resolves to %s (keeping DNS name for TLS)",
+                         hostname, ip);
+            }
+        } else {
+            ESP_LOGW(TAG, "could not resolve %s; attempting original Hub URL", hostname);
+        }
+    }
+
+    int url_written = snprintf(url, url_len, "%s%s", hub_base, api_path);
+    if (url_written <= 0 || (size_t)url_written >= url_len) {
+        ESP_LOGE(TAG, "Hub URL is too long");
+        return ESP_ERR_INVALID_SIZE;
+    }
+    return ESP_OK;
+}

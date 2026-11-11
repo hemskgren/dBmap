@@ -804,13 +804,13 @@
               <label for="firmware-build-target">Supported build target
                 <select id="firmware-build-target"><option value="">Loading supported targets…</option></select>
               </label>
-              <button id="list-firmware-dbmap-config" class="secondary" type="button" disabled>List CONFIG_DBMAP_*</button>
+              <button id="list-firmware-dbmap-config" class="secondary" type="button" disabled>List config</button>
               <button id="start-firmware-build" type="button" disabled>Build firmware</button>
               <span id="firmware-build-status" class="notice" role="status">Checking the optional builder…</span>
             </div>
             <details id="firmware-dbmap-config-panel" hidden>
-              <summary>Effective CONFIG_DBMAP_* for selected target</summary>
-              <pre id="firmware-dbmap-config-output">Select a target and click List CONFIG_DBMAP_*.</pre>
+              <summary>Effective config for selected target</summary>
+              <pre id="firmware-dbmap-config-output">Select a target and click List config.</pre>
             </details>
             <div id="firmware-build-toolbar" class="firmware-build-toolbar" hidden>
               <label id="firmware-builds-show-deleted-label">
@@ -4518,7 +4518,7 @@
           return;
         }
         listButton.disabled = true;
-        status.textContent = `Resolving effective CONFIG_DBMAP_* for ${targetSelect.value}…`;
+        status.textContent = `Resolving effective config for ${targetSelect.value}…`;
         status.className = 'notice';
         try {
           const config = await firmwareBuilderApi(
@@ -4529,11 +4529,11 @@
           panel.open = true;
           const highlightCount = Array.isArray(config.highlights) ? config.highlights.length : 0;
           status.textContent = highlightCount
-            ? `Listed CONFIG_DBMAP_* for ${targetSelect.value} (${highlightCount} value(s) differ from Kconfig defaults). Review before building.`
-            : `Listed CONFIG_DBMAP_* for ${targetSelect.value}. Review before building.`;
+            ? `Listed config for ${targetSelect.value} (${highlightCount} value(s) differ from Kconfig defaults). Review before building.`
+            : `Listed config for ${targetSelect.value}. Review before building.`;
           status.className = 'notice';
         } catch (error) {
-          status.textContent = `Could not list CONFIG_DBMAP_*: ${error.message}`;
+          status.textContent = `Could not list config: ${error.message}`;
           status.className = 'notice error';
         } finally {
           syncFirmwareBuildActionButtons();
@@ -5590,7 +5590,7 @@
         document.getElementById('firmware-dbmap-config-panel').hidden = true;
         document.getElementById('firmware-dbmap-config-panel').open = false;
         document.getElementById('firmware-dbmap-config-output').textContent =
-          'Select a target and click List CONFIG_DBMAP_*.';
+          'Select a target and click List config.';
       });
       document.getElementById('list-firmware-dbmap-config').addEventListener('click', listFirmwareDbmapConfig);
       document.getElementById('start-firmware-build').addEventListener('click', startFirmwareBuild);

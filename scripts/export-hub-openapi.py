@@ -586,16 +586,22 @@ EXTRA_SCHEMAS = {
             "esp_idf_version": {"type": "string"},
             "configuration_version": {"type": "integer", "minimum": 0},
             "artifact_sha256": {"type": "string"},
+            "config": {
+                "type": "object",
+                "description": (
+                    "Optional nested firmware config from sdkconfig.defaults overrides: "
+                    "config.sp (Sensor Platform) and config.product.dbmap (dBmap product). "
+                    "Not the full effective Kconfig merge."
+                ),
+                "additionalProperties": True,
+            },
             "dbmap_config": {
                 "type": "object",
                 "description": (
-                    "Optional hierarchical CONFIG_DBMAP_* values explicitly set in the "
-                    "target sdkconfig.defaults (not the full effective Kconfig merge)."
+                    "Legacy optional hierarchical CONFIG_DBMAP_* snapshot; "
+                    "prefer config for new uploads."
                 ),
-                "additionalProperties": {
-                    "type": "object",
-                    "additionalProperties": True,
-                },
+                "additionalProperties": True,
             },
             "status": {"type": "string", "enum": ["candidate", "registered"]},
             "uploaded_at": {"type": "string", "format": "date-time"},

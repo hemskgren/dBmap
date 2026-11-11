@@ -1,0 +1,22 @@
+idf_component_register(
+    SRCS
+        "observation_payload.c"
+        "activity_detector.c"
+        "lifecycle_v2.c"
+        "ear_obs_ota_policy.c"
+        "ear_observation.c"
+    INCLUDE_DIRS "include"
+    REQUIRES
+        node_common
+        mic
+        ear_acoustic
+        observation
+        json
+        nvs_flash
+        esp_timer
+        log
+        esp_system
+        esp_hw_support
+        heap
+        freertos
+)

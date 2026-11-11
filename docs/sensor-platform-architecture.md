@@ -123,7 +123,7 @@ flowchart BT
 | Observation transport | Envelope, episode/seq, Hub publish/ingest | Product-only required fields for all node kinds |
 | Product modules | Domain hypotheses, workflows, product UI | Forced deps on unrelated product stacks |
 
-**Verified coupling to unwind later:** `ear_observation` currently requires `ear_mic`, so Observation transport cannot ship without the acoustic stack. A Modbus product must not inherit that edge.
+**Verified coupling to unwind later:** dBmap `ear_observation` still requires Platform `mic` plus product `ear_acoustic` for Ear publish (acoustic-shaped JSON). Platform Observation Foundation (`observation`) no longer requires acoustic code; a future non-acoustic product must use the Foundation without pulling Ear modules.
 
 ---
 
@@ -176,7 +176,18 @@ Identity direction (future): stable internal user UUID; multiple external IdPs; 
 
 ---
 
-## 7. Recommended next smallest implementation task
+## 7. Firmware ownership (Step 1)
+
+| Layer | Path | Owns |
+| --- | --- | --- |
+| Platform | `firmware/platform/` | `node_common`, `mic` (I2S RX + generic audio metrics/reported values), `observation` (seq, episode registry, generic gate helpers) |
+| dBmap Ear | `firmware/products/dbmap/ear/` | `ear_acoustic` (L0–L2), `ear_observation` (activity policy + acoustic Observation JSON) |
+
+Future product observation modules (`nose/`, `monitor/`) are architectural placeholders only. Platform must not depend on product modules. See [firmware Sensor Platform Step 1](./firmware-sensor-platform-step1.md).
+
+## 8. Recommended next smallest implementation tasks
+
+**Firmware (after Step 1 hardware verification on EAR-004/005):** unwind remaining couplings (`dbmap_ota_register_acoustic_close` naming, dual I2S TX/RX helpers, schema-pluggable Observation JSON).
 
 **M1 — Logical Hub package ownership (behaviour-preserving):**
 
@@ -193,6 +204,8 @@ Optional parallel docs polish only if needed: cross-links from product contracts
 | Doc | Role |
 | --- | --- |
 | [ADR 0001](./adr/0001-sensor-platform-architecture.md) | Normative decisions |
+| [Firmware Sensor Platform Step 1](./firmware-sensor-platform-step1.md) | Phase 1 implementation report |
+| [ESP-IDF 6.1 migration assessment](./firmware-esp-idf-6.1-migration-assessment.md) | Phase 2 toolchain evaluation (no migration yet) |
 | [Protocol](./protocol.md) | Wire contract (Observation v1) |
 | [Identity and operating modes](./identity-and-operating-modes.md) | Current identity behaviour |
 | [Connectivity](./connectivity.md) | MQTT/HTTPS topology |

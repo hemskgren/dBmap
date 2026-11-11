@@ -130,8 +130,13 @@ def test_dbmap_config_endpoint_returns_effective_hierarchy(builder, monkeypatch)
         {
             **server.TARGETS["ear-esp32-s3"],
             "project": repo_firmware / "esp-ear",
-            "components": repo_firmware / "components",
-            "extra_component_trees": [repo_firmware / "ear_components"],
+            "components": repo_firmware / "platform",
+            "extra_component_trees": [
+                {
+                    "src": repo_firmware / "products" / "dbmap" / "ear",
+                    "dest": "products/dbmap/ear",
+                }
+            ],
         },
     )
     status, payload = request(
@@ -142,18 +147,13 @@ def test_dbmap_config_endpoint_returns_effective_hierarchy(builder, monkeypatch)
     )
     assert status == 200
     assert payload["source"] == "effective"
-    assert payload["dbmap_config"]["observation"]["EAR_OBS_L2"] is True
-    assert payload["dbmap_config"]["observation"]["EAR_OBS_RELATIVE_END"] is True
-    assert (
-        payload["dbmap_config"]["observation"]["EAR_OBS_REL_RETURN_MARGIN_DB_X1000"]
-        == 4000
-    )
-    assert payload["dbmap_config"]["observation"]["EAR_OBS_REL_EXIT_HOLD_MS"] == 2000
-    assert (
-        payload["dbmap_config"]["observation"]["EAR_OBS_REL_CANCEL_HYST_DB_X1000"]
-        == 1500
-    )
-    assert payload["dbmap_config"]["node"]["WIFI_SSID"] == ""
+    observation = payload["config"]["product"]["dbmap"]["observation"]
+    assert observation["EAR_OBS_L2"] is True
+    assert observation["EAR_OBS_RELATIVE_END"] is True
+    assert observation["EAR_OBS_REL_RETURN_MARGIN_DB_X1000"] == 4000
+    assert observation["EAR_OBS_REL_EXIT_HOLD_MS"] == 2000
+    assert observation["EAR_OBS_REL_CANCEL_HYST_DB_X1000"] == 1500
+    assert payload["config"]["sp"]["node"]["WIFI_SSID"] == ""
 
 
 @pytest.mark.parametrize("body", [None, {}, {"target": "unlisted"}, {"target": []}])

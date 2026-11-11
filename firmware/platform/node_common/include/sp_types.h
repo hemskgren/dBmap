@@ -1,0 +1,73 @@
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "sp_mic_count.h"
+
+#define DBMAP_NODE_ID_MAX 32
+#define DBMAP_HUB_ID_MAX 64
+#define DBMAP_HOST_MAX 128
+#define DBMAP_TOPIC_MAX 160
+#define DBMAP_TOKEN_MAX 128
+
+typedef struct {
+    char node_id[DBMAP_NODE_ID_MAX];
+    char hub_id[DBMAP_HUB_ID_MAX];
+    char hardware_revision[64];
+    char provisioning_state[32];
+} sp_identity_t;
+
+typedef struct {
+    char ssid[33];
+    char password[65];
+    char hub_http_url[DBMAP_HOST_MAX];
+    char mqtt_profile[16];
+    char mqtt_host[DBMAP_HOST_MAX];
+    uint16_t mqtt_port;
+    bool mqtt_use_tls;
+    char mqtt_username[64];
+    char mqtt_password[128];
+} sp_network_t;
+
+typedef struct {
+    uint32_t config_version;
+    uint32_t calibration_version;
+    char classifier_version[32];
+    char profile[32];
+} sp_config_t;
+
+typedef struct {
+    char hello[DBMAP_TOPIC_MAX];
+    char keepalive[DBMAP_TOPIC_MAX];
+    char health[DBMAP_TOPIC_MAX];
+    char status[DBMAP_TOPIC_MAX];
+    char command[DBMAP_TOPIC_MAX];
+    char ack[DBMAP_TOPIC_MAX];
+    char config[DBMAP_TOPIC_MAX];
+    char observation[DBMAP_TOPIC_MAX]; /* Ear detections; unused by Output */
+    char audio[DBMAP_TOPIC_MAX];       /* Ear audio telemetry; unused by Output */
+} sp_topics_t;
+
+typedef struct {
+    sp_identity_t identity;
+    sp_network_t network;
+    sp_config_t config;
+    sp_topics_t topics;
+    char bootstrap_token[DBMAP_TOKEN_MAX];
+    char device_api_token[DBMAP_TOKEN_MAX];
+    bool provisioned;
+    /**
+     * Installation microphone count from NVS audio/mic_count (1 or 2).
+     * Not part of config_version / calibration / classifier Desired state.
+     */
+    uint8_t microphone_count;
+    sp_mic_count_status_t microphone_count_status;
+} sp_effective_t;
+
+void sp_effective_defaults(sp_effective_t *out);
+void sp_rebuild_topics(sp_effective_t *cfg);
+
+/** MQTT topic root kind: "esp-output" or "esp-ear" from Kconfig node kind. */
+const char *sp_mqtt_topic_kind(void);

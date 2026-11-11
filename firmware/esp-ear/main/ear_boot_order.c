@@ -7,7 +7,7 @@ bool dbmap_ear_boot_allow_mic_start(const dbmap_ear_boot_state_t *s)
     if (s == NULL) {
         return false;
     }
-    return s->has_ipv4 && !s->mic_start_attempted;
+    return !s->mic_start_attempted;
 }
 
 bool dbmap_ear_boot_allow_obs_start(const dbmap_ear_boot_state_t *s)

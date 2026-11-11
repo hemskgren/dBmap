@@ -78,7 +78,8 @@ GROUP_KEYS: dict[str, tuple[str, ...]] = {
         "EAR_OBS_L2_PUBLISH",
         "EAR_OBS_SERIAL_DIAG",
     ),
-    "audio": (
+    # Platform Output hardware profile pins (defaults today; future per-board overlays).
+    "output": (
         "AUDIO_I2S_BCLK_GPIO",
         "AUDIO_I2S_WS_GPIO",
         "AUDIO_I2S_DOUT_GPIO",
@@ -86,9 +87,22 @@ GROUP_KEYS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Flat groups collected per node kind, then nested as config.sp / config.product.dbmap.
+SP_GROUPS_BY_NODE_TYPE: dict[str, tuple[str, ...]] = {
+    "ear": ("node", "diag", "backoff", "mic"),
+    "output": ("node", "diag", "backoff", "output"),
+}
+PRODUCT_DBMAP_GROUPS_BY_NODE_TYPE: dict[str, tuple[str, ...]] = {
+    "ear": ("observation",),
+    "output": (),
+}
+
 GROUPS_BY_NODE_TYPE: dict[str, tuple[str, ...]] = {
-    "ear": ("node", "diag", "backoff", "mic", "observation"),
-    "output": ("node", "diag", "backoff", "audio"),
+    node_type: SP_GROUPS_BY_NODE_TYPE.get(node_type, ())
+    + PRODUCT_DBMAP_GROUPS_BY_NODE_TYPE.get(node_type, ())
+    for node_type in sorted(
+        set(SP_GROUPS_BY_NODE_TYPE) | set(PRODUCT_DBMAP_GROUPS_BY_NODE_TYPE)
+    )
 }
 
 _CONFIG_LINE = re.compile(
@@ -237,17 +251,27 @@ def defaults_files(project: Path, chip: str) -> list[Path]:
 
 def kconfig_files(components: Path, extra_trees: list[Path]) -> list[Path]:
     paths = [components / "node_common" / "Kconfig.projbuild"]
+    # Platform also hosts mic/observation Kconfig beside node_common.
+    paths.extend(sorted(components.glob("*/Kconfig")))
+    paths.extend(sorted(components.glob("*/Kconfig.projbuild")))
     for tree in extra_trees:
         paths.extend(sorted(tree.glob("*/Kconfig")))
         paths.extend(sorted(tree.glob("*/Kconfig.projbuild")))
-    return [path for path in paths if path.is_file()]
+    # De-dupe while preserving order (node_common projbuild may match the glob).
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for path in paths:
+        if path.is_file() and path not in seen:
+            seen.add(path)
+            unique.append(path)
+    return unique
 
 
-def group_values(
-    flat: dict[str, Any], node_type: str
+def _group_subset(
+    flat: dict[str, Any], group_names: tuple[str, ...]
 ) -> dict[str, dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
-    for group in GROUPS_BY_NODE_TYPE.get(node_type, ("node",)):
+    for group in group_names:
         entries: dict[str, Any] = {}
         for key in GROUP_KEYS[group]:
             if key in flat:
@@ -255,6 +279,20 @@ def group_values(
         if entries:
             grouped[group] = entries
     return grouped
+
+
+def group_values(flat: dict[str, Any], node_type: str) -> dict[str, Any]:
+    """Nest CONFIG short-names under config.sp / config.product.dbmap ownership."""
+    sp = _group_subset(flat, SP_GROUPS_BY_NODE_TYPE.get(node_type, ("node",)))
+    product_dbmap = _group_subset(
+        flat, PRODUCT_DBMAP_GROUPS_BY_NODE_TYPE.get(node_type, ())
+    )
+    config: dict[str, Any] = {"sp": sp}
+    if product_dbmap:
+        config["product"] = {"dbmap": product_dbmap}
+    else:
+        config["product"] = {"dbmap": {}}
+    return config
 
 
 def highlights(
@@ -311,15 +349,16 @@ def resolve_effective_dbmap_config(
         effective["NODE_TYPE_EAR"] = False
         effective["NODE_TYPE_OUTPUT"] = True
 
-    grouped = group_values(effective, node_type)
+    nested = group_values(effective, node_type)
     return {
         "source": "effective",
-        "dbmap_config": grouped,
+        "config": nested,
         "highlights": highlights(effective, kconfig_defaults),
         "notes": [
-            "Release firmware_version is assigned at build time (sdkconfig.defaults series base + retained patch history) and is not duplicated under dbmap_config.node.",
-            "NTP_SERVER reflects DBMAP_NTP_SERVER from the builder environment.",
+            "Release firmware_version is assigned at build time (sdkconfig.defaults series base + retained patch history) and is not duplicated under config.sp.node.",
+            "Builder overlay sets NTP_SERVER from Hub env NTP_SERVER (default se.pool.ntp.org if unset); overrides sdkconfig.defaults.",
             "WIFI_SSID, WIFI_PASSWORD, and BOOTSTRAP_TOKEN are cleared for reusable images.",
+            "config.sp is Sensor Platform; config.product.dbmap is dBmap product (Ear observation today).",
         ],
     }
 
@@ -329,7 +368,7 @@ def resolve_defaults_file_dbmap_config(
     node_type: str,
     chip: str,
     project: Path,
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, Any]:
     """Only CONFIG_DBMAP_* lines from sdkconfig.defaults / sdkconfig.defaults.<chip>."""
     file_overrides: dict[str, Any] = {}
     for path in defaults_files(project, chip):
@@ -340,12 +379,12 @@ def resolve_defaults_file_dbmap_config(
 def format_log_block(payload: dict[str, Any]) -> str:
     body = {
         "source": payload.get("source", "effective"),
-        "dbmap_config": payload.get("dbmap_config", {}),
+        "config": payload.get("config", {}),
         "highlights": payload.get("highlights", []),
     }
     rendered = json.dumps(body, indent=2, sort_keys=True)
     return (
-        "\nEffective CONFIG_DBMAP_* (pre-build; Kconfig defaults + "
-        "sdkconfig.defaults + builder overlays):\n"
+        "\nEffective firmware config (pre-build; Kconfig defaults + "
+        "sdkconfig.defaults + builder overlays; CONFIG_DBMAP_* keys):\n"
         f"{rendered}\n"
     )

@@ -672,20 +672,35 @@ def test_upload_rejects_invalid_or_mismatched_metadata(catalog_client, mutate, m
     assert not (catalog_dir / f"{firmware_id}.zip").exists()
 
 
-def test_upload_accepts_optional_dbmap_config_and_rejects_unknown_fields(
+def test_upload_accepts_optional_config_and_rejects_unknown_fields(
     catalog_client,
 ):
     client, _ = catalog_client
     firmware_id, bundle, metadata_bytes = make_firmware_pair()
     metadata = json.loads(metadata_bytes)
-    metadata["dbmap_config"] = {
-        "node": {"NODE_TYPE_OUTPUT": True},
-        "audio": {"AUDIO_I2S_BCLK_GPIO": 26},
+    metadata["config"] = {
+        "sp": {
+            "node": {"NODE_TYPE_OUTPUT": True},
+            "output": {"AUDIO_I2S_BCLK_GPIO": 26},
+        },
+        "product": {"dbmap": {}},
     }
 
     accepted = upload_pair(client, firmware_id, bundle, json.dumps(metadata).encode())
     assert accepted.status_code == 201, accepted.text
-    assert accepted.json()["dbmap_config"]["audio"]["AUDIO_I2S_BCLK_GPIO"] == 26
+    assert accepted.json()["config"]["sp"]["output"]["AUDIO_I2S_BCLK_GPIO"] == 26
+
+    legacy_id, legacy_bundle, legacy_metadata_bytes = make_firmware_pair()
+    legacy_metadata = json.loads(legacy_metadata_bytes)
+    legacy_metadata["dbmap_config"] = {
+        "node": {"NODE_TYPE_OUTPUT": True},
+        "audio": {"AUDIO_I2S_BCLK_GPIO": 26},
+    }
+    legacy = upload_pair(
+        client, legacy_id, legacy_bundle, json.dumps(legacy_metadata).encode()
+    )
+    assert legacy.status_code == 201, legacy.text
+    assert legacy.json()["dbmap_config"]["audio"]["AUDIO_I2S_BCLK_GPIO"] == 26
 
     other_id, other_bundle, other_metadata_bytes = make_firmware_pair()
     other_metadata = json.loads(other_metadata_bytes)

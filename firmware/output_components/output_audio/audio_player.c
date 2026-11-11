@@ -5,9 +5,9 @@
 
 #include "audio_amp.h"
 #include "audio_media.h"
-#include "dbmap_hub_http.h"
-#include "dbmap_i2s.h"
-#include "dbmap_types.h"
+#include "sp_hub_http.h"
+#include "sp_i2s.h"
+#include "sp_types.h"
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -16,7 +16,7 @@
 #include "freertos/task.h"
 #include "mp3dec.h"
 
-static const char *TAG = "dbmap_audio";
+static const char *TAG = "sp_audio";
 
 enum {
     kSrcNone = 0,
@@ -75,7 +75,7 @@ static int id3v2_total_len(const unsigned char *buf, int len)
 static esp_err_t write_pcm_frame(const short *pcm, const MP3FrameInfo *info)
 {
     if (info->nChans == 2) {
-        return dbmap_i2s_write_pcm(pcm, (size_t)info->outputSamps);
+        return sp_i2s_write_pcm(pcm, (size_t)info->outputSamps);
     }
     /* Mono → stereo for MAX98357. */
     int frames = info->outputSamps;
@@ -87,7 +87,7 @@ static esp_err_t write_pcm_frame(const short *pcm, const MP3FrameInfo *info)
         stereo[i * 2] = pcm[i];
         stereo[i * 2 + 1] = pcm[i];
     }
-    return dbmap_i2s_write_pcm(stereo, (size_t)(frames * 2));
+    return sp_i2s_write_pcm(stereo, (size_t)(frames * 2));
 }
 
 typedef struct {
@@ -223,7 +223,7 @@ static esp_err_t decode_stream(source_t *src)
         MP3FrameInfo info;
         MP3GetLastFrameInfo(decoder, &info);
         if (!rate_set) {
-            result = dbmap_i2s_set_sample_rate(info.samprate);
+            result = sp_i2s_set_sample_rate(info.samprate);
             if (result != ESP_OK) {
                 break;
             }
@@ -240,7 +240,7 @@ static esp_err_t decode_stream(source_t *src)
     }
 
     MP3FreeDecoder(decoder);
-    dbmap_i2s_tx_clear();
+    sp_i2s_tx_clear();
     if (s_stop) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -272,7 +272,7 @@ static esp_err_t play_https_job(const char *url)
         .buffer_size = kReadBuf,
     };
     if (url_is_hub(url)) {
-        http_cfg.cert_pem = dbmap_hub_root_ca();
+        http_cfg.cert_pem = sp_hub_root_ca();
     } else {
         http_cfg.crt_bundle_attach = esp_crt_bundle_attach;
     }
@@ -351,7 +351,7 @@ static esp_err_t enqueue_job(int kind, const char *path_or_url)
         return ESP_ERR_INVALID_SIZE;
     }
 
-    (void)dbmap_audio_stop();
+    (void)sp_audio_stop();
 
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(2000)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
@@ -364,7 +364,7 @@ static esp_err_t enqueue_job(int kind, const char *path_or_url)
     return ESP_OK;
 }
 
-esp_err_t dbmap_audio_init(const char *hub_http_url)
+esp_err_t sp_audio_init(const char *hub_http_url)
 {
     if (s_lock != NULL) {
         return ESP_OK;
@@ -392,12 +392,12 @@ esp_err_t dbmap_audio_init(const char *hub_http_url)
     return ESP_OK;
 }
 
-esp_err_t dbmap_audio_play_file(const char *path)
+esp_err_t sp_audio_play_file(const char *path)
 {
     return enqueue_job(kSrcFile, path);
 }
 
-esp_err_t dbmap_audio_play_https(const char *url)
+esp_err_t sp_audio_play_https(const char *url)
 {
     if (url == NULL || strncmp(url, "https://", 8) != 0) {
         return ESP_ERR_INVALID_ARG;
@@ -405,7 +405,7 @@ esp_err_t dbmap_audio_play_https(const char *url)
     return enqueue_job(kSrcHttps, url);
 }
 
-esp_err_t dbmap_audio_stop(void)
+esp_err_t sp_audio_stop(void)
 {
     if (s_lock == NULL) {
         return ESP_ERR_INVALID_STATE;
@@ -421,7 +421,7 @@ esp_err_t dbmap_audio_stop(void)
     return s_playing ? ESP_ERR_TIMEOUT : ESP_OK;
 }
 
-bool dbmap_audio_is_playing(void)
+bool sp_audio_is_playing(void)
 {
     return s_playing;
 }

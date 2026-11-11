@@ -30,7 +30,8 @@ FIRMWARE_SOURCE = Path(
 )
 HUB_CA_FILE = Path(os.environ.get("DBMAP_HUB_CA_FILE", "/certs/ca.crt"))
 ADMIN_TOKEN = os.environ.get("DBMAP_ADMIN_TOKEN", "")
-NTP_SERVER = os.environ.get("DBMAP_NTP_SERVER", "se.pool.ntp.org").strip()
+# Platform NTP overlay for reusable images (not a DBMAP_* product env).
+NTP_SERVER = (os.environ.get("NTP_SERVER") or "se.pool.ntp.org").strip()
 BUILD_TIMEOUT_SECONDS = 1800
 FIRMWARE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 FIRMWARE_VERSION_PATTERN = re.compile(
@@ -40,9 +41,17 @@ TARGET_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 TARGETS = {
     "output-esp32": {
         "project": FIRMWARE_SOURCE,
-        "components": FIRMWARE_ROOT / "components",
+        # Full platform tree is copied as ../platform; esp-output CMakeLists
+        # registers only platform/node_common (not mic/observation).
+        "components": FIRMWARE_ROOT / "platform",
+        "components_work_name": "platform",
         # Output-only tree (Helix/LittleFS). Not copied for Ear builds.
-        "extra_component_trees": [FIRMWARE_ROOT / "output_components"],
+        "extra_component_trees": [
+            {
+                "src": FIRMWARE_ROOT / "output_components",
+                "dest": "output_components",
+            }
+        ],
         "chip": "esp32",
         "node_type": "output",
         "hardware_revision": "generic",
@@ -56,9 +65,15 @@ TARGETS = {
     },
     "ear-esp32-s3": {
         "project": FIRMWARE_ROOT / "esp-ear",
-        "components": FIRMWARE_ROOT / "components",
-        # Ear-only tree. Keeps Output registry deps (Helix) out of Ear solves.
-        "extra_component_trees": [FIRMWARE_ROOT / "ear_components"],
+        "components": FIRMWARE_ROOT / "platform",
+        "components_work_name": "platform",
+        # Platform + dBmap Ear product modules (not Output Helix deps).
+        "extra_component_trees": [
+            {
+                "src": FIRMWARE_ROOT / "products" / "dbmap" / "ear",
+                "dest": "products/dbmap/ear",
+            }
+        ],
         "chip": "esp32s3",
         "node_type": "ear",
         "hardware_revision": "esp32-s3-n16r8",
@@ -339,6 +354,17 @@ def _check_toolchain(target: str, work_dir: Path, log_path: Path) -> None:
         raise RuntimeError("The pinned ESP-IDF toolchain check failed.")
 
 
+def _extra_component_srcs(target_config: dict) -> list[Path]:
+    """Source trees used for Kconfig resolution (ignore work-dir dest names)."""
+    out: list[Path] = []
+    for tree in target_config.get("extra_component_trees", []):
+        if isinstance(tree, dict):
+            out.append(Path(tree["src"]))
+        else:
+            out.append(Path(tree))
+    return out
+
+
 def _target_dbmap_config(target: str) -> dict:
     target_config = TARGETS.get(target)
     if target_config is None:
@@ -348,7 +374,7 @@ def _target_dbmap_config(target: str) -> dict:
         chip=target_config["chip"],
         project=target_config["project"],
         components=target_config["components"],
-        extra_component_trees=list(target_config.get("extra_component_trees", [])),
+        extra_component_trees=_extra_component_srcs(target_config),
         ntp_server=NTP_SERVER,
     )
     return {
@@ -389,13 +415,21 @@ def _build(job_id: str, target: str) -> None:
             work_dir,
             ignore=shutil.ignore_patterns("build", "sdkconfig", "sdkconfig.old"),
         )
-        shutil.copytree(target_config["components"], work_root / "components")
+        components_name = target_config.get("components_work_name", "platform")
+        shutil.copytree(target_config["components"], work_root / components_name)
         for tree in target_config.get("extra_component_trees", []):
-            if not tree.is_dir():
+            if isinstance(tree, dict):
+                src = Path(tree["src"])
+                dest = work_root / str(tree["dest"])
+            else:
+                src = Path(tree)
+                dest = work_root / src.name
+            if not src.is_dir():
                 raise RuntimeError(
-                    f"Missing component tree for this target: {tree.name}"
+                    f"Missing component tree for this target: {src.name}"
                 )
-            shutil.copytree(tree, work_root / tree.name)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dest)
         _install_hub_ca(work_dir)
         for defaults in work_dir.glob("sdkconfig.defaults*"):
             _clear_device_secrets(defaults)
@@ -418,7 +452,7 @@ def _build(job_id: str, target: str) -> None:
         sdkconfig = work_dir / "sdkconfig"
         if not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", NTP_SERVER):
             raise RuntimeError(
-                "DBMAP_NTP_SERVER must be a valid DNS name or IPv4 address."
+                "NTP_SERVER must be a valid DNS name or IPv4 address."
             )
         _set_sdkconfig_string(sdkconfig, "CONFIG_DBMAP_NTP_SERVER", NTP_SERVER)
         base_version = _sdkconfig_string(sdkconfig, "CONFIG_DBMAP_FIRMWARE_VERSION")
@@ -448,7 +482,7 @@ def _build(job_id: str, target: str) -> None:
                 "Generated firmware configuration includes device-specific credentials."
             )
         # Metadata sidecar keeps defaults-file CONFIG_DBMAP_* only (list/log keep effective).
-        dbmap_config_tree = dbmap_config.resolve_defaults_file_dbmap_config(
+        config_tree = dbmap_config.resolve_defaults_file_dbmap_config(
             node_type=target_config["node_type"],
             chip=target_config["chip"],
             project=target_config["project"],
@@ -482,7 +516,7 @@ def _build(job_id: str, target: str) -> None:
                 "configuration_version": 0,
                 "nvs_preserved": True,
                 "flash_components": manifest_entries,
-                "dbmap_config": dbmap_config_tree,
+                "config": config_tree,
             }
             archive.writestr("manifest.json", json.dumps(manifest, indent=2))
         bundle_path.chmod(0o600)
@@ -492,7 +526,7 @@ def _build(job_id: str, target: str) -> None:
             stage="complete",
             firmware_version=manifest["firmware_version"],
             artifact={"sha256": digest, "size_bytes": bundle_path.stat().st_size},
-            dbmap_config=dbmap_config_tree,
+            config=config_tree,
             finished_at=time.time(),
         )
         _persist(job)
@@ -725,10 +759,10 @@ class Handler(BaseHTTPRequestHandler):
                     "configuration_version": manifest["configuration_version"],
                     "artifact_sha256": digest,
                 }
-                if isinstance(manifest.get("dbmap_config"), dict):
-                    metadata["dbmap_config"] = manifest["dbmap_config"]
-                elif isinstance(job.get("dbmap_config"), dict):
-                    metadata["dbmap_config"] = job["dbmap_config"]
+                if isinstance(manifest.get("config"), dict):
+                    metadata["config"] = manifest["config"]
+                elif isinstance(job.get("config"), dict):
+                    metadata["config"] = job["config"]
                 metadata_bytes = (json.dumps(metadata, indent=2) + "\n").encode()
             except (
                 KeyError,

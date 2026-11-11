@@ -1,0 +1,112 @@
+menu "dBmap Ear microphone"
+    depends on DBMAP_NODE_TYPE_EAR
+
+    choice DBMAP_EAR_MIC_MODEL
+        prompt "Microphone model (one per Ear image)"
+        default DBMAP_EAR_MIC_MODEL_INMP441
+        help
+            Each Ear firmware image is built for exactly one microphone model.
+            Additional models can be added later without mixing types on one device.
+
+        config DBMAP_EAR_MIC_MODEL_INMP441
+            bool "INMP441 (I2S MEMS)"
+    endchoice
+
+    config DBMAP_EAR_MIC_SAMPLE_RATE_HZ
+        int "Capture sample rate (Hz)"
+        range 8000 48000
+        default 16000
+
+    config DBMAP_EAR_MIC_WINDOW_MS
+        int "Measurement window (ms)"
+        range 100 5000
+        default 1000
+        help
+            Latest window metrics are attached to hello/health/keepalive reported
+            state (like wifi_rssi_dbm). There is no separate audio MQTT topic yet.
+
+    config DBMAP_EAR_MIC_I2S_BCLK_GPIO
+        int "I2S BCLK GPIO (UNVERIFIED placeholder)"
+        range 0 48
+        default 4
+        help
+            Shared bit clock for all INMP441s. Placeholder only — see
+            docs/device-wiring-and-pinout.md. Confirm free GPIOs on the board
+            before treating this map as verified.
+
+    config DBMAP_EAR_MIC_I2S_WS_GPIO
+        int "I2S WS / LRCLK GPIO (UNVERIFIED placeholder)"
+        range 0 48
+        default 5
+        help
+            Shared word select for all INMP441s.
+
+    config DBMAP_EAR_MIC_I2S_DIN_GPIO
+        int "I2S DIN0 GPIO for mic 0 (+ reserved mic 1)"
+        range 0 48
+        default 6
+        help
+            First data line. Mic index 0 uses the left slot (L/R to GND) today.
+            Mic index 1 can share this DIN later (L/R to VDD). Indexes are
+            0-based.
+
+    config DBMAP_EAR_MIC_I2S_DIN1_GPIO
+        int "I2S DIN1 GPIO for reserved mic 2+3 (-1 unused)"
+        range -1 48
+        default 7
+        help
+            Reserved second data line for mic indexes 2 (left) and 3 (right).
+            Not read by the current single-mic capture path; keep the pin free
+            when wiring a 4-mic Ear.
+
+    config DBMAP_EAR_MIC_I2S_MCLK_GPIO
+        int "I2S MCLK GPIO (-1 unused)"
+        range -1 48
+        default -1
+
+    config DBMAP_EAR_MIC_L0
+        bool "Compute L0 features per analysis window"
+        default y
+        help
+            Retain each completed 1 s analysis window as double-buffered SPIRAM
+            PCM for product acoustic analysis (ear_acoustic L0/L1/L2). I2S
+            capture is not blocked by analysis. Not used by the RMS activity
+            detector. Disable to reclaim SPIRAM (~2 × window PCM) when unused.
+
+    config DBMAP_EAR_MIC_BACKGROUND
+        bool "Iteration 1: rolling background RMS on Reported State"
+        default y
+        help
+            Maintain a rolling RMS history and attach audio.microphones[i].background
+            on hello/health/keepalive. Independent of Observation/MQTT. Read-only
+            on publish. Disable to reclaim a few KB of static RAM.
+
+    config DBMAP_EAR_MIC_BACKGROUND_WINDOW_MS
+        int "Background RMS rolling window (ms)"
+        depends on DBMAP_EAR_MIC_BACKGROUND
+        range 10000 600000
+        default 180000
+        help
+            Samples older than this duration are outside the Reported State
+            profile (snapshot time-filters; ring may also drop on insert).
+
+    config DBMAP_EAR_MIC_BACKGROUND_BOOT_SETTLE_MS
+        int "Exclude background samples this long after I2S enable (ms)"
+        depends on DBMAP_EAR_MIC_BACKGROUND
+        range 0 120000
+        default 5000
+        help
+            Reuses the same startup-settle idea as the activity detector
+            (ms_since_i2s_enable). Also excludes window_seq == 1.
+
+    config DBMAP_EAR_MIC_CAPTURE_DIAG
+        bool "Opt-in UART capture diagnostics (dual-mic / DMA / RAM)"
+        default n
+        help
+            Periodic console lines with sample-rate, slot mode, per-channel
+            counts/RMS/peak/clip/presence, incomplete stereo frames, DMA
+            descriptor/frame values actually passed to i2s_new_channel, and
+            heap/SPIRAM. Does not change Observation JSON or Hub schemas.
+            Enable for EAR-001 dual-mic bring-up; leave off for fleet images.
+
+endmenu

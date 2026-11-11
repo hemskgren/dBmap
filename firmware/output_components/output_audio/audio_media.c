@@ -4,7 +4,7 @@
 #include "esp_log.h"
 #include "esp_littlefs.h"
 
-static const char *TAG = "dbmap_media";
+static const char *TAG = "sp_media";
 static bool s_mounted;
 
 esp_err_t dbmap_media_mount(void)

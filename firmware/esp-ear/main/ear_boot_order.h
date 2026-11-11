@@ -7,14 +7,14 @@ extern "C" {
 #endif
 
 /**
- * Host-testable Ear boot ordering policy for Design B:
- * I2S/mic after IPv4 and before MQTT/Desired; observation only after Desired.
+ * Host-testable Ear boot ordering policy (Sensor Platform Step 1):
+ * Platform mic/I2S may start after USB config gates and before Wi-Fi;
+ * observation only after Desired.
  *
  * Pure predicates — no I/O. app_main owns the one-shot flags and calls the
  * real start APIs when these return true.
  */
 typedef struct {
-    bool has_ipv4;
     /** True after the boot path has invoked (or decided to skip) mic start. */
     bool mic_start_attempted;
     bool desired_boot_done;
@@ -22,7 +22,7 @@ typedef struct {
     bool obs_start_attempted;
 } dbmap_ear_boot_state_t;
 
-/** Mic may start once IPv4 is up and the one-shot has not fired. */
+/** Mic may start once the one-shot has not fired (no network gate). */
 bool dbmap_ear_boot_allow_mic_start(const dbmap_ear_boot_state_t *s);
 
 /**
