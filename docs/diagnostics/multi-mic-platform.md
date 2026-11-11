@@ -40,16 +40,34 @@ Do not treat a software test with four rings as proof of four-channel I2S acquis
 - `ear_mic.c`: per-index background rings; enrich all live mics; report `live_microphone_count`, `acquisition_max`, `acquisition_limited`, per-mic `din`.
 - Slot naming: even=left, odd=right (DIN-pair contract).
 - Kconfig / wiring docs aligned with behaviour.
-- Host tests: mic_count 1–4 + acquire clamp; four independent bg histories; channel slot names for indexes 0–3.
+- Host tests: mic_count 1–4 + acquire clamp; four independent bg histories; unacquired indexes omit background; channel slot names for indexes 0–3.
+
+### Background RAM (static, when `CONFIG_DBMAP_EAR_MIC_BACKGROUND`)
+
+Per index: `EAR_BG_RMS_CAP` samples where  
+`EAR_BG_RMS_CAP = BACKGROUND_WINDOW_MS / WINDOW_MS + 8`  
+(defaults: 180000/1000+8 = **188**).
+
+Total sample storage: `SP_MIC_COUNT_MAX × EAR_BG_RMS_CAP × sizeof(sp_bg_rms_sample_t)`  
+≈ `4 × 188 × 12` ≈ **9 KiB** plus `4 × sizeof(sp_bg_rms_hist_t)` metadata. Rings are allocated for all four indexes; only `s_live_mic_count` (≤2 today) is pushed/enriched.
+
+### Configured vs acquired (Reported State)
+
+| Field | Meaning |
+| --- | --- |
+| `configured_microphone_count` | NVS/USB installation value (1–4) |
+| `live_microphone_count` | Channels opened on I2S (`sp_mic_acquire_count`) |
+| `acquisition_max` | `SP_MIC_ACQUIRE_MAX` (2) |
+| `acquisition_limited` | true when configured > live |
 
 ### Verification status
 
 | Check | Result |
 | --- | --- |
 | Host `test_mic_count` | Pass |
-| Host `test_background_rms` (incl. 4 independent hists) | Pass |
+| Host `test_background_rms` (independent + unacquired) | Pass |
 | Host `test_ear_mic_channel_api` | Pass |
-| ESP-IDF **v5.4.4** `esp-ear` build | Pass (host IDF) |
+| ESP-IDF **v5.4.4** `esp-ear` build | Pass (host IDF); series base `0.8.0` in sdkconfig.defaults |
 | Physical EAR-001 | **Not done** (operator procedure in §5) |
 
 ## 5. EAR-001 two-mic physical procedure (operator)

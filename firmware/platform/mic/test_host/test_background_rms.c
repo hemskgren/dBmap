@@ -170,6 +170,35 @@ static void test_four_independent_histories(void)
     }
 }
 
+/**
+ * Simulate acquire_max=2: only indexes 0–1 receive samples; 2–3 stay empty
+ * (configured count may be 4, but unacquired indices must not report background).
+ */
+static void test_unacquired_indices_have_no_background(void)
+{
+    enum { N = 4, CAP = 8, LIVE = 2 };
+    sp_bg_rms_sample_t entries[N][CAP];
+    sp_bg_rms_hist_t hist[N];
+
+    for (int i = 0; i < N; ++i) {
+        sp_bg_rms_hist_init(&hist[i], entries[i], CAP, 180000);
+    }
+    for (int i = 0; i < LIVE; ++i) {
+        sp_bg_rms_push(&hist[i], -45.0f - (float)i, 1000000);
+    }
+
+    for (int i = 0; i < LIVE; ++i) {
+        sp_bg_rms_profile_t p;
+        sp_bg_rms_profile(&hist[i], 2000000, &p);
+        EXPECT(p.present);
+    }
+    for (int i = LIVE; i < N; ++i) {
+        sp_bg_rms_profile_t p;
+        sp_bg_rms_profile(&hist[i], 2000000, &p);
+        EXPECT(!p.present);
+    }
+}
+
 int main(void)
 {
     test_linear_mean_energy();
@@ -178,6 +207,7 @@ int main(void)
     test_partial_vs_full_elapsed();
     test_zero_samples_omits();
     test_four_independent_histories();
+    test_unacquired_indices_have_no_background();
 
     if (g_failures != 0) {
         fprintf(stderr, "%d failure(s)\n", g_failures);
