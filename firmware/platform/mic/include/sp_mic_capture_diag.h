@@ -30,7 +30,7 @@ extern "C" {
 
 /** Boot banner substring — confirms the running image has capture_diag compiled in. */
 #define SP_MIC_CAPTURE_DIAG_BOOT_MSG                                            \
-    "capture_diag UART enabled (~5s): per-ch slot/rms/peak/n/expect/window_seq/"       \
+    "capture_diag UART enabled (~5s): per-ch (0–3) slot/rms/peak/n/expect/window_seq/" \
     "mic/xport + stream incomplete (bench only; not fleet default)"
 
 #ifdef __cplusplus

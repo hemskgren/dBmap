@@ -29,9 +29,9 @@ static const char *TAG = "sp_mic";
 
 #define EAR_MIC_READ_FRAMES 256
 #define EAR_MIC_TASK_STACK 6144
-/* Max slot words per read: stereo needs 2 words per sample period. */
-/* I2S scratch sized for implemented acquisition (DIN0 mono/stereo), not config max. */
-#define EAR_MIC_SLOT_BUF_WORDS (EAR_MIC_READ_FRAMES * (int)SP_MIC_ACQUIRE_MAX)
+/* Per-DIN scratch: stereo needs 2 words per sample period (max on one DIN). */
+#define EAR_MIC_SLOT_WORDS_PER_DIN (EAR_MIC_READ_FRAMES * 2)
+#define EAR_MIC_DIN_COUNT_MAX 2
 
 typedef struct {
     float rms_dbfs;
@@ -133,8 +133,10 @@ static void bump_counter(uint32_t *counter, uint8_t *capped)
 static const sp_effective_t *s_cfg;
 static sp_mic_config_t s_mic_cfg;
 static const sp_mic_model_desc_t *s_model;
-static i2s_chan_handle_t s_rx;
-static bool s_rx_ready;
+/* I2S0 master (DIN0) + optional I2S1 slave (DIN1) sharing BCLK/WS. */
+static i2s_chan_handle_t s_rx[EAR_MIC_DIN_COUNT_MAX];
+static bool s_rx_ready[EAR_MIC_DIN_COUNT_MAX];
+static uint8_t s_open_din_count;
 /*
  * Index 0 is primary for Observation / analysis PCM / activity (product).
  * Platform measure/report paths use s_live_mic_count acquired channels.
@@ -145,17 +147,19 @@ static uint8_t s_live_mic_count = SP_MIC_COUNT_DEFAULT;
 static char s_status_cache[16] = "unavailable";
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 /* Keep I2S read scratch off the task stack (was overflowing a 4 KiB stack → TG1WDT). */
-static uint32_t s_slot_buf[EAR_MIC_SLOT_BUF_WORDS];
+static uint32_t s_slot_buf[EAR_MIC_DIN_COUNT_MAX][EAR_MIC_SLOT_WORDS_PER_DIN];
 static int64_t s_i2s_enabled_us;
 static uint32_t s_window_seq;
 /* Values actually passed to i2s_new_channel (not guesses). */
 static uint32_t s_dma_desc_num;
 static uint32_t s_dma_frame_num;
-static uint32_t s_slot_words_per_frame = 1;
-static uint32_t s_request_bytes;
+static uint32_t s_slot_words_per_frame = 1; /* DIN0 words/frame (compat field) */
+static uint32_t s_slot_words_per_din[EAR_MIC_DIN_COUNT_MAX];
+static uint32_t s_request_bytes; /* DIN0 request bytes (compat field) */
+static uint32_t s_request_bytes_din[EAR_MIC_DIN_COUNT_MAX];
 static uint32_t s_incomplete_stereo_frames_window;
 static uint32_t s_measure_window_us_last;
-static char s_slot_mode_name[16] = "mono_left";
+static char s_slot_mode_name[24] = "mono_left";
 #if CONFIG_DBMAP_EAR_MIC_CAPTURE_DIAG
 static int64_t s_capture_diag_last_us;
 #endif
@@ -534,7 +538,7 @@ static void enrich_mic_object(cJSON *mic, const ear_audio_snapshot_t *snap, uint
         sp_audio_expected_samples((uint32_t)s_mic_cfg.sample_rate_hz, snap->window_ms)
     );
     cJSON_AddNumberToObject(mic, "window_ms", snap->window_ms);
-    /* Shared I2S read counters (same DMA stream for both slots). */
+    /* Per-DIN I2S read counters (shared by L/R on that DIN only). */
     cJSON_AddNumberToObject(mic, "read_errors", snap->read_errors);
     cJSON_AddNumberToObject(mic, "timeout_reads", snap->timeout_reads);
     cJSON_AddNumberToObject(mic, "empty_reads", snap->empty_reads);
@@ -675,7 +679,9 @@ static void enrich_health(cJSON *state, const sp_effective_t *cfg, bool include_
         cJSON *mic = cJSON_CreateObject();
         enrich_mic_object(mic, &snaps[i], i);
 #if CONFIG_DBMAP_EAR_MIC_BACKGROUND
-        {
+        /* Omit background unless this mic is currently signal_present (no stale
+         * profile on disconnected / noise / unknown DIN). */
+        if (sp_bg_rms_status_allows_profile(mic_status)) {
             sp_bg_rms_profile_t bg;
             portENTER_CRITICAL(&s_lock);
             sp_bg_rms_profile(&s_bg_hist[i], esp_timer_get_time(), &bg);
@@ -700,37 +706,60 @@ static void enrich_health(cJSON *state, const sp_effective_t *cfg, bool include_
     cJSON_AddItemToObject(state, "audio", audio);
 }
 
-static esp_err_t init_i2s_rx(void)
+static const char *slot_mode_name_for_live(uint8_t live_count)
 {
-    if (s_rx_ready) {
-        return ESP_OK;
+    if (live_count >= 4u) {
+        return "dual_din_stereo_lr";
     }
-    if (s_mic_cfg.bclk_gpio < 0 || s_mic_cfg.ws_gpio < 0 || s_mic_cfg.din_gpio < 0) {
+    if (live_count == 3u) {
+        return "dual_din_stereo_mono";
+    }
+    if (live_count >= 2u) {
+        return "stereo_lr";
+    }
+    return "mono_left";
+}
+
+/**
+ * Open one STD RX: I2S0 master drives BCLK/WS; I2S1 slave shares those clocks.
+ * ESP32-S3 has SOC_I2S_NUM=2 and one DIN per STD channel → max 4 INMP441s.
+ */
+static esp_err_t init_one_i2s_rx(
+    uint8_t din_index,
+    i2s_port_t port,
+    i2s_role_t role,
+    int din_gpio,
+    uint8_t channels_on_din
+)
+{
+    if (din_index >= EAR_MIC_DIN_COUNT_MAX || din_gpio < 0 || channels_on_din < 1u) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (s_rx_ready[din_index]) {
+        return ESP_OK;
+    }
 
-    const bool stereo = (s_live_mic_count >= 2u);
-    s_slot_words_per_frame = sp_i2s_slot_words_per_frame(s_live_mic_count);
-    s_request_bytes =
-        (uint32_t)EAR_MIC_READ_FRAMES * s_slot_words_per_frame * (uint32_t)sizeof(uint32_t);
-    if (s_request_bytes > sizeof(s_slot_buf)) {
+    const bool stereo = (channels_on_din >= 2u);
+    const uint32_t words = sp_i2s_slot_words_per_frame(channels_on_din);
+    const uint32_t req =
+        (uint32_t)EAR_MIC_READ_FRAMES * words * (uint32_t)sizeof(uint32_t);
+    if (req > sizeof(s_slot_buf[din_index])) {
         return ESP_ERR_INVALID_SIZE;
     }
-    strncpy(
-        s_slot_mode_name,
-        stereo ? "stereo_lr" : "mono_left",
-        sizeof(s_slot_mode_name) - 1
-    );
-    s_slot_mode_name[sizeof(s_slot_mode_name) - 1] = '\0';
 
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    /* auto_clear_* applies only to TX channels in ESP-IDF 5.4.x (see i2s_new_channel).
-     * This image opens RX only (tx_handle=NULL), so the flag is unused; keep false explicitly. */
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(port, role);
+    /* auto_clear_* applies only to TX channels in ESP-IDF 5.4.x (see i2s_new_channel). */
     chan_cfg.auto_clear = false;
-    /* Record values actually passed (IDF default macro: desc=6, frame=240 unless overridden). */
-    s_dma_desc_num = chan_cfg.dma_desc_num;
-    s_dma_frame_num = chan_cfg.dma_frame_num;
-    ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, NULL, &s_rx), TAG, "new rx");
+    if (din_index == 0u) {
+        s_dma_desc_num = chan_cfg.dma_desc_num;
+        s_dma_frame_num = chan_cfg.dma_frame_num;
+    }
+    ESP_RETURN_ON_ERROR(
+        i2s_new_channel(&chan_cfg, NULL, &s_rx[din_index]),
+        TAG,
+        "new rx din%u",
+        (unsigned)din_index
+    );
 
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(s_mic_cfg.sample_rate_hz),
@@ -743,7 +772,7 @@ static esp_err_t init_i2s_rx(void)
             .bclk = s_mic_cfg.bclk_gpio,
             .ws = s_mic_cfg.ws_gpio,
             .dout = I2S_GPIO_UNUSED,
-            .din = s_mic_cfg.din_gpio,
+            .din = din_gpio,
             .invert_flags = {
                 .mclk_inv = false,
                 .bclk_inv = false,
@@ -754,7 +783,7 @@ static esp_err_t init_i2s_rx(void)
     /*
      * ESP32-S3 PHILIPS default sets slot_mask=BOTH even for mono; override mono to LEFT.
      * Stereo: BOTH — RX buffer order (IDF docs): WS-low then WS-high → left then right.
-     * Software contract: mic0=left (even), mic1=right (odd). Physical L/R straps unverified.
+     * Software contract: even=left, odd=right on each DIN. Physical L/R straps unverified.
      */
     if (stereo) {
         std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
@@ -763,26 +792,98 @@ static esp_err_t init_i2s_rx(void)
     }
     std_cfg.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
 
-    ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_rx, &std_cfg), TAG, "std mode");
-    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_rx), TAG, "enable");
+    ESP_RETURN_ON_ERROR(
+        i2s_channel_init_std_mode(s_rx[din_index], &std_cfg),
+        TAG,
+        "std mode din%u",
+        (unsigned)din_index
+    );
+    ESP_RETURN_ON_ERROR(
+        i2s_channel_enable(s_rx[din_index]),
+        TAG,
+        "enable din%u",
+        (unsigned)din_index
+    );
+
+    s_slot_words_per_din[din_index] = words;
+    s_request_bytes_din[din_index] = req;
+    s_rx_ready[din_index] = true;
+    return ESP_OK;
+}
+
+static esp_err_t init_i2s_rx(void)
+{
+    if (s_rx_ready[0]) {
+        return ESP_OK;
+    }
+    if (s_mic_cfg.bclk_gpio < 0 || s_mic_cfg.ws_gpio < 0 || s_mic_cfg.din_gpio < 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const uint8_t ch_din0 = sp_i2s_channels_on_din(s_live_mic_count, 0);
+    const uint8_t ch_din1 = sp_i2s_channels_on_din(s_live_mic_count, 1);
+    if (ch_din0 < 1u) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (ch_din1 > 0u && s_mic_cfg.din1_gpio < 0) {
+        ESP_LOGE(
+            TAG,
+            "live_mic_count=%u needs DIN1 but din1_gpio=%d (set Kconfig DIN1 or lower mic_count)",
+            (unsigned)s_live_mic_count,
+            s_mic_cfg.din1_gpio
+        );
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    strncpy(
+        s_slot_mode_name,
+        slot_mode_name_for_live(s_live_mic_count),
+        sizeof(s_slot_mode_name) - 1
+    );
+    s_slot_mode_name[sizeof(s_slot_mode_name) - 1] = '\0';
+
+    /* Master first so slave can take BCLK/WS from the same GPIOs. */
+    ESP_RETURN_ON_ERROR(
+        init_one_i2s_rx(0, I2S_NUM_0, I2S_ROLE_MASTER, s_mic_cfg.din_gpio, ch_din0),
+        TAG,
+        "din0"
+    );
+    s_slot_words_per_frame = s_slot_words_per_din[0];
+    s_request_bytes = s_request_bytes_din[0];
+    s_open_din_count = 1;
+
+    if (ch_din1 > 0u) {
+        esp_err_t err = init_one_i2s_rx(
+            1, I2S_NUM_1, I2S_ROLE_SLAVE, s_mic_cfg.din1_gpio, ch_din1
+        );
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "DIN1/I2S1 init failed: %s", esp_err_to_name(err));
+            return err;
+        }
+        s_open_din_count = 2;
+    }
+
     /* DMA starts immediately; ear_mic_task begins measure_window with no warmup skip. */
     s_i2s_enabled_us = esp_timer_get_time();
     s_window_seq = 0;
-    s_rx_ready = true;
     ESP_LOGW(
         TAG,
-        "I2S RX ready model=%s mode=%s bclk=%d ws=%d din=%d rate=%d "
-        "dma_desc=%lu dma_frame=%lu req_bytes=%lu (pins UNVERIFIED; "
-        "stereo L/R map is IDF-doc contract, not HW proof)",
+        "I2S RX ready model=%s mode=%s live=%u dins=%u bclk=%d ws=%d din0=%d din1=%d "
+        "rate=%d dma_desc=%lu dma_frame=%lu req0=%lu req1=%lu (pins UNVERIFIED; "
+        "L/R map is IDF-doc contract, not HW proof)",
         s_model->id,
         s_slot_mode_name,
+        (unsigned)s_live_mic_count,
+        (unsigned)s_open_din_count,
         s_mic_cfg.bclk_gpio,
         s_mic_cfg.ws_gpio,
         s_mic_cfg.din_gpio,
+        s_mic_cfg.din1_gpio,
         s_mic_cfg.sample_rate_hz,
         (unsigned long)s_dma_desc_num,
         (unsigned long)s_dma_frame_num,
-        (unsigned long)s_request_bytes
+        (unsigned long)s_request_bytes_din[0],
+        (unsigned long)s_request_bytes_din[1]
     );
     return ESP_OK;
 }
@@ -936,7 +1037,7 @@ static void finalize_channel(
         out->all_zero_window = 0;
         set_status(out, expected);
         const sp_mic_channel_presence_t p =
-            sp_mic_channel_presence(0, 0, 0);
+            sp_mic_channel_presence(0, 0, 0, DBMAP_AUDIO_SILENCE_DBFS);
         strncpy(
             out->channel_presence,
             sp_mic_channel_presence_str(p),
@@ -962,7 +1063,8 @@ static void finalize_channel(
     const sp_mic_channel_presence_t presence = sp_mic_channel_presence(
         out->sample_count,
         out->zero_sample_count,
-        out->clipped_samples
+        out->clipped_samples,
+        out->peak_dbfs
     );
     strncpy(
         out->channel_presence,
@@ -971,9 +1073,82 @@ static void finalize_channel(
     );
 }
 
+typedef struct {
+    uint32_t read_errors;
+    uint32_t timeout_reads;
+    uint32_t empty_reads;
+    uint8_t counters_capped;
+    uint32_t read_calls;
+    uint32_t bytes_received;
+    uint32_t partial_reads;
+} ear_din_read_stats_t;
+
 /**
- * Fill out[0..live_mic_count). Shared transport counters are identical across channels;
- * per-channel RMS/peak/clip/presence differ. Analysis PCM stores mic0/left only.
+ * Accumulate one DIN's slot buffer into the absolute mic indexes for that DIN.
+ * Analysis PCM stores mic0 (DIN0 left) only.
+ */
+static void accumulate_din_slots(
+    uint8_t din_index,
+    const uint32_t *buf,
+    size_t slot_words,
+    uint8_t channels_on_din,
+    ear_ch_accum_t *acc,
+    int32_t clip_threshold,
+    int32_t full_scale_mag,
+    uint32_t *incomplete_stereo
+)
+{
+    if (buf == NULL || channels_on_din < 1u || s_model == NULL) {
+        return;
+    }
+    const uint8_t ch_left = sp_i2s_mic_index_for_din_slot(din_index, 0);
+    if (channels_on_din >= 2u) {
+        if (incomplete_stereo != NULL) {
+            *incomplete_stereo += sp_i2s_stereo_incomplete_trailing(slot_words);
+        }
+        const uint8_t ch_right = sp_i2s_mic_index_for_din_slot(din_index, 1);
+        const size_t pairs = sp_i2s_stereo_complete_pairs(slot_words);
+        for (size_t p = 0; p < pairs; ++p) {
+            const uint32_t left_slot = buf[p * 2u];
+            const uint32_t right_slot = buf[p * 2u + 1u];
+            ch_accum_slot(&acc[ch_left], left_slot);
+            ch_accum_slot(&acc[ch_right], right_slot);
+            const int32_t left = s_model->extract(left_slot);
+            const int32_t right = s_model->extract(right_slot);
+            ch_accum_sample(&acc[ch_left], ch_left, left, clip_threshold, full_scale_mag);
+            ch_accum_sample(
+                &acc[ch_right], ch_right, right, clip_threshold, full_scale_mag
+            );
+#if CONFIG_DBMAP_EAR_MIC_L0
+            if (din_index == 0u && s_pcm_ready && s_pcm[s_pcm_fill_idx] != NULL
+                && acc[ch_left].pcm_count <= s_pcm_cap
+                && (acc[ch_left].pcm_count - 1u) < s_pcm_cap) {
+                s_pcm[s_pcm_fill_idx][acc[ch_left].pcm_count - 1u] = left;
+            }
+#endif
+        }
+    } else {
+        for (size_t i = 0; i < slot_words; ++i) {
+            const uint32_t slot = buf[i];
+            ch_accum_slot(&acc[ch_left], slot);
+            const int32_t sample = s_model->extract(slot);
+            ch_accum_sample(
+                &acc[ch_left], ch_left, sample, clip_threshold, full_scale_mag
+            );
+#if CONFIG_DBMAP_EAR_MIC_L0
+            if (din_index == 0u && s_pcm_ready && s_pcm[s_pcm_fill_idx] != NULL
+                && acc[ch_left].pcm_count <= s_pcm_cap
+                && (acc[ch_left].pcm_count - 1u) < s_pcm_cap) {
+                s_pcm[s_pcm_fill_idx][acc[ch_left].pcm_count - 1u] = sample;
+            }
+#endif
+        }
+    }
+}
+
+/**
+ * Fill out[0..live_mic_count). Per-DIN transport counters apply to that DIN's
+ * channels; per-channel RMS/peak/clip/presence differ. Analysis PCM = mic0 only.
  */
 static void measure_window(ear_audio_snapshot_t *out, uint8_t live_count)
 {
@@ -997,7 +1172,7 @@ static void measure_window(ear_audio_snapshot_t *out, uint8_t live_count)
         out[i].peak_dbfs = -120.0f;
     }
 
-    if (!s_rx_ready || s_model == NULL) {
+    if (!s_rx_ready[0] || s_model == NULL) {
         for (uint8_t i = 0; i < live_count; ++i) {
             out[i].missing_data = 1;
             set_status(&out[i], expected);
@@ -1006,95 +1181,77 @@ static void measure_window(ear_audio_snapshot_t *out, uint8_t live_count)
         return;
     }
 
-    const bool stereo = (live_count >= 2u);
     const int useful_bits = s_model->useful_bits;
     const double full_scale = (double)(1LL << (useful_bits > 1 ? useful_bits - 1 : 1));
     const int32_t clip_threshold = (int32_t)(full_scale * 0.99);
     const int32_t full_scale_mag = (int32_t)full_scale;
-    const size_t request_bytes = s_request_bytes > 0 ? s_request_bytes : sizeof(s_slot_buf);
     const int64_t deadline_us = t_measure0 + ((int64_t)window_ms * 1000LL);
+    const TickType_t read_ticks = (s_open_din_count > 1u) ? 20 : 50;
 
     ear_ch_accum_t acc[SP_MIC_COUNT_MAX];
     for (uint8_t i = 0; i < live_count; ++i) {
         ch_accum_init(&acc[i], i);
     }
 
-    uint32_t read_errors = 0;
-    uint32_t timeout_reads = 0;
-    uint32_t empty_reads = 0;
-    uint8_t counters_capped = 0;
-    uint32_t read_calls = 0;
-    uint32_t bytes_received = 0;
-    uint32_t partial_reads = 0;
+    ear_din_read_stats_t din_stats[EAR_MIC_DIN_COUNT_MAX];
+    memset(din_stats, 0, sizeof(din_stats));
     uint32_t incomplete_stereo = 0;
 
     while (esp_timer_get_time() < deadline_us) {
-        size_t bytes_read = 0;
-        esp_err_t err = i2s_channel_read(
-            s_rx,
-            s_slot_buf,
-            request_bytes,
-            &bytes_read,
-            50
-        );
-        read_calls++;
-        bytes_received += (uint32_t)bytes_read;
-        if (bytes_read > 0 && bytes_read < request_bytes) {
-            partial_reads++;
-        }
-
-        if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
-            bump_counter(&read_errors, &counters_capped);
-            taskYIELD();
-            continue;
-        }
-
-        const size_t slot_words = bytes_read / sizeof(uint32_t);
-        if (stereo) {
-            incomplete_stereo += sp_i2s_stereo_incomplete_trailing(slot_words);
-            const size_t pairs = sp_i2s_stereo_complete_pairs(slot_words);
-            for (size_t p = 0; p < pairs; ++p) {
-                const uint32_t left_slot = s_slot_buf[p * 2u];
-                const uint32_t right_slot = s_slot_buf[p * 2u + 1u];
-                ch_accum_slot(&acc[0], left_slot);
-                ch_accum_slot(&acc[1], right_slot);
-                const int32_t left = s_model->extract(left_slot);
-                const int32_t right = s_model->extract(right_slot);
-                ch_accum_sample(&acc[0], 0, left, clip_threshold, full_scale_mag);
-                ch_accum_sample(&acc[1], 1, right, clip_threshold, full_scale_mag);
-#if CONFIG_DBMAP_EAR_MIC_L0
-                /* Analysis PCM / Observation remain mic0 (left) only. */
-                if (s_pcm_ready && s_pcm[s_pcm_fill_idx] != NULL
-                    && acc[0].pcm_count <= s_pcm_cap
-                    && (acc[0].pcm_count - 1u) < s_pcm_cap) {
-                    s_pcm[s_pcm_fill_idx][acc[0].pcm_count - 1u] = left;
-                }
-#endif
+        for (uint8_t din = 0; din < s_open_din_count && din < EAR_MIC_DIN_COUNT_MAX; ++din) {
+            if (!s_rx_ready[din]) {
+                continue;
             }
-        } else {
-            for (size_t i = 0; i < slot_words; ++i) {
-                const uint32_t slot = s_slot_buf[i];
-                ch_accum_slot(&acc[0], slot);
-                const int32_t sample = s_model->extract(slot);
-                ch_accum_sample(&acc[0], 0, sample, clip_threshold, full_scale_mag);
-#if CONFIG_DBMAP_EAR_MIC_L0
-                if (s_pcm_ready && s_pcm[s_pcm_fill_idx] != NULL
-                    && acc[0].pcm_count <= s_pcm_cap
-                    && (acc[0].pcm_count - 1u) < s_pcm_cap) {
-                    s_pcm[s_pcm_fill_idx][acc[0].pcm_count - 1u] = sample;
-                }
-#endif
+            const uint8_t ch_on_din = sp_i2s_channels_on_din(live_count, din);
+            if (ch_on_din < 1u) {
+                continue;
             }
-        }
+            const size_t request_bytes =
+                s_request_bytes_din[din] > 0
+                    ? s_request_bytes_din[din]
+                    : sizeof(s_slot_buf[din]);
+            size_t bytes_read = 0;
+            esp_err_t err = i2s_channel_read(
+                s_rx[din],
+                s_slot_buf[din],
+                request_bytes,
+                &bytes_read,
+                read_ticks
+            );
+            ear_din_read_stats_t *st = &din_stats[din];
+            st->read_calls++;
+            st->bytes_received += (uint32_t)bytes_read;
+            if (bytes_read > 0 && bytes_read < request_bytes) {
+                st->partial_reads++;
+            }
 
-        if (err == ESP_ERR_TIMEOUT) {
-            bump_counter(&timeout_reads, &counters_capped);
-            continue;
-        }
-        if (slot_words == 0) {
-            bump_counter(&empty_reads, &counters_capped);
-            taskYIELD();
-            continue;
+            if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
+                bump_counter(&st->read_errors, &st->counters_capped);
+                taskYIELD();
+                continue;
+            }
+
+            const size_t slot_words = bytes_read / sizeof(uint32_t);
+            accumulate_din_slots(
+                din,
+                s_slot_buf[din],
+                slot_words,
+                ch_on_din,
+                acc,
+                clip_threshold,
+                full_scale_mag,
+                &incomplete_stereo
+            );
+
+            if (err == ESP_ERR_TIMEOUT) {
+                bump_counter(&st->timeout_reads, &st->counters_capped);
+                continue;
+            }
+            if (slot_words == 0) {
+                bump_counter(&st->empty_reads, &st->counters_capped);
+                taskYIELD();
+                continue;
+            }
         }
     }
 
@@ -1110,19 +1267,22 @@ static void measure_window(ear_audio_snapshot_t *out, uint8_t live_count)
     s_incomplete_stereo_frames_window = incomplete_stereo;
 
     for (uint8_t i = 0; i < live_count; ++i) {
+        const uint8_t din = (uint8_t)(i / 2u);
+        const ear_din_read_stats_t *st =
+            (din < EAR_MIC_DIN_COUNT_MAX) ? &din_stats[din] : &din_stats[0];
         finalize_channel(
             &out[i],
             &acc[i],
             expected,
             window_ms,
             useful_bits,
-            read_errors,
-            timeout_reads,
-            empty_reads,
-            counters_capped,
-            read_calls,
-            bytes_received,
-            partial_reads,
+            st->read_errors,
+            st->timeout_reads,
+            st->empty_reads,
+            st->counters_capped,
+            st->read_calls,
+            st->bytes_received,
+            st->partial_reads,
             s_window_seq,
             ms_since,
             measured_at
@@ -1153,24 +1313,27 @@ static void measure_window(ear_audio_snapshot_t *out, uint8_t live_count)
     if (out[0].window_seq <= 30u) {
         ESP_LOGI(
             TAG,
-            "win#%lu mode=%s t+%lums reads=%lu bytes=%lu ch0_n=%lu ch1_n=%lu "
-            "timeout=%lu incomplete=%lu rms0=%.1f rms1=%.1f peak0=%.1f peak1=%.1f "
-            "pres0=%s pres1=%s measure_us=%lu",
+            "win#%lu mode=%s t+%lums dins=%u "
+            "ch0_n=%lu ch1_n=%lu ch2_n=%lu ch3_n=%lu "
+            "incomplete=%lu rms0=%.1f rms1=%.1f rms2=%.1f rms3=%.1f "
+            "pres0=%s pres1=%s pres2=%s pres3=%s measure_us=%lu",
             (unsigned long)out[0].window_seq,
             s_slot_mode_name,
             (unsigned long)out[0].ms_since_i2s_enable,
-            (unsigned long)out[0].read_calls,
-            (unsigned long)out[0].bytes_received,
+            (unsigned)s_open_din_count,
             (unsigned long)out[0].sample_count,
             (unsigned long)(live_count > 1 ? out[1].sample_count : 0),
-            (unsigned long)out[0].timeout_reads,
+            (unsigned long)(live_count > 2 ? out[2].sample_count : 0),
+            (unsigned long)(live_count > 3 ? out[3].sample_count : 0),
             (unsigned long)incomplete_stereo,
             (double)out[0].rms_dbfs,
             (double)(live_count > 1 ? out[1].rms_dbfs : -120.0f),
-            (double)out[0].peak_dbfs,
-            (double)(live_count > 1 ? out[1].peak_dbfs : -120.0f),
+            (double)(live_count > 2 ? out[2].rms_dbfs : -120.0f),
+            (double)(live_count > 3 ? out[3].rms_dbfs : -120.0f),
             out[0].channel_presence,
             live_count > 1 ? out[1].channel_presence : "n/a",
+            live_count > 2 ? out[2].channel_presence : "n/a",
+            live_count > 3 ? out[3].channel_presence : "n/a",
             (unsigned long)s_measure_window_us_last
         );
     }
@@ -1220,7 +1383,7 @@ static void capture_diag_maybe_log(const ear_audio_snapshot_t *snaps, uint8_t li
             TAG,
             SP_MIC_CAPTURE_DIAG_CH_FMT,
             (unsigned)i,
-            i == 0 ? "left" : "right",
+            (i & 1u) == 0u ? "left" : "right",
             (unsigned long)snaps[i].sample_count,
             (unsigned long)sp_audio_expected_samples(
                 (uint32_t)s_mic_cfg.sample_rate_hz,
@@ -1270,6 +1433,10 @@ static void ear_mic_task(void *arg)
                     &cand, (uint32_t)CONFIG_DBMAP_EAR_MIC_BACKGROUND_BOOT_SETTLE_MS
                 )) {
                 sp_bg_rms_push(&s_bg_hist[i], snaps[i].rms_dbfs, snaps[i].measured_at_us);
+            } else if (!sp_bg_rms_status_allows_profile(snaps[i].microphone_status)) {
+                /* Disconnect / noise / unknown: drop history so reconnect starts clean
+                 * and enrich never resurrects floating-DIN samples. */
+                sp_bg_rms_hist_clear(&s_bg_hist[i]);
             }
         }
 #endif
@@ -1319,7 +1486,7 @@ esp_err_t sp_mic_start(const sp_effective_t *cfg, const sp_mic_config_t *mic_cfg
         (unsigned)s_configured_mic_count,
         (unsigned)SP_MIC_ACQUIRE_MAX,
         sp_mic_count_status_str(cfg->microphone_count_status),
-        s_live_mic_count >= 2u ? "stereo_lr" : "mono_left",
+        slot_mode_name_for_live(s_live_mic_count),
         s_configured_mic_count > s_live_mic_count ? " (acquisition_limited)" : ""
     );
 #if CONFIG_DBMAP_EAR_MIC_CAPTURE_DIAG

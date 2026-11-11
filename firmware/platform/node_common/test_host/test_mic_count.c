@@ -80,11 +80,13 @@ static void test_acquire_clamp(void)
 {
     EXPECT(sp_mic_acquire_count(1) == 1);
     EXPECT(sp_mic_acquire_count(2) == 2);
-    EXPECT(sp_mic_acquire_count(3) == SP_MIC_ACQUIRE_MAX);
-    EXPECT(sp_mic_acquire_count(4) == SP_MIC_ACQUIRE_MAX);
+    EXPECT(sp_mic_acquire_count(3) == 3);
+    EXPECT(sp_mic_acquire_count(4) == 4);
     EXPECT(sp_mic_acquire_count(0) == SP_MIC_COUNT_DEFAULT);
-    EXPECT(SP_MIC_ACQUIRE_MAX == 2);
+    EXPECT(SP_MIC_ACQUIRE_MAX == 4);
     EXPECT(SP_MIC_COUNT_MAX == 4);
+    /* Above acquire max still clamps (defensive; MAX currently equals COUNT_MAX). */
+    EXPECT(sp_mic_acquire_count(5) == SP_MIC_ACQUIRE_MAX);
 }
 
 int main(void)

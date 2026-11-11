@@ -75,6 +75,13 @@ static void test_inclusion_rules(void)
     c = ok_cand(2, 6000, -50.0f);
     c.microphone_status = "noise_suspected";
     EXPECT(!sp_bg_rms_should_include(&c, settle));
+
+    c = ok_cand(2, 6000, -50.0f);
+    c.microphone_status = "unknown";
+    EXPECT(!sp_bg_rms_should_include(&c, settle));
+    EXPECT(!sp_bg_rms_status_allows_profile("unknown"));
+    EXPECT(!sp_bg_rms_status_allows_profile("disconnected_suspected"));
+    EXPECT(sp_bg_rms_status_allows_profile("signal_present"));
 }
 
 static void test_snapshot_time_filter_read_only(void)
@@ -171,8 +178,8 @@ static void test_four_independent_histories(void)
 }
 
 /**
- * Simulate acquire_max=2: only indexes 0–1 receive samples; 2–3 stay empty
- * (configured count may be 4, but unacquired indices must not report background).
+ * Simulate live=2 while rings exist for 4: only indexes 0–1 receive samples;
+ * 2–3 stay empty (unacquired indices must not report background).
  */
 static void test_unacquired_indices_have_no_background(void)
 {
@@ -199,6 +206,86 @@ static void test_unacquired_indices_have_no_background(void)
     }
 }
 
+/**
+ * Mic0/1 connected (signal_present) keep independent profiles; Mic2/3
+ * disconnected must not keep or publish a background profile.
+ */
+static void test_disconnected_channels_clear_and_omit_background(void)
+{
+    enum { N = 4, CAP = 8 };
+    sp_bg_rms_sample_t entries[N][CAP];
+    sp_bg_rms_hist_t hist[N];
+    const uint32_t settle = 5000;
+
+    for (int i = 0; i < N; ++i) {
+        sp_bg_rms_hist_init(&hist[i], entries[i], CAP, 180000);
+    }
+
+    /* Seed all four as if a brief unknown/floating window had been wrongly pushed. */
+    for (int i = 0; i < N; ++i) {
+        sp_bg_rms_push(&hist[i], -45.0f - (float)i, 1000000);
+    }
+
+    /* Connected mics continue to accept signal_present windows. */
+    for (int i = 0; i < 2; ++i) {
+        sp_bg_rms_candidate_t c = ok_cand(10, 10000, -46.0f - (float)i);
+        EXPECT(sp_bg_rms_should_include(&c, settle));
+        sp_bg_rms_push(&hist[i], c.rms_dbfs, 2000000);
+        EXPECT(sp_bg_rms_status_allows_profile(c.microphone_status));
+    }
+
+    /* Disconnected: must not include, and clear drops any prior samples. */
+    for (int i = 2; i < N; ++i) {
+        sp_bg_rms_candidate_t c = ok_cand(10, 10000, -120.0f);
+        c.microphone_status = "disconnected_suspected";
+        c.peak_dbfs = -120.0f;
+        EXPECT(!sp_bg_rms_should_include(&c, settle));
+        EXPECT(!sp_bg_rms_status_allows_profile(c.microphone_status));
+        sp_bg_rms_hist_clear(&hist[i]);
+        sp_bg_rms_profile_t p;
+        sp_bg_rms_profile(&hist[i], 2500000, &p);
+        EXPECT(!p.present);
+    }
+
+    /* Connected profiles still present and independent. */
+    for (int i = 0; i < 2; ++i) {
+        sp_bg_rms_profile_t p;
+        sp_bg_rms_profile(&hist[i], 2500000, &p);
+        EXPECT(p.present);
+        EXPECT(p.sample_count == 2);
+    }
+}
+
+/** live=4: each index has its own history; no cross-copy of levels. */
+static void test_four_live_channels_independent_background(void)
+{
+    enum { N = 4, CAP = 8 };
+    sp_bg_rms_sample_t entries[N][CAP];
+    sp_bg_rms_hist_t hist[N];
+    const float levels[N] = {-41.0f, -52.0f, -63.0f, -74.0f};
+
+    for (int i = 0; i < N; ++i) {
+        sp_bg_rms_hist_init(&hist[i], entries[i], CAP, 180000);
+        sp_bg_rms_push(&hist[i], levels[i], 1000000);
+        sp_bg_rms_push(&hist[i], levels[i] - 1.0f, 2000000);
+    }
+
+    for (int i = 0; i < N; ++i) {
+        sp_bg_rms_profile_t p;
+        sp_bg_rms_profile(&hist[i], 2500000, &p);
+        EXPECT(p.present);
+        EXPECT(p.sample_count == 2);
+        EXPECT(fabs((double)p.rms_max_dbfs - (double)levels[i]) < 0.01);
+        EXPECT(fabs((double)p.rms_min_dbfs - (double)(levels[i] - 1.0f)) < 0.01);
+        for (int j = 0; j < N; ++j) {
+            if (i == j) {
+                continue;
+            }
+            EXPECT(fabs((double)p.rms_max_dbfs - (double)levels[j]) > 0.5);
+        }
+    }
+}
+
 int main(void)
 {
     test_linear_mean_energy();
@@ -208,6 +295,8 @@ int main(void)
     test_zero_samples_omits();
     test_four_independent_histories();
     test_unacquired_indices_have_no_background();
+    test_disconnected_channels_clear_and_omit_background();
+    test_four_live_channels_independent_background();
 
     if (g_failures != 0) {
         fprintf(stderr, "%d failure(s)\n", g_failures);

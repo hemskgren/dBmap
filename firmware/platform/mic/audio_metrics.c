@@ -5,10 +5,6 @@
 #include <stdint.h>
 #include <string.h>
 
-#ifndef DBMAP_AUDIO_SILENCE_DBFS
-#define DBMAP_AUDIO_SILENCE_DBFS (-120.0f)
-#endif
-
 static double full_scale_magnitude(int full_scale_bits)
 {
     if (full_scale_bits < 2) {

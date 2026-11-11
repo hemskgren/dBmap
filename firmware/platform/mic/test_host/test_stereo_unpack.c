@@ -35,13 +35,60 @@ static void test_words_per_frame(void)
     EXPECT(sp_i2s_slot_words_per_frame(0) == 1);
 }
 
+static void test_channels_on_din_and_mic_index(void)
+{
+    EXPECT(sp_i2s_channels_on_din(1, 0) == 1);
+    EXPECT(sp_i2s_channels_on_din(1, 1) == 0);
+    EXPECT(sp_i2s_channels_on_din(2, 0) == 2);
+    EXPECT(sp_i2s_channels_on_din(2, 1) == 0);
+    EXPECT(sp_i2s_channels_on_din(3, 0) == 2);
+    EXPECT(sp_i2s_channels_on_din(3, 1) == 1);
+    EXPECT(sp_i2s_channels_on_din(4, 0) == 2);
+    EXPECT(sp_i2s_channels_on_din(4, 1) == 2);
+    EXPECT(sp_i2s_channels_on_din(0, 0) == 0);
+
+    EXPECT(sp_i2s_mic_index_for_din_slot(0, 0) == 0);
+    EXPECT(sp_i2s_mic_index_for_din_slot(0, 1) == 1);
+    EXPECT(sp_i2s_mic_index_for_din_slot(1, 0) == 2);
+    EXPECT(sp_i2s_mic_index_for_din_slot(1, 1) == 3);
+}
+
 static void test_channel_index_deterministic(void)
 {
-    /* Software contract: even=left/mic0, odd=right/mic1. */
+    /* Software contract: even=left/mic0, odd=right/mic1 within one DIN buffer. */
     EXPECT(sp_i2s_stereo_channel_index(0) == 0);
     EXPECT(sp_i2s_stereo_channel_index(1) == 1);
     EXPECT(sp_i2s_stereo_channel_index(2) == 0);
     EXPECT(sp_i2s_stereo_channel_index(3) == 1);
+}
+
+static void test_dual_din_unpack_independent(void)
+{
+    /* DIN0 and DIN1 each carry an independent stereo pair → mic 0–3. */
+    const uint32_t din0[4] = {
+        0x11111100u, 0x22222200u, 0x33333300u, 0x44444400u
+    };
+    /* Positive 24-bit payloads (MSB clear) so extract stays unambiguous. */
+    const uint32_t din1[4] = {
+        0x0A0A0A00u, 0x0B0B0B00u, 0x0C0C0C00u, 0x0D0D0D00u
+    };
+    int32_t l0[2] = {0}, r0[2] = {0}, l1[2] = {0}, r1[2] = {0};
+    uint32_t inc0 = 0, inc1 = 0;
+    EXPECT(sp_i2s_unpack_stereo_slots(
+               din0, 4, sp_inmp441_extract_sample, l0, r0, 2, &inc0
+           )
+           == 2);
+    EXPECT(sp_i2s_unpack_stereo_slots(
+               din1, 4, sp_inmp441_extract_sample, l1, r1, 2, &inc1
+           )
+           == 2);
+    EXPECT(inc0 == 0 && inc1 == 0);
+    EXPECT(l0[0] == 0x111111 && r0[0] == 0x222222);
+    EXPECT(l1[0] == 0x0A0A0A && r1[0] == 0x0B0B0B);
+    /* Independence: DIN1 values must not equal DIN0. */
+    EXPECT(l0[0] != l1[0] && r0[0] != r1[0]);
+    EXPECT(sp_i2s_mic_index_for_din_slot(0, 0) == 0);
+    EXPECT(sp_i2s_mic_index_for_din_slot(1, 1) == 3);
 }
 
 static void test_incomplete_frames(void)
@@ -131,28 +178,34 @@ static void test_channel_presence_vs_health(void)
 {
     /* Delivering samples is not enough to call a channel healthy. */
     EXPECT(
-        sp_mic_channel_presence(0, 0, 0) == SP_MIC_CH_NO_SAMPLES
+        sp_mic_channel_presence(0, 0, 0, -40.0f) == SP_MIC_CH_NO_SAMPLES
     );
     EXPECT(
         strcmp(sp_mic_channel_presence_str(SP_MIC_CH_NO_SAMPLES), "no_samples") == 0
     );
 
     EXPECT(
-        sp_mic_channel_presence(16000, 16000, 0) == SP_MIC_CH_SILENT
+        sp_mic_channel_presence(16000, 16000, 0, -40.0f) == SP_MIC_CH_SILENT
     );
     EXPECT(
         strcmp(sp_mic_channel_presence_str(SP_MIC_CH_SILENT), "silent") == 0
     );
 
+    /* Sub-LSB / clamped −120 peak must not report active (floating DIN quiet). */
     EXPECT(
-        sp_mic_channel_presence(16000, 100, 12) == SP_MIC_CH_CLIPPING
+        sp_mic_channel_presence(16000, 0, 0, DBMAP_AUDIO_SILENCE_DBFS)
+        == SP_MIC_CH_SILENT
+    );
+
+    EXPECT(
+        sp_mic_channel_presence(16000, 100, 12, -1.0f) == SP_MIC_CH_CLIPPING
     );
     EXPECT(
         strcmp(sp_mic_channel_presence_str(SP_MIC_CH_CLIPPING), "clipping") == 0
     );
 
     EXPECT(
-        sp_mic_channel_presence(16000, 100, 0) == SP_MIC_CH_ACTIVE
+        sp_mic_channel_presence(16000, 100, 0, -40.0f) == SP_MIC_CH_ACTIVE
     );
     EXPECT(
         strcmp(sp_mic_channel_presence_str(SP_MIC_CH_ACTIVE), "active") == 0
@@ -168,7 +221,9 @@ static void test_expected_samples_unchanged_per_channel(void)
 int main(void)
 {
     test_words_per_frame();
+    test_channels_on_din_and_mic_index();
     test_channel_index_deterministic();
+    test_dual_din_unpack_independent();
     test_incomplete_frames();
     test_unpack_channel_ordering();
     test_unpack_sample_counts_even();

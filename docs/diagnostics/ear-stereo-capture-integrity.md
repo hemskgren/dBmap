@@ -119,5 +119,6 @@ Host tests: `firmware/ear_components/ear_mic/test_host/test_ear_mic_channel_api.
 
 ## Out of scope
 
-Four-microphone capture, DIN1 / second I2S RX, PCM retention, TDOA/DOA, MQTT schema
+Four-microphone capture (DIN1 / second I2S RX) is implemented in Platform mic;
+physical pin verify, TDOA/DOA, multi-mic Observation PCM, MQTT schema
 changes, detector threshold or boot-order changes.

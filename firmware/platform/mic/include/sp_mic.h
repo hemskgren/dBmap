@@ -23,7 +23,8 @@ typedef struct {
     sp_mic_model_t model;
     int bclk_gpio;
     int ws_gpio;
-    int din_gpio;
+    int din_gpio;  /* DIN0: mic 0 (L) + mic 1 (R) */
+    int din1_gpio; /* DIN1: mic 2 (L) + mic 3 (R); -1 unused / not opened */
     int mclk_gpio; /* -1 if unused */
     int sample_rate_hz;
 } sp_mic_config_t;

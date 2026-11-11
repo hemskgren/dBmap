@@ -12,6 +12,11 @@ extern "C" {
  * full_scale_bits is the signed peak magnitude bit width (e.g. 24 for INMP441 useful bits).
  */
 
+/** Floor used by RMS/peak clamp and digital-silence classification (−120 dBFS). */
+#ifndef DBMAP_AUDIO_SILENCE_DBFS
+#define DBMAP_AUDIO_SILENCE_DBFS (-120.0f)
+#endif
+
 float sp_audio_rms_dbfs(const int32_t *samples, size_t count, int full_scale_bits);
 float sp_audio_peak_dbfs(const int32_t *samples, size_t count, int full_scale_bits);
 uint32_t sp_audio_count_clipped(const int32_t *samples, size_t count, int full_scale_bits);

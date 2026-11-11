@@ -42,23 +42,23 @@ menu "dBmap Ear microphone"
             Shared word select for all INMP441s.
 
     config DBMAP_EAR_MIC_I2S_DIN_GPIO
-        int "I2S DIN0 GPIO for mic 0 (+ reserved mic 1)"
+        int "I2S DIN0 GPIO for mic 0 (+ mic 1 when stereo)"
         range 0 48
         default 6
         help
-            First data line. Mic index 0 uses the left slot (L/R to GND) today.
-            Mic index 1 can share this DIN later (L/R to VDD). Indexes are
-            0-based.
+            First data line (I2S0 RX master). Mic index 0 = left (L/R to GND);
+            mic index 1 = right (L/R to VDD) when microphone_count >= 2.
+            Indexes are 0-based. Placeholder — see device-wiring-and-pinout.md.
 
     config DBMAP_EAR_MIC_I2S_DIN1_GPIO
-        int "I2S DIN1 GPIO for reserved mic 2+3 (-1 unused)"
+        int "I2S DIN1 GPIO for mic 2+3 (-1 unused)"
         range -1 48
         default 7
         help
-            Reserved second data line for mic indexes 2 (left) and 3 (right).
-            Current firmware acquires at most two channels on DIN0 (Philips
-            stereo). DIN1 is not opened yet; NVS microphone_count may still be
-            3 or 4 for forward config (acquisition clamps to SP_MIC_ACQUIRE_MAX).
+            Second data line (I2S1 RX slave sharing BCLK/WS). Mic index 2 =
+            left, mic index 3 = right when microphone_count is 3 or 4.
+            Required when live count >= 3; set -1 only for boards without DIN1.
+            Placeholder pin — confirm free GPIO before treating as verified.
 
     config DBMAP_EAR_MIC_I2S_MCLK_GPIO
         int "I2S MCLK GPIO (-1 unused)"
@@ -103,13 +103,14 @@ menu "dBmap Ear microphone"
             (ms_since_i2s_enable). Also excludes window_seq == 1.
 
     config DBMAP_EAR_MIC_CAPTURE_DIAG
-        bool "Opt-in UART capture diagnostics (dual-mic / DMA / RAM)"
+        bool "Opt-in UART capture diagnostics (multi-mic / DMA / RAM)"
         default n
         help
             Periodic console lines with sample-rate, slot mode, per-channel
-            counts/RMS/peak/clip/presence, incomplete stereo frames, DMA
-            descriptor/frame values actually passed to i2s_new_channel, and
-            heap/SPIRAM. Does not change Observation JSON or Hub schemas.
-            Enable for EAR-001 dual-mic bring-up; leave off for fleet images.
+            (indexes 0–3) counts/RMS/peak/clip/presence, incomplete stereo
+            frames, DMA descriptor/frame values actually passed to
+            i2s_new_channel, and heap/SPIRAM. Does not change Observation JSON
+            or Hub schemas. Enable for EAR multi-mic bring-up; leave off for
+            fleet images.
 
 endmenu

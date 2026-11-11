@@ -1,55 +1,49 @@
-# Multi-microphone Platform consistency (up to four)
+# Multi-microphone Platform (up to four)
 
 **Branch:** `firmware/multi-mic-consistent-platform`  
-**Target physical check:** EAR-001 with **two** microphones (do not flash/OTA from this doc alone).
+**Physical check:** operator flash/OTA + EAR-001 (agent does not flash).
 
-## 1. Hardware feasibility (four mics)
+## 1. Hardware / interface arrangement
 
 | Layer | Status |
 | --- | --- |
-| ESP32-S3 I2S | One STD RX port used today (`I2S_NUM_0`). A second DIN pair would need a second RX channel (or future TDM) sharing BCLK/WS — **not implemented**. |
+| ESP32-S3 I2S | **`SOC_I2S_NUM = 2`**. STD mode has **one DIN per controller**. |
+| Acquisition design | **Dual RX:** I2S0 **master** (DIN0) drives shared BCLK/WS; I2S1 **slave** (DIN1) takes the same clocks. |
 | Wiring plan | Up to 4× INMP441: DIN0 L/R = indexes 0–1; DIN1 L/R = indexes 2–3 (`docs/device-wiring-and-pinout.md`). |
-| Firmware acquisition | **`SP_MIC_ACQUIRE_MAX = 2`** — only DIN0 mono/stereo is opened. |
-| Software config | **`SP_MIC_COUNT_MAX = 4`** — NVS/USB may store 1–4; live I2S count = `sp_mic_acquire_count(configured)`. |
-| Physically verified 4-mic | **No** (out of scope for this change). |
+| Firmware acquisition | **`SP_MIC_ACQUIRE_MAX = 4`** — opens DIN0 always; opens DIN1 when live count ≥ 3. |
+| Software config | **`SP_MIC_COUNT_MAX = 4`** — NVS/USB store 1–4; live = `sp_mic_acquire_count(configured)`. |
+| Physically verified 4-mic board | **No** (pins remain placeholder / unverified). |
 
-Do not treat a software test with four rings as proof of four-channel I2S acquisition.
+INMP441 is not a TDM mic: four channels require **two stereo DIN pairs**, not one controller with four slots. This firmware does **not** invent Mic 2/3 from duplicated DIN0 data.
 
-## 2. Mic-0-only assumptions (after this change)
+**Physical requirement for Mic 2/3:** wire a second INMP441 pair to DIN1 (Kconfig default GPIO **7**), share BCLK/WS, strap L/R (GND/VDD). Without that wiring, firmware still opens I2S1 when `mic_count` ≥ 3; those channels will read floating/silent — not a silent fallback to two-channel acquisition.
+
+## 2. Mic-0-only assumptions (product)
 
 | Location | Classification |
 | --- | --- |
-| Platform measure / finalize / enrich / background | **Generalized** for every **acquired** live index |
-| `sp_mic_get_levels` | **By design** primary = index 0 (Observation / activity) |
-| Analysis PCM / L0–L2 / Rel END | **Product mic-0** — unchanged; needs product decision for multi-channel acoustics |
+| Platform measure / finalize / enrich / background | **Every acquired live index** |
+| `sp_mic_get_levels` | Primary = index 0 (Observation / activity) |
+| Analysis PCM / L0–L2 / Rel END | **Product mic-0** — unchanged |
 | Observation `mic_index` | Hard-coded `0` — **product** |
 
-## 3. What supports 1 / 2 / 4
+## 3. What supports 1 / 2 / 3 / 4
 
-| Capability | 1 | 2 | 4 (software) | 4 (physical I2S) |
+| Capability | 1 | 2 | 3 | 4 |
 | --- | --- | --- | --- | --- |
-| NVS / USB count | yes | yes | yes (config) | n/a |
-| I2S acquire | yes | yes | clamped to 2 | **not implemented** |
-| Per-ch RMS/peak/samples | yes | yes | for acquired only | — |
-| Per-ch background hist + enrich | yes | yes | rings sized for 4; live attach for acquired | — |
-| Observation / L0 PCM | mic 0 | mic 0 | mic 0 | — |
+| NVS / USB count | yes | yes | yes | yes |
+| I2S acquire | DIN0 mono | DIN0 stereo | DIN0 stereo + DIN1 mono L | DIN0+DIN1 stereo |
+| Per-ch RMS/peak/samples | yes | yes | yes | yes |
+| Per-ch background hist + enrich | yes | yes | yes | yes |
+| Observation / L0 PCM | mic 0 | mic 0 | mic 0 | mic 0 |
 
 ## 4. Implementation summary
 
-- `sp_mic_count.h` / `mic_count.c`: max 4; `sp_mic_acquire_count()`.
-- `ear_mic.c`: per-index background rings; enrich all live mics; report `live_microphone_count`, `acquisition_max`, `acquisition_limited`, per-mic `din`.
-- Slot naming: even=left, odd=right (DIN-pair contract).
-- Kconfig / wiring docs aligned with behaviour.
-- Host tests: mic_count 1–4 + acquire clamp; four independent bg histories; unacquired indexes omit background; channel slot names for indexes 0–3.
-
-### Background RAM (static, when `CONFIG_DBMAP_EAR_MIC_BACKGROUND`)
-
-Per index: `EAR_BG_RMS_CAP` samples where  
-`EAR_BG_RMS_CAP = BACKGROUND_WINDOW_MS / WINDOW_MS + 8`  
-(defaults: 180000/1000+8 = **188**).
-
-Total sample storage: `SP_MIC_COUNT_MAX × EAR_BG_RMS_CAP × sizeof(sp_bg_rms_sample_t)`  
-≈ `4 × 188 × 12` ≈ **9 KiB** plus `4 × sizeof(sp_bg_rms_hist_t)` metadata. Rings are allocated for all four indexes; only `s_live_mic_count` (≤2 today) is pushed/enriched.
+- Dual STD RX in `ear_mic.c` (`init_one_i2s_rx` / `accumulate_din_slots`).
+- `sp_i2s_channels_on_din` / `sp_i2s_mic_index_for_din_slot` map DIN+slot → mic index.
+- Per-DIN read counters; independent RMS/peak/clip/presence/background per index.
+- Reported State: `live_microphone_count`, `acquisition_max` (4), `acquisition_limited`, per-mic `din`.
+- Hub USB flashing UI writes NVS `microphone_count` **1–4** (same as firmware).
 
 ### Configured vs acquired (Reported State)
 
@@ -57,32 +51,35 @@ Total sample storage: `SP_MIC_COUNT_MAX × EAR_BG_RMS_CAP × sizeof(sp_bg_rms_sa
 | --- | --- |
 | `configured_microphone_count` | NVS/USB installation value (1–4) |
 | `live_microphone_count` | Channels opened on I2S (`sp_mic_acquire_count`) |
-| `acquisition_max` | `SP_MIC_ACQUIRE_MAX` (2) |
-| `acquisition_limited` | true when configured > live |
-
-Hub **Firmware → Browser flashing → Configure device over USB** may write NVS `microphone_count` **1–4**. Values 3–4 are stored as configuration; current firmware still opens at most two I2S channels (`acquisition_limited`).
+| `acquisition_max` | `SP_MIC_ACQUIRE_MAX` (4) |
+| `acquisition_limited` | true when configured > live (should be rare while MAX==4) |
 
 ### Verification status
 
 | Check | Result |
 | --- | --- |
-| Host `test_mic_count` | Pass |
-| Host `test_background_rms` (independent + unacquired) | Pass |
-| Host `test_ear_mic_channel_api` | Pass |
-| ESP-IDF **v5.4.4** `esp-ear` build | Pass (host IDF); series base `0.8.0` in sdkconfig.defaults |
-| Physical EAR-001 | **Not done** (operator procedure in §5) |
+| Host `test_mic_count` | Pass (`SP_MIC_ACQUIRE_MAX=4`) |
+| Host `test_stereo_unpack` (dual-DIN map + unpack) | Pass |
+| Host `test_background_rms` (4 independent + live=4) | Pass |
+| Host `test_ear_mic_channel_api` / capture_diag format | Pass |
+| ESP-IDF **v5.4.4** `esp-ear` build | Pass (series base `0.8.0`) |
+| Physical EAR-001 four-mic | **Operator** (not done here) |
 
-## 5. EAR-001 two-mic physical procedure (operator)
+## 5. Background validity (disconnected / floating DIN)
 
-**Do not flash from the agent.** After you OTA/flash a build from this branch:
+Background is ambient learning for a **live** mic only:
 
-1. NVS `microphone_count=2` (or USB provision). Confirm boot log: `live_mic_count=2` → `stereo_lr`, no unexpected continuous spam (capture diag still opt-in).
-2. Both mics wired on DIN0 (L/R straps). Hub `ear_audio_compare watch` (or list --json): Mic 0 and Mic 1 show RMS, Peak, Samples, and **BgMin/Mean/Max** when background is warm (after settle + enough windows).
-3. Silence or disconnect **only** mic 1 (right): mic 0 levels/background should remain coherent; mic 1 presence/status should change without copying mic 0 RMS into mic 1.
-4. Repeat silencing mic 0; mic 1 should stay independent.
-5. Confirm L/R identity against straps (software contract: even=left). Treat absolute pin map as unverified until scoped.
-6. With Wi-Fi: hello/health payload includes `audio.microphones[0].background` and `[1].background` when present; `configured_microphone_count` / `live_microphone_count` match expectation.
+- **Include** a window iff `microphone_status == signal_present` (plus existing transport/clip/settle rules). `unknown`, `disconnected_suspected`, and `noise_suspected` never seed the ring.
+- **Publish** `audio.microphones[i].background` only when the **current** snapshot is still `signal_present` and the ring has in-window samples.
+- On untrusted status, the per-mic ring is **cleared** so reconnect starts empty and UI shows `—` immediately.
 
-## 6. Recommended next step after physical verify
+## 6. EAR-001 four-mic physical procedure (operator)
 
-If two-mic background and independence look good: optional DIN1 / second I2S RX acquisition design (hardware + pin freeze) before claiming four-channel physical support. Separately, product decision on whether Ear observation/L0 should consume more than mic 0.
+**Do not flash from the agent.**
+
+1. Wire Mic 0–1 on DIN0 and Mic 2–3 on DIN1 (shared BCLK/WS). Confirm free GPIOs vs placeholder map.
+2. NVS `microphone_count=4`. Boot log: `live_mic_count=4` → `dual_din_stereo_lr`, `dins=2`.
+3. `ear_audio_compare`: **EAR-001 Mic 0–3** each with independent RMS/Peak/Samples; Bg* only when that mic is `signal_present`.
+4. With Mic 2/3 unwired: RMS/Peak −120, `disconnected_suspected`, **no** background object.
+5. Silence or disconnect one wired mic at a time; other channels must not copy its levels.
+6. Repeat with `mic_count=1` and `=2` to confirm regression.

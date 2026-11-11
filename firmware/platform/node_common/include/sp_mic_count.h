@@ -4,9 +4,9 @@
  * Host-testable pure helpers.
  *
  * Software installation values: 1..SP_MIC_COUNT_MAX (4).
- * Physical I2S acquisition on current Ear hardware/firmware: at most
- * SP_MIC_ACQUIRE_MAX (2) on DIN0 Philips stereo. DIN1 (indexes 2–3) is reserved
- * in wiring docs but not opened yet — see docs/device-wiring-and-pinout.md.
+ * Physical I2S acquisition: up to SP_MIC_ACQUIRE_MAX (4) via dual STD RX
+ * (I2S0 DIN0 master + I2S1 DIN1 slave sharing BCLK/WS). See
+ * docs/device-wiring-and-pinout.md.
  */
 #pragma once
 
@@ -22,10 +22,10 @@ extern "C" {
 #define SP_MIC_COUNT_DEFAULT 1u
 
 /**
- * Max channels this firmware actually acquires on I2S today (DIN0 mono/stereo).
- * Configured count may be higher (software/forward config); acquisition is clamped.
+ * Max channels this firmware acquires on I2S (DIN0 + DIN1 Philips pairs).
+ * Configured count above this is clamped (should not happen while MAX==4).
  */
-#define SP_MIC_ACQUIRE_MAX 2u
+#define SP_MIC_ACQUIRE_MAX 4u
 
 /** Diagnostic status for reporting (not a Desired/config_version field). */
 typedef enum {

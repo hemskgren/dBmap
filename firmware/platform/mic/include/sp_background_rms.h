@@ -60,11 +60,27 @@ void sp_bg_rms_hist_init(
 /**
  * Inclusion using existing transport/mic validity, clip signals, and startup
  * fields (window_seq / ms_since_i2s_enable). No new validity subsystem.
+ *
+ * Allowlist: microphone_status must be exactly "signal_present". Ambiguous
+ * ("unknown") and untrusted (disconnected/noise/unavailable) windows are
+ * excluded so floating DIN energy cannot seed background.
  */
 bool sp_bg_rms_should_include(
     const sp_bg_rms_candidate_t *c,
     uint32_t boot_settle_ms
 );
+
+/**
+ * True when a published background profile may be attached for this mic status.
+ * Same allowlist as include: only "signal_present". Stale ring samples must not
+ * appear while the channel is disconnected or untrusted.
+ */
+bool sp_bg_rms_status_allows_profile(const char *microphone_status);
+
+/**
+ * Drop all samples and reset collection clock (disconnect / untrusted → empty).
+ */
+void sp_bg_rms_hist_clear(sp_bg_rms_hist_t *hist);
 
 /**
  * Insert one included sample. May drop aged entries as an optimization;
