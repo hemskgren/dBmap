@@ -21,6 +21,17 @@ bool sp_mic_count_supported(uint8_t count)
     return count >= SP_MIC_COUNT_MIN && count <= SP_MIC_COUNT_MAX;
 }
 
+uint8_t sp_mic_acquire_count(uint8_t configured_count)
+{
+    if (configured_count < SP_MIC_COUNT_MIN) {
+        return SP_MIC_COUNT_DEFAULT;
+    }
+    if (configured_count > SP_MIC_ACQUIRE_MAX) {
+        return SP_MIC_ACQUIRE_MAX;
+    }
+    return configured_count;
+}
+
 void sp_mic_count_from_nvs(
     bool found,
     uint8_t raw,

@@ -22,6 +22,11 @@ void sp_bg_rms_hist_init(
     }
 }
 
+bool sp_bg_rms_status_allows_profile(const char *microphone_status)
+{
+    return microphone_status != NULL && strcmp(microphone_status, "signal_present") == 0;
+}
+
 bool sp_bg_rms_should_include(const sp_bg_rms_candidate_t *c, uint32_t boot_settle_ms)
 {
     if (c == NULL || !c->levels_valid) {
@@ -39,9 +44,8 @@ bool sp_bg_rms_should_include(const sp_bg_rms_candidate_t *c, uint32_t boot_sett
     if (strcmp(c->transport_status, "ok") != 0 && strcmp(c->transport_status, "degraded") != 0) {
         return false;
     }
-    if (strcmp(c->microphone_status, "unavailable") == 0 ||
-        strcmp(c->microphone_status, "disconnected_suspected") == 0 ||
-        strcmp(c->microphone_status, "noise_suspected") == 0) {
+    /* Positive allowlist — do not learn from unknown / disconnected / noise. */
+    if (!sp_bg_rms_status_allows_profile(c->microphone_status)) {
         return false;
     }
     /* Clipped: existing mic clipped_samples and/or L0-equivalent peak rule. */
@@ -56,6 +60,19 @@ bool sp_bg_rms_should_include(const sp_bg_rms_candidate_t *c, uint32_t boot_sett
         return false;
     }
     return true;
+}
+
+void sp_bg_rms_hist_clear(sp_bg_rms_hist_t *hist)
+{
+    if (hist == NULL) {
+        return;
+    }
+    hist->head = 0;
+    hist->count = 0;
+    hist->collection_start_mono_us = 0;
+    if (hist->entries != NULL && hist->capacity > 0) {
+        memset(hist->entries, 0, sizeof(hist->entries[0]) * hist->capacity);
+    }
 }
 
 static void drop_expired(sp_bg_rms_hist_t *hist, int64_t now_mono_us)

@@ -121,7 +121,7 @@ Steady messages after that session is up:
 | `hub-bootstrap` | `command` | 1 | Output | Not stored as a command log. The board drives GPIO and publishes `ack` and `status`. |
 | either side | `config` | — | ACL allows it | No sender implements it. |
 
-`hub-bootstrap` also subscribes to Mosquitto `$SYS` counters on that same long-lived session (client id `hub-bootstrap`). Broker limits on this listener are a 4096-byte MQTT packet cap and 100 connections.
+`hub-bootstrap` also subscribes to Mosquitto `$SYS` counters on that same long-lived session (client id `hub-bootstrap`). Broker limits on this listener are a **16384-byte** MQTT packet cap (`max_packet_size` in `mqtt/mosquitto.conf`) and 100 connections. Keep the cap above Ear hello/health size: Reported State `audio.microphones[]` is roughly **1 KiB per live mic** plus envelope, so `mic_count=4` exceeds the old 4096-byte limit (broker resets the client; USB shows `Connection reset by peer` right after connect).
 
 ## Observation, write and read
 

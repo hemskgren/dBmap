@@ -122,6 +122,22 @@ static void test_channel1_accessible_when_stereo(void)
     EXPECT(ch.sample_count == 15990);
 }
 
+static void test_slot_names_for_four_index_software_model(void)
+{
+    /* Software contract: even=left, odd=right per DIN pair (0–1 DIN0, 2–3 DIN1). */
+    sp_mic_window_view_t view;
+    fill_view(&view, -40.0f, -20.0f, 16000, 3, 1);
+    sp_mic_channel_t ch;
+    EXPECT(sp_mic_fill_channel(0, 4, &view, 16000, &ch) == SP_MIC_API_OK);
+    EXPECT(strcmp(ch.slot, "left") == 0);
+    EXPECT(sp_mic_fill_channel(1, 4, &view, 16000, &ch) == SP_MIC_API_OK);
+    EXPECT(strcmp(ch.slot, "right") == 0);
+    EXPECT(sp_mic_fill_channel(2, 4, &view, 16000, &ch) == SP_MIC_API_OK);
+    EXPECT(strcmp(ch.slot, "left") == 0);
+    EXPECT(sp_mic_fill_channel(3, 4, &view, 16000, &ch) == SP_MIC_API_OK);
+    EXPECT(strcmp(ch.slot, "right") == 0);
+}
+
 static void test_out_of_range_index_fails(void)
 {
     sp_mic_window_view_t view;
@@ -207,6 +223,7 @@ int main(void)
 {
     test_channel0_matches_primary_levels();
     test_channel1_accessible_when_stereo();
+    test_slot_names_for_four_index_software_model();
     test_out_of_range_index_fails();
     test_stream_metadata_and_common_seq();
     test_unmeasured_window_not_valid();

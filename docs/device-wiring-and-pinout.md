@@ -38,27 +38,27 @@ Target image: `esp-ear` / catalog `ear-esp32-s3`. Hardware profile string: `esp3
 | Mic 2 | 2 | Third (second DIN pair) |
 | Mic 3 | 3 | Fourth (second DIN pair) |
 
-Firmware captures **index 0** in mono when NVS `microphone_count=1`. When `microphone_count=2`, it opens Philips stereo on DIN0 and reports indexes **0 (left)** and **1 (right)**. Pins and L/R straps remain **placeholder / unverified** until bench confirmation. DIN1 (indexes 2–3) is still not read.
+Firmware installation `microphone_count` may be **1–4**. Acquisition opens the matching live count (up to 4): DIN0 mono (`count=1`), DIN0 Philips stereo (`count=2`), DIN0 stereo + DIN1 mono left (`count=3`), or both DINs stereo (`count=4`). ESP32-S3 uses **I2S0 master + I2S1 slave** sharing BCLK/WS (STD mode allows one DIN per controller). Pins and L/R straps remain **placeholder / unverified** until bench confirmation. Each live channel has independent RMS/peak and background hist on hello/health — never copied across indexes.
 
-### Shared I2S bus (preferred for up to 4× INMP441)
+### Shared I2S bus (up to 4× INMP441)
 
-INMP441 is I2S MEMS with an L/R select pin. Best practice on one controller:
+INMP441 is I2S MEMS with an L/R select pin (not TDM):
 
 1. Share **BCLK** and **WS** across all mics.
 2. Put two mics on one **DIN** by tying one L/R to GND (left) and one to VDD (right).
-3. Add a second **DIN** for the next stereo pair → four mics total.
+3. Add a second **DIN** for the next stereo pair → four mics total (second I2S controller).
 
 | Net | GPIO | Mic mapping | Status |
 | --- | ---: | --- | --- |
-| I2S BCLK | **4** | Shared | Placeholder (Kconfig) |
+| I2S BCLK | **4** | Shared (I2S0 master out / I2S1 slave in) | Placeholder (Kconfig) |
 | I2S WS / LRCLK | **5** | Shared | Placeholder (Kconfig) |
-| I2S DIN0 | **6** | Mic **0** (L) + Mic **1** (R) when `mic_count=2` | Placeholder; stereo firmware path exists |
-| I2S DIN1 | **7** | Reserved Mic **2** (L) + Mic **3** (R) | Reserved — not read yet |
+| I2S DIN0 | **6** | Mic **0** (L) + Mic **1** (R) when `mic_count≥2` | Placeholder; I2S0 RX |
+| I2S DIN1 | **7** | Mic **2** (L) + Mic **3** (R) when `mic_count≥3` | Placeholder; I2S1 RX |
 | I2S MCLK | — | Unused (`-1`) | — |
 | Mic 0 L/R | GND | Left slot → `index` 0 | Unverified on board |
 | Mic 1 L/R | VDD | Right slot → `index` 1 | Required for dual capture; unverified |
-| Mic 2 L/R | GND | Left on DIN1 → `index` 2 | Future |
-| Mic 3 L/R | VDD | Right on DIN1 → `index` 3 | Future |
+| Mic 2 L/R | GND | Left on DIN1 → `index` 2 | Required for 3/4-mic; unverified |
+| Mic 3 L/R | VDD | Right on DIN1 → `index` 3 | Required for 4-mic; unverified |
 
 Also wire each INMP441: **VDD** 3.3 V, **GND**, **SCK**→BCLK, **WS**→WS, **SD**→its DIN. Decouple VDD near the mic.
 

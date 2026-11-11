@@ -51,6 +51,7 @@ static void start_ear_mic_once(void)
         .bclk_gpio = CONFIG_DBMAP_EAR_MIC_I2S_BCLK_GPIO,
         .ws_gpio = CONFIG_DBMAP_EAR_MIC_I2S_WS_GPIO,
         .din_gpio = CONFIG_DBMAP_EAR_MIC_I2S_DIN_GPIO,
+        .din1_gpio = CONFIG_DBMAP_EAR_MIC_I2S_DIN1_GPIO,
         .mclk_gpio = CONFIG_DBMAP_EAR_MIC_I2S_MCLK_GPIO,
         .sample_rate_hz = CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ,
     };

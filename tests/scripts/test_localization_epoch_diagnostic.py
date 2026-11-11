@@ -6,8 +6,6 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).parents[2] / "scripts"))
 
 from lib.cross_ear_event_correlation import AssembledObservation

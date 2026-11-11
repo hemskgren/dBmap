@@ -17,7 +17,7 @@ Keep unchanged:
 | Component | Responsibility | Used by |
 | --- | --- | --- |
 | `node_common` | Identity, NVS, USB serial config, Wi-Fi, MQTT, provision, Desired, OTA, health enricher table, time, generic I2S TX helper | Ear, Output |
-| `mic` | Microphone hardware lifecycle, I2S RX acquisition, generic audio metrics / diagnostics, PCM window hand-off, audio reported-values enricher | Ear only |
+| `mic` | Microphone hardware lifecycle, I2S RX acquisition (≤4 via DIN0+DIN1 dual STD RX), per-channel metrics + background hist, PCM window hand-off (primary), audio reported-values enricher | Ear only |
 | `observation` | Observation Foundation: sequence allocator, episode registry, generic emit-gate / MQTT wait helpers | Ear only |
 
 Product `CMakeLists.txt` must list only the platform components they need (`esp-output` → `node_common`; `esp-ear` → `node_common` + `mic` + `observation`). Do not set `EXTRA_COMPONENT_DIRS` to this whole directory for Output — IDF would still compile `mic`/`observation` and fail without Ear Kconfig.
