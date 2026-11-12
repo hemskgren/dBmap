@@ -13,6 +13,7 @@
 #include "dbmap_acoustic_l0.h"
 #include "dbmap_acoustic_l1.h"
 #include "dbmap_acoustic_l2.h"
+#include "sp_mic_pcm.h"
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -48,9 +49,18 @@ typedef struct {
 } dbmap_ear_mic_l0_perf_t;
 
 /**
+ * Analyze an already-taken Platform PCM job into L0(/L1/L2) latest windows.
+ * Used by Audio Engine device intake (sole PCM taker when AE enabled) and by
+ * dbmap_ear_mic_l0_poll when AE is off. Does not call sp_mic_take_pcm_job.
+ */
+esp_err_t dbmap_ear_acoustic_analyze_pcm_job(const sp_mic_pcm_job_t *job);
+
+/**
  * Run pending L0 analysis for the most recently captured PCM window.
  * Safe to call from the observation task; does not block I2S capture
  * (double-buffered SPIRAM PCM). No-op / ESP_ERR_NOT_SUPPORTED when L0 off.
+ * When Audio Engine device intake is active, prefer ae_device_poll() which
+ * takes PCM once and calls dbmap_ear_acoustic_analyze_pcm_job.
  */
 esp_err_t dbmap_ear_mic_l0_poll(void);
 

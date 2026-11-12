@@ -4,12 +4,15 @@ idf_component_register(
         "activity_detector.c"
         "lifecycle_v2.c"
         "ear_obs_ota_policy.c"
+        "ce_promotion_bridge.c"
         "ear_observation.c"
     INCLUDE_DIRS "include"
     REQUIRES
         node_common
         mic
         ear_acoustic
+        ae_runtime
+        candidate_engine
         observation
         json
         nvs_flash
