@@ -69,6 +69,12 @@ because one SD data wire is disconnected — diagnose with per-channel
 - Both channels stay within ~2 dB through both placements.
 - One channel has `n≈0` while clocks should be running.
 
+**Evidence status (M5):** Procedure and capture_diag tooling exist. Ambient dual-channel
+logs prove **independent** Mic0/Mic1 metrics, but a recorded near-mic stimulus PASS
+meeting the ≥6 dB criteria above has **not** been filed against EAR-001. Physical
+L/R orientation therefore remains **unverified** until Test A is executed and logged.
+Do not treat dual-mic presence alone as Test A PASS.
+
 ## Test B — Continuity (≥30 s)
 
 1. Steady 1 kHz at mid-distance, or quiet room.
