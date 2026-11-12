@@ -559,10 +559,10 @@ stateDiagram-v2
   ACTIVE --> ACTIVE: matching signature update
   ACTIVE --> COASTING: missing/invalid windows < T_coast
   COASTING --> ACTIVE: matching signature returns
-  COASTING --> EXPIRED: coast exceeded
+  COASTING --> EXPIRED: coast exceeded (EXIT if promotion_entered)
   ACTIVE --> PROMOTED: promoter / workflow gate
+  PROMOTED --> COASTING: missing/invalid windows < T_coast
   PROMOTED --> ACTIVE: still tracked locally optional
-  PROMOTED --> EXPIRED: promoter ends interest AND coast out
   ACTIVE --> REJECTED: explicit reject policy
   REJECTED --> [*]
   EXPIRED --> [*]
@@ -794,6 +794,26 @@ These future pieces are **Platform or peer-Engine capabilities**. AE/CE v1 must 
 | CE model + FSM (acoustic signatures) | CE v1 | **New** (Engine, not Platform) |
 | Bridge activity_detector ↔ CE promotion | Product v1 | **Extend** |
 | TDOA / classifiers / Module Runtime / Engine Runtime | Later | **New later** |
+
+### Implementation status (progress)
+
+| Milestone | Status |
+| --- | --- |
+| M1 — host-testable AE signature/history + CE lifecycle (no device wire) | **Done** — `audio_engine/`, `candidate_engine/` |
+| M2 — device intake: sole `sp_mic_take_pcm_job`, align Mic0/1, CE listener, poll from `ear_obs` | **Done** — `ae_runtime/` + Platform `pcm_job.window_seq`; activity/Observation unchanged |
+| M3 — Observation promotion bridge (activity_detector interim) | **Done** — Ear `ce_promotion_bridge` association-only; RMS detector remains Observation authority; no `identity.track_id`; one primary ACTIVE (evidence → ema_rms → candidate_id); Platform `config.sp.version` from `firmware/platform/VERSION` |
+| M4 — AE/CE lifecycle split, gap/overwrite | **Done** — AE-only device path; CE listener; gap eval; Observation unchanged |
+| M5 — Dual PCM Mic0+Mic1 + AE stereo foundation | **Done** — SP dual PCM retain; `ae_stereo`; `ae:` diag; HW audio-test verified on EAR-001 (Test A L/R still open) |
+| Platform USB provision wire ownership | **Done** — `SP_PROVISION_*` tokens (`sp.version` 0.2.0); web accepts legacy `DBMAP_PROVISION_*` |
+| AE time/data contract hardening | **Done** — `ae_time` publish validation; history since/expire by `window_end_mono_us`; `ae_contract.h` consumer guarantees |
+
+**M2 association rule:** Platform publishes a coherent **window job** (`sp_mic_take_window_job`): PCM + channel snapshots for the same `window_seq` / `measured_at`, under one lock (and `s_latest` is updated before the job becomes takeable). AE must use the bundled channels — not a later `get_channel()` — and still validates seq/time before pair metrics. Missing channels stay unmasked (not zero).
+
+**M3 Promotion Bridge (implemented):** Ear-owned `ce_promotion_bridge` registers `ce_set_promotion_cb`, defers ENTER/EXIT off the AE publish stack, and associates at most one primary `ACTIVE` candidate with the sole open RMS Observation episode. Selection: higher `evidence_count`, then higher `ema_rms_dbfs` (tie-break only), then lower `candidate_id`. The RMS activity detector remains the only Observation open/close authority (D1). M3 does **not** emit `identity.track_id` (D3). This is not multi-source event identity. CE tracks `promotion_entered` so `CE_PROMOTION_EXIT` fires exactly once when a promoted candidate’s lifecycle ends, including `PROMOTED → COASTING → EXPIRED` (gap expiry always coasts before free). Rematch after a promoted COASTING restores `PROMOTED` (no second ENTER); primary selection also blocks while `promotion_entered` is set during COASTING. Bridge UART diag (`ear_obs: ce_bridge diag …`) logs association/queue counters at the AE diag cadence.
+
+**Platform version:** `firmware/platform/VERSION` → builder `config.sp.version` (currently **0.2.0**, independent of product `firmware_version`). USB provision wire tokens are `SP_PROVISION_*` (web accepts legacy `DBMAP_PROVISION_*`).
+
+§0.9 constraints remain temporary in M1–M3.
 
 ### Assumptions still needing verification
 
