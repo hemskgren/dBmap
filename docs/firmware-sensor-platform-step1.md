@@ -10,7 +10,7 @@ Branch: `firmware/sensor-platform-step1` (from `main` after PR #45).
 
 - Established `firmware/platform/` (`node_common`, `mic`, `observation`) and `firmware/products/dbmap/ear/` (`ear_acoustic`, `ear_observation`).
 - Split former `ear_mic` / `ear_observation` by ownership (not wholesale moves).
-- Platform C APIs / headers / log tags use **`sp_`** (Sensor Platform); product keeps `dbmap_*`. Wire `DBMAP_PROVISION_*` and `CONFIG_DBMAP_*` unchanged.
+- Platform C APIs / headers / log tags use **`sp_`** (Sensor Platform); product keeps `dbmap_*`. Kconfig `CONFIG_DBMAP_*` unchanged. USB provision wire tokens moved to **`SP_PROVISION_*`** (see `docs/device-provisioning-design.md`; web accepts legacy `DBMAP_PROVISION_*`).
 - Ear boot: Platform mic/I2S **before** Wi-Fi (after USB gates); observation after Desired.
 - Provisioned USB configure window shortened **10 s → 7 s** (`SP_USB_PROVISIONED_CONFIG_WINDOW_S`); recovery window still 180 s.
 - Ear series base **0.8.0** (`sdkconfig.defaults`); Output remains **0.7.0**.

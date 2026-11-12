@@ -56,7 +56,7 @@ static void result(const char *request_id, const char *status, const char *error
             if (i != len) safe_id[0] = '\0';
         }
     }
-    printf("DBMAP_PROVISION_RESULT:{\"request_id\":\"%s\",\"status\":\"%s\",\"error\":\"%s\"}\n",
+    printf(SP_PROVISION_RESULT_PREFIX "{\"request_id\":\"%s\",\"status\":\"%s\",\"error\":\"%s\"}\n",
            safe_id, status, error != NULL ? error : "");
     fflush(stdout);
 }
@@ -164,7 +164,7 @@ esp_err_t sp_serial_config_wait(sp_effective_t *cfg, int timeout_seconds)
         int received = uart_read_bytes(UART_NUM_0, &byte, 1, pdMS_TO_TICKS(1000));
         if (received < 0) return ESP_FAIL;
         if (received == 0) {
-            puts("DBMAP_PROVISION_READY");
+            puts(SP_PROVISION_READY_TOKEN);
             fflush(stdout);
             if (timeout_seconds > 0 &&
                 esp_timer_get_time() - started_us >= (int64_t)timeout_seconds * 1000000) {

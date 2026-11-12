@@ -60,6 +60,13 @@ void sp_diag_note_obs_skipped_disconnected(void);
 void sp_diag_attach_json(cJSON *state_object);
 void sp_diag_clear_oneshots(void);
 
+/**
+ * Shared UART resource snapshot (CPU / heap / SPIRAM / current-task stack HWM).
+ * Tag is always `sp`. ctx names the caller (e.g. "ear_obs") without owning the format.
+ * Keep off the audio hot path — call from periodic diag only.
+ */
+void sp_diag_log_resources(const char *ctx);
+
 #ifdef __cplusplus
 }
 #endif

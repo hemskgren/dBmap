@@ -2,6 +2,7 @@
 
 #include "sp_types.h"
 #include "esp_err.h"
+#include "sp_serial_protocol.h"
 
 /**
  * Default USB slice length for first-config / unprovisioned waits (seconds).

@@ -1,0 +1,9 @@
+/**
+ * Generated from firmware/platform/VERSION — do not edit by hand.
+ * Rebuild after changing VERSION.
+ */
+#pragma once
+
+#ifndef SP_VERSION_STRING
+#define SP_VERSION_STRING "@SP_VERSION_STRING@"
+#endif
