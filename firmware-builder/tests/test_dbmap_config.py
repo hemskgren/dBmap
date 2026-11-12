@@ -108,6 +108,7 @@ def test_ear_effective_config_highlights_defaults_overrides(real_firmware_target
     assert payload["config"]["sp"]["node"]["NODE_TYPE_EAR"] is True
     assert payload["config"]["sp"]["node"]["WIFI_SSID"] == ""
     assert payload["config"]["sp"]["node"]["NTP_SERVER"] == "se.pool.ntp.org"
+    assert payload["config"]["sp"]["version"] == "0.2.0"
     highlight_keys = {row["key"] for row in payload["highlights"]}
     assert "EAR_OBS_SERIAL_DIAG" in highlight_keys
     assert "EAR_OBS_PUBLISH_L0" in highlight_keys
@@ -122,6 +123,7 @@ def test_output_effective_config_includes_output_group(real_firmware_targets):
     assert "mic" not in sp
     assert sp["node"]["NODE_TYPE_OUTPUT"] is True
     assert sp["output"]["AUDIO_I2S_BCLK_GPIO"] == 26
+    assert sp["version"] == "0.2.0"
     assert payload["config"]["product"]["dbmap"] == {}
 
 
@@ -143,9 +145,11 @@ def test_defaults_file_dbmap_config_is_overrides_only(real_firmware_targets):
         node_type="ear",
         chip="esp32s3",
         project=REPO_FIRMWARE / "esp-ear",
+        platform_dir=REPO_FIRMWARE / "platform",
     )
     assert set(ear) == {"sp", "product"}
-    assert set(ear["sp"]) <= {"node", "mic"}
+    assert set(ear["sp"]) <= {"node", "mic", "version"}
+    assert ear["sp"]["version"] == "0.2.0"
     assert "diag" not in ear["sp"]
     assert "backoff" not in ear["sp"]
     observation = ear["product"]["dbmap"]["observation"]
@@ -165,10 +169,12 @@ def test_defaults_file_dbmap_config_is_overrides_only(real_firmware_targets):
         node_type="output",
         chip="esp32",
         project=REPO_FIRMWARE / "esp-output",
+        platform_dir=REPO_FIRMWARE / "platform",
     )
     assert set(output) == {"sp", "product"}
-    assert set(output["sp"]) == {"node"}
+    assert set(output["sp"]) == {"node", "version"}
     assert output["sp"]["node"]["NODE_TYPE_OUTPUT"] is True
+    assert output["sp"]["version"] == "0.2.0"
     assert "FIRMWARE_VERSION" not in output["sp"]["node"]
     assert "output" not in output["sp"]
     assert output["product"]["dbmap"] == {}
@@ -181,5 +187,45 @@ def test_effective_and_defaults_omit_nested_firmware_version(real_firmware_targe
         node_type="ear",
         chip="esp32s3",
         project=REPO_FIRMWARE / "esp-ear",
+        platform_dir=REPO_FIRMWARE / "platform",
     )
     assert "FIRMWARE_VERSION" not in defaults.get("sp", {}).get("node", {})
+    assert defaults["sp"]["version"] == "0.2.0"
+    assert effective["config"]["sp"]["version"] == "0.2.0"
+
+
+def test_platform_version_semver_validation(tmp_path):
+    assert dbmap_config.is_valid_sp_version("0.1.0")
+    assert dbmap_config.is_valid_sp_version("1.2.3")
+    assert not dbmap_config.is_valid_sp_version("")
+    assert not dbmap_config.is_valid_sp_version("0.1")
+    assert not dbmap_config.is_valid_sp_version("v0.1.0")
+    assert not dbmap_config.is_valid_sp_version("0.1.0-beta")
+
+    missing = tmp_path / "missing"
+    missing.mkdir()
+    with pytest.raises(ValueError, match="Missing"):
+        dbmap_config.read_platform_version(missing)
+
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    (bad / "VERSION").write_text("not-a-version\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Malformed"):
+        dbmap_config.read_platform_version(bad)
+
+    good = tmp_path / "good"
+    good.mkdir()
+    (good / "VERSION").write_text("# comment\n0.1.0\n", encoding="utf-8")
+    assert dbmap_config.read_platform_version(good) == "0.1.0"
+
+
+def test_sp_version_independent_of_firmware_series(real_firmware_targets):
+    payload = server._target_dbmap_config("ear-esp32-s3")
+    sp_ver = payload["config"]["sp"]["version"]
+    # sdkconfig series base remains under FIRMWARE_VERSION in flat parse, not nested.
+    defaults_text = (REPO_FIRMWARE / "esp-ear" / "sdkconfig.defaults").read_text(
+        encoding="utf-8"
+    )
+    assert 'CONFIG_DBMAP_FIRMWARE_VERSION="0.8.0"' in defaults_text
+    assert sp_ver == "0.2.0"
+    assert sp_ver != "0.8.0"

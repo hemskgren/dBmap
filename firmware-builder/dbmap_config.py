@@ -110,6 +110,54 @@ _CONFIG_LINE = re.compile(
 )
 _NOT_SET_LINE = re.compile(r"^# (?P<name>CONFIG_DBMAP_[A-Z0-9_]+) is not set$")
 _SHORT = re.compile(r"^DBMAP_[A-Z0-9_]+$")
+# Strict SemVer core (MAJOR.MINOR.PATCH). No pre-release / build metadata.
+_SEMVER_CORE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+
+
+def is_valid_sp_version(value: str) -> bool:
+    """True if value is a SemVer core version string (MAJOR.MINOR.PATCH)."""
+    return bool(value) and _SEMVER_CORE.fullmatch(value) is not None
+
+
+def read_platform_version(platform_dir: Path) -> str:
+    """
+    Read the authoritative Sensor Platform version from platform/VERSION.
+
+    Raises ValueError if the file is missing or the first non-empty line is not
+    a valid SemVer core version. Callers must not invent a fallback version.
+    """
+    path = platform_dir / "VERSION"
+    if not path.is_file():
+        raise ValueError(f"Missing Sensor Platform VERSION file: {path}")
+    raw = path.read_text(encoding="utf-8")
+    line = ""
+    for candidate in raw.splitlines():
+        stripped = candidate.strip()
+        if stripped and not stripped.startswith("#"):
+            line = stripped
+            break
+    if not is_valid_sp_version(line):
+        raise ValueError(
+            f"Malformed Sensor Platform version in {path}: {raw!r} "
+            "(expected MAJOR.MINOR.PATCH SemVer core)"
+        )
+    return line
+
+
+def inject_sp_version(config: dict[str, Any], version: str) -> dict[str, Any]:
+    """Set config.sp.version without inventing Kconfig keys."""
+    if not is_valid_sp_version(version):
+        raise ValueError(f"Invalid Sensor Platform version: {version!r}")
+    if not isinstance(config, dict):
+        raise TypeError("config must be an object")
+    sp = config.get("sp")
+    if sp is None:
+        sp = {}
+        config["sp"] = sp
+    if not isinstance(sp, dict):
+        raise TypeError("config.sp must be an object")
+    sp["version"] = version
+    return config
 
 
 def short_name(config_name: str) -> str:
@@ -281,7 +329,12 @@ def _group_subset(
     return grouped
 
 
-def group_values(flat: dict[str, Any], node_type: str) -> dict[str, Any]:
+def group_values(
+    flat: dict[str, Any],
+    node_type: str,
+    *,
+    platform_version: str | None = None,
+) -> dict[str, Any]:
     """Nest CONFIG short-names under config.sp / config.product.dbmap ownership."""
     sp = _group_subset(flat, SP_GROUPS_BY_NODE_TYPE.get(node_type, ("node",)))
     product_dbmap = _group_subset(
@@ -292,6 +345,8 @@ def group_values(flat: dict[str, Any], node_type: str) -> dict[str, Any]:
         config["product"] = {"dbmap": product_dbmap}
     else:
         config["product"] = {"dbmap": {}}
+    if platform_version is not None:
+        inject_sp_version(config, platform_version)
     return config
 
 
@@ -349,7 +404,8 @@ def resolve_effective_dbmap_config(
         effective["NODE_TYPE_EAR"] = False
         effective["NODE_TYPE_OUTPUT"] = True
 
-    nested = group_values(effective, node_type)
+    sp_version = read_platform_version(components)
+    nested = group_values(effective, node_type, platform_version=sp_version)
     return {
         "source": "effective",
         "config": nested,
@@ -359,6 +415,7 @@ def resolve_effective_dbmap_config(
             "Builder overlay sets NTP_SERVER from Hub env NTP_SERVER (default se.pool.ntp.org if unset); overrides sdkconfig.defaults.",
             "WIFI_SSID, WIFI_PASSWORD, and BOOTSTRAP_TOKEN are cleared for reusable images.",
             "config.sp is Sensor Platform; config.product.dbmap is dBmap product (Ear observation today).",
+            "config.sp.version is the independent Sensor Platform SemVer from firmware/platform/VERSION (not firmware_version).",
         ],
     }
 
@@ -368,12 +425,16 @@ def resolve_defaults_file_dbmap_config(
     node_type: str,
     chip: str,
     project: Path,
+    platform_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Only CONFIG_DBMAP_* lines from sdkconfig.defaults / sdkconfig.defaults.<chip>."""
     file_overrides: dict[str, Any] = {}
     for path in defaults_files(project, chip):
         file_overrides.update(parse_sdkconfig_dbmap(path.read_text(encoding="utf-8")))
-    return group_values(file_overrides, node_type)
+    sp_version = None
+    if platform_dir is not None:
+        sp_version = read_platform_version(platform_dir)
+    return group_values(file_overrides, node_type, platform_version=sp_version)
 
 
 def format_log_block(payload: dict[str, Any]) -> str:
