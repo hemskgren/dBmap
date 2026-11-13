@@ -3,8 +3,15 @@
 #include <string.h>
 
 #include "sp_lifecycle.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "esp_private/esp_clk.h"
 #include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "sdkconfig.h"
+
+static const char *TAG_SP = "sp";
 
 #ifndef CONFIG_DBMAP_DIAG_ENABLED
 #define CONFIG_DBMAP_DIAG_ENABLED 1
@@ -298,4 +305,31 @@ void sp_diag_attach_json(cJSON *state_object)
 void sp_diag_clear_oneshots(void)
 {
     s_state.reset_reason_pending = false;
+}
+
+void sp_diag_log_resources(const char *ctx)
+{
+    const int cpu_hz = esp_clk_cpu_freq();
+    const unsigned long cpu_mhz =
+        cpu_hz > 0 ? (unsigned long)(cpu_hz / 1000000) : 0ul;
+#if defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
+    const char *pm = "enabled";
+#else
+    const char *pm = "disabled";
+#endif
+    const unsigned long hwm_bytes =
+        (unsigned long)uxTaskGetStackHighWaterMark(NULL);
+    ESP_LOGI(
+        TAG_SP,
+        "res ctx=%s cpu_mhz=%lu configured_mhz=%d pm=%s free_heap=%lu "
+        "min_free_heap=%lu free_spiram=%lu stack_hwm_bytes=%lu",
+        (ctx != NULL && ctx[0] != '\0') ? ctx : "-",
+        cpu_mhz,
+        CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        pm,
+        (unsigned long)esp_get_free_heap_size(),
+        (unsigned long)esp_get_minimum_free_heap_size(),
+        (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        hwm_bytes
+    );
 }

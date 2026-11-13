@@ -486,6 +486,7 @@ def _build(job_id: str, target: str) -> None:
             node_type=target_config["node_type"],
             chip=target_config["chip"],
             project=target_config["project"],
+            platform_dir=target_config["components"],
         )
         job.update(stage="finalizing")
         _persist(job)

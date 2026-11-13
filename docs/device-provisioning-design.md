@@ -32,7 +32,24 @@ USB access is an explicit local physical action. The browser must use the dBmap 
 
 ## Serial protocol requirements
 
-The first implementation uses newline-framed JSON at 115200 baud. The firmware emits `DBMAP_PROVISION_READY` while it waits, then accepts a `protocol: 1`, `operation: configure` request containing a request ID plus SSID, Wi-Fi password, HTTPS Hub URL, and MQTT profile. Bootstrap token is optional; when omitted, the existing NVS value is kept. Optional `mqtt_host` / `mqtt_port` update the call-home MQTT endpoint while preserving existing MQTT username/password. Optional integer `microphone_count` (`1` or `2`) persists Ear installation NVS `audio/mic_count`; when omitted the existing value (or default `1`) is kept; an invalid value rejects the entire configure before any NVS write. It replies with a matching `DBMAP_PROVISION_RESULT:` JSON line and a generic error code. The browser keeps the serial port open through the result.
+The first implementation uses newline-framed JSON at 115200 baud. **Sensor Platform**
+(`sp_serial` / `sp_serial_config_wait`) owns the USB wire protocol. While waiting, the
+firmware emits the machine-readable line `SP_PROVISION_READY` (human diagnostics use
+the `sp_serial` ESP_LOG tag separately). It then accepts a `protocol: 1`,
+`operation: configure` request containing a request ID plus SSID, Wi-Fi password,
+HTTPS Hub URL, and MQTT profile. Bootstrap token is optional; when omitted, the
+existing NVS value is kept. Optional `mqtt_host` / `mqtt_port` update the call-home
+MQTT endpoint while preserving existing MQTT username/password. Optional integer
+`microphone_count` (`1` or `2`) persists Ear installation NVS `audio/mic_count`; when
+omitted the existing value (or default `1`) is kept; an invalid value rejects the
+entire configure before any NVS write. It replies with a matching
+`SP_PROVISION_RESULT:` JSON line and a generic error code. The browser keeps the
+serial port open through the result.
+
+**Compatibility:** firmware `sp.version` ≥ 0.2.0 emits only `SP_PROVISION_*`. The Hub
+web UI accepts both `SP_PROVISION_*` and legacy `DBMAP_PROVISION_*` so older flashed
+images remain provisionable until they are replaced. Product firmware must not emit
+`DBMAP_PROVISION_*` startup tokens.
 
 Provisioned boots still open a short (~10 s) USB window for intentional reconfigure. Missing first-time credentials or failed HTTPS provision use a bounded USB window (`DBMAP_USB_BOOT_RECOVERY_S`, default 180 s) then reboot so remotes without a cable keep retrying. A late / missing Wi-Fi join (for example `NO_AP_FOUND`) does **not** reboot: STA reconnect continues with exponential backoff and jitter while USB configure remains available until an IP appears or the operator reconfigures. UART console setup is idempotent so recovery slices do not reinstall the driver or flood the log.
 

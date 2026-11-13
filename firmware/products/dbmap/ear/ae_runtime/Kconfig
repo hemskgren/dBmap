@@ -1,0 +1,30 @@
+menu "dBmap Audio Engine"
+
+    config DBMAP_EAR_AUDIO_ENGINE
+        bool "Enable Audio Engine device path (M4)"
+        default y
+        depends on DBMAP_EAR_MIC_L0
+        help
+            When enabled, ae_device_poll() is the sole consumer of
+            sp_mic_take_window_job from the observation task. AE starts
+            independently; Ear owns Candidate Engine startup and registers
+            ce_on_signature as an AE listener. Existing activity detection
+            and Observation MQTT are unchanged.
+            Placement under products/dbmap/ear is temporary (§0.9).
+
+    config DBMAP_EAR_AE_DIAG
+        bool "Audio Engine controlled diagnostic logging"
+        default n
+        depends on DBMAP_EAR_AUDIO_ENGINE
+        help
+            Periodic ESP_LOGI of AE counters (not every window), including
+            SP overwrite events vs sequence gaps.
+            Enable for bench verification of PCM/channel alignment.
+
+    config DBMAP_EAR_AE_DIAG_EVERY_N
+        int "AE diag log every N successful signature publishes"
+        depends on DBMAP_EAR_AE_DIAG
+        range 1 120
+        default 10
+
+endmenu

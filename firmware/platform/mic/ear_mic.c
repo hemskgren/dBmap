@@ -14,6 +14,7 @@
 #include "sp_i2s_stereo.h"
 #include "sp_mic_count.h"
 #include "sp_mic_pcm.h"
+#include "sp_mic_window_job.h"
 #include "driver/i2s_std.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
@@ -176,8 +177,10 @@ static sp_bg_rms_hist_t s_bg_hist[SP_MIC_COUNT_MAX];
 #endif
 
 #if CONFIG_DBMAP_EAR_MIC_L0
-/* Double-buffered SPIRAM PCM so product analysis never stalls the I2S read loop. */
-static int32_t *s_pcm[2];
+/* Double-buffered SPIRAM PCM: mic0 always; mic1 when live stereo (M5). */
+static int32_t *s_pcm0[2];
+static int32_t *s_pcm1[2];
+static uint8_t s_pcm_retained_channels; /* 1 or 2 */
 static uint32_t s_pcm_cap;
 static int s_pcm_fill_idx;
 static bool s_pcm_ready;
@@ -186,16 +189,47 @@ static sp_mic_pcm_ready_hook_t s_pcm_ready_hook;
 typedef struct {
     bool pending;
     int buf_idx;
-    size_t sample_count;
+    size_t sample_count_ch0;
+    size_t sample_count_ch1;
+    uint8_t pcm_channel_mask;
     uint32_t window_ms;
     int64_t window_end_mono_us;
     int full_scale_bits;
+    uint32_t window_seq;
+    uint8_t live_mic_count;
+    sp_mic_window_view_t views[SP_MIC_COUNT_MAX];
 } ear_pcm_pending_t;
 
 static ear_pcm_pending_t s_pcm_pending;
 static uint32_t s_pcm_pending_overwrite;
 static uint32_t s_pcm_free_heap_after_init;
 static uint32_t s_pcm_free_spiram_after_init;
+
+static void fill_pcm_job_from_pending(const ear_pcm_pending_t *job, sp_mic_pcm_job_t *out)
+{
+    if (out == NULL || job == NULL) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->full_scale_bits = job->full_scale_bits;
+    out->window_ms = job->window_ms;
+    out->window_end_mono_us = job->window_end_mono_us;
+    out->window_seq = job->window_seq;
+    out->pcm_channel_mask = job->pcm_channel_mask;
+    if (job->buf_idx < 0 || job->buf_idx > 1) {
+        return;
+    }
+    if ((job->pcm_channel_mask & 0x01u) != 0u && s_pcm0[job->buf_idx] != NULL) {
+        out->samples_ch0 = s_pcm0[job->buf_idx];
+        out->sample_count_ch0 = job->sample_count_ch0;
+        out->samples = out->samples_ch0;
+        out->sample_count = out->sample_count_ch0;
+    }
+    if ((job->pcm_channel_mask & 0x02u) != 0u && s_pcm1[job->buf_idx] != NULL) {
+        out->samples_ch1 = s_pcm1[job->buf_idx];
+        out->sample_count_ch1 = job->sample_count_ch1;
+    }
+}
 #endif
 
 static int gpio_or_unused(int gpio)
@@ -406,16 +440,55 @@ bool sp_mic_take_pcm_job(sp_mic_pcm_job_t *out)
     s_pcm_pending.pending = false;
     portEXIT_CRITICAL(&s_lock);
 
-    if (job.buf_idx < 0 || job.buf_idx > 1 || s_pcm[job.buf_idx] == NULL) {
+    if (job.buf_idx < 0 || job.buf_idx > 1 || s_pcm0[job.buf_idx] == NULL) {
         return false;
     }
     if (out != NULL) {
-        out->samples = s_pcm[job.buf_idx];
-        out->sample_count = job.sample_count;
-        out->full_scale_bits = job.full_scale_bits;
-        out->window_ms = job.window_ms;
-        out->window_end_mono_us = job.window_end_mono_us;
+        fill_pcm_job_from_pending(&job, out);
     }
+    return true;
+#endif
+}
+
+bool sp_mic_take_window_job(sp_mic_window_job_t *out)
+{
+#if !CONFIG_DBMAP_EAR_MIC_L0
+    (void)out;
+    return false;
+#else
+    if (!s_pcm_ready) {
+        return false;
+    }
+
+    ear_pcm_pending_t job;
+    uint32_t rate_hz;
+    portENTER_CRITICAL(&s_lock);
+    job = s_pcm_pending;
+    rate_hz = (uint32_t)s_mic_cfg.sample_rate_hz;
+    if (!job.pending) {
+        portEXIT_CRITICAL(&s_lock);
+        return false;
+    }
+    s_pcm_pending.pending = false;
+    portEXIT_CRITICAL(&s_lock);
+
+    if (job.buf_idx < 0 || job.buf_idx > 1 || s_pcm0[job.buf_idx] == NULL) {
+        return false;
+    }
+    if (out == NULL) {
+        return true;
+    }
+
+    memset(out, 0, sizeof(*out));
+    fill_pcm_job_from_pending(&job, &out->pcm);
+
+    uint8_t live = job.live_mic_count;
+    if (live < 1u || live > SP_MIC_COUNT_MAX) {
+        live = 1u;
+    }
+    /* Packaging is atomic with PCM; coherence should hold. Mask stays 0 on
+     * fill failure so AE can still mono-analyze without inventing channels. */
+    (void)sp_mic_window_job_set_channels_from_views(out, live, rate_hz, job.views);
     return true;
 #endif
 }
@@ -434,7 +507,20 @@ uint32_t sp_mic_pcm_bytes_total(void)
 #if !CONFIG_DBMAP_EAR_MIC_L0
     return 0;
 #else
-    return s_pcm_ready ? (s_pcm_cap * (uint32_t)sizeof(int32_t) * 2u) : 0;
+    if (!s_pcm_ready || s_pcm_retained_channels == 0u) {
+        return 0;
+    }
+    return s_pcm_cap * (uint32_t)sizeof(int32_t) * 2u
+        * (uint32_t)s_pcm_retained_channels;
+#endif
+}
+
+uint8_t sp_mic_pcm_retained_channels(void)
+{
+#if !CONFIG_DBMAP_EAR_MIC_L0
+    return 0;
+#else
+    return s_pcm_ready ? s_pcm_retained_channels : 0u;
 #endif
 }
 
@@ -1085,7 +1171,7 @@ typedef struct {
 
 /**
  * Accumulate one DIN's slot buffer into the absolute mic indexes for that DIN.
- * Analysis PCM stores mic0 (DIN0 left) only.
+ * Analysis PCM retains DIN0 left (mic0) and, when allocated, DIN0 right (mic1).
  */
 static void accumulate_din_slots(
     uint8_t din_index,
@@ -1120,10 +1206,17 @@ static void accumulate_din_slots(
                 &acc[ch_right], ch_right, right, clip_threshold, full_scale_mag
             );
 #if CONFIG_DBMAP_EAR_MIC_L0
-            if (din_index == 0u && s_pcm_ready && s_pcm[s_pcm_fill_idx] != NULL
-                && acc[ch_left].pcm_count <= s_pcm_cap
-                && (acc[ch_left].pcm_count - 1u) < s_pcm_cap) {
-                s_pcm[s_pcm_fill_idx][acc[ch_left].pcm_count - 1u] = left;
+            if (din_index == 0u && s_pcm_ready) {
+                if (s_pcm0[s_pcm_fill_idx] != NULL
+                    && acc[ch_left].pcm_count <= s_pcm_cap
+                    && (acc[ch_left].pcm_count - 1u) < s_pcm_cap) {
+                    s_pcm0[s_pcm_fill_idx][acc[ch_left].pcm_count - 1u] = left;
+                }
+                if (s_pcm_retained_channels >= 2u && s_pcm1[s_pcm_fill_idx] != NULL
+                    && acc[ch_right].pcm_count <= s_pcm_cap
+                    && (acc[ch_right].pcm_count - 1u) < s_pcm_cap) {
+                    s_pcm1[s_pcm_fill_idx][acc[ch_right].pcm_count - 1u] = right;
+                }
             }
 #endif
         }
@@ -1136,10 +1229,10 @@ static void accumulate_din_slots(
                 &acc[ch_left], ch_left, sample, clip_threshold, full_scale_mag
             );
 #if CONFIG_DBMAP_EAR_MIC_L0
-            if (din_index == 0u && s_pcm_ready && s_pcm[s_pcm_fill_idx] != NULL
+            if (din_index == 0u && s_pcm_ready && s_pcm0[s_pcm_fill_idx] != NULL
                 && acc[ch_left].pcm_count <= s_pcm_cap
                 && (acc[ch_left].pcm_count - 1u) < s_pcm_cap) {
-                s_pcm[s_pcm_fill_idx][acc[ch_left].pcm_count - 1u] = sample;
+                s_pcm0[s_pcm_fill_idx][acc[ch_left].pcm_count - 1u] = sample;
             }
 #endif
         }
@@ -1148,7 +1241,8 @@ static void accumulate_din_slots(
 
 /**
  * Fill out[0..live_mic_count). Per-DIN transport counters apply to that DIN's
- * channels; per-channel RMS/peak/clip/presence differ. Analysis PCM = mic0 only.
+ * channels; per-channel RMS/peak/clip/presence differ. Analysis PCM retains
+ * mic0 and mic1 when stereo retention is allocated (M5).
  */
 static void measure_window(ear_audio_snapshot_t *out, uint8_t live_count)
 {
@@ -1290,22 +1384,59 @@ static void measure_window(ear_audio_snapshot_t *out, uint8_t live_count)
     }
 
 #if CONFIG_DBMAP_EAR_MIC_L0
+    /*
+     * Publish s_latest and the PCM+channel pending bundle under one lock so a
+     * consumer that takes the job never races a stale s_latest for this seq.
+     * Channel views travel with the job (sp_mic_take_window_job) — do not
+     * assume a later get_channel() call still matches.
+     */
     if (s_pcm_ready && acc[0].pcm_count > 0) {
-        const size_t stored =
+        const size_t stored0 =
             acc[0].pcm_count < s_pcm_cap ? acc[0].pcm_count : s_pcm_cap;
+        size_t stored1 = 0;
+        uint8_t pcm_mask = 0x01u;
+        if (s_pcm_retained_channels >= 2u && live_count > 1u
+            && acc[1].pcm_count > 0u) {
+            stored1 =
+                acc[1].pcm_count < s_pcm_cap ? acc[1].pcm_count : s_pcm_cap;
+            pcm_mask = (uint8_t)(pcm_mask | 0x02u);
+        }
         portENTER_CRITICAL(&s_lock);
+        for (uint8_t i = 0; i < SP_MIC_COUNT_MAX; ++i) {
+            s_latest[i] = out[i];
+        }
         if (s_pcm_pending.pending) {
             s_pcm_pending_overwrite++;
         }
         s_pcm_pending.pending = true;
         s_pcm_pending.buf_idx = s_pcm_fill_idx;
-        s_pcm_pending.sample_count = stored;
+        s_pcm_pending.sample_count_ch0 = stored0;
+        s_pcm_pending.sample_count_ch1 = stored1;
+        s_pcm_pending.pcm_channel_mask = pcm_mask;
         s_pcm_pending.window_ms = window_ms;
         s_pcm_pending.window_end_mono_us = measured_at;
         s_pcm_pending.full_scale_bits = useful_bits;
+        s_pcm_pending.window_seq = s_window_seq;
+        s_pcm_pending.live_mic_count = live_count;
+        for (uint8_t i = 0; i < SP_MIC_COUNT_MAX; ++i) {
+            snapshot_to_view(&out[i], &s_pcm_pending.views[i]);
+        }
         s_pcm_fill_idx ^= 1;
         portEXIT_CRITICAL(&s_lock);
+    } else {
+        /* No PCM job — still publish levels for Observation / health. */
+        portENTER_CRITICAL(&s_lock);
+        for (uint8_t i = 0; i < SP_MIC_COUNT_MAX; ++i) {
+            s_latest[i] = out[i];
+        }
+        portEXIT_CRITICAL(&s_lock);
     }
+#else
+    portENTER_CRITICAL(&s_lock);
+    for (uint8_t i = 0; i < SP_MIC_COUNT_MAX; ++i) {
+        s_latest[i] = out[i];
+    }
+    portEXIT_CRITICAL(&s_lock);
 #endif
 
     s_measure_window_us_last = (uint32_t)(esp_timer_get_time() - t_measure0);
@@ -1413,6 +1544,9 @@ static void ear_mic_task(void *arg)
         ear_audio_snapshot_t snaps[SP_MIC_COUNT_MAX];
         measure_window(snaps, s_live_mic_count);
 
+        /* Refresh s_latest for early-return / no-PCM paths. When L0 PCM is
+         * published, measure_window already wrote the same snaps under lock
+         * before the pending job became takeable. */
         portENTER_CRITICAL(&s_lock);
         for (uint8_t i = 0; i < SP_MIC_COUNT_MAX; ++i) {
             s_latest[i] = snaps[i];
@@ -1540,34 +1674,62 @@ esp_err_t sp_mic_start(const sp_effective_t *cfg, const sp_mic_config_t *mic_cfg
         );
         /* +1% slack for slight over-fill vs nominal window length. */
         s_pcm_cap = expected + (expected / 100u) + 16u;
-        s_pcm[0] = (int32_t *)heap_caps_malloc(
-            (size_t)s_pcm_cap * sizeof(int32_t),
-            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
-        );
-        s_pcm[1] = (int32_t *)heap_caps_malloc(
-            (size_t)s_pcm_cap * sizeof(int32_t),
-            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
-        );
-        if (s_pcm[0] == NULL || s_pcm[1] == NULL) {
-            ESP_LOGE(TAG, "analysis PCM SPIRAM alloc failed cap=%lu", (unsigned long)s_pcm_cap);
-            heap_caps_free(s_pcm[0]);
-            heap_caps_free(s_pcm[1]);
-            s_pcm[0] = NULL;
-            s_pcm[1] = NULL;
+        s_pcm_retained_channels = (s_live_mic_count >= 2u) ? 2u : 1u;
+        s_pcm0[0] = s_pcm0[1] = NULL;
+        s_pcm1[0] = s_pcm1[1] = NULL;
+        bool ok = true;
+        for (int b = 0; b < 2; ++b) {
+            s_pcm0[b] = (int32_t *)heap_caps_malloc(
+                (size_t)s_pcm_cap * sizeof(int32_t),
+                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+            );
+            if (s_pcm0[b] == NULL) {
+                ok = false;
+                break;
+            }
+            if (s_pcm_retained_channels >= 2u) {
+                s_pcm1[b] = (int32_t *)heap_caps_malloc(
+                    (size_t)s_pcm_cap * sizeof(int32_t),
+                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+                );
+                if (s_pcm1[b] == NULL) {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if (!ok) {
+            ESP_LOGE(
+                TAG,
+                "analysis PCM SPIRAM alloc failed cap=%lu ch=%u",
+                (unsigned long)s_pcm_cap,
+                (unsigned)s_pcm_retained_channels
+            );
+            for (int b = 0; b < 2; ++b) {
+                heap_caps_free(s_pcm0[b]);
+                heap_caps_free(s_pcm1[b]);
+                s_pcm0[b] = NULL;
+                s_pcm1[b] = NULL;
+            }
             s_pcm_ready = false;
+            s_pcm_retained_channels = 0u;
         } else {
             s_pcm_ready = true;
             s_pcm_fill_idx = 0;
             memset(&s_pcm_pending, 0, sizeof(s_pcm_pending));
             s_pcm_free_heap_after_init = (uint32_t)esp_get_free_heap_size();
-            s_pcm_free_spiram_after_init = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+            s_pcm_free_spiram_after_init =
+                (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
             ESP_LOGI(
                 TAG,
-                "analysis PCM ready pcm_cap=%lu bytes=%lu free_heap=%lu free_spiram=%lu",
+                "analysis PCM ready pcm_cap=%lu ch=%u bytes=%lu "
+                "free_heap=%lu free_spiram=%lu (mic0%s)",
                 (unsigned long)s_pcm_cap,
-                (unsigned long)(s_pcm_cap * sizeof(int32_t) * 2u),
+                (unsigned)s_pcm_retained_channels,
+                (unsigned long)sp_mic_pcm_bytes_total(),
                 (unsigned long)s_pcm_free_heap_after_init,
-                (unsigned long)s_pcm_free_spiram_after_init
+                (unsigned long)s_pcm_free_spiram_after_init,
+                s_pcm_retained_channels >= 2u ? "+mic1" : " only"
             );
             if (s_pcm_ready_hook != NULL) {
                 s_pcm_ready_hook((uint32_t)s_mic_cfg.sample_rate_hz);

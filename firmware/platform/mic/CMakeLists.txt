@@ -5,6 +5,7 @@ idf_component_register(
         "ear_mic_channel_api.c"
         "i2s_stereo.c"
         "mic_model.c"
+        "sp_mic_window_job.c"
         "ear_mic.c"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "."

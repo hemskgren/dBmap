@@ -10,6 +10,9 @@
 #include "dbmap_acoustic_l0.h"
 #include "dbmap_acoustic_l2.h"
 #include "sp_diag.h"
+#include "ae_device.h"
+#include "ce_engine.h"
+#include "ce_promotion_bridge.h"
 #include "dbmap_ear_acoustic.h"
 #include "sp_mic.h"
 #include "sp_episode_registry.h"
@@ -81,6 +84,14 @@ static sp_episode_registry_t s_registry;
 static sp_ep_handle_t s_rms_handle;
 static bool s_rms_bound;
 static bool s_mqtt_episode_rearm_required;
+#if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
+static ce_engine_t s_ce;
+static ce_promotion_bridge_t s_ce_bridge;
+static bool s_ce_bridge_ready;
+#if defined(CONFIG_DBMAP_EAR_AE_DIAG) && CONFIG_DBMAP_EAR_AE_DIAG
+static uint32_t s_bridge_uart_diag_last_sig;
+#endif
+#endif
 #define EAR_OBS_PRODUCER_RMS 1u
 
 typedef struct {
@@ -866,7 +877,16 @@ static void l2_finalize_interval(
 
 static void l0_on_new_window(const sp_mic_levels_t *levels, bool levels_ok)
 {
+#if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
+    /* AE is the sole PCM taker when enabled; keeps L0/L1/L2 windows updated. */
+    if (ae_device_active()) {
+        (void)ae_device_poll();
+    } else {
+        (void)dbmap_ear_mic_l0_poll();
+    }
+#else
     (void)dbmap_ear_mic_l0_poll();
+#endif
 
     if (!levels_ok || levels == NULL || !levels->valid) {
         return;
@@ -952,6 +972,11 @@ static void rms_release_only(void)
         sp_episode_registry_release(&s_registry, s_rms_handle);
         s_rms_bound = false;
     }
+#if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
+    if (s_ce_bridge_ready) {
+        ce_bridge_notify_obs_closed(&s_ce_bridge);
+    }
+#endif
 #if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
     /* Episode / registry release: break dominant-frequency continuity (D2). */
     l2_continuity_break();
@@ -1017,6 +1042,11 @@ static void handle_emission(const dbmap_activity_emission_t *emission)
             s_rms_bound = false;
             return;
         }
+#if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
+        if (s_ce_bridge_ready) {
+            ce_bridge_notify_obs_open(&s_ce_bridge, slot->observation_id, s_rms_handle);
+        }
+#endif
 
         dbmap_l0_interval_t local_iv;
 #if CONFIG_DBMAP_EAR_OBS_L0
@@ -1524,34 +1554,12 @@ static void activity_serial_diag(const sp_mic_levels_t *levels, bool levels_ok)
 #endif
 #endif
         {
-            const int cpu_hz = esp_clk_cpu_freq();
-            const unsigned long cpu_mhz =
-                cpu_hz > 0 ? (unsigned long)(cpu_hz / 1000000) : 0ul;
-#if defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
-            const char *pm = "enabled";
-#else
-            const char *pm = "disabled";
-#endif
-            /* Lifetime minimum free stack since task create (bytes on ESP-IDF Xtensa). */
-            const unsigned long hwm_bytes =
-                (unsigned long)uxTaskGetStackHighWaterMark(NULL);
+            /* Generic CPU/heap/SPIRAM/stack → shared SP (tag `sp`). */
+            sp_diag_log_resources("ear_obs");
+            /* Phase checkpoints remain Ear-owned (task-phase attribution). */
             ESP_LOGI(
                 TAG,
-                "cpu freq_mhz=%lu configured_mhz=%d pm=%s free_heap=%lu "
-                "min_free_heap=%lu free_spiram=%lu ear_obs stack_hwm_bytes=%lu",
-                cpu_mhz,
-                CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
-                pm,
-                (unsigned long)esp_get_free_heap_size(),
-                (unsigned long)esp_get_minimum_free_heap_size(),
-                (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-                hwm_bytes
-            );
-            /* Phase checkpoints: each value is uxTaskGetStackHighWaterMark at that
-             * moment (lifetime min free so far), not instantaneous stack usage. */
-            ESP_LOGI(
-                TAG,
-                "ear_obs stack_hwm_phase_bytes pre_analyze=%lu seen=%d "
+                "stack_hwm_phase_bytes pre_analyze=%lu seen=%d "
                 "post_analyze=%lu seen=%d post_publish=%lu seen=%d "
                 "post_diag=%lu seen=%d (lifetime-min at checkpoint)",
                 s_stack_hwm_have_pre_analyze
@@ -1764,6 +1772,76 @@ static void activity_task(void *arg)
         if (s_lifecycle_mu != NULL) {
             xSemaphoreGive(s_lifecycle_mu);
         }
+#if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
+        /* Drain CE promotion callbacks and try primary promote outside lifecycle lock. */
+        if (s_ce_bridge_ready) {
+            ce_bridge_poll(&s_ce_bridge, &s_registry);
+        }
+#if defined(CONFIG_DBMAP_EAR_AE_DIAG) && CONFIG_DBMAP_EAR_AE_DIAG
+        /*
+         * Bridge UART at AE diag cadence (same every-N signature publishes),
+         * after poll so association reflects the latest ENTER/EXIT drain.
+         * Adjacent to ae_device "diag …" lines; does not raise AE frequency.
+         */
+        if (s_ce_bridge_ready && ae_device_active()) {
+            const uint32_t every = (uint32_t)CONFIG_DBMAP_EAR_AE_DIAG_EVERY_N;
+            ae_device_diag_t ad;
+            ae_device_get_diag(&ad);
+            if (every != 0u && ad.sig_published != 0u
+                && (ad.sig_published % every) == 0u
+                && ad.sig_published != s_bridge_uart_diag_last_sig) {
+                s_bridge_uart_diag_last_sig = ad.sig_published;
+                ce_bridge_diag_snapshot_t snap;
+                ce_bridge_get_diag_snapshot(&s_ce_bridge, &snap);
+                if (snap.bound) {
+                    ESP_LOGI(
+                        TAG,
+                        "ce_bridge diag sig=%lu assoc=1 cand=%llu obs=%s "
+                        "assoc_ok=%lu reject_ow=%lu q_ovf=%lu enter_q=%lu exit_q=%lu "
+                        "idem=%lu dis_exit=%lu dis_obs=%lu promo_calls=%lu "
+                        "promo_skip=%lu fail_no_obs=%lu fail_stale=%lu",
+                        (unsigned long)ad.sig_published,
+                        (unsigned long long)snap.candidate_id,
+                        snap.observation_id[0] != '\0' ? snap.observation_id : "-",
+                        (unsigned long)snap.diag.assoc_success,
+                        (unsigned long)snap.diag.assoc_reject_overwrite,
+                        (unsigned long)snap.diag.queue_overflows,
+                        (unsigned long)snap.diag.enter_queued,
+                        (unsigned long)snap.diag.exit_queued,
+                        (unsigned long)snap.diag.enter_idempotent,
+                        (unsigned long)snap.diag.disassoc_on_exit,
+                        (unsigned long)snap.diag.disassoc_on_obs_end,
+                        (unsigned long)snap.diag.promote_calls,
+                        (unsigned long)snap.diag.promote_skipped,
+                        (unsigned long)snap.diag.assoc_fail_no_obs,
+                        (unsigned long)snap.diag.assoc_fail_stale_handle
+                    );
+                } else {
+                    ESP_LOGI(
+                        TAG,
+                        "ce_bridge diag sig=%lu assoc=0 cand=- obs=- "
+                        "assoc_ok=%lu reject_ow=%lu q_ovf=%lu enter_q=%lu exit_q=%lu "
+                        "idem=%lu dis_exit=%lu dis_obs=%lu promo_calls=%lu "
+                        "promo_skip=%lu fail_no_obs=%lu fail_stale=%lu",
+                        (unsigned long)ad.sig_published,
+                        (unsigned long)snap.diag.assoc_success,
+                        (unsigned long)snap.diag.assoc_reject_overwrite,
+                        (unsigned long)snap.diag.queue_overflows,
+                        (unsigned long)snap.diag.enter_queued,
+                        (unsigned long)snap.diag.exit_queued,
+                        (unsigned long)snap.diag.enter_idempotent,
+                        (unsigned long)snap.diag.disassoc_on_exit,
+                        (unsigned long)snap.diag.disassoc_on_obs_end,
+                        (unsigned long)snap.diag.promote_calls,
+                        (unsigned long)snap.diag.promote_skipped,
+                        (unsigned long)snap.diag.assoc_fail_no_obs,
+                        (unsigned long)snap.diag.assoc_fail_stale_handle
+                    );
+                }
+            }
+        }
+#endif /* AE_DIAG */
+#endif /* AUDIO_ENGINE */
 #if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
         activity_serial_diag(&levels, levels_ok);
         {
@@ -2064,6 +2142,40 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg)
 
     s_cfg = cfg;
     sp_health_add_enricher(observation_enrich);
+
+#if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
+    err = ae_device_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Audio Engine device start failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    {
+        /* Ear owns CE lifecycle: start CE → register AE listener → Bridge. */
+        ce_config_t ccfg;
+        ce_config_set_defaults(&ccfg);
+        s_ce_bridge_ready = false;
+        if (!ce_start(&s_ce, &ccfg)) {
+            ESP_LOGE(TAG, "Candidate Engine start failed");
+            ae_device_stop();
+            return ESP_FAIL;
+        }
+        ae_engine_t *ae = ae_device_engine();
+        if (ae == NULL || !ae_add_signature_listener(ae, ce_on_signature, &s_ce)) {
+            ESP_LOGE(TAG, "CE signature listener registration failed");
+            memset(&s_ce, 0, sizeof(s_ce));
+            ae_device_stop();
+            return ESP_FAIL;
+        }
+        ESP_LOGI(TAG, "CE started; registered as AE signature listener (M4)");
+#if CONFIG_DBMAP_EAR_OBS_RMS_ACTIVITY
+        ce_bridge_init(&s_ce_bridge);
+        ce_bridge_bind_engine(&s_ce_bridge, &s_ce);
+        ce_set_promotion_cb(&s_ce, ce_bridge_on_promotion, &s_ce_bridge);
+        s_ce_bridge_ready = true;
+        ESP_LOGI(TAG, "CE promotion bridge ready (association-only M3)");
+#endif
+    }
+#endif
 
 #if CONFIG_DBMAP_EAR_OBS_RMS_ACTIVITY
     dbmap_activity_config_t act_cfg = {

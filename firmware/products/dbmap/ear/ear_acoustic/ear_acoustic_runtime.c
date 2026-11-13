@@ -108,20 +108,16 @@ esp_err_t dbmap_ear_acoustic_register(void)
 #endif
 }
 
-esp_err_t dbmap_ear_mic_l0_poll(void)
+esp_err_t dbmap_ear_acoustic_analyze_pcm_job(const sp_mic_pcm_job_t *job)
 {
 #if !CONFIG_DBMAP_EAR_MIC_L0
+    (void)job;
     return ESP_ERR_NOT_SUPPORTED;
 #else
+    if (job == NULL || job->samples == NULL || job->sample_count == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
     if (!sp_mic_pcm_ready() || !s_l0_bank_ready) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    sp_mic_pcm_job_t job;
-    if (!sp_mic_take_pcm_job(&job)) {
-        return ESP_OK;
-    }
-    if (job.samples == NULL || job.sample_count == 0) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -129,11 +125,11 @@ esp_err_t dbmap_ear_mic_l0_poll(void)
     const int64_t t0 = esp_timer_get_time();
     dbmap_l0_analyze_window(
         &s_l0_bank,
-        job.samples,
-        job.sample_count,
-        job.full_scale_bits,
-        job.window_ms,
-        job.window_end_mono_us,
+        job->samples,
+        job->sample_count,
+        job->full_scale_bits,
+        job->window_ms,
+        job->window_end_mono_us,
         &win
     );
     const int64_t elapsed = esp_timer_get_time() - t0;
@@ -157,12 +153,12 @@ esp_err_t dbmap_ear_mic_l0_poll(void)
         const int64_t l2_t0 = esp_timer_get_time();
         dbmap_l2_analyze_window(
             &s_l1_ws,
-            job.samples,
-            job.sample_count,
-            job.full_scale_bits,
+            job->samples,
+            job->sample_count,
+            job->full_scale_bits,
             (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ,
-            job.window_ms,
-            job.window_end_mono_us,
+            job->window_ms,
+            job->window_end_mono_us,
             &l1_win,
             &l2_win
         );
@@ -183,12 +179,12 @@ esp_err_t dbmap_ear_mic_l0_poll(void)
         const int64_t l1_t0 = esp_timer_get_time();
         dbmap_l1_analyze_window(
             &s_l1_ws,
-            job.samples,
-            job.sample_count,
-            job.full_scale_bits,
+            job->samples,
+            job->sample_count,
+            job->full_scale_bits,
             (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ,
-            job.window_ms,
-            job.window_end_mono_us,
+            job->window_ms,
+            job->window_end_mono_us,
             &l1_win
         );
         const int64_t l1_elapsed = esp_timer_get_time() - l1_t0;
@@ -241,6 +237,23 @@ esp_err_t dbmap_ear_mic_l0_poll(void)
 #endif
     portEXIT_CRITICAL(&s_lock);
     return ESP_OK;
+#endif
+}
+
+esp_err_t dbmap_ear_mic_l0_poll(void)
+{
+#if !CONFIG_DBMAP_EAR_MIC_L0
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    if (!sp_mic_pcm_ready() || !s_l0_bank_ready) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    sp_mic_pcm_job_t job;
+    if (!sp_mic_take_pcm_job(&job)) {
+        return ESP_OK;
+    }
+    return dbmap_ear_acoustic_analyze_pcm_job(&job);
 #endif
 }
 

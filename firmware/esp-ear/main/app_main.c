@@ -15,6 +15,7 @@
 #include "sp_serial_config.h"
 #include "sp_time.h"
 #include "sp_types.h"
+#include "sp_version.h"
 #include "sp_wifi.h"
 #include "ear_boot_order.h"
 #include "esp_log.h"
@@ -100,6 +101,7 @@ void app_main(void)
 {
     ESP_ERROR_CHECK(sp_nvs_init());
     sp_diag_init();
+    sp_version_log_boot();
     sp_effective_defaults(&s_cfg);
     ESP_ERROR_CHECK(sp_nvs_load(&s_cfg));
 

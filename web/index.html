@@ -5185,6 +5185,27 @@
         throw new Error(`Timed out ${description}.`);
       }
 
+      /**
+       * Sensor Platform USB provisioning wire tokens (machine-readable).
+       * Prefer SP_*; accept legacy DBMAP_* so older flashed images still provision.
+       */
+      const USB_PROVISION_READY_RE = /(?:^|\r?\n)(?:SP_PROVISION_READY|DBMAP_PROVISION_READY)(?=\r?\n|$)/;
+      const USB_PROVISION_RESULT_RE = /(?:SP_PROVISION_RESULT|DBMAP_PROVISION_RESULT):(\{[^\r\n]*\})/;
+
+      function matchUsbProvisionReady(text) {
+        return USB_PROVISION_READY_RE.test(String(text || ''));
+      }
+
+      function parseUsbProvisionResultLine(text) {
+        const match = String(text || '').match(USB_PROVISION_RESULT_RE);
+        if (!match) return null;
+        try {
+          return JSON.parse(match[1]);
+        } catch (_error) {
+          return null;
+        }
+      }
+
       async function provisionDeviceOverUsb(options = {}) {
         const nodeId = options.nodeId || document.getElementById('flash-device').value;
         const status = options.statusElement || document.getElementById('usb-provision-status');
@@ -5224,7 +5245,7 @@
           reader = port.readable.getReader();
           writer = port.writable.getWriter();
           status.textContent = 'Waiting for compatible firmware to enter the provisioning state…';
-          await waitForSerialLine(reader, /DBMAP_PROVISION_READY/, 30000, 'waiting for the device provisioning prompt');
+          await waitForSerialLine(reader, USB_PROVISION_READY_RE, 30000, 'waiting for the device provisioning prompt');
           const requestId = crypto.randomUUID();
           const request = {
             protocol: 1,
@@ -5236,18 +5257,18 @@
           status.textContent = 'Configuration sent. Waiting for the firmware to confirm its NVS write…';
           const responseMatch = await waitForSerialLine(
             reader,
-            /DBMAP_PROVISION_RESULT:(\{[^\r\n]*\})/,
+            USB_PROVISION_RESULT_RE,
             15000,
             'waiting for the device NVS result',
           );
-          const result = JSON.parse(responseMatch[1]);
-          if (result.request_id !== requestId || result.status !== 'accepted') {
-            throw new Error(result.error || 'The device did not accept this configuration.');
+          const result = parseUsbProvisionResultLine(responseMatch[0]);
+          if (!result || result.request_id !== requestId || result.status !== 'accepted') {
+            throw new Error((result && result.error) || 'The device did not accept this configuration.');
           }
           configurationAccepted = true;
           // Do not pulse DTR/RTS here: that can leave the chip in
           // DOWNLOAD_BOOT / "waiting for download". Firmware restarts itself
-          // after printing DBMAP_PROVISION_RESULT accepted.
+          // after printing SP_PROVISION_RESULT accepted.
           const successText = payload.configuration.bootstrap_token
             ? 'Success. NVS configuration accepted. The device is restarting on its own; Hub connectivity is pending until it calls home.'
             : 'Success. Wi-Fi and call-home settings saved to NVS. The device is restarting on its own; confirm connectivity in the Devices tab when it returns.';
@@ -5275,7 +5296,7 @@
           refreshDevices().catch(() => {});
         } catch (error) {
           status.textContent = error.message.includes('waiting for the device provisioning prompt')
-            ? 'The device did not advertise the dBmap USB provisioning prompt. The installed image likely predates this protocol; a new generic firmware release with USB provisioning support is required. No configuration was sent.'
+            ? 'The device did not advertise the Sensor Platform USB provisioning prompt (SP_PROVISION_READY). The installed image likely predates this protocol; a new firmware release with USB provisioning support is required. No configuration was sent.'
             : `USB provisioning did not complete: ${error.message}`;
           status.className = 'notice error';
         } finally {
