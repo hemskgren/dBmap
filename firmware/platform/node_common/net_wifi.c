@@ -7,6 +7,8 @@
 #include "sp_backoff.h"
 #include "sp_diag.h"
 #include "sp_lifecycle.h"
+#include "sp_mdns.h"
+#include "sp_mdns_policy.h"
 #include "sp_wifi_reconnect_sm.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -17,8 +19,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/portmacro.h"
-#include "mdns.h"
-
 static const char *TAG = "sp_wifi";
 static EventGroupHandle_t s_wifi;
 #define GOT_IP BIT0
@@ -529,13 +529,17 @@ esp_err_t sp_wifi_start(const sp_network_t *net)
         ESP_LOGW(TAG, "could not disable Wi-Fi power save: %s", esp_err_to_name(ps_err));
     }
 
-    esp_err_t mdns_err = mdns_init();
-    if (mdns_err == ESP_OK) {
-        ESP_LOGI(TAG, "mDNS client ready for *.local lookup");
-    } else if (mdns_err == ESP_ERR_INVALID_STATE) {
-        ESP_LOGI(TAG, "mDNS client already running");
+    if (sp_network_needs_mdns(net)) {
+        esp_err_t mdns_err = sp_mdns_ensure();
+        if (mdns_err == ESP_OK) {
+            ESP_LOGI(TAG, "mDNS client ready for *.local lookup");
+        }
     } else {
-        ESP_LOGW(TAG, "mDNS init failed: %s; *.local names may not resolve", esp_err_to_name(mdns_err));
+        ESP_LOGI(
+            TAG,
+            "mDNS skipped (mqtt_profile=%s; no .local MQTT/Hub host)",
+            net->mqtt_profile[0] ? net->mqtt_profile : "(empty)"
+        );
     }
     return ESP_OK;
 }

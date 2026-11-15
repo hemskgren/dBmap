@@ -10,12 +10,15 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "mdns.h"
+#include "sp_mdns.h"
+#include "sp_mdns_policy.h"
 
 static const char *TAG = "sp_resolve";
 
 static bool is_local_hostname(const char *hostname, size_t len)
 {
-    return len > 6 && strcasecmp(hostname + len - 6, ".local") == 0;
+    (void)len;
+    return sp_hostname_ends_with_local(hostname);
 }
 
 static esp_err_t format_ipv4(const esp_ip4_addr_t *addr, char *ip_out, size_t ip_out_len)
@@ -41,6 +44,9 @@ static esp_err_t resolve_mdns_ipv4(const char *hostname, char *ip_out, size_t ip
     if (short_name[0] == '\0') {
         return ESP_ERR_INVALID_ARG;
     }
+
+    /* Lazy start if Wi-Fi bring-up skipped mDNS (external + non-.local). */
+    (void)sp_mdns_ensure();
 
     esp_ip4_addr_t addr = {0};
     esp_err_t err = ESP_ERR_NOT_FOUND;
