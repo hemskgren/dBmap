@@ -5,6 +5,7 @@ idf_component_register(
     REQUIRES
         audio_engine
         ear_acoustic
+        audio
         mic
         log
 )

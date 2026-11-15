@@ -66,13 +66,15 @@ menu "dBmap Ear microphone"
         default -1
 
     config DBMAP_EAR_MIC_L0
-        bool "Compute L0 features per analysis window"
+        bool "Enable EAR L0 analysis path (selects Platform PCM + L0 DSP)"
         default y
+        select SP_MIC_PCM_RETAIN
+        select SP_AUDIO_L0
         help
-            Retain each completed 1 s analysis window as double-buffered SPIRAM
-            PCM for product acoustic analysis (ear_acoustic L0/L1/L2). I2S
-            capture is not blocked by analysis. Not used by the RMS activity
-            detector. Disable to reclaim SPIRAM (~2 × window PCM) when unused.
+            EAR product enable for L0 analysis. Selects Platform SPIRAM PCM
+            retention (SP_MIC_PCM_RETAIN) and Platform L0 DSP (SP_AUDIO_L0).
+            I2S capture is not blocked by analysis. Not used by the RMS
+            activity detector. Disable to reclaim SPIRAM when unused.
 
     config DBMAP_EAR_MIC_BACKGROUND
         bool "Rolling background RMS on Reported State (per live mic)"

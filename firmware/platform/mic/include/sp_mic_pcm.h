@@ -67,7 +67,7 @@ uint32_t sp_mic_pcm_free_spiram_after_init(void);
 
 /**
  * Install a one-shot-style ready hook. Called once after successful SPIRAM PCM
- * alloc during sp_mic_start (when CONFIG_DBMAP_EAR_MIC_L0). Set before
+ * alloc during sp_mic_start (when CONFIG_SP_MIC_PCM_RETAIN). Set before
  * mic start so product analysis can init workspaces at the same point.
  */
 void sp_mic_set_pcm_ready_hook(sp_mic_pcm_ready_hook_t hook);

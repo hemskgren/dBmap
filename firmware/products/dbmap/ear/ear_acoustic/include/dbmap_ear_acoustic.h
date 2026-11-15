@@ -4,7 +4,8 @@
  * dBmap Ear product acoustic runtime (L0 / L1 / L2) on platform analysis PCM.
  *
  * Historical poll/get APIs keep dbmap_ear_mic_l0/l1/l2_* names for call-site
- * compatibility; Platform capture APIs are sp_mic_*.
+ * compatibility. DSP algorithms are Platform-owned (sp_acoustic_l*); capture
+ * APIs are sp_mic_*. Compatibility aliases: dbmap_acoustic_l*.h.
  */
 
 #include <stdbool.h>
