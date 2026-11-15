@@ -41,6 +41,12 @@ typedef struct {
      * issued. Survives PROMOTED → COASTING so expiry still notifies the bridge.
      */
     bool promotion_entered;
+    /**
+     * Times a sequence discontinuity or GAP-quality signature was applied to
+     * this slot. Not a fabricated timestamp; the signature's own
+     * window_end_mono_us remains the evidence clock.
+     */
+    uint16_t gap_events;
 } ae_candidate_t;
 
 typedef enum {

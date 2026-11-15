@@ -15,7 +15,12 @@
  *     firmware/products/dbmap/ear/ear_acoustic/acoustic_l0.c \
  *     firmware/products/dbmap/ear/audio_engine/ae_signature.c \
  *     firmware/products/dbmap/ear/audio_engine/ae_history.c \
+ *     firmware/products/dbmap/ear/audio_engine/ae_time.c \
  *     firmware/products/dbmap/ear/audio_engine/ae_engine.c \
+ *     firmware/products/dbmap/ear/candidate_engine/ce_decision.c \
+ *     firmware/products/dbmap/ear/candidate_engine/ce_module.c \
+ *     firmware/products/dbmap/ear/candidate_engine/ce_workflow.c \
+ *     firmware/products/dbmap/ear/candidate_engine/ce_manager.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_engine.c \
  *     firmware/platform/observation/episode_registry.c \
  *     firmware/products/dbmap/ear/ear_observation/ce_promotion_bridge.c \
