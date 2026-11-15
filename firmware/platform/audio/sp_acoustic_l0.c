@@ -2,7 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 
-#include "dbmap_acoustic_l0.h"
+#include "sp_acoustic_l0.h"
 
 #include <limits.h>
 #include <math.h>
@@ -18,7 +18,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-static dbmap_l0_analyze_stages_t s_last_stages;
+static sp_acoustic_l0_analyze_stages_t s_last_stages;
 
 static int64_t l0_now_us(void)
 {
@@ -39,7 +39,7 @@ static uint32_t l0_elapsed_us(int64_t t0)
     return dt > 0 ? (uint32_t)dt : 0u;
 }
 
-void dbmap_l0_get_last_analyze_stages(dbmap_l0_analyze_stages_t *out)
+void sp_acoustic_l0_get_last_analyze_stages(sp_acoustic_l0_analyze_stages_t *out)
 {
     if (out == NULL) {
         return;
@@ -61,11 +61,11 @@ static float full_scale_magnitude_f(int full_scale_bits)
 static float power_to_dbfs_f(float power_rel)
 {
     if (!(power_rel > 0.0f)) {
-        return DBMAP_L0_SILENCE_DBFS;
+        return SP_ACOUSTIC_L0_SILENCE_DBFS;
     }
     float dbfs = 10.0f * log10f(power_rel);
-    if (dbfs < DBMAP_L0_SILENCE_DBFS) {
-        return DBMAP_L0_SILENCE_DBFS;
+    if (dbfs < SP_ACOUSTIC_L0_SILENCE_DBFS) {
+        return SP_ACOUSTIC_L0_SILENCE_DBFS;
     }
     if (dbfs > 0.0f) {
         return 0.0f;
@@ -77,11 +77,11 @@ static float power_to_dbfs_f(float power_rel)
 static float power_to_dbfs(double power_rel)
 {
     if (!(power_rel > 0.0)) {
-        return DBMAP_L0_SILENCE_DBFS;
+        return SP_ACOUSTIC_L0_SILENCE_DBFS;
     }
     double dbfs = 10.0 * log10(power_rel);
-    if (dbfs < DBMAP_L0_SILENCE_DBFS) {
-        return DBMAP_L0_SILENCE_DBFS;
+    if (dbfs < SP_ACOUSTIC_L0_SILENCE_DBFS) {
+        return SP_ACOUSTIC_L0_SILENCE_DBFS;
     }
     if (dbfs > 0.0) {
         return 0.0f;
@@ -92,15 +92,15 @@ static float power_to_dbfs(double power_rel)
 static float amp_to_dbfs_f(float magnitude, float full_scale)
 {
     if (!(magnitude > 0.0f) || !(full_scale > 0.0f)) {
-        return DBMAP_L0_SILENCE_DBFS;
+        return SP_ACOUSTIC_L0_SILENCE_DBFS;
     }
     float ratio = magnitude / full_scale;
     if (!(ratio > 0.0f)) {
-        return DBMAP_L0_SILENCE_DBFS;
+        return SP_ACOUSTIC_L0_SILENCE_DBFS;
     }
     float dbfs = 20.0f * log10f(ratio);
-    if (dbfs < DBMAP_L0_SILENCE_DBFS) {
-        return DBMAP_L0_SILENCE_DBFS;
+    if (dbfs < SP_ACOUSTIC_L0_SILENCE_DBFS) {
+        return SP_ACOUSTIC_L0_SILENCE_DBFS;
     }
     if (dbfs > 0.0f) {
         return 0.0f;
@@ -108,31 +108,31 @@ static float amp_to_dbfs_f(float magnitude, float full_scale)
     return dbfs;
 }
 
-float dbmap_l0_band_low_hz(dbmap_l0_band_id_t band)
+float sp_acoustic_l0_band_low_hz(sp_acoustic_l0_band_id_t band)
 {
-    static const float lo[DBMAP_L0_BAND_COUNT] = {20.0f, 250.0f, 1000.0f, 4000.0f};
-    if ((int)band < 0 || (int)band >= DBMAP_L0_BAND_COUNT) {
+    static const float lo[SP_ACOUSTIC_L0_BAND_COUNT] = {20.0f, 250.0f, 1000.0f, 4000.0f};
+    if ((int)band < 0 || (int)band >= SP_ACOUSTIC_L0_BAND_COUNT) {
         return 0.0f;
     }
     return lo[band];
 }
 
-float dbmap_l0_band_high_hz(dbmap_l0_band_id_t band)
+float sp_acoustic_l0_band_high_hz(sp_acoustic_l0_band_id_t band)
 {
-    static const float hi[DBMAP_L0_BAND_COUNT] = {250.0f, 1000.0f, 4000.0f, 8000.0f};
-    if ((int)band < 0 || (int)band >= DBMAP_L0_BAND_COUNT) {
+    static const float hi[SP_ACOUSTIC_L0_BAND_COUNT] = {250.0f, 1000.0f, 4000.0f, 8000.0f};
+    if ((int)band < 0 || (int)band >= SP_ACOUSTIC_L0_BAND_COUNT) {
         return 0.0f;
     }
     return hi[band];
 }
 
-static void biquad_clear_state(dbmap_l0_biquad_t *bq)
+static void biquad_clear_state(sp_acoustic_l0_biquad_t *bq)
 {
     bq->z1 = 0.0f;
     bq->z2 = 0.0f;
 }
 
-static float biquad_process(dbmap_l0_biquad_t *bq, float x)
+static float biquad_process(sp_acoustic_l0_biquad_t *bq, float x)
 {
     /* Transposed direct form II */
     float y = bq->b0 * x + bq->z1;
@@ -142,7 +142,7 @@ static float biquad_process(dbmap_l0_biquad_t *bq, float x)
 }
 
 /* RBJ / Audio EQ Cookbook — Butterworth-ish 2nd-order LPF (Q = 1/sqrt(2)). */
-static void design_lowpass(dbmap_l0_biquad_t *bq, float fs, float f_c)
+static void design_lowpass(sp_acoustic_l0_biquad_t *bq, float fs, float f_c)
 {
     if (f_c < 1.0f) {
         f_c = 1.0f;
@@ -163,7 +163,7 @@ static void design_lowpass(dbmap_l0_biquad_t *bq, float fs, float f_c)
     biquad_clear_state(bq);
 }
 
-static void design_highpass(dbmap_l0_biquad_t *bq, float fs, float f_c)
+static void design_highpass(sp_acoustic_l0_biquad_t *bq, float fs, float f_c)
 {
     if (f_c < 1.0f) {
         f_c = 1.0f;
@@ -184,7 +184,7 @@ static void design_highpass(dbmap_l0_biquad_t *bq, float fs, float f_c)
     biquad_clear_state(bq);
 }
 
-void dbmap_l0_filter_bank_init(dbmap_l0_filter_bank_t *bank, uint32_t sample_rate_hz)
+void sp_acoustic_l0_filter_bank_init(sp_acoustic_l0_filter_bank_t *bank, uint32_t sample_rate_hz)
 {
     if (bank == NULL) {
         return;
@@ -195,24 +195,24 @@ void dbmap_l0_filter_bank_init(dbmap_l0_filter_bank_t *bank, uint32_t sample_rat
     }
     bank->sample_rate_hz = sample_rate_hz;
     const float fs = (float)sample_rate_hz;
-    for (int i = 0; i < DBMAP_L0_BAND_COUNT; ++i) {
-        design_highpass(&bank->bands[i].hp, fs, dbmap_l0_band_low_hz((dbmap_l0_band_id_t)i));
-        design_lowpass(&bank->bands[i].lp, fs, dbmap_l0_band_high_hz((dbmap_l0_band_id_t)i));
+    for (int i = 0; i < SP_ACOUSTIC_L0_BAND_COUNT; ++i) {
+        design_highpass(&bank->bands[i].hp, fs, sp_acoustic_l0_band_low_hz((sp_acoustic_l0_band_id_t)i));
+        design_lowpass(&bank->bands[i].lp, fs, sp_acoustic_l0_band_high_hz((sp_acoustic_l0_band_id_t)i));
     }
 }
 
-void dbmap_l0_filter_bank_reset(dbmap_l0_filter_bank_t *bank)
+void sp_acoustic_l0_filter_bank_reset(sp_acoustic_l0_filter_bank_t *bank)
 {
     if (bank == NULL) {
         return;
     }
-    for (int i = 0; i < DBMAP_L0_BAND_COUNT; ++i) {
+    for (int i = 0; i < SP_ACOUSTIC_L0_BAND_COUNT; ++i) {
         biquad_clear_state(&bank->bands[i].hp);
         biquad_clear_state(&bank->bands[i].lp);
     }
 }
 
-bool dbmap_l0_window_in_interval(
+bool sp_acoustic_l0_window_in_interval(
     int64_t window_end_mono_us,
     int64_t interval_start_mono_us,
     int64_t interval_end_mono_us
@@ -229,17 +229,17 @@ bool dbmap_l0_window_in_interval(
         && window_end_mono_us <= interval_end_mono_us;
 }
 
-void dbmap_l0_analyze_window(
-    dbmap_l0_filter_bank_t *bank,
+void sp_acoustic_l0_analyze_window(
+    sp_acoustic_l0_filter_bank_t *bank,
     const int32_t *samples,
     size_t count,
     int full_scale_bits,
     uint32_t window_ms,
     int64_t window_end_mono_us,
-    dbmap_l0_window_t *out
+    sp_acoustic_l0_window_t *out
 )
 {
-    dbmap_l0_analyze_stages_t stages;
+    sp_acoustic_l0_analyze_stages_t stages;
     memset(&stages, 0, sizeof(stages));
 
     if (out == NULL) {
@@ -249,11 +249,11 @@ void dbmap_l0_analyze_window(
     memset(out, 0, sizeof(*out));
     out->window_end_mono_us = window_end_mono_us;
     out->window_ms = window_ms;
-    out->rms_dbfs = DBMAP_L0_SILENCE_DBFS;
-    out->peak_dbfs = DBMAP_L0_SILENCE_DBFS;
+    out->rms_dbfs = SP_ACOUSTIC_L0_SILENCE_DBFS;
+    out->peak_dbfs = SP_ACOUSTIC_L0_SILENCE_DBFS;
     out->crest_db = 0.0f;
-    for (int i = 0; i < DBMAP_L0_BAND_COUNT; ++i) {
-        out->band_dbfs[i] = DBMAP_L0_SILENCE_DBFS;
+    for (int i = 0; i < SP_ACOUSTIC_L0_BAND_COUNT; ++i) {
+        out->band_dbfs[i] = SP_ACOUSTIC_L0_SILENCE_DBFS;
     }
 
     if (bank == NULL || samples == NULL || count == 0) {
@@ -264,7 +264,7 @@ void dbmap_l0_analyze_window(
 
     {
         const int64_t t0 = l0_now_us();
-        dbmap_l0_filter_bank_reset(bank);
+        sp_acoustic_l0_filter_bank_reset(bank);
         stages.reset_us = l0_elapsed_us(t0);
     }
 
@@ -274,7 +274,7 @@ void dbmap_l0_analyze_window(
     int32_t peak_abs = 0;
     uint32_t clipped = 0;
     const int32_t clip_level = (int32_t)(fs_mag - 1.0f);
-    float band_sum_sq[DBMAP_L0_BAND_COUNT];
+    float band_sum_sq[SP_ACOUSTIC_L0_BAND_COUNT];
     memset(band_sum_sq, 0, sizeof(band_sum_sq));
 
     {
@@ -295,7 +295,7 @@ void dbmap_l0_analyze_window(
             const float xn = (float)s * inv_fs;
             sum_sq += xn * xn;
             const float xf = xn;
-            for (int b = 0; b < DBMAP_L0_BAND_COUNT; ++b) {
+            for (int b = 0; b < SP_ACOUSTIC_L0_BAND_COUNT; ++b) {
                 float y = biquad_process(&bank->bands[b].hp, xf);
                 y = biquad_process(&bank->bands[b].lp, y);
                 band_sum_sq[b] += y * y;
@@ -312,25 +312,25 @@ void dbmap_l0_analyze_window(
         out->rms_dbfs = amp_to_dbfs_f(sqrtf(sum_sq / (float)count), 1.0f);
         out->peak_dbfs = amp_to_dbfs_f((float)peak_abs * inv_fs, 1.0f);
         out->crest_db = out->peak_dbfs - out->rms_dbfs;
-        out->clipped = (clipped > 0) || (out->peak_dbfs >= DBMAP_L0_CLIP_PEAK_DBFS);
+        out->clipped = (clipped > 0) || (out->peak_dbfs >= SP_ACOUSTIC_L0_CLIP_PEAK_DBFS);
 
         float e_low = 0.0f;
         float e_high = 0.0f;
-        for (int b = 0; b < DBMAP_L0_BAND_COUNT; ++b) {
+        for (int b = 0; b < SP_ACOUSTIC_L0_BAND_COUNT; ++b) {
             const float e = band_sum_sq[b] / (float)count; /* mean-square vs FS^2 */
             out->band_energy_linear[b] = (double)e;
             out->band_dbfs[b] = power_to_dbfs_f(e);
-            if (b <= DBMAP_L0_BAND_B1) {
+            if (b <= SP_ACOUSTIC_L0_BAND_B1) {
                 e_low += e;
             } else {
                 e_high += e;
             }
         }
 
-        if (e_low > (float)DBMAP_L0_VALID_ENERGY_FLOOR && e_high > 0.0f) {
+        if (e_low > (float)SP_ACOUSTIC_L0_VALID_ENERGY_FLOOR && e_high > 0.0f) {
             out->hl_valid = true;
             out->hl_db = 10.0f * log10f(e_high / e_low);
-        } else if (e_high > (float)DBMAP_L0_VALID_ENERGY_FLOOR && e_low > 0.0f) {
+        } else if (e_high > (float)SP_ACOUSTIC_L0_VALID_ENERGY_FLOOR && e_low > 0.0f) {
             out->hl_valid = true;
             out->hl_db = 10.0f * log10f(e_high / e_low);
         } else {
@@ -343,8 +343,8 @@ void dbmap_l0_analyze_window(
     s_last_stages = stages;
 }
 
-void dbmap_l0_interval_accum_init(
-    dbmap_l0_interval_accum_t *acc,
+void sp_acoustic_l0_interval_accum_init(
+    sp_acoustic_l0_interval_accum_t *acc,
     uint32_t sample_rate_hz,
     uint32_t analysis_window_ms,
     uint32_t mic_index,
@@ -375,19 +375,19 @@ void dbmap_l0_interval_accum_init(
     acc->hist_crest_db = hist_crest_db;
     acc->hist_crest_ok = hist_crest_ok;
     acc->hist_cap = hist_cap;
-    acc->rms_max_dbfs = DBMAP_L0_SILENCE_DBFS;
+    acc->rms_max_dbfs = SP_ACOUSTIC_L0_SILENCE_DBFS;
     acc->rms_min_dbfs = 0.0f;
 }
 
-void dbmap_l0_interval_accum_add(
-    dbmap_l0_interval_accum_t *acc,
-    const dbmap_l0_window_t *window
+void sp_acoustic_l0_interval_accum_add(
+    sp_acoustic_l0_interval_accum_t *acc,
+    const sp_acoustic_l0_window_t *window
 )
 {
     if (acc == NULL || window == NULL || !window->valid) {
         return;
     }
-    if (!dbmap_l0_window_in_interval(
+    if (!sp_acoustic_l0_window_in_interval(
             window->window_end_mono_us,
             acc->interval_start_mono_us,
             acc->interval_end_mono_us
@@ -408,7 +408,7 @@ void dbmap_l0_interval_accum_add(
     }
 
     acc->sum_rms_dbfs += (double)window->rms_dbfs;
-    for (int b = 0; b < DBMAP_L0_BAND_COUNT; ++b) {
+    for (int b = 0; b < SP_ACOUSTIC_L0_BAND_COUNT; ++b) {
         acc->sum_band_energy[b] += window->band_energy_linear[b];
     }
 
@@ -486,9 +486,9 @@ static bool ols_slope(
     return true;
 }
 
-void dbmap_l0_interval_accum_finalize(
-    const dbmap_l0_interval_accum_t *acc,
-    dbmap_l0_interval_t *out
+void sp_acoustic_l0_interval_accum_finalize(
+    const sp_acoustic_l0_interval_accum_t *acc,
+    sp_acoustic_l0_interval_t *out
 )
 {
     if (out == NULL) {
@@ -519,16 +519,16 @@ void dbmap_l0_interval_accum_finalize(
     out->rms_min_dbfs = acc->rms_min_dbfs;
 
     double e_tot = 0.0;
-    for (int b = 0; b < DBMAP_L0_BAND_COUNT; ++b) {
+    for (int b = 0; b < SP_ACOUSTIC_L0_BAND_COUNT; ++b) {
         const double mean_e = acc->sum_band_energy[b] / (double)acc->window_count;
         out->band_mean_dbfs[b] = power_to_dbfs(mean_e);
         e_tot += acc->sum_band_energy[b];
     }
     out->has_band_means = true;
 
-    if (e_tot > DBMAP_L0_VALID_ENERGY_FLOOR * (double)acc->window_count) {
+    if (e_tot > SP_ACOUSTIC_L0_VALID_ENERGY_FLOOR * (double)acc->window_count) {
         out->has_band_fractions = true;
-        for (int b = 0; b < DBMAP_L0_BAND_COUNT; ++b) {
+        for (int b = 0; b < SP_ACOUSTIC_L0_BAND_COUNT; ++b) {
             out->band_fraction[b] = (float)(acc->sum_band_energy[b] / e_tot);
         }
     }
@@ -536,11 +536,11 @@ void dbmap_l0_interval_accum_finalize(
     /* Interval H/L mean from Σ linear energies (not average of per-window HL_db). */
     {
         const double e_low =
-            acc->sum_band_energy[DBMAP_L0_BAND_B0] + acc->sum_band_energy[DBMAP_L0_BAND_B1];
+            acc->sum_band_energy[SP_ACOUSTIC_L0_BAND_B0] + acc->sum_band_energy[SP_ACOUSTIC_L0_BAND_B1];
         const double e_high =
-            acc->sum_band_energy[DBMAP_L0_BAND_B2] + acc->sum_band_energy[DBMAP_L0_BAND_B3];
+            acc->sum_band_energy[SP_ACOUSTIC_L0_BAND_B2] + acc->sum_band_energy[SP_ACOUSTIC_L0_BAND_B3];
         const double floor_n =
-            DBMAP_L0_VALID_ENERGY_FLOOR * (double)acc->window_count;
+            SP_ACOUSTIC_L0_VALID_ENERGY_FLOOR * (double)acc->window_count;
         if (e_low > floor_n && e_high > 0.0) {
             out->has_hl_mean = true;
             out->hl_mean_db = (float)(10.0 * log10(e_high / e_low));
@@ -610,7 +610,7 @@ void dbmap_l0_interval_accum_finalize(
                 crest_max = c;
                 any = true;
             }
-            if (c >= DBMAP_L0_CREST_THRESHOLD_DB) {
+            if (c >= SP_ACOUSTIC_L0_CREST_THRESHOLD_DB) {
                 high += 1;
             }
         }

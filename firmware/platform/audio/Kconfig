@@ -1,0 +1,34 @@
+menu "Sensor Platform audio analysis"
+
+    config SP_MIC_PCM_RETAIN
+        bool "Retain analysis PCM windows (SPIRAM double-buffer)"
+        default n
+        help
+            Keep completed analysis windows as double-buffered SPIRAM PCM for
+            product DSP consumers. Independent of product Observation policy.
+            Products that need L0/L1/L2 typically select this with SP_AUDIO_L0.
+
+    config SP_AUDIO_L0
+        bool "L0 acoustic measurements (band energy / RMS / crest)"
+        default n
+        help
+            Compile Platform L0 DSP (sp_acoustic_l0). Host-testable combined-scene
+            measurements. Does not include product Observation or AE policy.
+
+    config SP_AUDIO_L1
+        bool "L1 spectral features (FFT centroid / bandwidth / flatness)"
+        default n
+        depends on SP_AUDIO_L0
+        help
+            Compile Platform L1 DSP (sp_acoustic_l1). Requires L0. Uses a static
+            FFT workspace (~22.5 KiB).
+
+    config SP_AUDIO_L2
+        bool "L2 acoustic dynamics (flux / envelope / dominant delta)"
+        default n
+        depends on SP_AUDIO_L1
+        help
+            Compile Platform L2 DSP (sp_acoustic_l2) and enable the fused L1+L2
+            FFT path. Requires L1. Invalid without L1 (Kconfig dependency).
+
+endmenu

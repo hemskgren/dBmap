@@ -11,6 +11,10 @@ from pathlib import Path
 
 DEFAULT_DISPLAY_TIMEZONE = "Europe/Stockholm"
 _SAFE_TZ = re.compile(r"^[A-Za-z0-9_/+-]+$")
+# Chromium often refuses to show tab icons when Cache-Control is no-store.
+_ICON_CACHEABLE = re.compile(
+    r"^/(?:favicon\.ico|favicon-\d+x\d+\.png|site\.webmanifest)$"
+)
 
 
 def _is_client_disconnect(exc: BaseException | None) -> bool:
@@ -67,8 +71,13 @@ class StaticHandler(SimpleHTTPRequestHandler):
         return _logged_client_ip(getattr(self, "headers", None), self.client_address[0])
 
     def end_headers(self) -> None:
-        # UI is rebuilt often during cutovers; never let browsers keep a stale shell.
-        self.send_header("Cache-Control", "no-store")
+        path = self.path.split("?", 1)[0]
+        if _ICON_CACHEABLE.fullmatch(path):
+            # Tab favicons need a cacheable response; HTML/JS stay no-store.
+            self.send_header("Cache-Control", "public, max-age=86400")
+        else:
+            # UI is rebuilt often during cutovers; never let browsers keep a stale shell.
+            self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
     def handle(self) -> None:

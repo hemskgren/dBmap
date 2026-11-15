@@ -242,25 +242,29 @@ menu "dBmap Ear Observation"
         bool "Step 3: L1 Acoustic Signature (FFT features on Observation intervals)"
         default y
         depends on DBMAP_EAR_OBS_RMS_ACTIVITY && DBMAP_EAR_MIC_L0 && DBMAP_EAR_OBS_L0
+        select SP_AUDIO_L1
         help
             Compute interval-scoped L1 spectral signature (centroid, bandwidth,
             dominant frequency, flatness) from the existing SPIRAM PCM buffer
-            using 1024-pt Hann FFTs. Uses the same window association rule and
-            history capacity as L0, but aggregation state is independent.
-            When enabled, acoustic.signature is a schema=l1 object (or a valid
-            empty L1 object). When disabled, acoustic.signature is JSON null.
-            Does not change L0 formulas, detector thresholds, or Observation
-            lifecycle. Analysis runs in the observation task only.
+            using 1024-pt Hann FFTs. Selects Platform SP_AUDIO_L1. Uses the same
+            window association rule and history capacity as L0, but aggregation
+            state is independent. When enabled, acoustic.signature is a
+            schema=l1 object (or a valid empty L1 object). When disabled,
+            acoustic.signature is JSON null. Does not change L0 formulas,
+            detector thresholds, or Observation lifecycle. Analysis runs in the
+            observation task only.
 
     config DBMAP_EAR_OBS_L2
         bool "L2 Acoustic Dynamics computation"
         default n
         depends on DBMAP_EAR_OBS_L1 && DBMAP_EAR_OBS_L0 && DBMAP_EAR_MIC_L0
+        select SP_AUDIO_L2
         help
             Compute spectral_flux, envelope_cv, and dominant_delta_hz using the
-            fused L1 FFT path (no second PCM/FFT pass). Continuity cache and
-            interval aggregates are maintained for diagnostics. Does not publish
-            acoustic.dynamics unless DBMAP_EAR_OBS_L2_PUBLISH is also enabled.
+            fused L1 FFT path (no second PCM/FFT pass). Selects Platform
+            SP_AUDIO_L2. Continuity cache and interval aggregates are maintained
+            for diagnostics. Does not publish acoustic.dynamics unless
+            DBMAP_EAR_OBS_L2_PUBLISH is also enabled.
 
     config DBMAP_EAR_OBS_L2_PUBLISH
         bool "Publish acoustic.dynamics on Observations"

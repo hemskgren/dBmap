@@ -48,6 +48,28 @@ def test_health_returns_a_short_body() -> None:
         ) as response:
             assert response.status == 200
             assert response.read() == b"ok\n"
+            assert response.headers.get("Cache-Control") == "no-store"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_favicon_responses_are_cacheable(tmp_path, monkeypatch) -> None:
+    icon = tmp_path / "favicon-32x32.png"
+    icon.write_bytes(b"\x89PNG\r\n\x1a\n")
+    monkeypatch.chdir(tmp_path)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), serve.StaticHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/favicon-32x32.png", timeout=2
+        ) as response:
+            assert response.status == 200
+            assert response.headers.get("Cache-Control") == "public, max-age=86400"
+            assert response.read() == b"\x89PNG\r\n\x1a\n"
     finally:
         server.shutdown()
         server.server_close()

@@ -11,7 +11,7 @@
  * - derived band fractions: 0.01 abs when total energy > 1e-9
  */
 
-#include "dbmap_acoustic_l0.h"
+#include "sp_acoustic_l0.h"
 
 #include <limits.h>
 #include <math.h>
@@ -46,11 +46,11 @@ static double full_scale_magnitude(int full_scale_bits)
 static float power_to_dbfs_d(double power_rel)
 {
     if (!(power_rel > 0.0)) {
-        return DBMAP_L0_SILENCE_DBFS;
+        return SP_ACOUSTIC_L0_SILENCE_DBFS;
     }
     double dbfs = 10.0 * log10(power_rel);
-    if (dbfs < DBMAP_L0_SILENCE_DBFS) {
-        return DBMAP_L0_SILENCE_DBFS;
+    if (dbfs < SP_ACOUSTIC_L0_SILENCE_DBFS) {
+        return SP_ACOUSTIC_L0_SILENCE_DBFS;
     }
     if (dbfs > 0.0) {
         return 0.0f;
@@ -61,15 +61,15 @@ static float power_to_dbfs_d(double power_rel)
 static float amp_to_dbfs_d(double magnitude, double full_scale)
 {
     if (!(magnitude > 0.0) || !(full_scale > 0.0)) {
-        return DBMAP_L0_SILENCE_DBFS;
+        return SP_ACOUSTIC_L0_SILENCE_DBFS;
     }
     double ratio = magnitude / full_scale;
     if (ratio <= 0.0) {
-        return DBMAP_L0_SILENCE_DBFS;
+        return SP_ACOUSTIC_L0_SILENCE_DBFS;
     }
     double dbfs = 20.0 * log10(ratio);
-    if (dbfs < DBMAP_L0_SILENCE_DBFS) {
-        return DBMAP_L0_SILENCE_DBFS;
+    if (dbfs < SP_ACOUSTIC_L0_SILENCE_DBFS) {
+        return SP_ACOUSTIC_L0_SILENCE_DBFS;
     }
     if (dbfs > 0.0) {
         return 0.0f;
@@ -77,7 +77,7 @@ static float amp_to_dbfs_d(double magnitude, double full_scale)
     return (float)dbfs;
 }
 
-static float biquad_process(dbmap_l0_biquad_t *bq, float x)
+static float biquad_process(sp_acoustic_l0_biquad_t *bq, float x)
 {
     float y = bq->b0 * x + bq->z1;
     bq->z1 = bq->b1 * x - bq->a1 * y + bq->z2;
@@ -87,28 +87,28 @@ static float biquad_process(dbmap_l0_biquad_t *bq, float x)
 
 /** Pre-opt double hot-path reference (same filters/topology). */
 static void analyze_window_ref_double(
-    dbmap_l0_filter_bank_t *bank,
+    sp_acoustic_l0_filter_bank_t *bank,
     const int32_t *samples,
     size_t count,
     int full_scale_bits,
     uint32_t window_ms,
     int64_t window_end_mono_us,
-    dbmap_l0_window_t *out
+    sp_acoustic_l0_window_t *out
 )
 {
     memset(out, 0, sizeof(*out));
     out->window_end_mono_us = window_end_mono_us;
     out->window_ms = window_ms;
-    out->rms_dbfs = DBMAP_L0_SILENCE_DBFS;
-    out->peak_dbfs = DBMAP_L0_SILENCE_DBFS;
-    for (int i = 0; i < DBMAP_L0_BAND_COUNT; ++i) {
-        out->band_dbfs[i] = DBMAP_L0_SILENCE_DBFS;
+    out->rms_dbfs = SP_ACOUSTIC_L0_SILENCE_DBFS;
+    out->peak_dbfs = SP_ACOUSTIC_L0_SILENCE_DBFS;
+    for (int i = 0; i < SP_ACOUSTIC_L0_BAND_COUNT; ++i) {
+        out->band_dbfs[i] = SP_ACOUSTIC_L0_SILENCE_DBFS;
     }
     if (bank == NULL || samples == NULL || count == 0) {
         out->valid = false;
         return;
     }
-    dbmap_l0_filter_bank_reset(bank);
+    sp_acoustic_l0_filter_bank_reset(bank);
 
     const double fs_mag = full_scale_magnitude(full_scale_bits);
     const double inv_fs = 1.0 / fs_mag;
@@ -116,7 +116,7 @@ static void analyze_window_ref_double(
     int32_t peak_abs = 0;
     uint32_t clipped = 0;
     const int32_t clip_level = (int32_t)(fs_mag - 1.0);
-    double band_sum_sq[DBMAP_L0_BAND_COUNT];
+    double band_sum_sq[SP_ACOUSTIC_L0_BAND_COUNT];
     memset(band_sum_sq, 0, sizeof(band_sum_sq));
 
     for (size_t n = 0; n < count; ++n) {
@@ -134,7 +134,7 @@ static void analyze_window_ref_double(
         double xn = (double)s * inv_fs;
         sum_sq += xn * xn;
         float xf = (float)xn;
-        for (int b = 0; b < DBMAP_L0_BAND_COUNT; ++b) {
+        for (int b = 0; b < SP_ACOUSTIC_L0_BAND_COUNT; ++b) {
             float y = biquad_process(&bank->bands[b].hp, xf);
             y = biquad_process(&bank->bands[b].lp, y);
             band_sum_sq[b] += (double)y * (double)y;
@@ -147,25 +147,25 @@ static void analyze_window_ref_double(
     out->rms_dbfs = amp_to_dbfs_d(sqrt(sum_sq / (double)count), 1.0);
     out->peak_dbfs = amp_to_dbfs_d((double)peak_abs * inv_fs, 1.0);
     out->crest_db = out->peak_dbfs - out->rms_dbfs;
-    out->clipped = (clipped > 0) || (out->peak_dbfs >= DBMAP_L0_CLIP_PEAK_DBFS);
+    out->clipped = (clipped > 0) || (out->peak_dbfs >= SP_ACOUSTIC_L0_CLIP_PEAK_DBFS);
 
     double e_low = 0.0;
     double e_high = 0.0;
-    for (int b = 0; b < DBMAP_L0_BAND_COUNT; ++b) {
+    for (int b = 0; b < SP_ACOUSTIC_L0_BAND_COUNT; ++b) {
         double e = band_sum_sq[b] / (double)count;
         out->band_energy_linear[b] = e;
         out->band_dbfs[b] = power_to_dbfs_d(e);
-        if (b <= DBMAP_L0_BAND_B1) {
+        if (b <= SP_ACOUSTIC_L0_BAND_B1) {
             e_low += e;
         } else {
             e_high += e;
         }
     }
 
-    if (e_low > DBMAP_L0_VALID_ENERGY_FLOOR && e_high > 0.0) {
+    if (e_low > SP_ACOUSTIC_L0_VALID_ENERGY_FLOOR && e_high > 0.0) {
         out->hl_valid = true;
         out->hl_db = (float)(10.0 * log10(e_high / e_low));
-    } else if (e_high > DBMAP_L0_VALID_ENERGY_FLOOR && e_low > 0.0) {
+    } else if (e_high > SP_ACOUSTIC_L0_VALID_ENERGY_FLOOR && e_low > 0.0) {
         out->hl_valid = true;
         out->hl_db = (float)(10.0 * log10(e_high / e_low));
     } else {
@@ -206,7 +206,7 @@ static int near_db(float a, float b, float tol_lo, float tol_hi, float level_db)
     return fabsf(a - b) <= tol;
 }
 
-static int compare_windows(const dbmap_l0_window_t *ref, const dbmap_l0_window_t *opt, const char *tag)
+static int compare_windows(const sp_acoustic_l0_window_t *ref, const sp_acoustic_l0_window_t *opt, const char *tag)
 {
     if (ref->valid != opt->valid) {
         fprintf(stderr, "%s: valid ref=%d opt=%d\n", tag, ref->valid, opt->valid);
@@ -245,7 +245,7 @@ static int compare_windows(const dbmap_l0_window_t *ref, const dbmap_l0_window_t
         fprintf(stderr, "%s: crest ref=%.4f opt=%.4f\n", tag, ref->crest_db, opt->crest_db);
         return 1;
     }
-    for (int b = 0; b < DBMAP_L0_BAND_COUNT; ++b) {
+    for (int b = 0; b < SP_ACOUSTIC_L0_BAND_COUNT; ++b) {
         if (!near_db(ref->band_dbfs[b], opt->band_dbfs[b], 0.10f, 0.25f, ref->band_dbfs[b])) {
             fprintf(
                 stderr,
@@ -283,12 +283,12 @@ static int compare_windows(const dbmap_l0_window_t *ref, const dbmap_l0_window_t
 
     double tot_r = 0.0;
     double tot_o = 0.0;
-    for (int b = 0; b < DBMAP_L0_BAND_COUNT; ++b) {
+    for (int b = 0; b < SP_ACOUSTIC_L0_BAND_COUNT; ++b) {
         tot_r += ref->band_energy_linear[b];
         tot_o += opt->band_energy_linear[b];
     }
     if (tot_r > 1e-9 && tot_o > 1e-9) {
-        for (int b = 0; b < DBMAP_L0_BAND_COUNT; ++b) {
+        for (int b = 0; b < SP_ACOUSTIC_L0_BAND_COUNT; ++b) {
             const float fr = (float)(ref->band_energy_linear[b] / tot_r);
             const float fo = (float)(opt->band_energy_linear[b] / tot_o);
             if (fabsf(fr - fo) > 0.01f) {
@@ -302,15 +302,15 @@ static int compare_windows(const dbmap_l0_window_t *ref, const dbmap_l0_window_t
 
 static int run_case(const char *tag, int32_t *pcm)
 {
-    dbmap_l0_filter_bank_t bank_ref;
-    dbmap_l0_filter_bank_t bank_opt;
-    dbmap_l0_filter_bank_init(&bank_ref, SR);
-    dbmap_l0_filter_bank_init(&bank_opt, SR);
+    sp_acoustic_l0_filter_bank_t bank_ref;
+    sp_acoustic_l0_filter_bank_t bank_opt;
+    sp_acoustic_l0_filter_bank_init(&bank_ref, SR);
+    sp_acoustic_l0_filter_bank_init(&bank_opt, SR);
 
-    dbmap_l0_window_t ref;
-    dbmap_l0_window_t opt;
+    sp_acoustic_l0_window_t ref;
+    sp_acoustic_l0_window_t opt;
     analyze_window_ref_double(&bank_ref, pcm, N_SAMP, FS_BITS, WIN_MS, 1000000, &ref);
-    dbmap_l0_analyze_window(&bank_opt, pcm, N_SAMP, FS_BITS, WIN_MS, 1000000, &opt);
+    sp_acoustic_l0_analyze_window(&bank_opt, pcm, N_SAMP, FS_BITS, WIN_MS, 1000000, &opt);
     if (compare_windows(&ref, &opt, tag)) {
         return 1;
     }
@@ -319,19 +319,19 @@ static int run_case(const char *tag, int32_t *pcm)
 
 static int test_stages_sample_loop_dominates(void)
 {
-    dbmap_l0_filter_bank_t bank;
-    dbmap_l0_filter_bank_init(&bank, SR);
+    sp_acoustic_l0_filter_bank_t bank;
+    sp_acoustic_l0_filter_bank_init(&bank, SR);
     int32_t *pcm = calloc(N_SAMP, sizeof(int32_t));
     if (pcm == NULL) {
         FAIL("oom");
     }
     fill_tone(pcm, N_SAMP, 1000.0, 0.2);
-    dbmap_l0_window_t w;
-    dbmap_l0_analyze_window(&bank, pcm, N_SAMP, FS_BITS, WIN_MS, 1, &w);
+    sp_acoustic_l0_window_t w;
+    sp_acoustic_l0_analyze_window(&bank, pcm, N_SAMP, FS_BITS, WIN_MS, 1, &w);
     free(pcm);
 
-    dbmap_l0_analyze_stages_t st;
-    dbmap_l0_get_last_analyze_stages(&st);
+    sp_acoustic_l0_analyze_stages_t st;
+    sp_acoustic_l0_get_last_analyze_stages(&st);
     const uint32_t sum = st.reset_us + st.sample_loop_us + st.post_us;
     if (sum == 0) {
         FAIL("stage timers returned zero (clock unavailable?)");

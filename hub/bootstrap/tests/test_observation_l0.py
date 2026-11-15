@@ -291,6 +291,42 @@ def test_reject_unknown_termination_reason() -> None:
         ObservationBody.model_validate(payload)
 
 
+def test_context_origin_critical_path_accepted() -> None:
+    payload = _extended(kind="start")
+    payload["context"]["origin"] = "critical_path"
+    body = ObservationBody.model_validate(payload)
+    assert body.context.origin == "critical_path"
+
+
+def test_context_origin_omitted_is_none() -> None:
+    payload = _extended(kind="periodic")
+    assert "origin" not in payload["context"]
+    body = ObservationBody.model_validate(payload)
+    assert body.context.origin is None
+
+
+def test_context_origin_null_accepted() -> None:
+    payload = _extended(kind="periodic")
+    payload["context"]["origin"] = None
+    body = ObservationBody.model_validate(payload)
+    assert body.context.origin is None
+
+
+def test_reject_unknown_context_origin() -> None:
+    payload = _extended(kind="start")
+    payload["context"]["origin"] = "ce_path"
+    with pytest.raises(ValidationError):
+        ObservationBody.model_validate(payload)
+
+
+def test_reject_unknown_context_field_with_origin_present() -> None:
+    payload = _extended(kind="start")
+    payload["context"]["origin"] = "critical_path"
+    payload["context"]["extra_hint"] = "nope"
+    with pytest.raises(ValidationError):
+        ObservationBody.model_validate(payload)
+
+
 def test_reject_flat_termination_reason_without_hierarchy() -> None:
     payload = _flat_legacy()
     payload["termination_reason"] = "natural"

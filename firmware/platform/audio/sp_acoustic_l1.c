@@ -2,8 +2,8 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 
-#include "dbmap_acoustic_l1.h"
-#include "dbmap_acoustic_l2.h"
+#include "sp_acoustic_l1.h"
+#include "sp_acoustic_l2.h"
 
 #include <limits.h>
 #include <math.h>
@@ -19,7 +19,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-static dbmap_l2_analyze_stages_t s_l2_last_stages;
+static sp_acoustic_l2_analyze_stages_t s_l2_last_stages;
 
 static int64_t l2_now_us(void)
 {
@@ -40,7 +40,7 @@ static uint32_t l2_elapsed_us(int64_t t0)
     return dt > 0 ? (uint32_t)dt : 0u;
 }
 
-void dbmap_l2_get_last_analyze_stages(dbmap_l2_analyze_stages_t *out)
+void sp_acoustic_l2_get_last_analyze_stages(sp_acoustic_l2_analyze_stages_t *out)
 {
     if (out == NULL) {
         return;
@@ -62,15 +62,15 @@ static float full_scale_magnitude_f(int full_scale_bits)
 static float amp_to_dbfs_f(float magnitude, float full_scale)
 {
     if (!(magnitude > 0.0f) || !(full_scale > 0.0f)) {
-        return DBMAP_L1_SILENCE_DBFS;
+        return SP_ACOUSTIC_L1_SILENCE_DBFS;
     }
     float ratio = magnitude / full_scale;
     if (!(ratio > 0.0f)) {
-        return DBMAP_L1_SILENCE_DBFS;
+        return SP_ACOUSTIC_L1_SILENCE_DBFS;
     }
     float dbfs = 20.0f * log10f(ratio);
-    if (dbfs < DBMAP_L1_SILENCE_DBFS) {
-        return DBMAP_L1_SILENCE_DBFS;
+    if (dbfs < SP_ACOUSTIC_L1_SILENCE_DBFS) {
+        return SP_ACOUSTIC_L1_SILENCE_DBFS;
     }
     if (dbfs > 0.0f) {
         return 0.0f;
@@ -78,18 +78,18 @@ static float amp_to_dbfs_f(float magnitude, float full_scale)
     return dbfs;
 }
 
-void dbmap_l1_workspace_init(dbmap_l1_workspace_t *ws)
+void sp_acoustic_l1_workspace_init(sp_acoustic_l1_workspace_t *ws)
 {
     if (ws == NULL) {
         return;
     }
     memset(ws, 0, sizeof(*ws));
-    for (uint32_t n = 0; n < DBMAP_L1_FFT_SIZE; n++) {
-        ws->hann[n] = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * (float)n / (float)(DBMAP_L1_FFT_SIZE - 1)));
+    for (uint32_t n = 0; n < SP_ACOUSTIC_L1_FFT_SIZE; n++) {
+        ws->hann[n] = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * (float)n / (float)(SP_ACOUSTIC_L1_FFT_SIZE - 1)));
     }
 
     /* Bit-reversal permutation for N=1024. */
-    for (uint32_t i = 0; i < DBMAP_L1_FFT_SIZE; i++) {
+    for (uint32_t i = 0; i < SP_ACOUSTIC_L1_FFT_SIZE; i++) {
         uint32_t x = i;
         uint32_t r = 0;
         for (uint32_t b = 0; b < 10u; b++) {
@@ -100,8 +100,8 @@ void dbmap_l1_workspace_init(dbmap_l1_workspace_t *ws)
     }
 
     /* Twiddles exp(-2π i k / N) for k = 0 .. N/2-1. */
-    for (uint32_t k = 0; k < (DBMAP_L1_FFT_SIZE / 2u); k++) {
-        const float ang = -2.0f * (float)M_PI * (float)k / (float)DBMAP_L1_FFT_SIZE;
+    for (uint32_t k = 0; k < (SP_ACOUSTIC_L1_FFT_SIZE / 2u); k++) {
+        const float ang = -2.0f * (float)M_PI * (float)k / (float)SP_ACOUSTIC_L1_FFT_SIZE;
         ws->tw_re[k] = cosf(ang);
         ws->tw_im[k] = sinf(ang);
     }
@@ -110,11 +110,11 @@ void dbmap_l1_workspace_init(dbmap_l1_workspace_t *ws)
 }
 
 /* In-place radix-2 Cooley–Tukey using precomputed bitrev + twiddles. */
-static void fft_radix2(dbmap_l1_workspace_t *ws)
+static void fft_radix2(sp_acoustic_l1_workspace_t *ws)
 {
     float *re = ws->time_re;
     float *im = ws->time_im;
-    const uint32_t n = DBMAP_L1_FFT_SIZE;
+    const uint32_t n = SP_ACOUSTIC_L1_FFT_SIZE;
 
     for (uint32_t i = 0; i < n; i++) {
         const uint32_t j = ws->bitrev[i];
@@ -165,7 +165,7 @@ static void features_from_power(
     *dominant_hz = 0.0f;
     *flatness = 0.0f;
 
-    const float bin_hz = (float)sample_rate_hz / (float)DBMAP_L1_FFT_SIZE;
+    const float bin_hz = (float)sample_rate_hz / (float)SP_ACOUSTIC_L1_FFT_SIZE;
     float sum_power = 0.0f;
     float sum_mag = 0.0f;
     float sum_f_mag = 0.0f;
@@ -174,9 +174,9 @@ static void features_from_power(
     float peak_power = -1.0f;
     uint32_t peak_k = 0;
 
-    for (uint32_t k = 0; k < DBMAP_L1_FFT_BINS; k++) {
+    for (uint32_t k = 0; k < SP_ACOUSTIC_L1_FFT_BINS; k++) {
         const float f = bin_hz * (float)k;
-        if (f < DBMAP_L1_FREQ_MIN_HZ || f > DBMAP_L1_FREQ_MAX_HZ) {
+        if (f < SP_ACOUSTIC_L1_FREQ_MIN_HZ || f > SP_ACOUSTIC_L1_FREQ_MAX_HZ) {
             continue;
         }
         const float p = power[k];
@@ -197,15 +197,15 @@ static void features_from_power(
         }
     }
 
-    if (!(sum_power > (float)DBMAP_L1_VALID_ENERGY_FLOOR) || !(sum_mag > 0.0f) || mag_bins == 0) {
+    if (!(sum_power > (float)SP_ACOUSTIC_L1_VALID_ENERGY_FLOOR) || !(sum_mag > 0.0f) || mag_bins == 0) {
         return;
     }
 
     const float centroid = sum_f_mag / sum_mag;
     float sum_var = 0.0f;
-    for (uint32_t k = 0; k < DBMAP_L1_FFT_BINS; k++) {
+    for (uint32_t k = 0; k < SP_ACOUSTIC_L1_FFT_BINS; k++) {
         const float f = bin_hz * (float)k;
-        if (f < DBMAP_L1_FREQ_MIN_HZ || f > DBMAP_L1_FREQ_MAX_HZ) {
+        if (f < SP_ACOUSTIC_L1_FREQ_MIN_HZ || f > SP_ACOUSTIC_L1_FREQ_MAX_HZ) {
             continue;
         }
         const float mag = sqrtf(power[k]);
@@ -239,14 +239,14 @@ static void features_from_power(
  * (caller should leave features invalid). Does not clear *out beyond fields set.
  */
 static bool analyze_prepare(
-    dbmap_l1_workspace_t *ws,
+    sp_acoustic_l1_workspace_t *ws,
     const int32_t *samples,
     size_t count,
     int full_scale_bits,
     uint32_t sample_rate_hz,
     uint32_t window_ms,
     int64_t window_end_mono_us,
-    dbmap_l1_window_t *out,
+    sp_acoustic_l1_window_t *out,
     float *inv_fs_out
 )
 {
@@ -259,7 +259,7 @@ static bool analyze_prepare(
         return false;
     }
     if (!ws->tables_ready) {
-        dbmap_l1_workspace_init(ws);
+        sp_acoustic_l1_workspace_init(ws);
     }
 
     const float full_scale = full_scale_magnitude_f(full_scale_bits);
@@ -275,19 +275,19 @@ static bool analyze_prepare(
         }
     }
     const float peak_dbfs = amp_to_dbfs_f((float)peak_abs, full_scale);
-    out->clipped = (peak_dbfs >= DBMAP_L1_CLIP_PEAK_DBFS);
+    out->clipped = (peak_dbfs >= SP_ACOUSTIC_L1_CLIP_PEAK_DBFS);
 
-    if (count < DBMAP_L1_FFT_SIZE) {
+    if (count < SP_ACOUSTIC_L1_FFT_SIZE) {
         return false;
     }
     return true;
 }
 
 static void analyze_finish_from_power(
-    dbmap_l1_workspace_t *ws,
+    sp_acoustic_l1_workspace_t *ws,
     uint32_t sample_rate_hz,
     uint32_t frames,
-    dbmap_l1_window_t *out
+    sp_acoustic_l1_window_t *out
 )
 {
     out->frame_count = frames;
@@ -295,7 +295,7 @@ static void analyze_finish_from_power(
         return;
     }
     const float inv_frames = 1.0f / (float)frames;
-    for (uint32_t k = 0; k < DBMAP_L1_FFT_BINS; k++) {
+    for (uint32_t k = 0; k < SP_ACOUSTIC_L1_FFT_BINS; k++) {
         ws->power_acc[k] *= inv_frames;
     }
     bool ok = false;
@@ -311,15 +311,15 @@ static void analyze_finish_from_power(
     out->valid = ok;
 }
 
-void dbmap_l1_analyze_window(
-    dbmap_l1_workspace_t *ws,
+void sp_acoustic_l1_analyze_window(
+    sp_acoustic_l1_workspace_t *ws,
     const int32_t *samples,
     size_t count,
     int full_scale_bits,
     uint32_t sample_rate_hz,
     uint32_t window_ms,
     int64_t window_end_mono_us,
-    dbmap_l1_window_t *out
+    sp_acoustic_l1_window_t *out
 )
 {
     if (out == NULL) {
@@ -343,18 +343,18 @@ void dbmap_l1_analyze_window(
     /* L1-only: no prev_power / L2 scratch — keeps this function's stack small. */
     memset(ws->power_acc, 0, sizeof(ws->power_acc));
     uint32_t frames = 0;
-    for (size_t offset = 0; offset + DBMAP_L1_FFT_SIZE <= count;
-         offset += DBMAP_L1_FFT_SIZE) {
+    for (size_t offset = 0; offset + SP_ACOUSTIC_L1_FFT_SIZE <= count;
+         offset += SP_ACOUSTIC_L1_FFT_SIZE) {
         const float *hann = ws->hann;
         float *re = ws->time_re;
         float *im = ws->time_im;
         const int32_t *frame = samples + offset;
-        for (uint32_t n = 0; n < DBMAP_L1_FFT_SIZE; n++) {
+        for (uint32_t n = 0; n < SP_ACOUSTIC_L1_FFT_SIZE; n++) {
             re[n] = ((float)frame[n] * inv_fs) * hann[n];
             im[n] = 0.0f;
         }
         fft_radix2(ws);
-        for (uint32_t k = 0; k < DBMAP_L1_FFT_BINS; k++) {
+        for (uint32_t k = 0; k < SP_ACOUSTIC_L1_FFT_BINS; k++) {
             const float rr = re[k];
             const float ii = im[k];
             ws->power_acc[k] += rr * rr + ii * ii;
@@ -364,20 +364,20 @@ void dbmap_l1_analyze_window(
     analyze_finish_from_power(ws, sample_rate_hz, frames, out);
 }
 
-void dbmap_l1_analyze_window_ex(
-    dbmap_l1_workspace_t *ws,
+void sp_acoustic_l1_analyze_window_ex(
+    sp_acoustic_l1_workspace_t *ws,
     const int32_t *samples,
     size_t count,
     int full_scale_bits,
     uint32_t sample_rate_hz,
     uint32_t window_ms,
     int64_t window_end_mono_us,
-    dbmap_l1_window_t *out,
-    dbmap_l2_intra_metrics_t *intra_out
+    sp_acoustic_l1_window_t *out,
+    sp_acoustic_l2_intra_metrics_t *intra_out
 )
 {
     if (intra_out == NULL) {
-        dbmap_l1_analyze_window(
+        sp_acoustic_l1_analyze_window(
             ws,
             samples,
             count,
@@ -414,7 +414,7 @@ void dbmap_l1_analyze_window_ex(
      * not on the caller/task stack. has_prev_power is per-call only — never
      * reuse a prior window's last frame as the first comparison.
      */
-    const float bin_hz = (float)sample_rate_hz / (float)DBMAP_L1_FFT_SIZE;
+    const float bin_hz = (float)sample_rate_hz / (float)SP_ACOUSTIC_L1_FFT_SIZE;
     float *prev_power = ws->prev_power;
     bool has_prev_power = false;
     double flux_sum = 0.0;
@@ -427,8 +427,8 @@ void dbmap_l1_analyze_window_ex(
     memset(&s_l2_last_stages, 0, sizeof(s_l2_last_stages));
     uint32_t frames = 0;
     uint32_t rms_stage_us = 0;
-    for (size_t offset = 0; offset + DBMAP_L1_FFT_SIZE <= count;
-         offset += DBMAP_L1_FFT_SIZE) {
+    for (size_t offset = 0; offset + SP_ACOUSTIC_L1_FFT_SIZE <= count;
+         offset += SP_ACOUSTIC_L1_FFT_SIZE) {
         const float *hann = ws->hann;
         float *re = ws->time_re;
         float *im = ws->time_im;
@@ -437,19 +437,19 @@ void dbmap_l1_analyze_window_ex(
         /* Direct L2 RMS stage timing (outside FFT / bin loop). */
         const int64_t rms_t0 = l2_now_us();
         double sum_sq = 0.0;
-        for (uint32_t n = 0; n < DBMAP_L1_FFT_SIZE; n++) {
+        for (uint32_t n = 0; n < SP_ACOUSTIC_L1_FFT_SIZE; n++) {
             const double x = (double)frame[n] * (double)inv_fs;
             sum_sq += x * x;
         }
-        const float r = (float)sqrt(sum_sq / (double)DBMAP_L1_FFT_SIZE);
-        if (r > (float)DBMAP_L2_ENV_RMS_EPS) {
+        const float r = (float)sqrt(sum_sq / (double)SP_ACOUSTIC_L1_FFT_SIZE);
+        if (r > (float)SP_ACOUSTIC_L2_ENV_RMS_EPS) {
             rms_sum += (double)r;
             rms_sum_sq += (double)r * (double)r;
             rms_n++;
         }
         rms_stage_us += l2_elapsed_us(rms_t0);
 
-        for (uint32_t n = 0; n < DBMAP_L1_FFT_SIZE; n++) {
+        for (uint32_t n = 0; n < SP_ACOUSTIC_L1_FFT_SIZE; n++) {
             re[n] = ((float)frame[n] * inv_fs) * hann[n];
             im[n] = 0.0f;
         }
@@ -458,7 +458,7 @@ void dbmap_l1_analyze_window_ex(
         double num = 0.0;
         double den = 0.0;
         double prev_e = 0.0;
-        for (uint32_t k = 0; k < DBMAP_L1_FFT_BINS; k++) {
+        for (uint32_t k = 0; k < SP_ACOUSTIC_L1_FFT_BINS; k++) {
             const float rr = re[k];
             const float ii = im[k];
             const float p = rr * rr + ii * ii;
@@ -466,7 +466,7 @@ void dbmap_l1_analyze_window_ex(
 
             if (has_prev_power) {
                 const float f = bin_hz * (float)k;
-                if (f >= DBMAP_L1_FREQ_MIN_HZ && f <= DBMAP_L1_FREQ_MAX_HZ) {
+                if (f >= SP_ACOUSTIC_L1_FREQ_MIN_HZ && f <= SP_ACOUSTIC_L1_FREQ_MAX_HZ) {
                     const double cur = (double)p;
                     const double prv = (double)prev_power[k];
                     num += fabs(cur - prv);
@@ -476,8 +476,8 @@ void dbmap_l1_analyze_window_ex(
             }
             prev_power[k] = p;
         }
-        if (has_prev_power && den > (double)DBMAP_L1_VALID_ENERGY_FLOOR &&
-            prev_e > (double)DBMAP_L1_VALID_ENERGY_FLOOR) {
+        if (has_prev_power && den > (double)SP_ACOUSTIC_L1_VALID_ENERGY_FLOOR &&
+            prev_e > (double)SP_ACOUSTIC_L1_VALID_ENERGY_FLOOR) {
             flux_sum += num / den;
             flux_pairs++;
         }
@@ -494,7 +494,7 @@ void dbmap_l1_analyze_window_ex(
     }
     if (rms_n >= 2u) {
         const double mu = rms_sum / (double)rms_n;
-        if (mu > (double)DBMAP_L2_ENV_RMS_EPS) {
+        if (mu > (double)SP_ACOUSTIC_L2_ENV_RMS_EPS) {
             double var = (rms_sum_sq / (double)rms_n) - mu * mu;
             if (var < 0.0) {
                 var = 0.0;
@@ -508,8 +508,8 @@ void dbmap_l1_analyze_window_ex(
     analyze_finish_from_power(ws, sample_rate_hz, frames, out);
 }
 
-void dbmap_l1_interval_accum_init(
-    dbmap_l1_interval_accum_t *acc,
+void sp_acoustic_l1_interval_accum_init(
+    sp_acoustic_l1_interval_accum_t *acc,
     uint32_t sample_rate_hz,
     uint32_t analysis_window_ms,
     int64_t interval_start_mono_us,
@@ -526,9 +526,9 @@ void dbmap_l1_interval_accum_init(
     acc->interval_end_mono_us = interval_end_mono_us;
 }
 
-void dbmap_l1_interval_accum_add(
-    dbmap_l1_interval_accum_t *acc,
-    const dbmap_l1_window_t *window
+void sp_acoustic_l1_interval_accum_add(
+    sp_acoustic_l1_interval_accum_t *acc,
+    const sp_acoustic_l1_window_t *window
 )
 {
     if (acc == NULL || window == NULL) {
@@ -567,9 +567,9 @@ static float sample_stdev(double sum, double sum_sq, uint32_t n)
     return (float)sqrt(var);
 }
 
-void dbmap_l1_interval_accum_finalize(
-    const dbmap_l1_interval_accum_t *acc,
-    dbmap_l1_interval_t *out
+void sp_acoustic_l1_interval_accum_finalize(
+    const sp_acoustic_l1_interval_accum_t *acc,
+    sp_acoustic_l1_interval_t *out
 )
 {
     if (out == NULL) {
@@ -581,9 +581,9 @@ void dbmap_l1_interval_accum_finalize(
     }
     out->sample_rate_hz = acc->sample_rate_hz;
     out->analysis_window_ms = acc->analysis_window_ms;
-    out->fft_size = DBMAP_L1_FFT_SIZE;
-    out->freq_min_hz = DBMAP_L1_FREQ_MIN_HZ;
-    out->freq_max_hz = DBMAP_L1_FREQ_MAX_HZ;
+    out->fft_size = SP_ACOUSTIC_L1_FFT_SIZE;
+    out->freq_min_hz = SP_ACOUSTIC_L1_FREQ_MIN_HZ;
+    out->freq_max_hz = SP_ACOUSTIC_L1_FREQ_MAX_HZ;
     out->interval_start_mono_us = acc->interval_start_mono_us;
     out->interval_end_mono_us = acc->interval_end_mono_us;
     out->window_count = acc->window_count;
@@ -611,8 +611,8 @@ void dbmap_l1_interval_accum_finalize(
     out->flatness_stdev = sample_stdev(acc->sum_flatness, acc->sum_flatness_sq, acc->window_count);
 }
 
-void dbmap_l1_interval_set_empty(
-    dbmap_l1_interval_t *out,
+void sp_acoustic_l1_interval_set_empty(
+    sp_acoustic_l1_interval_t *out,
     uint32_t sample_rate_hz,
     uint32_t analysis_window_ms,
     int64_t interval_start_mono_us,
@@ -625,9 +625,9 @@ void dbmap_l1_interval_set_empty(
     memset(out, 0, sizeof(*out));
     out->sample_rate_hz = sample_rate_hz;
     out->analysis_window_ms = analysis_window_ms;
-    out->fft_size = DBMAP_L1_FFT_SIZE;
-    out->freq_min_hz = DBMAP_L1_FREQ_MIN_HZ;
-    out->freq_max_hz = DBMAP_L1_FREQ_MAX_HZ;
+    out->fft_size = SP_ACOUSTIC_L1_FFT_SIZE;
+    out->freq_min_hz = SP_ACOUSTIC_L1_FREQ_MIN_HZ;
+    out->freq_max_hz = SP_ACOUSTIC_L1_FREQ_MAX_HZ;
     out->interval_start_mono_us = interval_start_mono_us;
     out->interval_end_mono_us = interval_end_mono_us;
 }

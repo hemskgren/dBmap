@@ -153,7 +153,12 @@ def _short_error(error: BaseException | str, limit: int = 160) -> str:
     return text
 
 
-def _run_stage(command: list[str], cwd: Path, log_path: Path) -> tuple[int, str]:
+def _run_stage(
+    command: list[str],
+    cwd: Path,
+    log_path: Path,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str]:
     log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(descriptor, "a", encoding="utf-8") as log_file:
@@ -167,7 +172,7 @@ def _run_stage(command: list[str], cwd: Path, log_path: Path) -> tuple[int, str]
             stderr=subprocess.STDOUT,
             text=True,
             timeout=BUILD_TIMEOUT_SECONDS,
-            env=os.environ.copy(),
+            env=env if env is not None else os.environ.copy(),
         )
     return result.returncode, _tail_log(log_path)
 
@@ -354,6 +359,34 @@ def _check_toolchain(target: str, work_dir: Path, log_path: Path) -> None:
         raise RuntimeError("The pinned ESP-IDF toolchain check failed.")
 
 
+def _run_ear_fast_gate(log_path: Path) -> None:
+    """Mandatory Ear fast gate before configure/build. Non-zero exit aborts the job."""
+    gate = FIRMWARE_ROOT / "scripts" / "run_firmware_fast_gate.sh"
+    if not gate.is_file():
+        raise RuntimeError(
+            f"Ear fast test gate script is missing at {gate}."
+        )
+    # Isolated modularity builds write under esp-ear/.gate-builds (gitignored).
+    # The firmware tree is mounted read-only in Compose — use artifacts workspace.
+    gate_root = ARTIFACTS / ".gate-builds" / f"builder-{os.getpid()}"
+    gate_root.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["FIRMWARE_GATE_ROOT"] = str(gate_root)
+    _append_log(log_path, "Running Ear firmware fast test gate…")
+    code, output = _run_stage(
+        ["bash", str(gate)],
+        FIRMWARE_ROOT,
+        log_path,
+        env=env,
+    )
+    shutil.rmtree(gate_root, ignore_errors=True)
+    if code != 0:
+        raise RuntimeError(
+            "Ear firmware fast test gate failed; refusing to build."
+            + (f"\n{output[-2000:]}" if output else "")
+        )
+
+
 def _extra_component_srcs(target_config: dict) -> list[Path]:
     """Source trees used for Kconfig resolution (ignore work-dir dest names)."""
     out: list[Path] = []
@@ -437,6 +470,11 @@ def _build(job_id: str, target: str) -> None:
         job.update(stage="checking_toolchain")
         _persist(job)
         _check_toolchain(target, work_dir, log_path)
+
+        if target == "ear-esp32-s3":
+            job.update(stage="testing")
+            _persist(job)
+            _run_ear_fast_gate(log_path)
 
         pre_build_config = _target_dbmap_config(target)
         _append_log(log_path, dbmap_config.format_log_block(pre_build_config).rstrip())

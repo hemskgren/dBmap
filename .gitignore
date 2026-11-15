@@ -32,8 +32,15 @@ shared/results/ear-tests/**
 
 hub/bootstrap/data/
 firmware/**/build/
+firmware/**/.gate-builds/
 firmware/**/sdkconfig
 firmware/**/sdkconfig.old
 firmware/**/managed_components/
 .idea/
 .vscode/
+
+# Critical Path offline evidence audio (keep fixtures + metadata tracked)
+firmware/products/dbmap/ear/audio_engine/test_host/crit_offline/evidence/recordings/**
+!firmware/products/dbmap/ear/audio_engine/test_host/crit_offline/evidence/recordings/.gitkeep
+firmware/products/dbmap/ear/audio_engine/test_host/crit_offline/evidence/converted/**
+!firmware/products/dbmap/ear/audio_engine/test_host/crit_offline/evidence/converted/.gitkeep

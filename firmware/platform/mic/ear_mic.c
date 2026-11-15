@@ -176,7 +176,7 @@ static sp_bg_rms_sample_t s_bg_entries[SP_MIC_COUNT_MAX][EAR_BG_RMS_CAP];
 static sp_bg_rms_hist_t s_bg_hist[SP_MIC_COUNT_MAX];
 #endif
 
-#if CONFIG_DBMAP_EAR_MIC_L0
+#if CONFIG_SP_MIC_PCM_RETAIN
 /* Double-buffered SPIRAM PCM: mic0 always; mic1 when live stereo (M5). */
 static int32_t *s_pcm0[2];
 static int32_t *s_pcm1[2];
@@ -404,7 +404,7 @@ esp_err_t sp_mic_get_stream(sp_mic_stream_t *out)
 
 void sp_mic_set_pcm_ready_hook(sp_mic_pcm_ready_hook_t hook)
 {
-#if CONFIG_DBMAP_EAR_MIC_L0
+#if CONFIG_SP_MIC_PCM_RETAIN
     s_pcm_ready_hook = hook;
 #else
     (void)hook;
@@ -413,7 +413,7 @@ void sp_mic_set_pcm_ready_hook(sp_mic_pcm_ready_hook_t hook)
 
 bool sp_mic_pcm_ready(void)
 {
-#if !CONFIG_DBMAP_EAR_MIC_L0
+#if !CONFIG_SP_MIC_PCM_RETAIN
     return false;
 #else
     return s_pcm_ready;
@@ -422,7 +422,7 @@ bool sp_mic_pcm_ready(void)
 
 bool sp_mic_take_pcm_job(sp_mic_pcm_job_t *out)
 {
-#if !CONFIG_DBMAP_EAR_MIC_L0
+#if !CONFIG_SP_MIC_PCM_RETAIN
     (void)out;
     return false;
 #else
@@ -452,7 +452,7 @@ bool sp_mic_take_pcm_job(sp_mic_pcm_job_t *out)
 
 bool sp_mic_take_window_job(sp_mic_window_job_t *out)
 {
-#if !CONFIG_DBMAP_EAR_MIC_L0
+#if !CONFIG_SP_MIC_PCM_RETAIN
     (void)out;
     return false;
 #else
@@ -495,7 +495,7 @@ bool sp_mic_take_window_job(sp_mic_window_job_t *out)
 
 uint32_t sp_mic_pcm_cap_samples(void)
 {
-#if !CONFIG_DBMAP_EAR_MIC_L0
+#if !CONFIG_SP_MIC_PCM_RETAIN
     return 0;
 #else
     return s_pcm_cap;
@@ -504,7 +504,7 @@ uint32_t sp_mic_pcm_cap_samples(void)
 
 uint32_t sp_mic_pcm_bytes_total(void)
 {
-#if !CONFIG_DBMAP_EAR_MIC_L0
+#if !CONFIG_SP_MIC_PCM_RETAIN
     return 0;
 #else
     if (!s_pcm_ready || s_pcm_retained_channels == 0u) {
@@ -517,7 +517,7 @@ uint32_t sp_mic_pcm_bytes_total(void)
 
 uint8_t sp_mic_pcm_retained_channels(void)
 {
-#if !CONFIG_DBMAP_EAR_MIC_L0
+#if !CONFIG_SP_MIC_PCM_RETAIN
     return 0;
 #else
     return s_pcm_ready ? s_pcm_retained_channels : 0u;
@@ -526,7 +526,7 @@ uint8_t sp_mic_pcm_retained_channels(void)
 
 uint32_t sp_mic_pcm_pending_overwrite(void)
 {
-#if !CONFIG_DBMAP_EAR_MIC_L0
+#if !CONFIG_SP_MIC_PCM_RETAIN
     return 0;
 #else
     uint32_t v;
@@ -539,7 +539,7 @@ uint32_t sp_mic_pcm_pending_overwrite(void)
 
 uint32_t sp_mic_pcm_free_heap_after_init(void)
 {
-#if !CONFIG_DBMAP_EAR_MIC_L0
+#if !CONFIG_SP_MIC_PCM_RETAIN
     return 0;
 #else
     return s_pcm_free_heap_after_init;
@@ -548,7 +548,7 @@ uint32_t sp_mic_pcm_free_heap_after_init(void)
 
 uint32_t sp_mic_pcm_free_spiram_after_init(void)
 {
-#if !CONFIG_DBMAP_EAR_MIC_L0
+#if !CONFIG_SP_MIC_PCM_RETAIN
     return 0;
 #else
     return s_pcm_free_spiram_after_init;
@@ -1205,7 +1205,7 @@ static void accumulate_din_slots(
             ch_accum_sample(
                 &acc[ch_right], ch_right, right, clip_threshold, full_scale_mag
             );
-#if CONFIG_DBMAP_EAR_MIC_L0
+#if CONFIG_SP_MIC_PCM_RETAIN
             if (din_index == 0u && s_pcm_ready) {
                 if (s_pcm0[s_pcm_fill_idx] != NULL
                     && acc[ch_left].pcm_count <= s_pcm_cap
@@ -1228,7 +1228,7 @@ static void accumulate_din_slots(
             ch_accum_sample(
                 &acc[ch_left], ch_left, sample, clip_threshold, full_scale_mag
             );
-#if CONFIG_DBMAP_EAR_MIC_L0
+#if CONFIG_SP_MIC_PCM_RETAIN
             if (din_index == 0u && s_pcm_ready && s_pcm0[s_pcm_fill_idx] != NULL
                 && acc[ch_left].pcm_count <= s_pcm_cap
                 && (acc[ch_left].pcm_count - 1u) < s_pcm_cap) {
@@ -1383,7 +1383,7 @@ static void measure_window(ear_audio_snapshot_t *out, uint8_t live_count)
         );
     }
 
-#if CONFIG_DBMAP_EAR_MIC_L0
+#if CONFIG_SP_MIC_PCM_RETAIN
     /*
      * Publish s_latest and the PCM+channel pending bundle under one lock so a
      * consumer that takes the job never races a stale s_latest for this seq.
@@ -1665,7 +1665,7 @@ esp_err_t sp_mic_start(const sp_effective_t *cfg, const sp_mic_config_t *mic_cfg
     );
 #endif
 
-#if CONFIG_DBMAP_EAR_MIC_L0
+#if CONFIG_SP_MIC_PCM_RETAIN
     {
         const uint32_t window_ms = (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS;
         const uint32_t expected = sp_audio_expected_samples(

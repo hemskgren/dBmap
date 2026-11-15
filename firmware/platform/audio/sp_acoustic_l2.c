@@ -1,9 +1,9 @@
-#include "dbmap_acoustic_l2.h"
+#include "sp_acoustic_l2.h"
 
 #include <math.h>
 #include <string.h>
 
-void dbmap_l2_continuity_reset(dbmap_l2_continuity_t *cache)
+void sp_acoustic_l2_continuity_reset(sp_acoustic_l2_continuity_t *cache)
 {
     if (cache == NULL) {
         return;
@@ -11,10 +11,10 @@ void dbmap_l2_continuity_reset(dbmap_l2_continuity_t *cache)
     memset(cache, 0, sizeof(*cache));
 }
 
-void dbmap_l2_continuity_push(
-    dbmap_l2_continuity_t *cache,
+void sp_acoustic_l2_continuity_push(
+    sp_acoustic_l2_continuity_t *cache,
     uint32_t analysis_window_ms,
-    dbmap_l2_window_t *window
+    sp_acoustic_l2_window_t *window
 )
 {
     if (window == NULL) {
@@ -28,7 +28,7 @@ void dbmap_l2_continuity_push(
     }
 
     if (!window->eligible) {
-        dbmap_l2_continuity_reset(cache);
+        sp_acoustic_l2_continuity_reset(cache);
         return;
     }
 
@@ -37,13 +37,13 @@ void dbmap_l2_continuity_push(
         const int64_t dt = window->window_end_mono_us - cache->prev_window_end_us;
         const int64_t err = dt - tw_us;
         const int64_t abs_err = err < 0 ? -err : err;
-        if (abs_err <= DBMAP_L2_CONTINUITY_TOL_US) {
+        if (abs_err <= SP_ACOUSTIC_L2_CONTINUITY_TOL_US) {
             window->has_dominant_delta = true;
             window->dominant_delta_hz =
                 fabsf(window->dominant_hz - cache->prev_dominant_hz);
         } else {
             /* Timestamp gap: break then install current as new predecessor. */
-            dbmap_l2_continuity_reset(cache);
+            sp_acoustic_l2_continuity_reset(cache);
         }
     }
 
@@ -52,8 +52,8 @@ void dbmap_l2_continuity_push(
     cache->prev_window_end_us = window->window_end_mono_us;
 }
 
-void dbmap_l2_interval_accum_init(
-    dbmap_l2_interval_accum_t *acc,
+void sp_acoustic_l2_interval_accum_init(
+    sp_acoustic_l2_interval_accum_t *acc,
     uint32_t sample_rate_hz,
     uint32_t analysis_window_ms,
     int64_t interval_start_mono_us,
@@ -70,7 +70,7 @@ void dbmap_l2_interval_accum_init(
     acc->interval_end_mono_us = interval_end_mono_us;
 }
 
-void dbmap_l2_interval_accum_mark_overflow(dbmap_l2_interval_accum_t *acc)
+void sp_acoustic_l2_interval_accum_mark_overflow(sp_acoustic_l2_interval_accum_t *acc)
 {
     if (acc == NULL) {
         return;
@@ -89,9 +89,9 @@ void dbmap_l2_interval_accum_mark_overflow(dbmap_l2_interval_accum_t *acc)
     acc->sum_delta_sq = 0.0;
 }
 
-void dbmap_l2_interval_accum_add(
-    dbmap_l2_interval_accum_t *acc,
-    const dbmap_l2_window_t *window
+void sp_acoustic_l2_interval_accum_add(
+    sp_acoustic_l2_interval_accum_t *acc,
+    const sp_acoustic_l2_window_t *window
 )
 {
     if (acc == NULL || window == NULL || acc->history_overflow) {
@@ -162,8 +162,8 @@ static void set_feature_stats(
     }
 }
 
-void dbmap_l2_interval_set_empty(
-    dbmap_l2_interval_t *out,
+void sp_acoustic_l2_interval_set_empty(
+    sp_acoustic_l2_interval_t *out,
     uint32_t sample_rate_hz,
     uint32_t analysis_window_ms,
     int64_t interval_start_mono_us,
@@ -176,17 +176,17 @@ void dbmap_l2_interval_set_empty(
     memset(out, 0, sizeof(*out));
     out->sample_rate_hz = sample_rate_hz;
     out->analysis_window_ms = analysis_window_ms;
-    out->fft_size = DBMAP_L1_FFT_SIZE;
-    out->freq_min_hz = DBMAP_L1_FREQ_MIN_HZ;
-    out->freq_max_hz = DBMAP_L1_FREQ_MAX_HZ;
-    out->frame_hop_samples = DBMAP_L1_FFT_SIZE;
+    out->fft_size = SP_ACOUSTIC_L1_FFT_SIZE;
+    out->freq_min_hz = SP_ACOUSTIC_L1_FREQ_MIN_HZ;
+    out->freq_max_hz = SP_ACOUSTIC_L1_FREQ_MAX_HZ;
+    out->frame_hop_samples = SP_ACOUSTIC_L1_FFT_SIZE;
     out->interval_start_mono_us = interval_start_mono_us;
     out->interval_end_mono_us = interval_end_mono_us;
 }
 
-void dbmap_l2_interval_accum_finalize(
-    const dbmap_l2_interval_accum_t *acc,
-    dbmap_l2_interval_t *out
+void sp_acoustic_l2_interval_accum_finalize(
+    const sp_acoustic_l2_interval_accum_t *acc,
+    sp_acoustic_l2_interval_t *out
 )
 {
     if (out == NULL) {
@@ -197,7 +197,7 @@ void dbmap_l2_interval_accum_finalize(
         return;
     }
 
-    dbmap_l2_interval_set_empty(
+    sp_acoustic_l2_interval_set_empty(
         out,
         acc->sample_rate_hz,
         acc->analysis_window_ms,
@@ -247,23 +247,23 @@ void dbmap_l2_interval_accum_finalize(
     );
 }
 
-void dbmap_l2_analyze_window(
-    dbmap_l1_workspace_t *ws,
+void sp_acoustic_l2_analyze_window(
+    sp_acoustic_l1_workspace_t *ws,
     const int32_t *samples,
     size_t count,
     int full_scale_bits,
     uint32_t sample_rate_hz,
     uint32_t window_ms,
     int64_t window_end_mono_us,
-    dbmap_l1_window_t *l1_out,
-    dbmap_l2_window_t *l2_out
+    sp_acoustic_l1_window_t *l1_out,
+    sp_acoustic_l2_window_t *l2_out
 )
 {
-    dbmap_l1_window_t l1_local;
-    dbmap_l1_window_t *l1 = (l1_out != NULL) ? l1_out : &l1_local;
-    dbmap_l2_intra_metrics_t intra;
+    sp_acoustic_l1_window_t l1_local;
+    sp_acoustic_l1_window_t *l1 = (l1_out != NULL) ? l1_out : &l1_local;
+    sp_acoustic_l2_intra_metrics_t intra;
 
-    dbmap_l1_analyze_window_ex(
+    sp_acoustic_l1_analyze_window_ex(
         ws,
         samples,
         count,

@@ -2,8 +2,9 @@
 
 #include <string.h>
 
-#include "dbmap_acoustic_l0.h"
-#include "dbmap_acoustic_l2.h"
+#include "sp_acoustic_l0.h"
+#include "sp_acoustic_l1.h"
+#include "sp_acoustic_l2.h"
 #include "sp_mic_pcm.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -14,24 +15,24 @@ static const char *TAG = "ear_acoustic";
 
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 
-#if CONFIG_DBMAP_EAR_MIC_L0
-static dbmap_l0_filter_bank_t s_l0_bank;
-static dbmap_l0_window_t s_l0_latest;
+#if CONFIG_SP_AUDIO_L0
+static sp_acoustic_l0_filter_bank_t s_l0_bank;
+static sp_acoustic_l0_window_t s_l0_latest;
 static bool s_l0_latest_ready;
 static bool s_l0_bank_ready;
 static uint32_t s_l0_analyze_count;
 static uint32_t s_l0_analyze_us_last;
 static uint32_t s_l0_analyze_us_max;
 #if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
-static dbmap_l1_workspace_t s_l1_ws;
-static dbmap_l1_window_t s_l1_latest;
+static sp_acoustic_l1_workspace_t s_l1_ws;
+static sp_acoustic_l1_window_t s_l1_latest;
 static bool s_l1_latest_ready;
 static bool s_l1_ws_ready;
 static uint32_t s_l1_analyze_count;
 static uint32_t s_l1_analyze_us_last;
 static uint32_t s_l1_analyze_us_max;
 #if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
-static dbmap_l2_window_t s_l2_latest;
+static sp_acoustic_l2_window_t s_l2_latest;
 static bool s_l2_latest_ready;
 static uint32_t s_l2_analyze_count;
 static uint32_t s_l2_combined_us_last;
@@ -44,10 +45,10 @@ static uint32_t s_l2_rms_us_max;
 #endif
 #endif
 
-#if CONFIG_DBMAP_EAR_MIC_L0
+#if CONFIG_SP_AUDIO_L0
 static void pcm_ready_hook(uint32_t sample_rate_hz)
 {
-    dbmap_l0_filter_bank_init(&s_l0_bank, sample_rate_hz);
+    sp_acoustic_l0_filter_bank_init(&s_l0_bank, sample_rate_hz);
     memset(&s_l0_latest, 0, sizeof(s_l0_latest));
     s_l0_latest_ready = false;
     s_l0_bank_ready = true;
@@ -60,7 +61,7 @@ static void pcm_ready_hook(uint32_t sample_rate_hz)
         (unsigned long)sample_rate_hz
     );
 #if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
-    dbmap_l1_workspace_init(&s_l1_ws);
+    sp_acoustic_l1_workspace_init(&s_l1_ws);
     memset(&s_l1_latest, 0, sizeof(s_l1_latest));
     s_l1_latest_ready = false;
     s_l1_ws_ready = true;
@@ -70,9 +71,9 @@ static void pcm_ready_hook(uint32_t sample_rate_hz)
     ESP_LOGI(
         TAG,
         "L1 ready fft=%u band=%.0f-%.0f Hz (static workspace float+twiddle LUT)",
-        (unsigned)DBMAP_L1_FFT_SIZE,
-        (double)DBMAP_L1_FREQ_MIN_HZ,
-        (double)DBMAP_L1_FREQ_MAX_HZ
+        (unsigned)SP_ACOUSTIC_L1_FFT_SIZE,
+        (double)SP_ACOUSTIC_L1_FREQ_MIN_HZ,
+        (double)SP_ACOUSTIC_L1_FREQ_MAX_HZ
     );
 #if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
     memset(&s_l2_latest, 0, sizeof(s_l2_latest));
@@ -100,7 +101,7 @@ static void pcm_ready_hook(uint32_t sample_rate_hz)
 
 esp_err_t dbmap_ear_acoustic_register(void)
 {
-#if !CONFIG_DBMAP_EAR_MIC_L0
+#if !CONFIG_SP_AUDIO_L0
     return ESP_OK;
 #else
     sp_mic_set_pcm_ready_hook(pcm_ready_hook);
@@ -110,7 +111,7 @@ esp_err_t dbmap_ear_acoustic_register(void)
 
 esp_err_t dbmap_ear_acoustic_analyze_pcm_job(const sp_mic_pcm_job_t *job)
 {
-#if !CONFIG_DBMAP_EAR_MIC_L0
+#if !CONFIG_SP_AUDIO_L0
     (void)job;
     return ESP_ERR_NOT_SUPPORTED;
 #else
@@ -121,9 +122,9 @@ esp_err_t dbmap_ear_acoustic_analyze_pcm_job(const sp_mic_pcm_job_t *job)
         return ESP_ERR_INVALID_STATE;
     }
 
-    dbmap_l0_window_t win;
+    sp_acoustic_l0_window_t win;
     const int64_t t0 = esp_timer_get_time();
-    dbmap_l0_analyze_window(
+    sp_acoustic_l0_analyze_window(
         &s_l0_bank,
         job->samples,
         job->sample_count,
@@ -137,10 +138,10 @@ esp_err_t dbmap_ear_acoustic_analyze_pcm_job(const sp_mic_pcm_job_t *job)
 
 #if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
     /* L1(/L2) is independent of L0 results; failure must not affect L0 publication. */
-    dbmap_l1_window_t l1_win;
+    sp_acoustic_l1_window_t l1_win;
     memset(&l1_win, 0, sizeof(l1_win));
 #if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
-    dbmap_l2_window_t l2_win;
+    sp_acoustic_l2_window_t l2_win;
     memset(&l2_win, 0, sizeof(l2_win));
     uint32_t l2_combined_us = 0;
     uint32_t l2_rms_us = 0;
@@ -151,7 +152,7 @@ esp_err_t dbmap_ear_acoustic_analyze_pcm_job(const sp_mic_pcm_job_t *job)
     if (s_l1_ws_ready) {
 #if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
         const int64_t l2_t0 = esp_timer_get_time();
-        dbmap_l2_analyze_window(
+        sp_acoustic_l2_analyze_window(
             &s_l1_ws,
             job->samples,
             job->sample_count,
@@ -165,8 +166,8 @@ esp_err_t dbmap_ear_acoustic_analyze_pcm_job(const sp_mic_pcm_job_t *job)
         const int64_t l2_elapsed = esp_timer_get_time() - l2_t0;
         l2_combined_us = l2_elapsed > 0 ? (uint32_t)l2_elapsed : 0;
         {
-            dbmap_l2_analyze_stages_t st;
-            dbmap_l2_get_last_analyze_stages(&st);
+            sp_acoustic_l2_analyze_stages_t st;
+            sp_acoustic_l2_get_last_analyze_stages(&st);
             l2_rms_us = st.rms_us;
         }
         /* Derived estimate vs pre-L2 EAR-001 L1 baseline (not a direct L2 timer). */
@@ -177,7 +178,7 @@ esp_err_t dbmap_ear_acoustic_analyze_pcm_job(const sp_mic_pcm_job_t *job)
         }
 #else
         const int64_t l1_t0 = esp_timer_get_time();
-        dbmap_l1_analyze_window(
+        sp_acoustic_l1_analyze_window(
             &s_l1_ws,
             job->samples,
             job->sample_count,
@@ -242,7 +243,7 @@ esp_err_t dbmap_ear_acoustic_analyze_pcm_job(const sp_mic_pcm_job_t *job)
 
 esp_err_t dbmap_ear_mic_l0_poll(void)
 {
-#if !CONFIG_DBMAP_EAR_MIC_L0
+#if !CONFIG_SP_AUDIO_L0
     return ESP_ERR_NOT_SUPPORTED;
 #else
     if (!sp_mic_pcm_ready() || !s_l0_bank_ready) {
@@ -257,13 +258,13 @@ esp_err_t dbmap_ear_mic_l0_poll(void)
 #endif
 }
 
-esp_err_t dbmap_ear_mic_get_l0_window(dbmap_l0_window_t *out)
+esp_err_t dbmap_ear_mic_get_l0_window(sp_acoustic_l0_window_t *out)
 {
     if (out == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     memset(out, 0, sizeof(*out));
-#if !CONFIG_DBMAP_EAR_MIC_L0
+#if !CONFIG_SP_AUDIO_L0
     return ESP_ERR_NOT_SUPPORTED;
 #else
     portENTER_CRITICAL(&s_lock);
@@ -281,7 +282,7 @@ esp_err_t dbmap_ear_mic_get_l0_perf(dbmap_ear_mic_l0_perf_t *out)
         return ESP_ERR_INVALID_ARG;
     }
     memset(out, 0, sizeof(*out));
-#if !CONFIG_DBMAP_EAR_MIC_L0
+#if !CONFIG_SP_AUDIO_L0
     out->enabled = false;
     return ESP_OK;
 #else
@@ -298,8 +299,8 @@ esp_err_t dbmap_ear_mic_get_l0_perf(dbmap_ear_mic_l0_perf_t *out)
     out->analyze_us_max = s_l0_analyze_us_max;
     portEXIT_CRITICAL(&s_lock);
     {
-        dbmap_l0_analyze_stages_t st;
-        dbmap_l0_get_last_analyze_stages(&st);
+        sp_acoustic_l0_analyze_stages_t st;
+        sp_acoustic_l0_get_last_analyze_stages(&st);
         out->stage_reset_us = st.reset_us;
         out->stage_sample_loop_us = st.sample_loop_us;
         out->stage_post_us = st.post_us;
@@ -308,13 +309,13 @@ esp_err_t dbmap_ear_mic_get_l0_perf(dbmap_ear_mic_l0_perf_t *out)
 #endif
 }
 
-esp_err_t dbmap_ear_mic_get_l1_window(dbmap_l1_window_t *out)
+esp_err_t dbmap_ear_mic_get_l1_window(sp_acoustic_l1_window_t *out)
 {
     if (out == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     memset(out, 0, sizeof(*out));
-#if !defined(CONFIG_DBMAP_EAR_OBS_L1) || !CONFIG_DBMAP_EAR_OBS_L1 || !CONFIG_DBMAP_EAR_MIC_L0
+#if !defined(CONFIG_DBMAP_EAR_OBS_L1) || !CONFIG_DBMAP_EAR_OBS_L1 || !CONFIG_SP_AUDIO_L0
     return ESP_ERR_NOT_SUPPORTED;
 #else
     portENTER_CRITICAL(&s_lock);
@@ -332,7 +333,7 @@ esp_err_t dbmap_ear_mic_get_l1_perf(dbmap_ear_mic_l1_perf_t *out)
         return ESP_ERR_INVALID_ARG;
     }
     memset(out, 0, sizeof(*out));
-#if !defined(CONFIG_DBMAP_EAR_OBS_L1) || !CONFIG_DBMAP_EAR_OBS_L1 || !CONFIG_DBMAP_EAR_MIC_L0
+#if !defined(CONFIG_DBMAP_EAR_OBS_L1) || !CONFIG_DBMAP_EAR_OBS_L1 || !CONFIG_SP_AUDIO_L0
     out->enabled = false;
     return ESP_OK;
 #else
@@ -346,14 +347,14 @@ esp_err_t dbmap_ear_mic_get_l1_perf(dbmap_ear_mic_l1_perf_t *out)
 #endif
 }
 
-esp_err_t dbmap_ear_mic_get_l2_window(dbmap_l2_window_t *out)
+esp_err_t dbmap_ear_mic_get_l2_window(sp_acoustic_l2_window_t *out)
 {
     if (out == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     memset(out, 0, sizeof(*out));
 #if !defined(CONFIG_DBMAP_EAR_OBS_L2) || !CONFIG_DBMAP_EAR_OBS_L2 || \
-    !defined(CONFIG_DBMAP_EAR_OBS_L1) || !CONFIG_DBMAP_EAR_OBS_L1 || !CONFIG_DBMAP_EAR_MIC_L0
+    !defined(CONFIG_DBMAP_EAR_OBS_L1) || !CONFIG_DBMAP_EAR_OBS_L1 || !CONFIG_SP_AUDIO_L0
     return ESP_ERR_NOT_SUPPORTED;
 #else
     portENTER_CRITICAL(&s_lock);
@@ -372,7 +373,7 @@ esp_err_t dbmap_ear_mic_get_l2_perf(dbmap_ear_mic_l2_perf_t *out)
     }
     memset(out, 0, sizeof(*out));
 #if !defined(CONFIG_DBMAP_EAR_OBS_L2) || !CONFIG_DBMAP_EAR_OBS_L2 || \
-    !defined(CONFIG_DBMAP_EAR_OBS_L1) || !CONFIG_DBMAP_EAR_OBS_L1 || !CONFIG_DBMAP_EAR_MIC_L0
+    !defined(CONFIG_DBMAP_EAR_OBS_L1) || !CONFIG_DBMAP_EAR_OBS_L1 || !CONFIG_SP_AUDIO_L0
     out->enabled = false;
     return ESP_OK;
 #else

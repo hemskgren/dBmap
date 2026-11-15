@@ -3,18 +3,18 @@
  *
  * Build (from repo root):
  *   cc -std=c11 -Wall -Wextra -O2 -g \
- *     -I firmware/ear_components/ear_mic/include \
- *     firmware/ear_components/ear_mic/acoustic_l1.c \
- *     firmware/ear_components/ear_mic/acoustic_l2.c \
- *     firmware/ear_components/ear_mic/test_host/test_acoustic_l2.c \
+ *     -I firmware/platform/audio/include \
+ *     firmware/platform/audio/sp_acoustic_l1.c \
+ *     firmware/platform/audio/sp_acoustic_l2.c \
+ *     firmware/platform/audio/test_host/test_sp_acoustic_l2.c \
  *     -lm -o /tmp/test_acoustic_l2 && /tmp/test_acoustic_l2
  *
  * Independent double-precision reference (ref_*) is used for golden comparison;
- * it does not call dbmap_l2_* / dbmap_l1_analyze_window_ex.
+ * it does not call sp_acoustic_l2_* / sp_acoustic_l1_analyze_window_ex.
  */
 
-#include "dbmap_acoustic_l1.h"
-#include "dbmap_acoustic_l2.h"
+#include "sp_acoustic_l1.h"
+#include "sp_acoustic_l2.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -294,14 +294,14 @@ static void ref_intra_from_pcm(const int32_t *pcm, size_t count, ref_intra_t *ou
 }
 
 static int analyze_l2(
-    dbmap_l1_workspace_t *ws,
+    sp_acoustic_l1_workspace_t *ws,
     const int32_t *pcm,
     int64_t t_end,
-    dbmap_l1_window_t *l1,
-    dbmap_l2_window_t *l2
+    sp_acoustic_l1_window_t *l1,
+    sp_acoustic_l2_window_t *l2
 )
 {
-    dbmap_l2_analyze_window(
+    sp_acoustic_l2_analyze_window(
         ws, pcm, N_SAMP, FS_BITS, SR, WIN_MS, t_end, l1, l2
     );
     return 0;
@@ -311,8 +311,8 @@ static int analyze_l2(
 
 static int test_h1_stable_tone(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
     int32_t *pcm = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm != NULL);
     fill_tone(pcm, N_SAMP, 1000.0, 0.2);
@@ -322,8 +322,8 @@ static int test_h1_stable_tone(void)
     EXPECT(ref.has_flux);
     EXPECT(ref.has_env);
 
-    dbmap_l1_window_t l1;
-    dbmap_l2_window_t l2;
+    sp_acoustic_l1_window_t l1;
+    sp_acoustic_l2_window_t l2;
     analyze_l2(&ws, pcm, 1000000, &l1, &l2);
     free(pcm);
 
@@ -351,8 +351,8 @@ static int test_h1_stable_tone(void)
 
 static int test_h2_multi_tone(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
     int32_t *pcm = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm != NULL);
     fill_two_tone(pcm, N_SAMP, 1000.0, 0.08, 2000.0, 0.2);
@@ -360,8 +360,8 @@ static int test_h2_multi_tone(void)
     ref_intra_t ref;
     ref_intra_from_pcm(pcm, N_SAMP, &ref);
 
-    dbmap_l1_window_t l1;
-    dbmap_l2_window_t l2;
+    sp_acoustic_l1_window_t l1;
+    sp_acoustic_l2_window_t l2;
     analyze_l2(&ws, pcm, 2000000, &l1, &l2);
     free(pcm);
 
@@ -377,16 +377,16 @@ static int test_h2_multi_tone(void)
 
 static int test_h3_noise(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
     int32_t *pcm_tone = calloc(N_SAMP, sizeof(int32_t));
     int32_t *pcm_noise = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm_tone && pcm_noise);
     fill_tone(pcm_tone, N_SAMP, 1000.0, 0.2);
     fill_noise(pcm_noise, N_SAMP, 42u, 0.15);
 
-    dbmap_l1_window_t l1t, l1n;
-    dbmap_l2_window_t l2t, l2n;
+    sp_acoustic_l1_window_t l1t, l1n;
+    sp_acoustic_l2_window_t l2t, l2n;
     analyze_l2(&ws, pcm_tone, 1000000, &l1t, &l2t);
     analyze_l2(&ws, pcm_noise, 2000000, &l1n, &l2n);
     free(pcm_tone);
@@ -409,14 +409,14 @@ static int test_h3_noise(void)
 
 static int test_h4_am_phases(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
     int32_t *pcm = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm != NULL);
 
     fill_tone(pcm, N_SAMP, 1000.0, 0.2);
-    dbmap_l1_window_t l1_tone;
-    dbmap_l2_window_t l2_tone;
+    sp_acoustic_l1_window_t l1_tone;
+    sp_acoustic_l2_window_t l2_tone;
     analyze_l2(&ws, pcm, 1000000, &l1_tone, &l2_tone);
     EXPECT(l2_tone.has_envelope_cv);
 
@@ -430,8 +430,8 @@ static int test_h4_am_phases(void)
         fill_am_tone(pcm, N_SAMP, 1000.0, 5.0, 0.5, 0.2, phases[i]);
         ref_intra_t ref;
         ref_intra_from_pcm(pcm, N_SAMP, &ref);
-        dbmap_l1_window_t l1;
-        dbmap_l2_window_t l2;
+        sp_acoustic_l1_window_t l1;
+        sp_acoustic_l2_window_t l2;
         analyze_l2(&ws, pcm, (int64_t)(i + 2) * 1000000LL, &l1, &l2);
         EXPECT(l2.eligible);
         EXPECT(l2.has_envelope_cv);
@@ -457,16 +457,16 @@ static int test_h4_am_phases(void)
 
 static int test_h5_chirp(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
     int32_t *pcm_tone = calloc(N_SAMP, sizeof(int32_t));
     int32_t *pcm_chirp = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm_tone && pcm_chirp);
     fill_tone(pcm_tone, N_SAMP, 1000.0, 0.2);
     fill_chirp(pcm_chirp, N_SAMP, 500.0, 3000.0, 0.2);
 
-    dbmap_l1_window_t l1t, l1c;
-    dbmap_l2_window_t l2t, l2c;
+    sp_acoustic_l1_window_t l1t, l1c;
+    sp_acoustic_l2_window_t l2t, l2c;
     analyze_l2(&ws, pcm_tone, 1000000, &l1t, &l2t);
     analyze_l2(&ws, pcm_chirp, 2000000, &l1c, &l2c);
 
@@ -485,16 +485,16 @@ static int test_h5_chirp(void)
 
 static int test_h6_pulse_train(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
     int32_t *pcm_tone = calloc(N_SAMP, sizeof(int32_t));
     int32_t *pcm_pulse = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm_tone && pcm_pulse);
     fill_tone(pcm_tone, N_SAMP, 1000.0, 0.2);
     fill_pulse_train(pcm_pulse, N_SAMP, 0.05, 0.005, 0.4);
 
-    dbmap_l1_window_t l1t, l1p;
-    dbmap_l2_window_t l2t, l2p;
+    sp_acoustic_l1_window_t l1t, l1p;
+    sp_acoustic_l2_window_t l2t, l2p;
     analyze_l2(&ws, pcm_tone, 1000000, &l1t, &l2t);
     analyze_l2(&ws, pcm_pulse, 2000000, &l1p, &l2p);
     free(pcm_tone);
@@ -510,13 +510,13 @@ static int test_h6_pulse_train(void)
 
 static int test_h7_near_silence(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
     int32_t *pcm = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm != NULL);
 
-    dbmap_l1_window_t l1;
-    dbmap_l2_window_t l2;
+    sp_acoustic_l1_window_t l1;
+    sp_acoustic_l2_window_t l2;
     analyze_l2(&ws, pcm, 1000000, &l1, &l2);
     EXPECT(!l2.eligible);
     EXPECT(!l2.has_spectral_flux);
@@ -531,26 +531,26 @@ static int test_h7_near_silence(void)
 
 static int test_h8_abrupt_delta(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
-    dbmap_l2_continuity_t cache;
-    dbmap_l2_continuity_reset(&cache);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
+    sp_acoustic_l2_continuity_t cache;
+    sp_acoustic_l2_continuity_reset(&cache);
 
     int32_t *pcm = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm != NULL);
 
     fill_tone(pcm, N_SAMP, 1000.0, 0.2);
-    dbmap_l1_window_t l1a;
-    dbmap_l2_window_t l2a;
+    sp_acoustic_l1_window_t l1a;
+    sp_acoustic_l2_window_t l2a;
     analyze_l2(&ws, pcm, 1000000, &l1a, &l2a);
-    dbmap_l2_continuity_push(&cache, WIN_MS, &l2a);
+    sp_acoustic_l2_continuity_push(&cache, WIN_MS, &l2a);
     EXPECT(!l2a.has_dominant_delta);
 
     fill_tone(pcm, N_SAMP, 3000.0, 0.2);
-    dbmap_l1_window_t l1b;
-    dbmap_l2_window_t l2b;
+    sp_acoustic_l1_window_t l1b;
+    sp_acoustic_l2_window_t l2b;
     analyze_l2(&ws, pcm, 2000000, &l1b, &l2b);
-    dbmap_l2_continuity_push(&cache, WIN_MS, &l2b);
+    sp_acoustic_l2_continuity_push(&cache, WIN_MS, &l2b);
     free(pcm);
 
     EXPECT(l2b.has_dominant_delta);
@@ -560,23 +560,23 @@ static int test_h8_abrupt_delta(void)
 
 static int test_h9_missing_and_invalid_prev(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
-    dbmap_l2_continuity_t cache;
-    dbmap_l2_continuity_reset(&cache);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
+    sp_acoustic_l2_continuity_t cache;
+    sp_acoustic_l2_continuity_reset(&cache);
     int32_t *pcm = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm != NULL);
 
     fill_tone(pcm, N_SAMP, 1000.0, 0.2);
-    dbmap_l1_window_t l1;
-    dbmap_l2_window_t l2;
+    sp_acoustic_l1_window_t l1;
+    sp_acoustic_l2_window_t l2;
     analyze_l2(&ws, pcm, 1000000, &l1, &l2);
-    dbmap_l2_continuity_push(&cache, WIN_MS, &l2);
+    sp_acoustic_l2_continuity_push(&cache, WIN_MS, &l2);
     EXPECT(cache.has_prev);
 
     /* Missing preceding: jump by 2 s (skip one window). */
     analyze_l2(&ws, pcm, 3000000, &l1, &l2);
-    dbmap_l2_continuity_push(&cache, WIN_MS, &l2);
+    sp_acoustic_l2_continuity_push(&cache, WIN_MS, &l2);
     EXPECT(!l2.has_dominant_delta);
     EXPECT(cache.has_prev); /* current installed after break */
 
@@ -585,18 +585,18 @@ static int test_h9_missing_and_invalid_prev(void)
     pcm[10] = (int32_t)FS - 1;
     analyze_l2(&ws, pcm, 4000000, &l1, &l2);
     EXPECT(l2.clipped);
-    dbmap_l2_continuity_push(&cache, WIN_MS, &l2);
+    sp_acoustic_l2_continuity_push(&cache, WIN_MS, &l2);
     EXPECT(!cache.has_prev);
     EXPECT(!l2.has_dominant_delta);
 
     fill_tone(pcm, N_SAMP, 1000.0, 0.2);
     analyze_l2(&ws, pcm, 5000000, &l1, &l2);
-    dbmap_l2_continuity_push(&cache, WIN_MS, &l2);
+    sp_acoustic_l2_continuity_push(&cache, WIN_MS, &l2);
     EXPECT(!l2.has_dominant_delta); /* first after break */
     EXPECT(cache.has_prev);
 
     analyze_l2(&ws, pcm, 6000000, &l1, &l2);
-    dbmap_l2_continuity_push(&cache, WIN_MS, &l2);
+    sp_acoustic_l2_continuity_push(&cache, WIN_MS, &l2);
     EXPECT(l2.has_dominant_delta);
     EXPECT(near_abs(l2.dominant_delta_hz, 0.0, EPS_DELTA_HZ));
     free(pcm);
@@ -605,27 +605,27 @@ static int test_h9_missing_and_invalid_prev(void)
 
 static int test_h10_timestamp_gap(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
-    dbmap_l2_continuity_t cache;
-    dbmap_l2_continuity_reset(&cache);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
+    sp_acoustic_l2_continuity_t cache;
+    sp_acoustic_l2_continuity_reset(&cache);
     int32_t *pcm = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm != NULL);
     fill_tone(pcm, N_SAMP, 1000.0, 0.2);
 
-    dbmap_l1_window_t l1;
-    dbmap_l2_window_t l2;
+    sp_acoustic_l1_window_t l1;
+    sp_acoustic_l2_window_t l2;
     analyze_l2(&ws, pcm, 1000000, &l1, &l2);
-    dbmap_l2_continuity_push(&cache, WIN_MS, &l2);
+    sp_acoustic_l2_continuity_push(&cache, WIN_MS, &l2);
 
     /* Gap of 100001 µs beyond nominal 1 s (> ±100 ms). */
     analyze_l2(&ws, pcm, 1000000 + 1000000 + 100001, &l1, &l2);
-    dbmap_l2_continuity_push(&cache, WIN_MS, &l2);
+    sp_acoustic_l2_continuity_push(&cache, WIN_MS, &l2);
     EXPECT(!l2.has_dominant_delta);
 
     /* Within tolerance: +50 ms. */
     analyze_l2(&ws, pcm, l2.window_end_mono_us + 1000000 + 50000, &l1, &l2);
-    dbmap_l2_continuity_push(&cache, WIN_MS, &l2);
+    sp_acoustic_l2_continuity_push(&cache, WIN_MS, &l2);
     EXPECT(l2.has_dominant_delta);
     free(pcm);
     return 0;
@@ -633,23 +633,23 @@ static int test_h10_timestamp_gap(void)
 
 static int test_h11_episode_reset(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
-    dbmap_l2_continuity_t cache;
-    dbmap_l2_continuity_reset(&cache);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
+    sp_acoustic_l2_continuity_t cache;
+    sp_acoustic_l2_continuity_reset(&cache);
     int32_t *pcm = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm != NULL);
     fill_tone(pcm, N_SAMP, 1000.0, 0.2);
 
-    dbmap_l1_window_t l1;
-    dbmap_l2_window_t l2;
+    sp_acoustic_l1_window_t l1;
+    sp_acoustic_l2_window_t l2;
     analyze_l2(&ws, pcm, 1000000, &l1, &l2);
-    dbmap_l2_continuity_push(&cache, WIN_MS, &l2);
+    sp_acoustic_l2_continuity_push(&cache, WIN_MS, &l2);
     EXPECT(cache.has_prev);
 
-    dbmap_l2_continuity_reset(&cache); /* episode END / reset */
+    sp_acoustic_l2_continuity_reset(&cache); /* episode END / reset */
     analyze_l2(&ws, pcm, 2000000, &l1, &l2);
-    dbmap_l2_continuity_push(&cache, WIN_MS, &l2);
+    sp_acoustic_l2_continuity_push(&cache, WIN_MS, &l2);
     EXPECT(!l2.has_dominant_delta);
     free(pcm);
     return 0;
@@ -657,32 +657,32 @@ static int test_h11_episode_reset(void)
 
 static int test_h12_interval_boundary(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
-    dbmap_l2_continuity_t cache;
-    dbmap_l2_continuity_reset(&cache);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
+    sp_acoustic_l2_continuity_t cache;
+    sp_acoustic_l2_continuity_reset(&cache);
     int32_t *pcm = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm != NULL);
     fill_tone(pcm, N_SAMP, 1000.0, 0.2);
 
-    dbmap_l2_interval_accum_t a0, a1;
-    dbmap_l2_interval_accum_init(&a0, SR, WIN_MS, 0, 1000000);
-    dbmap_l2_interval_accum_init(&a1, SR, WIN_MS, 1000000, 2000000);
+    sp_acoustic_l2_interval_accum_t a0, a1;
+    sp_acoustic_l2_interval_accum_init(&a0, SR, WIN_MS, 0, 1000000);
+    sp_acoustic_l2_interval_accum_init(&a1, SR, WIN_MS, 1000000, 2000000);
 
-    dbmap_l1_window_t l1;
-    dbmap_l2_window_t l2;
+    sp_acoustic_l1_window_t l1;
+    sp_acoustic_l2_window_t l2;
     analyze_l2(&ws, pcm, 1000000, &l1, &l2);
-    dbmap_l2_continuity_push(&cache, WIN_MS, &l2);
-    dbmap_l2_interval_accum_add(&a0, &l2);
+    sp_acoustic_l2_continuity_push(&cache, WIN_MS, &l2);
+    sp_acoustic_l2_interval_accum_add(&a0, &l2);
 
     analyze_l2(&ws, pcm, 2000000, &l1, &l2);
-    dbmap_l2_continuity_push(&cache, WIN_MS, &l2);
+    sp_acoustic_l2_continuity_push(&cache, WIN_MS, &l2);
     EXPECT(l2.has_dominant_delta);
-    dbmap_l2_interval_accum_add(&a1, &l2);
+    sp_acoustic_l2_interval_accum_add(&a1, &l2);
 
-    dbmap_l2_interval_t i0, i1;
-    dbmap_l2_interval_accum_finalize(&a0, &i0);
-    dbmap_l2_interval_accum_finalize(&a1, &i1);
+    sp_acoustic_l2_interval_t i0, i1;
+    sp_acoustic_l2_interval_accum_finalize(&a0, &i0);
+    sp_acoustic_l2_interval_accum_finalize(&a1, &i1);
     free(pcm);
 
     EXPECT(i0.window_count == 1);
@@ -697,12 +697,12 @@ static int test_h12_interval_boundary(void)
 
 static int test_overflow_vs_empty(void)
 {
-    dbmap_l2_interval_accum_t empty_acc, ov_acc;
-    dbmap_l2_interval_accum_init(&empty_acc, SR, WIN_MS, 0, 1000000);
-    dbmap_l2_interval_accum_init(&ov_acc, SR, WIN_MS, 0, 1000000);
+    sp_acoustic_l2_interval_accum_t empty_acc, ov_acc;
+    sp_acoustic_l2_interval_accum_init(&empty_acc, SR, WIN_MS, 0, 1000000);
+    sp_acoustic_l2_interval_accum_init(&ov_acc, SR, WIN_MS, 0, 1000000);
 
-    dbmap_l2_interval_t empty_out, ov_out;
-    dbmap_l2_interval_accum_finalize(&empty_acc, &empty_out);
+    sp_acoustic_l2_interval_t empty_out, ov_out;
+    sp_acoustic_l2_interval_accum_finalize(&empty_acc, &empty_out);
     EXPECT(!empty_out.history_overflow);
     EXPECT(empty_out.window_count == 0);
     EXPECT(empty_out.invalid_window_count == 0);
@@ -710,18 +710,18 @@ static int test_overflow_vs_empty(void)
     EXPECT(!empty_out.has_spectral_flux_mean);
 
     /* Pretend we had data then overflow clears (Option A). */
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
     int32_t *pcm = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm != NULL);
     fill_tone(pcm, N_SAMP, 1000.0, 0.2);
-    dbmap_l1_window_t l1;
-    dbmap_l2_window_t l2;
+    sp_acoustic_l1_window_t l1;
+    sp_acoustic_l2_window_t l2;
     analyze_l2(&ws, pcm, 500000, &l1, &l2);
-    dbmap_l2_interval_accum_add(&ov_acc, &l2);
+    sp_acoustic_l2_interval_accum_add(&ov_acc, &l2);
     EXPECT(ov_acc.window_count == 1);
-    dbmap_l2_interval_accum_mark_overflow(&ov_acc);
-    dbmap_l2_interval_accum_finalize(&ov_acc, &ov_out);
+    sp_acoustic_l2_interval_accum_mark_overflow(&ov_acc);
+    sp_acoustic_l2_interval_accum_finalize(&ov_acc, &ov_out);
     free(pcm);
 
     EXPECT(ov_out.history_overflow);
@@ -768,21 +768,21 @@ static void fill_alternating_tone_silence(
 
 static int test_invalid_and_feature_specific(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
     int32_t *pcm = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm != NULL);
 
-    dbmap_l2_interval_accum_t acc;
-    dbmap_l2_interval_accum_init(&acc, SR, WIN_MS, 0, 5000000);
+    sp_acoustic_l2_interval_accum_t acc;
+    sp_acoustic_l2_interval_accum_init(&acc, SR, WIN_MS, 0, 5000000);
 
     /* Ordinary invalid (silence). */
     memset(pcm, 0, N_SAMP * sizeof(int32_t));
-    dbmap_l1_window_t l1;
-    dbmap_l2_window_t l2;
+    sp_acoustic_l1_window_t l1;
+    sp_acoustic_l2_window_t l2;
     analyze_l2(&ws, pcm, 1000000, &l1, &l2);
     EXPECT(!l2.eligible);
-    dbmap_l2_interval_accum_add(&acc, &l2);
+    sp_acoustic_l2_interval_accum_add(&acc, &l2);
 
     /* Eligible tone. */
     fill_tone(pcm, N_SAMP, 1000.0, 0.2);
@@ -790,10 +790,10 @@ static int test_invalid_and_feature_specific(void)
     EXPECT(l2.eligible);
     EXPECT(l2.has_spectral_flux);
     EXPECT(l2.has_envelope_cv);
-    dbmap_l2_interval_accum_add(&acc, &l2);
+    sp_acoustic_l2_interval_accum_add(&acc, &l2);
 
-    dbmap_l2_interval_t out;
-    dbmap_l2_interval_accum_finalize(&acc, &out);
+    sp_acoustic_l2_interval_t out;
+    sp_acoustic_l2_interval_accum_finalize(&acc, &out);
     free(pcm);
 
     EXPECT(out.window_count == 1);
@@ -809,8 +809,8 @@ static int test_invalid_and_feature_specific(void)
  */
 static int test_feature_independence_flux_absent_env_present(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
     int32_t *pcm = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm != NULL);
     fill_alternating_tone_silence(pcm, N_SAMP, 1000.0, 0.2);
@@ -821,8 +821,8 @@ static int test_feature_independence_flux_absent_env_present(void)
     EXPECT(ref.has_env);
     EXPECT(ref.env_n >= 2u);
 
-    dbmap_l1_window_t l1;
-    dbmap_l2_window_t l2;
+    sp_acoustic_l1_window_t l1;
+    sp_acoustic_l2_window_t l2;
     analyze_l2(&ws, pcm, 1000000, &l1, &l2);
 
     EXPECT(l1.valid);
@@ -834,11 +834,11 @@ static int test_feature_independence_flux_absent_env_present(void)
     EXPECT(l2.envelope_cv > 0.05); /* level alternation on even frames */
     EXPECT(near_abs(l2.envelope_cv, ref.env_cv, EPS_ENV_ABS));
 
-    dbmap_l2_interval_accum_t acc;
-    dbmap_l2_interval_accum_init(&acc, SR, WIN_MS, 0, 2000000);
-    dbmap_l2_interval_accum_add(&acc, &l2);
-    dbmap_l2_interval_t out;
-    dbmap_l2_interval_accum_finalize(&acc, &out);
+    sp_acoustic_l2_interval_accum_t acc;
+    sp_acoustic_l2_interval_accum_init(&acc, SR, WIN_MS, 0, 2000000);
+    sp_acoustic_l2_interval_accum_add(&acc, &l2);
+    sp_acoustic_l2_interval_t out;
+    sp_acoustic_l2_interval_accum_finalize(&acc, &out);
     free(pcm);
 
     EXPECT(out.window_count == 1);
@@ -891,8 +891,8 @@ static void note_err(
 
 static int test_golden_float_double_error_survey(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
     int32_t *pcm = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm != NULL);
 
@@ -945,8 +945,8 @@ static int test_golden_float_double_error_survey(void)
 
         ref_intra_t ref;
         ref_intra_from_pcm(pcm, N_SAMP, &ref);
-        dbmap_l1_window_t l1;
-        dbmap_l2_window_t l2;
+        sp_acoustic_l1_window_t l1;
+        sp_acoustic_l2_window_t l2;
         analyze_l2(&ws, pcm, (int64_t)(i + 1) * 1000000LL, &l1, &l2);
 
         if (ref.has_flux != (l2.has_spectral_flux ? 1 : 0)) {
@@ -1026,20 +1026,20 @@ static int test_golden_float_double_error_survey(void)
 
     /* Dominant delta: on-bin 1 kHz→3 kHz is exactly 128 bins * 15.625. */
     {
-        dbmap_l1_workspace_t ws2;
-        dbmap_l1_workspace_init(&ws2);
-        dbmap_l2_continuity_t cache;
-        dbmap_l2_continuity_reset(&cache);
+        sp_acoustic_l1_workspace_t ws2;
+        sp_acoustic_l1_workspace_init(&ws2);
+        sp_acoustic_l2_continuity_t cache;
+        sp_acoustic_l2_continuity_reset(&cache);
         int32_t *p2 = calloc(N_SAMP, sizeof(int32_t));
         EXPECT(p2 != NULL);
         fill_tone(p2, N_SAMP, 1000.0, 0.2);
-        dbmap_l1_window_t l1;
-        dbmap_l2_window_t l2;
+        sp_acoustic_l1_window_t l1;
+        sp_acoustic_l2_window_t l2;
         analyze_l2(&ws2, p2, 1000000, &l1, &l2);
-        dbmap_l2_continuity_push(&cache, WIN_MS, &l2);
+        sp_acoustic_l2_continuity_push(&cache, WIN_MS, &l2);
         fill_tone(p2, N_SAMP, 3000.0, 0.2);
         analyze_l2(&ws2, p2, 2000000, &l1, &l2);
-        dbmap_l2_continuity_push(&cache, WIN_MS, &l2);
+        sp_acoustic_l2_continuity_push(&cache, WIN_MS, &l2);
         free(p2);
         EXPECT(l2.has_dominant_delta);
         const double err = fabs((double)l2.dominant_delta_hz - 2000.0);
@@ -1057,16 +1057,16 @@ static int test_golden_float_double_error_survey(void)
 
 static int test_l1_unchanged_with_ex(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
     int32_t *pcm = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm != NULL);
     fill_tone(pcm, N_SAMP, 1000.0, 0.2);
 
-    dbmap_l1_window_t a, b;
-    dbmap_l2_intra_metrics_t intra;
-    dbmap_l1_analyze_window(&ws, pcm, N_SAMP, FS_BITS, SR, WIN_MS, 1000000, &a);
-    dbmap_l1_analyze_window_ex(
+    sp_acoustic_l1_window_t a, b;
+    sp_acoustic_l2_intra_metrics_t intra;
+    sp_acoustic_l1_analyze_window(&ws, pcm, N_SAMP, FS_BITS, SR, WIN_MS, 1000000, &a);
+    sp_acoustic_l1_analyze_window_ex(
         &ws, pcm, N_SAMP, FS_BITS, SR, WIN_MS, 1000000, &b, &intra
     );
     free(pcm);
@@ -1086,14 +1086,14 @@ static int test_l1_unchanged_with_ex(void)
 /** Workspace init zeros prev_power; sizeof includes the L2 flux scratch. */
 static int test_workspace_init_prev_power(void)
 {
-    dbmap_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_t ws;
     memset(&ws, 0xA5, sizeof(ws));
-    dbmap_l1_workspace_init(&ws);
-    for (uint32_t k = 0; k < (uint32_t)DBMAP_L1_FFT_BINS; k++) {
+    sp_acoustic_l1_workspace_init(&ws);
+    for (uint32_t k = 0; k < (uint32_t)SP_ACOUSTIC_L1_FFT_BINS; k++) {
         EXPECT(ws.prev_power[k] == 0.0f);
     }
     EXPECT(ws.tables_ready);
-    EXPECT(sizeof(dbmap_l1_workspace_t) >= sizeof(float) * (size_t)DBMAP_L1_FFT_BINS);
+    EXPECT(sizeof(sp_acoustic_l1_workspace_t) >= sizeof(float) * (size_t)SP_ACOUSTIC_L1_FFT_BINS);
     return 0;
 }
 
@@ -1103,10 +1103,10 @@ static int test_workspace_init_prev_power(void)
  */
 static int test_workspace_prev_power_independence(void)
 {
-    dbmap_l1_workspace_t ws_a, ws_b, ws_clean;
-    dbmap_l1_workspace_init(&ws_a);
-    dbmap_l1_workspace_init(&ws_b);
-    dbmap_l1_workspace_init(&ws_clean);
+    sp_acoustic_l1_workspace_t ws_a, ws_b, ws_clean;
+    sp_acoustic_l1_workspace_init(&ws_a);
+    sp_acoustic_l1_workspace_init(&ws_b);
+    sp_acoustic_l1_workspace_init(&ws_clean);
 
     int32_t *pcm_tone = calloc(N_SAMP, sizeof(int32_t));
     int32_t *pcm_noise = calloc(N_SAMP, sizeof(int32_t));
@@ -1114,15 +1114,15 @@ static int test_workspace_prev_power_independence(void)
     fill_tone(pcm_tone, N_SAMP, 1000.0, 0.25);
     fill_noise(pcm_noise, N_SAMP, 42u, 0.2);
 
-    dbmap_l1_window_t l1;
-    dbmap_l2_window_t flux_tone_clean, flux_noise_clean, flux_tone_a, flux_noise_b;
+    sp_acoustic_l1_window_t l1;
+    sp_acoustic_l2_window_t flux_tone_clean, flux_noise_clean, flux_tone_a, flux_noise_b;
     analyze_l2(&ws_clean, pcm_tone, 1000000, &l1, &flux_tone_clean);
-    dbmap_l1_workspace_init(&ws_clean);
+    sp_acoustic_l1_workspace_init(&ws_clean);
     analyze_l2(&ws_clean, pcm_noise, 1000000, &l1, &flux_noise_clean);
 
     /* Dirty ws_a with tone, then poison remaining prev_power cells. */
     analyze_l2(&ws_a, pcm_tone, 1000000, &l1, &flux_tone_a);
-    for (uint32_t k = 0; k < (uint32_t)DBMAP_L1_FFT_BINS; k++) {
+    for (uint32_t k = 0; k < (uint32_t)SP_ACOUSTIC_L1_FFT_BINS; k++) {
         ws_a.prev_power[k] = 1.0e9f;
     }
     analyze_l2(&ws_b, pcm_noise, 1000000, &l1, &flux_noise_b);
@@ -1141,7 +1141,7 @@ static int test_workspace_prev_power_independence(void)
     }
 
     /* After poisoning ws_a, a fresh tone analyze on ws_a must still match clean. */
-    dbmap_l2_window_t flux_tone_a2;
+    sp_acoustic_l2_window_t flux_tone_a2;
     analyze_l2(&ws_a, pcm_tone, 2000000, &l1, &flux_tone_a2);
     EXPECT(flux_tone_a2.has_spectral_flux == flux_tone_clean.has_spectral_flux);
     if (flux_tone_clean.has_spectral_flux) {
@@ -1161,16 +1161,16 @@ static int test_workspace_prev_power_independence(void)
  */
 static int test_no_stale_first_frame_across_calls(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
     int32_t *pcm_a = calloc(N_SAMP, sizeof(int32_t));
     int32_t *pcm_b = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm_a != NULL && pcm_b != NULL);
     fill_tone(pcm_a, N_SAMP, 1000.0, 0.25);
     fill_tone(pcm_b, N_SAMP, 3000.0, 0.25);
 
-    dbmap_l1_window_t l1;
-    dbmap_l2_window_t solo, after_other;
+    sp_acoustic_l1_window_t l1;
+    sp_acoustic_l2_window_t solo, after_other;
     analyze_l2(&ws, pcm_b, 1000000, &l1, &solo);
 
     /* Contaminate workspace with a different spectrum, then re-run pcm_b. */
@@ -1194,29 +1194,29 @@ static int test_no_stale_first_frame_across_calls(void)
 
 static int test_population_stdev_interval(void)
 {
-    dbmap_l1_workspace_t ws;
-    dbmap_l1_workspace_init(&ws);
-    dbmap_l2_continuity_t cache;
-    dbmap_l2_continuity_reset(&cache);
+    sp_acoustic_l1_workspace_t ws;
+    sp_acoustic_l1_workspace_init(&ws);
+    sp_acoustic_l2_continuity_t cache;
+    sp_acoustic_l2_continuity_reset(&cache);
     int32_t *pcm = calloc(N_SAMP, sizeof(int32_t));
     EXPECT(pcm != NULL);
 
-    dbmap_l2_interval_accum_t acc;
-    dbmap_l2_interval_accum_init(&acc, SR, WIN_MS, 0, 5000000);
+    sp_acoustic_l2_interval_accum_t acc;
+    sp_acoustic_l2_interval_accum_init(&acc, SR, WIN_MS, 0, 5000000);
 
     const double freqs[] = {1000.0, 1000.0, 3000.0};
     for (int i = 0; i < 3; i++) {
         fill_tone(pcm, N_SAMP, freqs[i], 0.2);
-        dbmap_l1_window_t l1;
-        dbmap_l2_window_t l2;
+        sp_acoustic_l1_window_t l1;
+        sp_acoustic_l2_window_t l2;
         analyze_l2(&ws, pcm, (int64_t)(i + 1) * 1000000LL, &l1, &l2);
-        dbmap_l2_continuity_push(&cache, WIN_MS, &l2);
-        dbmap_l2_interval_accum_add(&acc, &l2);
+        sp_acoustic_l2_continuity_push(&cache, WIN_MS, &l2);
+        sp_acoustic_l2_interval_accum_add(&acc, &l2);
     }
     free(pcm);
 
-    dbmap_l2_interval_t out;
-    dbmap_l2_interval_accum_finalize(&acc, &out);
+    sp_acoustic_l2_interval_t out;
+    sp_acoustic_l2_interval_accum_finalize(&acc, &out);
     EXPECT(out.window_count == 3);
     EXPECT(out.dominant_delta_valid_count == 2); /* pairs: 0 then ~2000 */
     EXPECT(out.has_dominant_delta_mean);

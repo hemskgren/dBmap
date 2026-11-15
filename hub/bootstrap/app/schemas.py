@@ -420,6 +420,9 @@ class ObservationContext(BaseModel):
     termination_reason: (
         Literal["natural", "invalid_hold", "ota_reboot", "report_rotation"] | None
     ) = None
+    # Working Critical Path mark (ADR 0003). Omit/null on normal Observations.
+    # Only known value accepted today; unknown strings reject via Literal.
+    origin: Literal["critical_path"] | None = None
 
     @field_validator("event_time_utc")
     @classmethod

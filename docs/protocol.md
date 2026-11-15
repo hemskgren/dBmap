@@ -163,6 +163,11 @@ because of a reporting budget/interval rotation; physical track continuity is
 conveyed by a stable `identity.track_id`, not inferred from the reason alone.
 The hub rejects `termination_reason` on other emission kinds.
 
+Optional `context.origin` marks which technical Observation path produced the
+report. The only accepted value today is `critical_path` (Critical Observation
+Path; ADR 0003). Omit the field (or send JSON `null`) on normal Observations.
+Unknown origin strings and unknown context keys are rejected (`extra` forbid).
+
 `context.event_time_utc` must include a timezone and marks the beginning of
 the observation interval; the hub normalizes it to UTC.
 `interval_duration_ms` is the interval length;

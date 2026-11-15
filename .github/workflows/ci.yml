@@ -1,0 +1,59 @@
+# Repo CI: always lint; firmware host gate only when firmware-impacting paths change.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linting:
+    runs-on: ubuntu-slim
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Sync lint toolchain
+        run: uv sync --group dev
+
+      - name: Ruff check (repo)
+        run: uv run ruff check
+
+  changes:
+    runs-on: ubuntu-slim
+    outputs:
+      firmware: ${{ steps.filter.outputs.firmware }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Prefer over-inclusion: builder / Compose can affect Ear builds without
+      # touching firmware/** (e.g. builder image or mount changes).
+      - name: Detect firmware-impacting paths
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            firmware:
+              - 'firmware/**'
+              - 'firmware-builder/**'
+              - 'compose.yaml'
+              - '.github/workflows/ci.yml'
+
+  firmware-fast-gate:
+    needs: [linting, changes]
+    if: needs.changes.outputs.firmware == 'true'
+    runs-on: ubuntu-slim
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install host C toolchain
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+
+      - name: Run firmware fast gate (host-only)
+        run: ./firmware/scripts/run_firmware_fast_gate.sh --host-only

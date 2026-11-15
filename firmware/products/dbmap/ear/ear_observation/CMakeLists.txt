@@ -11,6 +11,7 @@ idf_component_register(
         node_common
         mic
         ear_acoustic
+        audio
         ae_runtime
         candidate_engine
         observation
