@@ -42,13 +42,17 @@ typedef struct {
     uint32_t analyze_count;
     uint32_t analyze_us_last;
     uint32_t analyze_us_max;
-    /** Stages inside dbmap_l0_analyze_window (last call, mic0 path). */
+    /** Sum of wall-clock analyze µs for avg = sum/count (multi-mic pass). */
+    uint64_t analyze_us_sum;
+    /** Stages from last serial channel L0 call (not mic0-specific under multi-mic). */
     uint32_t stage_reset_us;
     uint32_t stage_sample_loop_us;
     uint32_t stage_post_us;
     uint32_t pending_overwrite; /* capture produced a window before prior was analyzed */
     uint32_t free_heap_after_init;
     uint32_t free_spiram_after_init;
+    /** Active mic count for the last successful analyze pass. */
+    uint8_t last_active_mic_count;
 } dbmap_ear_mic_l0_perf_t;
 
 /**
@@ -93,6 +97,7 @@ typedef struct {
     uint32_t analyze_count;
     uint32_t analyze_us_last;
     uint32_t analyze_us_max;
+    uint64_t analyze_us_sum;
 } dbmap_ear_mic_l1_perf_t;
 
 /** Latest L1 window for mic 0. */
@@ -120,6 +125,7 @@ typedef struct {
     uint32_t analyze_count;
     uint32_t combined_us_last;
     uint32_t combined_us_max;
+    uint64_t combined_us_sum;
     uint32_t incremental_estimated_us_last;
     uint32_t incremental_estimated_us_max;
     uint32_t rms_us_last;

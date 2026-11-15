@@ -315,8 +315,9 @@ static void test_auto_detect_never_starts(void)
     printf("test_auto_detect_never_starts\n");
     ear_critical_path_t cp;
     setup(&cp);
-    /* Even if flag flipped on, this slice has no acoustic START implementation. */
+    /* Production auto_detect flag alone never STARTS (no approved detector). */
     cp.cfg.auto_detect_enabled = true;
+    cp.cfg.lab_impulse_enabled = false;
     ae_signature_t loud = make_sig(-40.0f, -0.5f, 40.0f, -45.0f);
     ear_critical_on_signature(&cp, &loud, 1000000);
     EXPECT(!ear_critical_is_active(&cp));
@@ -324,6 +325,35 @@ static void test_auto_detect_never_starts(void)
     ear_critical_diag_t d;
     ear_critical_get_diag(&cp, &d);
     EXPECT(d.auto_start_blocked >= 1);
+}
+
+static void test_lab_impulse_starts_and_times(void)
+{
+    printf("test_lab_impulse_starts_and_times\n");
+    ear_critical_path_t cp;
+    setup(&cp);
+    cp.cfg.lab_impulse_enabled = true;
+    cp.cfg.lab_crest_floor_db = 12.0f;
+    cp.cfg.lab_peak_dbfs_min = -20.0f;
+
+    ae_signature_t quiet = make_sig(-55.0f, -50.0f, 5.0f, -60.0f);
+    quiet.window_end_mono_us = 900000;
+    ear_critical_on_signature(&cp, &quiet, 1000000);
+    EXPECT(!ear_critical_is_active(&cp));
+    ear_critical_diag_t d;
+    ear_critical_get_diag(&cp, &d);
+    EXPECT(d.lab_eval >= 1);
+    EXPECT(d.lab_trigger == 0);
+
+    ae_signature_t impulse = make_sig(-40.0f, -2.0f, 38.0f, -45.0f);
+    impulse.window_end_mono_us = 1000000;
+    ear_critical_on_signature(&cp, &impulse, 1050000);
+    EXPECT(ear_critical_is_active(&cp));
+    EXPECT(g_pub.starts == 1);
+    ear_critical_get_diag(&cp, &d);
+    EXPECT(d.lab_trigger == 1);
+    EXPECT(d.lab_start_ok == 1);
+    EXPECT(d.lab_detect_us_last == 50000u);
 }
 
 static void test_on_signature_idle_reset_when_active(void)
@@ -353,6 +383,7 @@ int main(void)
     test_ota_cleanup();
     test_end_releases_even_if_publish_fails();
     test_auto_detect_never_starts();
+    test_lab_impulse_starts_and_times();
     test_on_signature_idle_reset_when_active();
 
     if (g_failures != 0) {

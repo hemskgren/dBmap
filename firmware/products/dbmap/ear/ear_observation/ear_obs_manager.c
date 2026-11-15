@@ -504,7 +504,9 @@ void ear_obs_manager_on_promotion(
     if (om == NULL || c == NULL) {
         return;
     }
-    (void)evq_push(om, c->candidate_id, ev, c);
+    if (!evq_push(om, c->candidate_id, ev, c)) {
+        om->diag.evq_dropped++;
+    }
 }
 
 void ear_obs_manager_fill_snapshot_from_candidate(

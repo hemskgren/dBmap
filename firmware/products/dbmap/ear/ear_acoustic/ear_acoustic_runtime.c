@@ -22,14 +22,17 @@ static uint8_t s_active_mic_count;
 static uint32_t s_l0_analyze_count;
 static uint32_t s_l0_analyze_us_last;
 static uint32_t s_l0_analyze_us_max;
+static uint64_t s_l0_analyze_us_sum;
 #if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
 static uint32_t s_l1_analyze_count;
 static uint32_t s_l1_analyze_us_last;
 static uint32_t s_l1_analyze_us_max;
+static uint64_t s_l1_analyze_us_sum;
 #if defined(CONFIG_DBMAP_EAR_OBS_L2) && CONFIG_DBMAP_EAR_OBS_L2
 static uint32_t s_l2_analyze_count;
 static uint32_t s_l2_combined_us_last;
 static uint32_t s_l2_combined_us_max;
+static uint64_t s_l2_combined_us_sum;
 static uint32_t s_l2_incr_est_us_last;
 static uint32_t s_l2_incr_est_us_max;
 static uint32_t s_l2_rms_us_last;
@@ -46,6 +49,7 @@ static void pcm_ready_hook(uint32_t sample_rate_hz)
     s_l0_analyze_count = 0;
     s_l0_analyze_us_last = 0;
     s_l0_analyze_us_max = 0;
+    s_l0_analyze_us_sum = 0;
     ESP_LOGI(
         TAG,
         "multi-mic analyze ready sample_rate=%lu (serial L1 workspace reuse)",
@@ -55,6 +59,7 @@ static void pcm_ready_hook(uint32_t sample_rate_hz)
     s_l1_analyze_count = 0;
     s_l1_analyze_us_last = 0;
     s_l1_analyze_us_max = 0;
+    s_l1_analyze_us_sum = 0;
     ESP_LOGI(
         TAG,
         "L1 enabled fft=%u (one workspace ≈22.5 KiB, reused per channel)",
@@ -64,6 +69,7 @@ static void pcm_ready_hook(uint32_t sample_rate_hz)
     s_l2_analyze_count = 0;
     s_l2_combined_us_last = 0;
     s_l2_combined_us_max = 0;
+    s_l2_combined_us_sum = 0;
     s_l2_incr_est_us_last = 0;
     s_l2_incr_est_us_max = 0;
     s_l2_rms_us_last = 0;
@@ -155,6 +161,7 @@ esp_err_t dbmap_ear_acoustic_analyze_pcm_job(const sp_mic_pcm_job_t *job)
     s_active_mic_count = active;
     s_l0_analyze_count++;
     s_l0_analyze_us_last = us;
+    s_l0_analyze_us_sum += us;
     if (us > s_l0_analyze_us_max) {
         s_l0_analyze_us_max = us;
     }
@@ -164,6 +171,7 @@ esp_err_t dbmap_ear_acoustic_analyze_pcm_job(const sp_mic_pcm_job_t *job)
     s_l1_analyze_count++;
     s_l2_analyze_count++;
     s_l2_combined_us_last = us;
+    s_l2_combined_us_sum += us;
     if (us > s_l2_combined_us_max) {
         s_l2_combined_us_max = us;
     }
@@ -190,6 +198,7 @@ esp_err_t dbmap_ear_acoustic_analyze_pcm_job(const sp_mic_pcm_job_t *job)
 #else
     s_l1_analyze_count++;
     s_l1_analyze_us_last = us;
+    s_l1_analyze_us_sum += us;
     if (us > s_l1_analyze_us_max) {
         s_l1_analyze_us_max = us;
     }
@@ -282,6 +291,8 @@ esp_err_t dbmap_ear_mic_get_l0_perf(dbmap_ear_mic_l0_perf_t *out)
     out->analyze_count = s_l0_analyze_count;
     out->analyze_us_last = s_l0_analyze_us_last;
     out->analyze_us_max = s_l0_analyze_us_max;
+    out->analyze_us_sum = s_l0_analyze_us_sum;
+    out->last_active_mic_count = s_active_mic_count;
     portEXIT_CRITICAL(&s_lock);
     {
         sp_acoustic_l0_analyze_stages_t st;
@@ -352,6 +363,7 @@ esp_err_t dbmap_ear_mic_get_l1_perf(dbmap_ear_mic_l1_perf_t *out)
     out->analyze_count = s_l1_analyze_count;
     out->analyze_us_last = s_l1_analyze_us_last;
     out->analyze_us_max = s_l1_analyze_us_max;
+    out->analyze_us_sum = s_l1_analyze_us_sum;
     portEXIT_CRITICAL(&s_lock);
     return ESP_OK;
 #endif
@@ -420,6 +432,7 @@ esp_err_t dbmap_ear_mic_get_l2_perf(dbmap_ear_mic_l2_perf_t *out)
     out->analyze_count = s_l2_analyze_count;
     out->combined_us_last = s_l2_combined_us_last;
     out->combined_us_max = s_l2_combined_us_max;
+    out->combined_us_sum = s_l2_combined_us_sum;
     out->incremental_estimated_us_last = s_l2_incr_est_us_last;
     out->incremental_estimated_us_max = s_l2_incr_est_us_max;
     out->rms_us_last = s_l2_rms_us_last;

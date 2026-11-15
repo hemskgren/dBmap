@@ -5,7 +5,21 @@
 
 #include "ae_signature.h"
 
+#include <stdint.h>
 #include <string.h>
+
+#if defined(ESP_PLATFORM)
+#include "esp_timer.h"
+static int64_t crit_wall_us(void)
+{
+    return esp_timer_get_time();
+}
+#else
+static int64_t crit_wall_us(void)
+{
+    return 0;
+}
+#endif
 
 #ifndef EAR_CRITICAL_PERIODIC_MS_DEFAULT
 #define EAR_CRITICAL_PERIODIC_MS_DEFAULT 5000u
@@ -35,6 +49,9 @@ void ear_critical_config_set_defaults(ear_critical_config_t *cfg)
     cfg->match_distance_max = EAR_CRITICAL_MATCH_DISTANCE_DEFAULT;
     cfg->match_crest_floor_db = EAR_CRITICAL_MATCH_CREST_FLOOR_DEFAULT;
     cfg->auto_detect_enabled = false;
+    cfg->lab_impulse_enabled = false;
+    cfg->lab_crest_floor_db = EAR_CRITICAL_MATCH_CREST_FLOOR_DEFAULT;
+    cfg->lab_peak_dbfs_min = -20.0f;
 }
 
 bool ear_critical_init(ear_critical_path_t *cp, const ear_critical_config_t *cfg)
@@ -302,6 +319,29 @@ static void apply_evidence(ear_critical_path_t *cp, const ae_signature_t *sig, i
     }
 }
 
+static void note_lab_us(uint32_t *last, uint32_t *max, uint64_t *sum, uint32_t us)
+{
+    *last = us;
+    *sum += us;
+    if (us > *max) {
+        *max = us;
+    }
+}
+
+static bool lab_impulse_should_start(const ear_critical_path_t *cp, const ae_signature_t *sig)
+{
+    if (!cp->cfg.lab_impulse_enabled || !sig_usable(sig)) {
+        return false;
+    }
+    if (sig->crest_db >= cp->cfg.lab_crest_floor_db) {
+        return true;
+    }
+    if (sig->peak_dbfs >= cp->cfg.lab_peak_dbfs_min) {
+        return true;
+    }
+    return false;
+}
+
 void ear_critical_on_signature(ear_critical_path_t *cp, const ae_signature_t *sig, int64_t now_mono_us)
 {
     if (cp == NULL || sig == NULL) {
@@ -313,12 +353,67 @@ void ear_critical_on_signature(ear_critical_path_t *cp, const ae_signature_t *si
         return;
     }
     /*
-     * Automatic acoustic START is not implemented in this slice.
-     * Even if auto_detect_enabled is set, no production threshold exists;
-     * signatures never open a Critical Observation. Use force_start for tests.
+     * Production automatic acoustic START is not implemented.
+     * Even if auto_detect_enabled is set, no approved production threshold exists.
+     * LAB impulse harness (lab_impulse_enabled) may force_start for timing soaks.
      */
     (void)cp->cfg.auto_detect_enabled;
-    cp->diag.auto_start_blocked++;
+    if (!cp->cfg.lab_impulse_enabled) {
+        cp->diag.auto_start_blocked++;
+        return;
+    }
+
+    cp->diag.lab_eval++;
+    if (!lab_impulse_should_start(cp, sig)) {
+        return;
+    }
+
+    cp->diag.lab_trigger++;
+    {
+        uint32_t detect_us = 0u;
+        if (sig->window_end_mono_us > 0 && now_mono_us >= sig->window_end_mono_us) {
+            const int64_t d = now_mono_us - sig->window_end_mono_us;
+            detect_us = d > (int64_t)UINT32_MAX ? UINT32_MAX : (uint32_t)d;
+        }
+        note_lab_us(
+            &cp->diag.lab_detect_us_last,
+            &cp->diag.lab_detect_us_max,
+            &cp->diag.lab_detect_us_sum,
+            detect_us
+        );
+    }
+
+    const int64_t t0 = crit_wall_us();
+    const bool ok = start_active(cp, sig, now_mono_us);
+    const int64_t t1 = crit_wall_us();
+    if (ok) {
+        cp->diag.lab_start_ok++;
+    } else {
+        cp->diag.lab_start_fail++;
+    }
+    {
+        uint32_t force_us = 0u;
+        if (t1 > t0) {
+            const int64_t d = t1 - t0;
+            force_us = d > (int64_t)UINT32_MAX ? UINT32_MAX : (uint32_t)d;
+        }
+        note_lab_us(
+            &cp->diag.lab_force_us_last,
+            &cp->diag.lab_force_us_max,
+            &cp->diag.lab_force_us_sum,
+            force_us
+        );
+        uint32_t preserve_us = cp->diag.lab_detect_us_last;
+        if (force_us > 0u && preserve_us < UINT32_MAX - force_us) {
+            preserve_us += force_us;
+        }
+        note_lab_us(
+            &cp->diag.lab_preserve_us_last,
+            &cp->diag.lab_preserve_us_max,
+            &cp->diag.lab_preserve_us_sum,
+            preserve_us
+        );
+    }
 }
 
 void ear_critical_poll(ear_critical_path_t *cp, int64_t now_mono_us)

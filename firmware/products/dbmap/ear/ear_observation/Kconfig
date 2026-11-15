@@ -366,6 +366,34 @@ menu "dBmap Ear Observation"
             approved acoustic START threshold; leaving this off is required.
             Do not enable in field builds.
 
+    config DBMAP_EAR_OBS_CRITICAL_LAB_IMPULSE
+        bool "Critical Path: LAB impulse START for timing experiments (not production)"
+        default n
+        depends on DBMAP_EAR_OBS_CRITICAL_PATH
+        help
+            Measurement harness only. When enabled, completed-window AE signatures
+            that meet LAB crest/peak floors call force_start so Critical Path ON
+            soaks can measure detection→evidence latency. This is NOT gunshot
+            classification and must not ship as a product default.
+
+    config DBMAP_EAR_OBS_CRITICAL_LAB_CREST_FLOOR_DB_X1000
+        int "LAB impulse crest floor (dB ×1000)"
+        range 0 60000
+        default 12000
+        depends on DBMAP_EAR_OBS_CRITICAL_LAB_IMPULSE
+        help
+            Provisional lab threshold (12000 → 12.0 dB crest). Tune per stimulus;
+            not a production detector.
+
+    config DBMAP_EAR_OBS_CRITICAL_LAB_PEAK_DBFS_X1000
+        int "LAB impulse peak floor (dBFS ×1000, typically negative)"
+        range -120000 0
+        default -20000
+        depends on DBMAP_EAR_OBS_CRITICAL_LAB_IMPULSE
+        help
+            Provisional lab peak floor (e.g. -20000 → -20.0 dBFS). Trigger when
+            crest OR peak condition is met.
+
     config DBMAP_EAR_OBS_CRITICAL_PERIODIC_MS
         int "Critical Path PERIODIC interval (ms) — provisional default"
         range 1000 60000

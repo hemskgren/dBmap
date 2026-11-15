@@ -22,12 +22,21 @@ detection is hard-disabled** in this slice.
 | Idle timeout | 15000 ms | Resets only on experimental fingerprint match |
 | Max active | 30000 ms | Hard END |
 
-## Detection disabled
+## Detection disabled (production)
 
 - `CONFIG_DBMAP_EAR_OBS_CRITICAL_AUTO_DETECT` defaults **n**
-- `ear_critical_on_signature` **never** opens a Critical Observation (no production
-  trigger threshold is implemented)
+- Production path: `ear_critical_on_signature` does **not** open a Critical
+  Observation (no approved production trigger)
 - Crest/peak offline harness results are **not** production criteria
+
+## LAB impulse harness (measurement only)
+
+- `CONFIG_DBMAP_EAR_OBS_CRITICAL_LAB_IMPULSE` defaults **n**
+- When enabled (see `sdkconfig.defaults.critical_lab_impulse`), idle signatures
+  meeting provisional crest/peak floors call `force_start` and record
+  `lab_detect_us_*` / `lab_preserve_us_*` / `lab_force_us_*` for 240 MHz /
+  1000 Hz experiments ([`docs/diagnostics/ear-critical-path-perf-240-1000.md`](../../../docs/diagnostics/ear-critical-path-perf-240-1000.md))
+- **Not** gunshot classification; must not ship as a product default
 
 ## How to test the lifecycle without enabling detection
 

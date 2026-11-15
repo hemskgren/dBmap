@@ -1,0 +1,14 @@
+# Experimental tick-rate overlay — do NOT merge into sdkconfig.defaults.
+# Product defaults are already 240 MHz / FreeRTOS 100 Hz.
+# This overlay only raises the FreeRTOS tick to 1000 Hz (and reaffirms 240 MHz)
+# for A/B vs R0 or vs product-default 100 Hz builds.
+#
+# Must come AFTER any overlay that pins 160/100 (e.g. r0_ref):
+#   rm -f sdkconfig
+#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.r0_ref;sdkconfig.defaults.perf_240_1000" …
+#
+# CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_80 is not set
+# CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160 is not set
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+CONFIG_FREERTOS_HZ=1000

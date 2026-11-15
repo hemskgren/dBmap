@@ -49,6 +49,29 @@ typedef struct {
     uint32_t bg_ignored;
     uint32_t publish_fail;
     uint32_t auto_start_blocked;
+    /** LAB impulse harness: completed-window signatures evaluated for START. */
+    uint32_t lab_eval;
+    uint32_t lab_trigger;
+    uint32_t lab_start_ok;
+    uint32_t lab_start_fail;
+    /**
+     * Wall µs (esp_timer) from signature window_end_mono_us → lab decision.
+     * Only updated on lab_trigger attempts.
+     */
+    uint32_t lab_detect_us_last;
+    uint32_t lab_detect_us_max;
+    uint64_t lab_detect_us_sum;
+    /**
+     * Wall µs from window_end_mono_us → after force_start returns (evidence frozen
+     * in Critical binding; START publish may still be in flight / failed).
+     */
+    uint32_t lab_preserve_us_last;
+    uint32_t lab_preserve_us_max;
+    uint64_t lab_preserve_us_sum;
+    /** Wall µs spent inside force_start / start_active (decision→preserved). */
+    uint32_t lab_force_us_last;
+    uint32_t lab_force_us_max;
+    uint64_t lab_force_us_sum;
 } ear_critical_diag_t;
 
 /**
@@ -95,6 +118,13 @@ typedef struct {
      * Critical Observation. Inject/force APIs still work.
      */
     bool auto_detect_enabled;
+    /**
+     * LAB measurement harness (not production detection). When true, idle
+     * signatures meeting crest/peak floors call force_start.
+     */
+    bool lab_impulse_enabled;
+    float lab_crest_floor_db;
+    float lab_peak_dbfs_min;
     ear_critical_publish_fn publish;
     void *publish_user;
     ear_critical_uuid_fn uuid_fn;

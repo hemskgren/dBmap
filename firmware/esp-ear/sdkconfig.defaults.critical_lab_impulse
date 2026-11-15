@@ -1,0 +1,13 @@
+# Experimental Critical Path LAB impulse START — do NOT merge into product defaults.
+# Enables crest/peak threshold force_start for timing matrix C/D only.
+# This is NOT gunshot classification.
+#
+# Matrix C: …;sdkconfig.defaults.r0_ref;sdkconfig.defaults.critical_lab_impulse
+# Matrix D: …;sdkconfig.defaults.r0_ref;sdkconfig.defaults.perf_240_1000;sdkconfig.defaults.critical_lab_impulse
+# Remove existing sdkconfig before applying defaults.
+#
+CONFIG_DBMAP_EAR_OBS_CRITICAL_PATH=y
+CONFIG_DBMAP_EAR_OBS_CRITICAL_LAB_IMPULSE=y
+# Provisional lab floors (tune per stimulus on device):
+CONFIG_DBMAP_EAR_OBS_CRITICAL_LAB_CREST_FLOOR_DB_X1000=12000
+CONFIG_DBMAP_EAR_OBS_CRITICAL_LAB_PEAK_DBFS_X1000=-20000

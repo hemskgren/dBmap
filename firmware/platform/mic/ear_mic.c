@@ -10,6 +10,7 @@
 #include "sp_background_rms.h"
 #include "sp_mic_capture_diag.h"
 #include "sp_mic_channel_api.h"
+#include "sp_diag.h"
 #include "sp_health.h"
 #include "sp_i2s_stereo.h"
 #include "sp_mic_count.h"
@@ -1760,7 +1761,12 @@ esp_err_t sp_mic_start(const sp_effective_t *cfg, const sp_mic_config_t *mic_cfg
 
     sp_health_set_enricher(enrich_health);
 
-    BaseType_t ok = xTaskCreate(ear_mic_task, "sp_mic", EAR_MIC_TASK_STACK, NULL, 5, NULL);
+    TaskHandle_t mic_task = NULL;
+    BaseType_t ok =
+        xTaskCreate(ear_mic_task, "sp_mic", EAR_MIC_TASK_STACK, NULL, 5, &mic_task);
+    if (ok == pdPASS && mic_task != NULL) {
+        sp_diag_register_task("sp_mic", mic_task);
+    }
     if (ok != pdPASS) {
         return ESP_ERR_NO_MEM;
     }

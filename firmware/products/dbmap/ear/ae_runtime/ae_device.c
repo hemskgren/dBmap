@@ -10,6 +10,7 @@
 #include "sp_mic_window_job.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "sdkconfig.h"
 
 #include <string.h>
@@ -89,6 +90,28 @@ static void maybe_diag_log(void)
         (unsigned long)s_diag.stereo_degraded,
         (unsigned long)s_diag.stereo_pcm_incomplete
     );
+    {
+        const uint32_t an = s_diag.analyze_n;
+        const uint32_t pn = s_diag.post_dsp_n;
+        const unsigned long a_avg =
+            an > 0u ? (unsigned long)(s_diag.analyze_us_sum / an) : 0ul;
+        const unsigned long p_avg =
+            pn > 0u ? (unsigned long)(s_diag.post_dsp_us_sum / pn) : 0ul;
+        ESP_LOGI(
+            TAG,
+            "timing analyze_n=%lu analyze_us last=%lu avg=%lu max=%lu "
+            "post_dsp_n=%lu post_dsp_us last=%lu avg=%lu max=%lu "
+            "(wall us; post_dsp includes sync CE listeners)",
+            (unsigned long)an,
+            (unsigned long)s_diag.analyze_us_last,
+            a_avg,
+            (unsigned long)s_diag.analyze_us_max,
+            (unsigned long)pn,
+            (unsigned long)s_diag.post_dsp_us_last,
+            p_avg,
+            (unsigned long)s_diag.post_dsp_us_max
+        );
+    }
 #else
     (void)0;
 #endif
@@ -157,12 +180,22 @@ esp_err_t ae_device_poll(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    const int64_t t_analyze0 = esp_timer_get_time();
     const esp_err_t an = dbmap_ear_acoustic_analyze_pcm_job(job);
+    const int64_t t_analyze1 = esp_timer_get_time();
+    const uint32_t analyze_us =
+        (t_analyze1 > t_analyze0) ? (uint32_t)(t_analyze1 - t_analyze0) : 0u;
     if (an != ESP_OK) {
         s_diag.analyze_fail++;
         return an;
     }
     s_diag.analyze_ok++;
+    s_diag.analyze_n++;
+    s_diag.analyze_us_last = analyze_us;
+    s_diag.analyze_us_sum += analyze_us;
+    if (analyze_us > s_diag.analyze_us_max) {
+        s_diag.analyze_us_max = analyze_us;
+    }
 
     const bool ch0_ok = (wjob.channel_mask & 0x01u) != 0u;
     const bool ch1_ok = (wjob.channel_mask & 0x02u) != 0u;
@@ -293,6 +326,17 @@ esp_err_t ae_device_poll(void)
     s_diag.last_quality = sig.quality;
     if (gap.gap_before) {
         s_diag.gap_sigs_published++;
+    }
+    {
+        const int64_t t_post1 = esp_timer_get_time();
+        const uint32_t pus =
+            (t_post1 > t_analyze1) ? (uint32_t)(t_post1 - t_analyze1) : 0u;
+        s_diag.post_dsp_n++;
+        s_diag.post_dsp_us_last = pus;
+        s_diag.post_dsp_us_sum += pus;
+        if (pus > s_diag.post_dsp_us_max) {
+            s_diag.post_dsp_us_max = pus;
+        }
     }
     s_diag_publish_count++;
     maybe_diag_log();
