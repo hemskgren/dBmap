@@ -93,7 +93,11 @@ def test_ear_effective_config_highlights_defaults_overrides(real_firmware_target
     payload = server._target_dbmap_config("ear-esp32-s3")
     assert payload["target"] == "ear-esp32-s3"
     assert payload["source"] == "effective"
-    observation = payload["config"]["product"]["dbmap"]["observation"]
+    product = payload["config"]["product"]["dbmap"]
+    observation = product["observation"]
+    acoustic = product["acoustic"]
+    assert acoustic["EAR_MIC_L0"] is True
+    assert "mic" not in payload["config"]["sp"]
     assert observation["EAR_OBS_PUBLISH_L0"] is True
     assert observation["EAR_OBS_L2"] is True
     assert observation["EAR_OBS_L2_PUBLISH"] is True
@@ -113,7 +117,7 @@ def test_ear_effective_config_highlights_defaults_overrides(real_firmware_target
     assert "EAR_OBS_SERIAL_DIAG" in highlight_keys
     assert "EAR_OBS_PUBLISH_L0" in highlight_keys
     assert "EAR_OBS_L2" in highlight_keys
-    # Relative END matches Kconfig default y, so it is not a defaults-file highlight.
+    # EAR_MIC_L0 and Relative END match Kconfig default y → not defaults-file highlights.
 
 
 def test_output_effective_config_includes_output_group(real_firmware_targets):
@@ -148,11 +152,14 @@ def test_defaults_file_dbmap_config_is_overrides_only(real_firmware_targets):
         platform_dir=REPO_FIRMWARE / "platform",
     )
     assert set(ear) == {"sp", "product"}
-    assert set(ear["sp"]) <= {"node", "mic", "version"}
+    assert set(ear["sp"]) <= {"node", "version"}
     assert ear["sp"]["version"] == "0.2.0"
     assert "diag" not in ear["sp"]
     assert "backoff" not in ear["sp"]
+    assert "mic" not in ear["sp"]
     observation = ear["product"]["dbmap"]["observation"]
+    acoustic = ear["product"]["dbmap"]["acoustic"]
+    assert acoustic["EAR_MIC_L0"] is True
     assert observation["EAR_OBS_SERIAL_DIAG"] is True
     assert observation["EAR_OBS_L2"] is True
     assert observation["EAR_OBS_L2_PUBLISH"] is True
@@ -160,7 +167,6 @@ def test_defaults_file_dbmap_config_is_overrides_only(real_firmware_targets):
     assert observation["EAR_OBS_REL_LATE_ARM"] is True
     # Dependent Relative END ints come from Kconfig defaults, not sdkconfig.defaults.
     assert "EAR_OBS_REL_RETURN_MARGIN_DB_X1000" not in observation
-    assert "EAR_MIC_SAMPLE_RATE_HZ" not in ear["sp"].get("mic", {})
     assert "NTP_SERVER" not in ear["sp"]["node"]
     assert "WIFI_SSID" not in ear["sp"]["node"]
     assert "FIRMWARE_VERSION" not in ear["sp"]["node"]

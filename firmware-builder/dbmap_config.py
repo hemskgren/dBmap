@@ -36,19 +36,11 @@ GROUP_KEYS: dict[str, tuple[str, ...]] = {
         "BACKOFF_HTTPS_INITIAL_MS",
         "BACKOFF_HTTPS_MAX_MS",
     ),
-    "mic": (
-        "EAR_MIC_MODEL_INMP441",
-        "EAR_MIC_SAMPLE_RATE_HZ",
-        "EAR_MIC_WINDOW_MS",
-        "EAR_MIC_I2S_BCLK_GPIO",
-        "EAR_MIC_I2S_WS_GPIO",
-        "EAR_MIC_I2S_DIN_GPIO",
-        "EAR_MIC_I2S_DIN1_GPIO",
-        "EAR_MIC_I2S_MCLK_GPIO",
-        "EAR_MIC_L0",
-        "EAR_MIC_BACKGROUND",
-        "EAR_MIC_BACKGROUND_WINDOW_MS",
-        "EAR_MIC_BACKGROUND_BOOT_SETTLE_MS",
+    # Platform microphone hardware/background options are CONFIG_SP_MIC_* (not
+    # CONFIG_DBMAP_*). They are intentionally absent from this DBMAP catalog.
+    # Product analysis enable that selects Platform PCM + L0 lives under acoustic.
+    "acoustic": (
+        "EAR_MIC_L0",  # product select → SP_MIC_PCM_RETAIN + SP_AUDIO_L0
     ),
     "observation": (
         "EAR_OBS_SEQ_BLOCK_SIZE",
@@ -89,11 +81,11 @@ GROUP_KEYS: dict[str, tuple[str, ...]] = {
 
 # Flat groups collected per node kind, then nested as config.sp / config.product.dbmap.
 SP_GROUPS_BY_NODE_TYPE: dict[str, tuple[str, ...]] = {
-    "ear": ("node", "diag", "backoff", "mic"),
+    "ear": ("node", "diag", "backoff"),
     "output": ("node", "diag", "backoff", "output"),
 }
 PRODUCT_DBMAP_GROUPS_BY_NODE_TYPE: dict[str, tuple[str, ...]] = {
-    "ear": ("observation",),
+    "ear": ("acoustic", "observation"),
     "output": (),
 }
 
@@ -414,7 +406,7 @@ def resolve_effective_dbmap_config(
             "Release firmware_version is assigned at build time (sdkconfig.defaults series base + retained patch history) and is not duplicated under config.sp.node.",
             "Builder overlay sets NTP_SERVER from Hub env NTP_SERVER (default se.pool.ntp.org if unset); overrides sdkconfig.defaults.",
             "WIFI_SSID, WIFI_PASSWORD, and BOOTSTRAP_TOKEN are cleared for reusable images.",
-            "config.sp is Sensor Platform; config.product.dbmap is dBmap product (Ear observation today).",
+            "config.sp is Sensor Platform; config.product.dbmap is dBmap product (Ear acoustic + observation). Platform mic DSP flags are CONFIG_SP_* and are outside this DBMAP catalog.",
             "config.sp.version is the independent Sensor Platform SemVer from firmware/platform/VERSION (not firmware_version).",
         ],
     }
