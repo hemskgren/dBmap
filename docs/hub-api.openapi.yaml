@@ -3917,6 +3917,14 @@ components:
             - ota_reboot
             - report_rotation
           nullable: true
+        origin:
+          title: Origin
+          description: Optional technical Observation path mark. Omit/null on normal
+            Observations. Only critical_path is accepted today (Critical Path / ADR 0003).
+          type: string
+          enum:
+            - critical_path
+          nullable: true
       additionalProperties: false
       type: object
       required:
