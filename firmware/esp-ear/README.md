@@ -189,7 +189,7 @@ Full wiring (Output + Ear, reserved 4-mic map): [`docs/device-wiring-and-pinout.
 
 | Item | Value | Status |
 |------|-------|--------|
-| Hardware profile | `esp32-s3-n16r8` | **Verified** (ESPConnect): ESP32-S3 QFN56 rev v0.2, 16 MB flash (`0x184068`), 8 MB PSRAM (AP Memory 3.3 V), dual-core up to 240 MHz |
+| Hardware profile | `esp32-s3-n16r8` | **Verified** (ESPConnect): ESP32-S3 QFN56 rev v0.2, 16 MB flash (`0x184068`), 8 MB PSRAM (AP Memory 3.3 V), dual-core; **product default 240 MHz / FreeRTOS 100 Hz** in `sdkconfig.defaults` |
 | Mic model | INMP441 | One model per Ear image |
 | Mic index | **0–3** (0-based) from `mic_count` 1–4 | DIN0 = 0/1; DIN1 = 2/3 (I2S0 master + I2S1 slave) |
 | I2S pins | BCLK=4, WS=5, DIN0=6, DIN1=7 | Placeholder — verify free GPIOs on this board |

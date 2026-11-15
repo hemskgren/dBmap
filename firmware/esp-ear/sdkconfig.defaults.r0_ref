@@ -1,0 +1,17 @@
+# R0 measurement reference overlay — NOT the product default.
+# Product defaults in sdkconfig.defaults are 240 MHz / FreeRTOS 100 Hz.
+# This overlay intentionally pins the historical R0 baseline (160 MHz / 100 Hz)
+# for A/C comparison only. Never merge into sdkconfig.defaults.
+#
+#   rm -f sdkconfig
+#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.r0_ref" set-target esp32s3 build
+#
+# CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_80 is not set
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+# CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240 is not set
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=160
+CONFIG_FREERTOS_HZ=100
+CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG=y
+CONFIG_DBMAP_EAR_AE_DIAG=y
+# Critical Path lifecycle remains available; production/lab auto-START stay off.
+# CONFIG_DBMAP_EAR_OBS_CRITICAL_LAB_IMPULSE is not set

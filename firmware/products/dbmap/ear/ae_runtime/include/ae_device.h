@@ -52,6 +52,19 @@ typedef struct {
     uint32_t stereo_misaligned;
     uint32_t stereo_degraded;
     uint32_t stereo_pcm_incomplete;
+    /**
+     * R0 wall-clock µs (esp_timer_get_time) for jobs that took PCM.
+     * analyze_* covers Platform DSP only; post_dsp_* is align+signature+
+     * publish (includes sync CE listeners). Not CPU-cycle time.
+     */
+    uint32_t analyze_n;
+    uint32_t analyze_us_last;
+    uint32_t analyze_us_max;
+    uint64_t analyze_us_sum;
+    uint32_t post_dsp_n;
+    uint32_t post_dsp_us_last;
+    uint32_t post_dsp_us_max;
+    uint64_t post_dsp_us_sum;
 } ae_device_diag_t;
 
 esp_err_t ae_device_start(void);

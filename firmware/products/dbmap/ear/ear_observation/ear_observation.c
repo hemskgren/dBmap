@@ -74,6 +74,16 @@ static bool s_ota_close_registered;
 static SemaphoreHandle_t s_lifecycle_mu;
 static sp_obs_emit_gate_t s_emit_gate = SP_OBS_GATE_RUN;
 
+/* R0 wall-clock stage timers (esp_timer_get_time); aggregated only. */
+static uint32_t s_r0_promo_mgr_n;
+static uint32_t s_r0_promo_mgr_us_last;
+static uint32_t s_r0_promo_mgr_us_max;
+static uint64_t s_r0_promo_mgr_us_sum;
+static uint32_t s_r0_publish_n;
+static uint32_t s_r0_publish_us_last;
+static uint32_t s_r0_publish_us_max;
+static uint64_t s_r0_publish_us_sum;
+
 #if CONFIG_DBMAP_EAR_OBS_RMS_ACTIVITY
 static bool s_logged_mqtt_drop;
 static uint32_t s_dropped_while_mqtt_down;
@@ -787,6 +797,7 @@ esp_err_t dbmap_ear_observation_publish_ex(
         .dynamics = dynamics,
     };
 
+    const int64_t t_pub0 = esp_timer_get_time();
     char *json = dbmap_observation_build_json(&fields);
     if (json == NULL) {
         ESP_LOGE(TAG, "observation JSON build failed (sequence %lu consumed)", (unsigned long)sequence);
@@ -794,6 +805,15 @@ esp_err_t dbmap_ear_observation_publish_ex(
     }
 
     esp_err_t pub_err = sp_mqtt_publish_json(cfg->topics.observation, json, 1);
+    {
+        const uint32_t dt = (uint32_t)(esp_timer_get_time() - t_pub0);
+        s_r0_publish_n++;
+        s_r0_publish_us_last = dt;
+        s_r0_publish_us_sum += dt;
+        if (dt > s_r0_publish_us_max) {
+            s_r0_publish_us_max = dt;
+        }
+    }
     if (pub_err == ESP_OK) {
         ESP_LOGI(
             TAG,
@@ -2022,16 +2042,22 @@ static void activity_serial_diag(const sp_mic_levels_t *levels, bool levels_ok)
         {
             dbmap_ear_mic_l0_perf_t perf;
             if (dbmap_ear_mic_get_l0_perf(&perf) == ESP_OK) {
+                const unsigned long l0_avg = perf.analyze_count > 0u
+                    ? (unsigned long)(perf.analyze_us_sum / perf.analyze_count)
+                    : 0ul;
                 ESP_LOGI(
                     TAG,
-                    "L0 perf analyze_n=%lu us_last=%lu us_max=%lu overwrite=%lu "
+                    "L0 perf analyze_n=%lu us_last=%lu us_avg=%lu us_max=%lu "
+                    "overwrite=%lu active_mics=%u "
                     "stage_reset=%lu stage_loop=%lu stage_post=%lu "
                     "pcm_cap=%lu pcm_bytes=%lu free_heap_init=%lu free_spiram_init=%lu "
                     "ring=%lu/%lu",
                     (unsigned long)perf.analyze_count,
                     (unsigned long)perf.analyze_us_last,
+                    l0_avg,
                     (unsigned long)perf.analyze_us_max,
                     (unsigned long)perf.pending_overwrite,
+                    (unsigned)perf.last_active_mic_count,
                     (unsigned long)perf.stage_reset_us,
                     (unsigned long)perf.stage_sample_loop_us,
                     (unsigned long)perf.stage_post_us,
@@ -2048,11 +2074,15 @@ static void activity_serial_diag(const sp_mic_levels_t *levels, bool levels_ok)
         {
             dbmap_ear_mic_l1_perf_t l1perf;
             if (dbmap_ear_mic_get_l1_perf(&l1perf) == ESP_OK && l1perf.enabled) {
+                const unsigned long l1_avg = l1perf.analyze_count > 0u
+                    ? (unsigned long)(l1perf.analyze_us_sum / l1perf.analyze_count)
+                    : 0ul;
                 ESP_LOGI(
                     TAG,
-                    "L1 perf analyze_n=%lu us_last=%lu us_max=%lu",
+                    "L1 perf analyze_n=%lu us_last=%lu us_avg=%lu us_max=%lu",
                     (unsigned long)l1perf.analyze_count,
                     (unsigned long)l1perf.analyze_us_last,
+                    l1_avg,
                     (unsigned long)l1perf.analyze_us_max
                 );
             }
@@ -2061,14 +2091,18 @@ static void activity_serial_diag(const sp_mic_levels_t *levels, bool levels_ok)
         {
             dbmap_ear_mic_l2_perf_t l2perf;
             if (dbmap_ear_mic_get_l2_perf(&l2perf) == ESP_OK && l2perf.enabled) {
+                const unsigned long l2_avg = l2perf.analyze_count > 0u
+                    ? (unsigned long)(l2perf.combined_us_sum / l2perf.analyze_count)
+                    : 0ul;
                 ESP_LOGI(
                     TAG,
-                    "L2 perf analyze_n=%lu l1_l2_combined_us last=%lu max=%lu "
+                    "L2 perf analyze_n=%lu l1_l2_combined_us last=%lu avg=%lu max=%lu "
                     "l2_incremental_estimated_us last=%lu max=%lu "
                     "(baseline_l1 last=%lu max=%lu) l2_rms_us last=%lu max=%lu "
                     "publish=%d",
                     (unsigned long)l2perf.analyze_count,
                     (unsigned long)l2perf.combined_us_last,
+                    l2_avg,
                     (unsigned long)l2perf.combined_us_max,
                     (unsigned long)l2perf.incremental_estimated_us_last,
                     (unsigned long)l2perf.incremental_estimated_us_max,
@@ -2104,6 +2138,27 @@ static void activity_serial_diag(const sp_mic_levels_t *levels, bool levels_ok)
         {
             /* Generic CPU/heap/SPIRAM/stack → shared SP (tag `sp`). */
             sp_diag_log_resources("ear_obs");
+            {
+                const unsigned long pm_avg = s_r0_promo_mgr_n > 0u
+                    ? (unsigned long)(s_r0_promo_mgr_us_sum / s_r0_promo_mgr_n)
+                    : 0ul;
+                const unsigned long pub_avg = s_r0_publish_n > 0u
+                    ? (unsigned long)(s_r0_publish_us_sum / s_r0_publish_n)
+                    : 0ul;
+                ESP_LOGI(
+                    TAG,
+                    "R0 stage wall_us promo_mgr n=%lu last=%lu avg=%lu max=%lu "
+                    "publish_json_mqtt n=%lu last=%lu avg=%lu max=%lu",
+                    (unsigned long)s_r0_promo_mgr_n,
+                    (unsigned long)s_r0_promo_mgr_us_last,
+                    pm_avg,
+                    (unsigned long)s_r0_promo_mgr_us_max,
+                    (unsigned long)s_r0_publish_n,
+                    (unsigned long)s_r0_publish_us_last,
+                    pub_avg,
+                    (unsigned long)s_r0_publish_us_max
+                );
+            }
             /* Phase checkpoints remain Ear-owned (task-phase attribution). */
             ESP_LOGI(
                 TAG,
@@ -2324,9 +2379,20 @@ static void activity_task(void *arg)
         /* Promotion policy + Observation Manager outside lifecycle lock. */
         if (s_obs_mgr_ready) {
             const int64_t now_us = esp_timer_get_time();
+            const int64_t t_pm0 = now_us;
             ear_promotion_policy_poll(&s_promo_pol, now_us);
             ear_obs_manager_poll(&s_obs_mgr, now_us);
             mgr_feed_evidence(now_us);
+            {
+                const uint32_t dt =
+                    (uint32_t)(esp_timer_get_time() - t_pm0);
+                s_r0_promo_mgr_n++;
+                s_r0_promo_mgr_us_last = dt;
+                s_r0_promo_mgr_us_sum += dt;
+                if (dt > s_r0_promo_mgr_us_max) {
+                    s_r0_promo_mgr_us_max = dt;
+                }
+            }
         }
 #if defined(CONFIG_DBMAP_EAR_OBS_CRITICAL_PATH) && CONFIG_DBMAP_EAR_OBS_CRITICAL_PATH
         if (s_critical_ready) {
@@ -2351,7 +2417,7 @@ static void activity_task(void *arg)
                     TAG,
                     "obs_mgr diag sig=%lu open=%u pending=%u held=%u "
                     "rsv_ok=%lu rsv_full=%lu bound=%lu pend_q=%lu "
-                    "drain_fail=%lu exit_detach=%lu end=%lu",
+                    "drain_fail=%lu exit_detach=%lu end=%lu evq_drop=%lu",
                     (unsigned long)ad.sig_published,
                     (unsigned)ear_obs_manager_n_open(&s_obs_mgr),
                     (unsigned)ear_obs_manager_n_pending(&s_obs_mgr),
@@ -2362,10 +2428,48 @@ static void activity_task(void *arg)
                     (unsigned long)d.pending_enqueue,
                     (unsigned long)d.drain_alloc_fail,
                     (unsigned long)d.exit_detach,
-                    (unsigned long)d.end_done
+                    (unsigned long)d.end_done,
+                    (unsigned long)d.evq_dropped
                 );
                 ce_diag_t cd;
                 ce_get_diag(&s_ce, &cd);
+#if defined(CONFIG_DBMAP_EAR_OBS_CRITICAL_PATH) && CONFIG_DBMAP_EAR_OBS_CRITICAL_PATH
+                if (s_critical_ready) {
+                    ear_critical_diag_t cpd;
+                    ear_critical_get_diag(&s_critical, &cpd);
+                    const unsigned long det_n = cpd.lab_trigger;
+                    const unsigned long det_avg = det_n > 0u
+                        ? (unsigned long)(cpd.lab_detect_us_sum / det_n)
+                        : 0ul;
+                    const unsigned long prv_avg = det_n > 0u
+                        ? (unsigned long)(cpd.lab_preserve_us_sum / det_n)
+                        : 0ul;
+                    ESP_LOGI(
+                        TAG,
+                        "critical diag active=%d start=%lu drop_busy=%lu "
+                        "auto_blocked=%lu lab_eval=%lu lab_trig=%lu lab_ok=%lu lab_fail=%lu "
+                        "detect_us last=%lu avg=%lu max=%lu "
+                        "preserve_us last=%lu avg=%lu max=%lu "
+                        "force_us last=%lu max=%lu",
+                        ear_critical_is_active(&s_critical) ? 1 : 0,
+                        (unsigned long)cpd.start,
+                        (unsigned long)cpd.drop_busy,
+                        (unsigned long)cpd.auto_start_blocked,
+                        (unsigned long)cpd.lab_eval,
+                        (unsigned long)cpd.lab_trigger,
+                        (unsigned long)cpd.lab_start_ok,
+                        (unsigned long)cpd.lab_start_fail,
+                        (unsigned long)cpd.lab_detect_us_last,
+                        det_avg,
+                        (unsigned long)cpd.lab_detect_us_max,
+                        (unsigned long)cpd.lab_preserve_us_last,
+                        prv_avg,
+                        (unsigned long)cpd.lab_preserve_us_max,
+                        (unsigned long)cpd.lab_force_us_last,
+                        (unsigned long)cpd.lab_force_us_max
+                    );
+                }
+#endif
                 ESP_LOGI(
                     TAG,
                     "ce diag active=%u created=%lu assoc=%lu expired=%lu rejected=%lu "
@@ -2865,7 +2969,7 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg)
                 ((float)CONFIG_DBMAP_EAR_OBS_CRITICAL_MATCH_DISTANCE_X1000) / 1000.0f;
             ccfg.match_crest_floor_db =
                 ((float)CONFIG_DBMAP_EAR_OBS_CRITICAL_MATCH_CREST_FLOOR_DB_X1000) / 1000.0f;
-            /* Auto acoustic START is not implemented; keep false regardless. */
+            /* Production auto acoustic START is not implemented; keep false. */
             ccfg.auto_detect_enabled = false;
 #if defined(CONFIG_DBMAP_EAR_OBS_CRITICAL_AUTO_DETECT) \
     && CONFIG_DBMAP_EAR_OBS_CRITICAL_AUTO_DETECT
@@ -2874,6 +2978,23 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg)
                 "CRITICAL_AUTO_DETECT is set but no production trigger exists; "
                 "acoustic START remains disabled"
             );
+#endif
+#if defined(CONFIG_DBMAP_EAR_OBS_CRITICAL_LAB_IMPULSE) \
+    && CONFIG_DBMAP_EAR_OBS_CRITICAL_LAB_IMPULSE
+            ccfg.lab_impulse_enabled = true;
+            ccfg.lab_crest_floor_db =
+                ((float)CONFIG_DBMAP_EAR_OBS_CRITICAL_LAB_CREST_FLOOR_DB_X1000) / 1000.0f;
+            ccfg.lab_peak_dbfs_min =
+                ((float)CONFIG_DBMAP_EAR_OBS_CRITICAL_LAB_PEAK_DBFS_X1000) / 1000.0f;
+            ESP_LOGW(
+                TAG,
+                "CRITICAL LAB impulse START enabled (measurement only) "
+                "crest>=%.2f peak>=%.2f — not production detection",
+                (double)ccfg.lab_crest_floor_db,
+                (double)ccfg.lab_peak_dbfs_min
+            );
+#else
+            ccfg.lab_impulse_enabled = false;
 #endif
             ccfg.publish = critical_publish_cb;
             ccfg.publish_user = NULL;
@@ -2886,8 +3007,9 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg)
             }
             ESP_LOGI(
                 TAG,
-                "Critical Path ready auto_detect=off idle_ms=%lu max_ms=%lu "
+                "Critical Path ready auto_detect=off lab_impulse=%d idle_ms=%lu max_ms=%lu "
                 "periodic_ms=%lu listener=%d (experimental match D=%.2f crest>=%.2f)",
+                ccfg.lab_impulse_enabled ? 1 : 0,
                 (unsigned long)ccfg.idle_timeout_ms,
                 (unsigned long)ccfg.max_active_ms,
                 (unsigned long)ccfg.periodic_ms,
@@ -2952,7 +3074,11 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg)
 #endif
 #endif
     /* Extra stack for L0 interval diag formatting when SERIAL_DIAG is on. */
-    BaseType_t ok = xTaskCreate(activity_task, "ear_obs", 6144, NULL, 4, NULL);
+    TaskHandle_t obs_task = NULL;
+    BaseType_t ok = xTaskCreate(activity_task, "ear_obs", 6144, NULL, 4, &obs_task);
+    if (ok == pdPASS && obs_task != NULL) {
+        sp_diag_register_task("ear_obs", obs_task);
+    }
     if (ok != pdPASS) {
         return ESP_ERR_NO_MEM;
     }

@@ -151,6 +151,8 @@ typedef struct {
     uint32_t evidence_accepted;
     uint32_t evidence_dropped;
     uint32_t periodic_hint;
+    /** Promotion callback arrived while EAR_OBS_MGR_EVENT_Q was full. */
+    uint32_t evq_dropped;
 } ear_obs_manager_diag_t;
 
 typedef struct ear_obs_manager ear_obs_manager_t;

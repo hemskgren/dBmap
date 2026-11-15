@@ -1,5 +1,6 @@
 #include "sp_diag.h"
 
+#include <stdint.h>
 #include <string.h>
 
 #include "sp_lifecycle.h"
@@ -307,6 +308,50 @@ void sp_diag_clear_oneshots(void)
     s_state.reset_reason_pending = false;
 }
 
+typedef struct {
+    char name[16];
+    TaskHandle_t handle;
+    bool used;
+} sp_diag_tracked_task_t;
+
+static sp_diag_tracked_task_t s_tracked_tasks[SP_DIAG_TRACKED_TASKS];
+
+void sp_diag_register_task(const char *name, void *task_handle)
+{
+    if (name == NULL || name[0] == '\0') {
+        return;
+    }
+    TaskHandle_t handle = (TaskHandle_t)task_handle;
+    for (uint32_t i = 0; i < SP_DIAG_TRACKED_TASKS; ++i) {
+        if (s_tracked_tasks[i].used
+            && strncmp(s_tracked_tasks[i].name, name, sizeof(s_tracked_tasks[i].name))
+                == 0) {
+            s_tracked_tasks[i].handle = handle;
+            if (handle == NULL) {
+                s_tracked_tasks[i].used = false;
+                s_tracked_tasks[i].name[0] = '\0';
+            }
+            return;
+        }
+    }
+    if (handle == NULL) {
+        return;
+    }
+    for (uint32_t i = 0; i < SP_DIAG_TRACKED_TASKS; ++i) {
+        if (!s_tracked_tasks[i].used) {
+            strncpy(
+                s_tracked_tasks[i].name,
+                name,
+                sizeof(s_tracked_tasks[i].name) - 1u
+            );
+            s_tracked_tasks[i].name[sizeof(s_tracked_tasks[i].name) - 1u] = '\0';
+            s_tracked_tasks[i].handle = handle;
+            s_tracked_tasks[i].used = true;
+            return;
+        }
+    }
+}
+
 void sp_diag_log_resources(const char *ctx)
 {
     const int cpu_hz = esp_clk_cpu_freq();
@@ -319,17 +364,57 @@ void sp_diag_log_resources(const char *ctx)
 #endif
     const unsigned long hwm_bytes =
         (unsigned long)uxTaskGetStackHighWaterMark(NULL);
+    const unsigned long free_heap = (unsigned long)esp_get_free_heap_size();
+    const unsigned long min_free_heap =
+        (unsigned long)esp_get_minimum_free_heap_size();
+    const unsigned long free_internal =
+        (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const unsigned long min_free_internal =
+        (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    const unsigned long largest_internal =
+        (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    const unsigned long free_spiram =
+        (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    const unsigned long min_free_spiram =
+        (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
+    const unsigned long largest_spiram =
+        (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+
     ESP_LOGI(
         TAG_SP,
-        "res ctx=%s cpu_mhz=%lu configured_mhz=%d pm=%s free_heap=%lu "
-        "min_free_heap=%lu free_spiram=%lu stack_hwm_bytes=%lu",
+        "res ctx=%s cpu_mhz=%lu configured_mhz=%d tick_hz=%d pm=%s "
+        "free_heap=%lu min_free_heap=%lu "
+        "free_internal=%lu min_free_internal=%lu largest_internal=%lu "
+        "free_spiram=%lu min_free_spiram=%lu largest_spiram=%lu "
+        "stack_hwm_bytes=%lu",
         (ctx != NULL && ctx[0] != '\0') ? ctx : "-",
         cpu_mhz,
         CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        CONFIG_FREERTOS_HZ,
         pm,
-        (unsigned long)esp_get_free_heap_size(),
-        (unsigned long)esp_get_minimum_free_heap_size(),
-        (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        free_heap,
+        min_free_heap,
+        free_internal,
+        min_free_internal,
+        largest_internal,
+        free_spiram,
+        min_free_spiram,
+        largest_spiram,
         hwm_bytes
     );
+
+    for (uint32_t i = 0; i < SP_DIAG_TRACKED_TASKS; ++i) {
+        if (!s_tracked_tasks[i].used || s_tracked_tasks[i].handle == NULL) {
+            continue;
+        }
+        const unsigned long thwm =
+            (unsigned long)uxTaskGetStackHighWaterMark(s_tracked_tasks[i].handle);
+        ESP_LOGI(
+            TAG_SP,
+            "res ctx=%s task=%s stack_hwm_bytes=%lu",
+            (ctx != NULL && ctx[0] != '\0') ? ctx : "-",
+            s_tracked_tasks[i].name,
+            thwm
+        );
+    }
 }

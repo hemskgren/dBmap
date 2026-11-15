@@ -4,6 +4,18 @@ CONFIG_IDF_TARGET="esp32s3"
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 # Hardware profile esp32-s3-n16r8 verified via ESPConnect on the physical board:
 # ESP32-S3 QFN56 rev v0.2, 16 MB flash (ID 0x184068), 8 MB embedded PSRAM (AP Memory 3.3 V).
+#
+# Product CPU / scheduler (normal fleet defaults — not experimental overlays):
+#   CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_* / CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ → 240 MHz
+#   CONFIG_FREERTOS_HZ → 100 (do not use 1000 Hz in product images)
+# Runtime proof after boot: sp: res … cpu_mhz=240 configured_mhz=240 tick_hz=100
+# Existing local sdkconfig is gitignored and wins over these lines until removed;
+# for a clean apply: rm sdkconfig && idf.py set-target esp32s3 build
+# CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_80 is not set
+# CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160 is not set
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+CONFIG_FREERTOS_HZ=100
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y

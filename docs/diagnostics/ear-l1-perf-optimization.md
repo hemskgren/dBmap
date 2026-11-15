@@ -26,7 +26,7 @@ ear_obs: cpu freq_mhz=… configured_mhz=… pm=… free_heap=… free_spiram=�
 
 | Field | Baseline (physical) | Notes |
 | --- | --- | --- |
-| CPU configured / runtime MHz | **160 / TBD** | sdkconfig: `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=160`; `CONFIG_PM_ENABLE` unset |
+| CPU configured / runtime MHz | **240 / TBD on device** | product `sdkconfig.defaults`: `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240`; `CONFIG_PM_ENABLE` unset |
 | L1 us_last / us_max | **TBD** | fill from `L1 perf` |
 | L0 us_last / us_max | **TBD** (~160–169 ms historically) | fill from `L0 perf`; L0 not optimized here |
 | PCM overwrite | **TBD** | must stay 0 |
@@ -67,21 +67,16 @@ Host unit tests: `test_acoustic_l1` → `ok`. Tone centroid/dominant stay on-bin
 
 | Item | Finding |
 | --- | --- |
-| Configured | **160 MHz** (`CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160`) |
+| Configured (historical note) | Was **160 MHz**; **product default is now 240 MHz** in `sdkconfig.defaults` |
 | Available | 80 / 160 / **240** MHz on ESP32-S3 |
 | Dynamic FS / PM | `CONFIG_PM_ENABLE` **not set** — frequency should stay at configured value |
 | Wi-Fi / I2S | Raising to 240 increases power/thermal; Wi-Fi timing usually OK; verify I2S/sample counts and overwrite |
 
-**Production default not changed.** To A/B 240 MHz (requires explicit approval before merging to fleet defaults):
+**Product default is 240 MHz / FreeRTOS 100 Hz** in `sdkconfig.defaults`.
+Historical 160 MHz R0 comparison uses `sdkconfig.defaults.r0_ref` only.
 
-```
-# temporary local sdkconfig / defaults overlay only
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
-# CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160 is not set
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
-```
-
-Keep software build identical; measure L1/L0/overwrite/runtime `freq_mhz` for ≥500 windows. Prefer lowest MHz that meets the L1 budget with margin.
+Keep software build identical when A/B testing; measure L1/L0/overwrite/runtime
+`cpu_mhz` / `configured_mhz` for ≥500 windows.
 
 ## Phase 3 — Comparison table (fill from EAR-001)
 

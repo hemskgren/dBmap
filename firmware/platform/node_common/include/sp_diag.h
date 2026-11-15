@@ -61,9 +61,30 @@ void sp_diag_attach_json(cJSON *state_object);
 void sp_diag_clear_oneshots(void);
 
 /**
- * Shared UART resource snapshot (CPU / heap / SPIRAM / current-task stack HWM).
+ * Optional named FreeRTOS tasks for stack HWM in sp_diag_log_resources.
+ * Call once after xTaskCreate (e.g. "sp_mic", "ear_obs"). Replaces prior
+ * registration for the same name. Pass NULL handle to clear a slot.
+ * Bounded to SP_DIAG_TRACKED_TASKS; extra registrations are ignored.
+ */
+#ifndef SP_DIAG_TRACKED_TASKS
+#define SP_DIAG_TRACKED_TASKS 4u
+#endif
+
+void sp_diag_register_task(const char *name, void *task_handle);
+
+/**
+ * Shared UART resource snapshot (CPU / heap / SPIRAM / stack HWM).
  * Tag is always `sp`. ctx names the caller (e.g. "ear_obs") without owning the format.
  * Keep off the audio hot path — call from periodic diag only.
+ *
+ * Logs (bytes unless noted):
+ * - cpu_mhz (esp_clk_cpu_freq), configured_mhz (CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ),
+ *   tick_hz (CONFIG_FREERTOS_HZ compile-time tick rate)
+ * - free_heap (esp_get_free_heap_size — with SPIRAM_USE_MALLOC this is combined)
+ * - min_free_heap (esp_get_minimum_free_heap_size — combined)
+ * - free_internal / min_free_internal / largest_internal (MALLOC_CAP_INTERNAL)
+ * - free_spiram / min_free_spiram / largest_spiram (MALLOC_CAP_SPIRAM)
+ * - stack_hwm_bytes for current task, then each registered task
  */
 void sp_diag_log_resources(const char *ctx);
 
