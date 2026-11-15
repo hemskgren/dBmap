@@ -13,8 +13,7 @@ DEFAULT_DISPLAY_TIMEZONE = "Europe/Stockholm"
 _SAFE_TZ = re.compile(r"^[A-Za-z0-9_/+-]+$")
 # Chromium often refuses to show tab icons when Cache-Control is no-store.
 _ICON_CACHEABLE = re.compile(
-    r"^/(?:favicon\.ico|favicon-\d+x\d+\.png|apple-touch-icon\.png|"
-    r"android-chrome-\d+x\d+\.png|site\.webmanifest)$"
+    r"^/(?:favicon\.ico|favicon-\d+x\d+\.png|site\.webmanifest)$"
 )
 
 
