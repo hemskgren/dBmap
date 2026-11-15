@@ -5,7 +5,8 @@ menu "Sensor Platform audio analysis"
         default n
         help
             Keep completed analysis windows as double-buffered SPIRAM PCM for
-            product DSP consumers. Independent of product Observation policy.
+            every live microphone channel (1..SP_MIC_COUNT_MAX from NVS
+            mic_count). Independent of product Observation policy.
             Products that need L0/L1/L2 typically select this with SP_AUDIO_L0.
 
     config SP_AUDIO_L0

@@ -1,5 +1,5 @@
 /**
- * UART format contract for CONFIG_DBMAP_EAR_MIC_CAPTURE_DIAG.
+ * UART format contract for CONFIG_SP_MIC_CAPTURE_DIAG.
  *
  * Host-testable string fragments — keep in sync with capture_diag_maybe_log().
  * Fleet images leave the Kconfig off; bench builds use

@@ -37,7 +37,17 @@ static void test_valid_stored(void)
 {
     uint8_t eff = 0;
     sp_mic_count_status_t st = SP_MIC_COUNT_STATUS_DEFAULTED;
-    for (uint8_t n = 1; n <= 4; ++n) {
+    /* Primary NVS targets for this task: mic_count=1 and mic_count=2. */
+    sp_mic_count_from_nvs(true, 1, &eff, &st);
+    EXPECT(eff == 1);
+    EXPECT(st == SP_MIC_COUNT_STATUS_OK);
+    EXPECT(sp_mic_acquire_count(1) == 1);
+    sp_mic_count_from_nvs(true, 2, &eff, &st);
+    EXPECT(eff == 2);
+    EXPECT(st == SP_MIC_COUNT_STATUS_OK);
+    EXPECT(sp_mic_acquire_count(2) == 2);
+    /* Platform capability 3–4 remains valid (not required for EAR HW verify yet). */
+    for (uint8_t n = 3; n <= 4; ++n) {
         sp_mic_count_from_nvs(true, n, &eff, &st);
         EXPECT(eff == n);
         EXPECT(st == SP_MIC_COUNT_STATUS_OK);
