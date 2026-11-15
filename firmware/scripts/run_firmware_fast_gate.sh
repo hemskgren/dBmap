@@ -152,13 +152,21 @@ run_host_tests() {
     "${SP_MIC}/sp_mic_window_job.c" "${SP_MIC}/ear_mic_channel_api.c" \
     "${SP_MIC}/audio_metrics.c" \
     "${EAR_AE}/test_host/test_ae_window_job_align.c" || host_fail=1
-  run_host_one ae_m4_lifecycle_gap \
-    ${ae_inc} \
-    "${EAR_AE}/ae_gap.c" "${EAR_AE}/ae_signature.c" "${EAR_AE}/ae_history.c" \
-    "${EAR_AE}/ae_engine.c" "${EAR_AE}/ae_time.c" \
-    "${EAR_CE}/ce_decision.c" "${EAR_CE}/ce_module.c" "${EAR_CE}/ce_workflow.c" \
-    "${EAR_CE}/ce_manager.c" "${EAR_CE}/ce_engine.c" \
-    "${EAR_AE}/test_host/test_ae_m4_lifecycle_gap.c" || host_fail=1
+  # M4 links CE module split (decision/module/workflow/manager). Those sources
+  # are not on every branch yet — run when present, otherwise SKIP explicitly
+  # so CI on Platform-DSP-only trees stays green without hiding a real fail.
+  if [[ -f "${EAR_CE}/ce_decision.c" && -f "${EAR_CE}/ce_module.c" \
+    && -f "${EAR_CE}/ce_workflow.c" && -f "${EAR_CE}/ce_manager.c" ]]; then
+    run_host_one ae_m4_lifecycle_gap \
+      ${ae_inc} \
+      "${EAR_AE}/ae_gap.c" "${EAR_AE}/ae_signature.c" "${EAR_AE}/ae_history.c" \
+      "${EAR_AE}/ae_engine.c" "${EAR_AE}/ae_time.c" \
+      "${EAR_CE}/ce_decision.c" "${EAR_CE}/ce_module.c" "${EAR_CE}/ce_workflow.c" \
+      "${EAR_CE}/ce_manager.c" "${EAR_CE}/ce_engine.c" \
+      "${EAR_AE}/test_host/test_ae_m4_lifecycle_gap.c" || host_fail=1
+  else
+    record_skip "host/ae_m4_lifecycle_gap (CE module sources not in tree)"
+  fi
 
   return "${host_fail}"
 }
