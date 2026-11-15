@@ -127,7 +127,8 @@ Source: [ADR 0003](../../../adr/0003-critical-observation-path-and-shared-eviden
 All investigation targets from the Map task were traced to source as above.
 No target was copied without a citation. Remaining composition caveats:
 
-1. CPU 160 MHz: present in checked-in `firmware/esp-ear/sdkconfig`, **absent**
-   from `sdkconfig.defaults` (see hardware profile discrepancy).
+1. Product CPU is **240 MHz** / FreeRTOS **100 Hz** in
+   `firmware/esp-ear/sdkconfig.defaults` (see hardware profile). Historical R0
+   160 MHz builds use `sdkconfig.defaults.r0_ref` only.
 2. Fleet `firmware_version` is builder/catalog-bumped; defaults file series base
    is not the sole runtime identity for a given device image.
