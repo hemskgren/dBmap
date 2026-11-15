@@ -292,6 +292,22 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 Expect continuous `diag snap` / `diag counters` lines with Wi-Fi/MQTT disconnected. No credentials are logged; no raw PCM.
 
+## Fast test gate
+
+Before a local IDF build (and automatically before Ear builds in `firmware-builder`), run:
+
+```bash
+# From repo root — host acoustic tests + L0/L1/L2 modularity archive checks (needs ESP-IDF)
+./firmware/scripts/run_firmware_fast_gate.sh
+
+# Host tests only (no ESP-IDF; used by GitHub Actions when firmware paths change)
+./firmware/scripts/run_firmware_fast_gate.sh --host-only
+```
+
+GitHub Actions (`ci.yml`) always runs the `linting` job (`uv run ruff check` on `ubuntu-slim`). The firmware host gate runs only after linting succeeds, and only when `firmware/`, `firmware-builder/`, `compose.yaml`, or `ci.yml` change (so a web-only PR skips it).
+
+A non-zero exit means do not flash or OTA that tree.
+
 ## Build
 
 Prefer the Hub **Firmware → Build reusable firmware** target `ear-esp32-s3` (series `0.7.*`).

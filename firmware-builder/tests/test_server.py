@@ -400,3 +400,53 @@ def test_artifact_download_and_explicit_delete(builder):
     assert status == 200
     assert deleted["status"] == "deleted"
     assert not artifact_dir.exists()
+
+
+def test_ear_fast_gate_missing_script_raises(monkeypatch, tmp_path):
+    firmware_root = tmp_path / "firmware"
+    firmware_root.mkdir()
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    monkeypatch.setattr(server, "FIRMWARE_ROOT", firmware_root)
+    monkeypatch.setattr(server, "ARTIFACTS", artifacts)
+    log_path = tmp_path / "build.log"
+    log_path.write_text("", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="fast test gate script is missing"):
+        server._run_ear_fast_gate(log_path)
+
+
+def test_ear_fast_gate_nonzero_exit_raises(monkeypatch, tmp_path):
+    firmware_root = tmp_path / "firmware"
+    scripts = firmware_root / "scripts"
+    scripts.mkdir(parents=True)
+    gate = scripts / "run_firmware_fast_gate.sh"
+    gate.write_text("#!/bin/bash\necho gate-boom\nexit 7\n", encoding="utf-8")
+    gate.chmod(0o755)
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    monkeypatch.setattr(server, "FIRMWARE_ROOT", firmware_root)
+    monkeypatch.setattr(server, "ARTIFACTS", artifacts)
+    log_path = tmp_path / "build.log"
+    log_path.write_text("", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="fast test gate failed"):
+        server._run_ear_fast_gate(log_path)
+    assert "gate-boom" in log_path.read_text(encoding="utf-8")
+
+
+def test_ear_fast_gate_success(monkeypatch, tmp_path):
+    firmware_root = tmp_path / "firmware"
+    scripts = firmware_root / "scripts"
+    scripts.mkdir(parents=True)
+    gate = scripts / "run_firmware_fast_gate.sh"
+    gate.write_text("#!/bin/bash\necho gate-ok\nexit 0\n", encoding="utf-8")
+    gate.chmod(0o755)
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    monkeypatch.setattr(server, "FIRMWARE_ROOT", firmware_root)
+    monkeypatch.setattr(server, "ARTIFACTS", artifacts)
+    log_path = tmp_path / "build.log"
+    log_path.write_text("", encoding="utf-8")
+    server._run_ear_fast_gate(log_path)
+    text = log_path.read_text(encoding="utf-8")
+    assert "gate-ok" in text
+    assert "Running Ear firmware fast test gate" in text
