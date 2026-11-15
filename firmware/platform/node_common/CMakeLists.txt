@@ -22,6 +22,8 @@ idf_component_register(
         "serial_config.c"
         "net_wifi.c"
         "net_resolve.c"
+        "net_mdns_policy.c"
+        "net_mdns.c"
         "net_i2s.c"
         "time_sync.c"
         "hub_http.c"
