@@ -1,0 +1,20 @@
+{
+  "recording_id": "REPLACE_target_impulse_001",
+  "source": "REPLACE dataset name / lab session / URL",
+  "label": "impulse",
+  "role": "target",
+  "origin": "controlled_playback",
+  "equipment": "REPLACE",
+  "mic_config": "REPLACE mono/stereo and mic model",
+  "original_level_notes": "REPLACE capture gain; applied_gain_db must be 0 for the master file",
+  "applied_gain_db": 0.0,
+  "attenuation_notes": "Contextual only — not a detector threshold",
+  "sample_rate_hz": 16000,
+  "pcm_format": "wav_s16le_mono",
+  "conversion_command": "sh firmware/.../convert_to_mono16k.sh IN OUT",
+  "derived_from": null,
+  "license": "REPLACE",
+  "background_notes": "REPLACE",
+  "event_notes": "REPLACE timing of impulse(s)",
+  "start_seq_hint": null
+}

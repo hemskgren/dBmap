@@ -20,6 +20,19 @@ extern "C" {
  * reference without rewriting the frozen baseline.
  * When relative_end_enabled is false, behavior matches the absolute-only detector.
  *
+ * Pre-START baseline eligibility (Relative END ring, CAP=5, MIN=3, median):
+ * - Collect only in IDLE and PENDING_ENTER (never ACTIVE / PENDING_EXIT).
+ * - Boot settle and unusable samples never reach the ring (existing feed gates).
+ * - Absolute ENTER does NOT gate eligibility (ambient above enter may seed).
+ * - Contamination: reject a sample louder than the latest ring sample by more
+ *   than DBMAP_ACTIVITY_BASELINE_CONTAM_DB, or louder than the current ring
+ *   median by more than that margin when count >= 2. Empty ring always accepts
+ *   (seed). Quieter or similar levels are accepted so continuous floors fill.
+ * - Stale candidates older than baseline_stale_ms are dropped at push/freeze.
+ * - Freeze at START takes the current non-stale ring (median); clear on END.
+ * - While ambient is still accepted into the ring, START waits for MIN_SAMPLES
+ *   even after min_activity_ms; contamination rejects do not delay START.
+ *
  * Detection evaluation is independent of MQTT / Observation emission success.
  */
 
@@ -60,6 +73,11 @@ typedef enum {
 
 #define DBMAP_ACTIVITY_BASELINE_CAP 5u
 #define DBMAP_ACTIVITY_BASELINE_MIN_SAMPLES 3u
+/**
+ * Max upward jump (dB) from the latest / median ring level allowed into the
+ * pre-START baseline. Larger jumps are treated as event onset, not ambient.
+ */
+#define DBMAP_ACTIVITY_BASELINE_CONTAM_DB 6.0f
 #define DBMAP_ACTIVITY_ARMING_WINDOWS 2u
 #define DBMAP_ACTIVITY_LATE_ARM_STREAK 2u
 #define DBMAP_ACTIVITY_AMB_STABLE_CAP 8u

@@ -37,6 +37,11 @@ typedef struct {
     const char *emission_kind; /* required */
     /** Required for end/complete; NULL omits (invalid for those kinds). */
     const char *termination_reason;
+    /**
+     * Optional technical path mark. NULL omits the field (normal Observations).
+     * Critical Path reports set "critical_path".
+     */
+    const char *origin;
 
     /* acoustic */
     bool has_signal_level_dbfs;

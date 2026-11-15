@@ -206,6 +206,8 @@ Optional parallel docs polish only if needed: cross-links from product contracts
 | Doc | Role |
 | --- | --- |
 | [ADR 0001](./adr/0001-sensor-platform-architecture.md) | Normative decisions |
+| [Firmware Map](./firmware-map/README.md) | Platform × hardware × product × IDF capacities and performance evidence index (docs only; does not replace Kconfig/`#define`) |
+| [ADR 0003](./adr/0003-critical-observation-path-and-shared-evidence.md) | Proposed Critical Observation Path — lifecycle slice in source; auto-detect deferred |
 | [Firmware Sensor Platform Step 1](./firmware-sensor-platform-step1.md) | Phase 1 implementation report |
 | [ESP-IDF 6.1 migration assessment](./firmware-esp-idf-6.1-migration-assessment.md) | Phase 2 toolchain evaluation (no migration yet) |
 | [Protocol](./protocol.md) | Wire contract (Observation v1) |

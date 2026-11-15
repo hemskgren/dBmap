@@ -1,0 +1,20 @@
+{
+  "recording_id": "synth_impulse_smoke",
+  "source": "Generated in-repo for WAV path smoke test only",
+  "label": "impulse_smoke",
+  "role": "synthetic",
+  "origin": "synthetic",
+  "equipment": "n/a (procedural PCM)",
+  "mic_config": "n/a",
+  "original_level_notes": "Peak impulse ~0.85 FS in s16; no AGC",
+  "applied_gain_db": 0.0,
+  "attenuation_notes": "n/a — not a physical distance study",
+  "sample_rate_hz": 16000,
+  "pcm_format": "wav_s16le_mono",
+  "conversion_command": null,
+  "derived_from": null,
+  "license": "in-repo synthetic fixture",
+  "background_notes": "Low tonal floor + two short impulses at windows ~3 and ~5",
+  "event_notes": "Synthetic impulses only; not Critical-event evidence",
+  "start_seq_hint": null
+}

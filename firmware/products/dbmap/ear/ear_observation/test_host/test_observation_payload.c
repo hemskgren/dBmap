@@ -90,6 +90,7 @@ static dbmap_observation_fields_t base_fields(const dbmap_l0_interval_t *iv)
         .episode_duration_ms = 2000.0,
         .emission_kind = "start",
         .termination_reason = NULL,
+        .origin = NULL,
         .has_signal_level_dbfs = true,
         .signal_level_dbfs = -42.5,
         .measurements = iv,
@@ -148,6 +149,7 @@ static void test_hierarchical_start(void)
         EXPECT(strstr(json, "\"episode_duration_ms\":2000") != NULL);
         EXPECT(strstr(json, "\"emission_kind\":\"start\"") != NULL);
         EXPECT(strstr(json, "termination_reason") == NULL);
+        EXPECT(strstr(json, "\"origin\"") == NULL);
         EXPECT(strstr(json, "\"signature\":null") != NULL);
         EXPECT(strstr(json, "\"dynamics\":null") != NULL);
         EXPECT(strstr(json, "\"classification\":null") != NULL);
@@ -399,6 +401,19 @@ static void test_dynamics_schema_and_version(void)
     }
 }
 
+static void test_origin_critical_path(void)
+{
+    dbmap_l0_interval_t iv = sample_interval();
+    dbmap_observation_fields_t fields = base_fields(&iv);
+    fields.origin = "critical_path";
+    char *json = dbmap_observation_build_json(&fields);
+    EXPECT(json != NULL);
+    if (json) {
+        EXPECT(strstr(json, "\"origin\":\"critical_path\"") != NULL);
+        free(json);
+    }
+}
+
 int main(void)
 {
     test_hierarchical_start();
@@ -409,6 +424,7 @@ int main(void)
     test_dynamics_feature_null_rules();
     test_dynamics_overflow_option_a();
     test_dynamics_schema_and_version();
+    test_origin_critical_path();
     if (g_failures) {
         fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;

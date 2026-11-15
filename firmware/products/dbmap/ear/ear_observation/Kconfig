@@ -346,4 +346,66 @@ menu "dBmap Ear Observation"
         default 1000
         depends on DBMAP_EAR_OBS_LIFECYCLE_V2
 
+    config DBMAP_EAR_OBS_CRITICAL_PATH
+        bool "Critical Observation Path lifecycle (ADR 0003 slice)"
+        default y
+        depends on DBMAP_EAR_AUDIO_ENGINE
+        help
+            EAR-owned Critical Observation lifecycle (START/PERIODIC/END),
+            independent of CE and normal registry slots. Automatic acoustic
+            detection remains disabled unless CRITICAL_AUTO_DETECT is also
+            enabled — and even then no production trigger is implemented in
+            this slice (use force_start / inject for tests).
+
+    config DBMAP_EAR_OBS_CRITICAL_AUTO_DETECT
+        bool "Critical Path: enable automatic acoustic START (UNSAFE / unused)"
+        default n
+        depends on DBMAP_EAR_OBS_CRITICAL_PATH
+        help
+            Hard-disabled production default. This slice does not implement an
+            approved acoustic START threshold; leaving this off is required.
+            Do not enable in field builds.
+
+    config DBMAP_EAR_OBS_CRITICAL_PERIODIC_MS
+        int "Critical Path PERIODIC interval (ms) — provisional default"
+        range 1000 60000
+        default 5000
+        depends on DBMAP_EAR_OBS_CRITICAL_PATH
+        help
+            Implementation default 5000 ms. Provisional — not a final
+            architectural cadence decision.
+
+    config DBMAP_EAR_OBS_CRITICAL_IDLE_TIMEOUT_MS
+        int "Critical Path idle timeout (ms)"
+        range 1000 300000
+        default 15000
+        depends on DBMAP_EAR_OBS_CRITICAL_PATH
+        help
+            END when no matching evidence within this window. Idle resets only
+            on experimental fingerprint match (see MATCH_* below).
+
+    config DBMAP_EAR_OBS_CRITICAL_MAX_ACTIVE_MS
+        int "Critical Path maximum active duration (ms)"
+        range 1000 600000
+        default 30000
+        depends on DBMAP_EAR_OBS_CRITICAL_PATH
+
+    config DBMAP_EAR_OBS_CRITICAL_MATCH_DISTANCE_X1000
+        int "Critical idle-reset match distance (×1000) — experimental"
+        range 0 100000
+        default 4000
+        depends on DBMAP_EAR_OBS_CRITICAL_PATH
+        help
+            Experimental ae_signature_distance max for idle-reset only
+            (4000 → 4.0). Not an approved production detector parameter.
+
+    config DBMAP_EAR_OBS_CRITICAL_MATCH_CREST_FLOOR_DB_X1000
+        int "Critical idle-reset crest floor (dB ×1000) — experimental"
+        range 0 60000
+        default 12000
+        depends on DBMAP_EAR_OBS_CRITICAL_PATH
+        help
+            Experimental crest floor for idle-reset only (12000 → 12.0 dB).
+            Not an approved production detector parameter.
+
 endmenu

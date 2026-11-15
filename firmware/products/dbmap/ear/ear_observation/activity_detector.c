@@ -282,7 +282,47 @@ static void baseline_drop_stale(dbmap_activity_detector_t *det, int64_t now_us)
     }
 }
 
-static void baseline_push(
+/**
+ * Whether rms may enter the pre-START baseline ring.
+ * See dbmap_activity_detector.h for the full eligibility contract.
+ */
+static bool baseline_sample_eligible(const dbmap_activity_detector_t *det, float rms)
+{
+    if (det->baseline_count == 0u) {
+        return true; /* seed ambient, including floors above absolute ENTER */
+    }
+
+    const uint32_t last_idx =
+        (det->baseline_head + DBMAP_ACTIVITY_BASELINE_CAP - 1u) % DBMAP_ACTIVITY_BASELINE_CAP;
+    const float last_rms = det->baseline_entries[last_idx].rms_dbfs;
+    if (rms > last_rms + DBMAP_ACTIVITY_BASELINE_CONTAM_DB) {
+        return false; /* sudden rise vs latest accepted ambient */
+    }
+
+    if (det->baseline_count >= 2u) {
+        float vals[DBMAP_ACTIVITY_BASELINE_CAP];
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < det->baseline_count; ++i) {
+            const uint32_t idx =
+                (det->baseline_head + DBMAP_ACTIVITY_BASELINE_CAP - det->baseline_count + i)
+                % DBMAP_ACTIVITY_BASELINE_CAP;
+            const dbmap_activity_baseline_sample_t *s = &det->baseline_entries[idx];
+            if (s->valid) {
+                vals[n++] = s->rms_dbfs;
+            }
+        }
+        if (n >= 2u) {
+            const float med = baseline_median(vals, n);
+            if (rms > med + DBMAP_ACTIVITY_BASELINE_CONTAM_DB) {
+                return false; /* outlier above ring median (transient / onset) */
+            }
+        }
+    }
+    return true;
+}
+
+/** @return true if the sample was stored in the pre-START ring. */
+static bool baseline_push(
     dbmap_activity_detector_t *det,
     float rms,
     int64_t t_end_us,
@@ -290,10 +330,13 @@ static void baseline_push(
 )
 {
     if (!det->cfg.relative_end_enabled || det->baseline_frozen) {
-        return;
+        return false;
     }
     if (!isfinite((double)rms) || rms > 0.0f || t_end_us < 0) {
-        return;
+        return false;
+    }
+    if (!baseline_sample_eligible(det, rms)) {
+        return false;
     }
     baseline_drop_stale(det, t_end_us);
     if (det->baseline_count == DBMAP_ACTIVITY_BASELINE_CAP) {
@@ -305,6 +348,29 @@ static void baseline_push(
     det->baseline_entries[det->baseline_head].valid = true;
     det->baseline_head = (det->baseline_head + 1u) % DBMAP_ACTIVITY_BASELINE_CAP;
     det->baseline_count++;
+    return true;
+}
+
+/**
+ * When Relative END is on, prefer waiting for MIN baseline samples while ambient
+ * is still being accepted. Event-onset windows (contamination reject) must not
+ * block START forever — fall through to absolute-only / unreliable freeze.
+ */
+static bool relative_baseline_ready_for_start(
+    const dbmap_activity_detector_t *det,
+    bool baseline_accepted_this_window
+)
+{
+    if (!det->cfg.relative_end_enabled) {
+        return true;
+    }
+    if (det->baseline_count >= DBMAP_ACTIVITY_BASELINE_MIN_SAMPLES) {
+        return true;
+    }
+    if (!baseline_accepted_this_window) {
+        return true; /* event path: do not stall PENDING_ENTER */
+    }
+    return false;
 }
 
 static void baseline_freeze(dbmap_activity_detector_t *det, int64_t episode_start_us)
@@ -312,6 +378,7 @@ static void baseline_freeze(dbmap_activity_detector_t *det, int64_t episode_star
     if (!det->cfg.relative_end_enabled) {
         return;
     }
+    /* Stale trim uses episode_start as "now" so pre-START ages are consistent. */
     baseline_drop_stale(det, episode_start_us);
 
     float vals[DBMAP_ACTIVITY_BASELINE_CAP];
@@ -321,16 +388,17 @@ static void baseline_freeze(dbmap_activity_detector_t *det, int64_t episode_star
     int64_t accepted_t[DBMAP_ACTIVITY_BASELINE_CAP];
     float accepted_rms[DBMAP_ACTIVITY_BASELINE_CAP];
 #endif
+    /*
+     * Freeze the current pre-START ring. Contamination filtering during
+     * IDLE/PENDING_ENTER replaces the old t_end<=episode_start cut that
+     * dropped all above-enter ambient windows (n=0 on elevated floors).
+     */
     for (uint32_t i = 0; i < det->baseline_count; ++i) {
         const uint32_t idx =
             (det->baseline_head + DBMAP_ACTIVITY_BASELINE_CAP - det->baseline_count + i)
             % DBMAP_ACTIVITY_BASELINE_CAP;
         const dbmap_activity_baseline_sample_t *s = &det->baseline_entries[idx];
         if (!s->valid) {
-            continue;
-        }
-        /* Pre-event only: window ended at or before episode start. */
-        if (s->t_end_mono_us > episode_start_us) {
             continue;
         }
 #if DBMAP_ACTIVITY_SERIAL_DIAG
@@ -1033,9 +1101,10 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
     }
 #endif
 
-    /* Baseline: IDLE and below enter only. */
-    if (det->state == DBMAP_ACTIVITY_IDLE && !above_enter(det, rms)) {
-        baseline_push(det, rms, t, sample->window_seq);
+    /* Baseline: pre-START (IDLE / PENDING_ENTER) with contamination filter. */
+    bool baseline_accepted = false;
+    if (det->state == DBMAP_ACTIVITY_IDLE || det->state == DBMAP_ACTIVITY_PENDING_ENTER) {
+        baseline_accepted = baseline_push(det, rms, t, sample->window_seq);
     }
 
     switch (det->state) {
@@ -1043,7 +1112,8 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
         if (above_enter(det, rms)) {
             det->pending_since_us = window_start;
             det->episode_start_us = window_start;
-            if ((t - window_start) >= ((int64_t)det->cfg.min_activity_ms * 1000LL)) {
+            if ((t - window_start) >= ((int64_t)det->cfg.min_activity_ms * 1000LL)
+                && relative_baseline_ready_for_start(det, baseline_accepted)) {
                 det->state = DBMAP_ACTIVITY_ACTIVE;
                 det->last_emit_us = t;
                 det->emissions_start += 1;
@@ -1067,7 +1137,8 @@ dbmap_activity_emission_t dbmap_activity_detector_feed(
             det->pending_since_us = 0;
             return none;
         }
-        if ((t - det->pending_since_us) >= ((int64_t)det->cfg.min_activity_ms * 1000LL)) {
+        if ((t - det->pending_since_us) >= ((int64_t)det->cfg.min_activity_ms * 1000LL)
+            && relative_baseline_ready_for_start(det, baseline_accepted)) {
             det->state = DBMAP_ACTIVITY_ACTIVE;
             det->episode_start_us = det->pending_since_us;
             det->last_emit_us = t;
