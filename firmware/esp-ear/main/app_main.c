@@ -49,12 +49,12 @@ static void start_ear_mic_once(void)
 
     sp_mic_config_t mic_cfg = {
         .model = SP_MIC_MODEL_INMP441,
-        .bclk_gpio = CONFIG_DBMAP_EAR_MIC_I2S_BCLK_GPIO,
-        .ws_gpio = CONFIG_DBMAP_EAR_MIC_I2S_WS_GPIO,
-        .din_gpio = CONFIG_DBMAP_EAR_MIC_I2S_DIN_GPIO,
-        .din1_gpio = CONFIG_DBMAP_EAR_MIC_I2S_DIN1_GPIO,
-        .mclk_gpio = CONFIG_DBMAP_EAR_MIC_I2S_MCLK_GPIO,
-        .sample_rate_hz = CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ,
+        .bclk_gpio = CONFIG_SP_MIC_I2S_BCLK_GPIO,
+        .ws_gpio = CONFIG_SP_MIC_I2S_WS_GPIO,
+        .din_gpio = CONFIG_SP_MIC_I2S_DIN_GPIO,
+        .din1_gpio = CONFIG_SP_MIC_I2S_DIN1_GPIO,
+        .mclk_gpio = CONFIG_SP_MIC_I2S_MCLK_GPIO,
+        .sample_rate_hz = CONFIG_SP_MIC_SAMPLE_RATE_HZ,
     };
     ESP_LOGI(TAG_PLATFORM, "starting Platform mic/I2S before Wi-Fi");
     esp_err_t mic_err = sp_mic_start(&s_cfg, &mic_cfg);

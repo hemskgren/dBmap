@@ -198,8 +198,8 @@ esp_err_t ae_device_poll(void)
             &ares,
             expect_stereo,
             job->pcm_channel_mask,
-            job->sample_count_ch0,
-            job->sample_count_ch1
+            job->sample_count_ch[0],
+            job->sample_count_ch[1]
         );
         s_diag.last_stereo_state = (uint8_t)st.state;
         s_diag.last_pcm_mask = st.pcm_channel_mask;

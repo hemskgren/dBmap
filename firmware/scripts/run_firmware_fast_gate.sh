@@ -107,6 +107,12 @@ run_host_tests() {
     "${SP_AUDIO}/sp_acoustic_l0.c" "${SP_AUDIO}/sp_acoustic_l1.c" \
     "${SP_AUDIO}/sp_acoustic_l2.c" \
     "${SP_AUDIO}/test_host/test_acoustic_golden.c" || host_fail=1
+  run_host_one audio_analyze_multimic \
+    ${sp_inc} \
+    -DCONFIG_SP_AUDIO_L0=1 -DCONFIG_SP_AUDIO_L1=1 -DCONFIG_SP_AUDIO_L2=1 \
+    "${SP_AUDIO}/sp_acoustic_l0.c" "${SP_AUDIO}/sp_acoustic_l1.c" \
+    "${SP_AUDIO}/sp_acoustic_l2.c" "${SP_AUDIO}/sp_audio_analyze.c" \
+    "${SP_AUDIO}/test_host/test_audio_analyze_multimic.c" || host_fail=1
 
   section "Host Platform mic tests (migration-relevant)"
   local nc_inc="-I${FIRMWARE_ROOT}/platform/node_common/include"
@@ -120,6 +126,17 @@ run_host_tests() {
     "${SP_MIC}/sp_mic_window_job.c" "${SP_MIC}/ear_mic_channel_api.c" \
     "${SP_MIC}/audio_metrics.c" \
     "${SP_MIC}/test_host/test_sp_mic_window_job.c" || host_fail=1
+  run_host_one ear_mic_channel_api \
+    ${mic_inc} \
+    "${SP_MIC}/ear_mic_channel_api.c" "${SP_MIC}/audio_metrics.c" \
+    "${SP_MIC}/test_host/test_ear_mic_channel_api.c" || host_fail=1
+  run_host_one background_rms \
+    ${mic_inc} \
+    "${SP_MIC}/background_rms.c" \
+    "${SP_MIC}/test_host/test_background_rms.c" || host_fail=1
+  run_host_one capture_diag_format \
+    ${mic_inc} \
+    "${SP_MIC}/test_host/test_capture_diag_format.c" || host_fail=1
   run_host_one mic_count \
     ${nc_inc} \
     "${FIRMWARE_ROOT}/platform/node_common/mic_count.c" \
@@ -191,13 +208,26 @@ assert_cmake_modularity_structure() {
   # Platform DSP sources must not include product paths/headers
   if grep -R -n 'products/dbmap\|dbmap_ear_\|ear_observation\|ae_engine' \
       "${SP_AUDIO}/sp_acoustic_l0.c" "${SP_AUDIO}/sp_acoustic_l1.c" \
-      "${SP_AUDIO}/sp_acoustic_l2.c" "${SP_AUDIO}/include" 2>/dev/null; then
+      "${SP_AUDIO}/sp_acoustic_l2.c" "${SP_AUDIO}/sp_audio_analyze.c" \
+      "${SP_AUDIO}/include" 2>/dev/null; then
     log "  Platform DSP references EAR/DBMAP product code"
+    ok=0
+  fi
+  # Platform mic Kconfig must be generic (no EAR node-type / EAR_MIC ownership)
+  local mic_kconfig="${SP_MIC}/Kconfig"
+  if grep -E 'DBMAP_NODE_TYPE_EAR|DBMAP_EAR_MIC_' "${mic_kconfig}" >/dev/null 2>&1; then
+    log "  Platform mic Kconfig still references EAR-specific symbols"
+    ok=0
+  fi
+  if ! grep -q 'SP_MIC_SAMPLE_RATE_HZ' "${mic_kconfig}" \
+    || ! grep -q 'SP_MIC_WINDOW_MS' "${mic_kconfig}"; then
+    log "  Platform mic Kconfig missing generic SP_MIC_* symbols"
     ok=0
   fi
   if [[ "${ok}" -eq 1 ]]; then
     record_pass "cmake/conditional_srcs"
     record_pass "cmake/platform_no_ear_deps"
+    record_pass "cmake/platform_mic_kconfig_generic"
     return 0
   fi
   record_fail "cmake/conditional_srcs"
@@ -336,7 +366,8 @@ run_modularity_checks() {
   build_audio_archive "${ear_build}"
   expect_members "modularity/ear_full_audio_archive" \
     "${ear_build}/esp-idf/audio/libaudio.a" \
-    sp_acoustic_l0.c.obj sp_acoustic_l1.c.obj sp_acoustic_l2.c.obj \
+    sp_acoustic_l0.c.obj sp_audio_analyze.c.obj \
+    sp_acoustic_l1.c.obj sp_acoustic_l2.c.obj \
     || mod_fail=1
   build_ear_acoustic_archive "${ear_build}"
   expect_members "modularity/ear_runtime_archive" \
@@ -359,7 +390,7 @@ run_modularity_checks() {
   build_audio_archive "${GATE_ROOT}/l0-only"
   expect_members "modularity/l0_only_archive" \
     "${GATE_ROOT}/l0-only/esp-idf/audio/libaudio.a" \
-    sp_acoustic_l0.c.obj \
+    sp_acoustic_l0.c.obj sp_audio_analyze.c.obj \
     || mod_fail=1
   if grep -q 'CONFIG_SP_AUDIO_L1 1' "${GATE_ROOT}/l0-only/config/sdkconfig.h" 2>/dev/null \
     || grep -q 'CONFIG_SP_AUDIO_L2 1' "${GATE_ROOT}/l0-only/config/sdkconfig.h" 2>/dev/null; then
@@ -375,7 +406,7 @@ run_modularity_checks() {
   build_audio_archive "${GATE_ROOT}/l0-l1"
   expect_members "modularity/l0_l1_archive" \
     "${GATE_ROOT}/l0-l1/esp-idf/audio/libaudio.a" \
-    sp_acoustic_l0.c.obj sp_acoustic_l1.c.obj \
+    sp_acoustic_l0.c.obj sp_audio_analyze.c.obj sp_acoustic_l1.c.obj \
     || mod_fail=1
 
   # D) Invalid L2 without L1 — Kconfig must drop L2

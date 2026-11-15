@@ -1,0 +1,17 @@
+menu "dBmap Ear acoustic analysis"
+    depends on DBMAP_NODE_TYPE_EAR
+
+    config DBMAP_EAR_MIC_L0
+        bool "Enable EAR L0 analysis path (selects Platform PCM + L0 DSP)"
+        default y
+        select SP_MIC_PCM_RETAIN
+        select SP_AUDIO_L0
+        help
+            EAR product enable for L0 analysis. Selects Platform SPIRAM PCM
+            retention (SP_MIC_PCM_RETAIN) and Platform L0 DSP (SP_AUDIO_L0).
+            I2S capture is not blocked by analysis. Not used by the RMS
+            activity detector. Disable to reclaim SPIRAM when unused.
+            Microphone hardware options live under Sensor Platform microphone
+            (SP_MIC_*); this option only enables the product analysis path.
+
+endmenu
