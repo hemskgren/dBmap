@@ -57,6 +57,7 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg);
  * dynamics: NULL → acoustic.dynamics JSON null (L2 publish off / omitted);
  *   non-NULL → schema=l2 object (may be empty or Option A overflow).
  * has_signal_level_dbfs: false → JSON null signal level.
+ * origin: NULL omits context.origin (normal path); "critical_path" for Critical.
  */
 esp_err_t dbmap_ear_observation_publish(
     const sp_effective_t *cfg,
@@ -72,6 +73,24 @@ esp_err_t dbmap_ear_observation_publish(
     const dbmap_l0_interval_t *measurements,
     const dbmap_l1_interval_t *signature,
     const dbmap_l2_interval_t *dynamics
+);
+
+/** Same as dbmap_ear_observation_publish with optional context.origin. */
+esp_err_t dbmap_ear_observation_publish_ex(
+    const sp_effective_t *cfg,
+    const char *observation_id,
+    bool has_signal_level_dbfs,
+    double signal_level_dbfs,
+    double interval_duration_ms,
+    double episode_duration_ms,
+    int64_t capture_timestamp_monotonic_us,
+    int64_t interval_start_monotonic_us,
+    const char *emission_kind,
+    const char *termination_reason,
+    const dbmap_l0_interval_t *measurements,
+    const dbmap_l1_interval_t *signature,
+    const dbmap_l2_interval_t *dynamics,
+    const char *origin
 );
 
 /**

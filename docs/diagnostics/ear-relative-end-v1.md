@@ -48,14 +48,19 @@ These are **not** calibrated fleet defaults. Retune only after controlled EAR-00
 
 ### Baseline collection and freeze
 
-- Collect up to **five** usable RMS samples only in **IDLE** while `rms < enter` (−45 dBFS).
-- Do **not** collect in PENDING_ENTER, ACTIVE, or PENDING_EXIT.
+- Collect up to **five** usable RMS samples in **IDLE and PENDING_ENTER** (pre-START only).
+- Do **not** collect in ACTIVE or PENDING_EXIT.
+- Absolute ENTER (−45 dBFS) does **not** gate eligibility (elevated ambient may seed the ring).
+- **Contamination filter** (`DBMAP_ACTIVITY_BASELINE_CONTAM_DB` = 6.0 dB): reject a sample louder than the latest ring sample by more than 6 dB, or louder than the current ring median by more than 6 dB when `count >= 2`. Empty ring always accepts (seed). Short upward transients and sudden event onsets are excluded; quieter/similar levels fill continuous floors.
+- Boot settle and unusable windows never reach the ring (existing feed gates).
 - Store each sample’s `window_end` (`measured_at_us`).
-- At **START**, freeze candidates with `t_end <= episode_start` (excludes the first above-enter window and later event windows).
+- At **START**, freeze the current non-stale ring (contamination already applied during collection).
 - Baseline = **median**; **reliable** only if `n >= 3`.
-- Apply staleness filter before freeze when configured.
+- Apply staleness filter before freeze when configured (`baseline_stale_ms`, default 15 s).
 - Unreliable / insufficient → Relative END stays unarmed; absolute exit only; **A3 also inactive**.
 - After END (natural, secondary ambient, invalid-hold, force_end, reset_idle): clear freeze, arming, latch, secondary ambient state, and the candidate ring; resume IDLE collection.
+- Absolute ENTER/EXIT thresholds are unchanged; this policy only repairs pre-START baseline eligibility.
+- While Relative END is enabled and ambient samples are still being **accepted** into the ring, START waits until `baseline_count >= 3` even if `min_activity_ms` has elapsed (so a continuous above-enter floor can fill ~3 s of baseline). Contamination-rejected event windows do **not** delay START (unreliable freeze / absolute fallback remains available).
 
 ### Arming and contrast
 

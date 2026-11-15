@@ -52,6 +52,9 @@ CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG=y
 CONFIG_DBMAP_EAR_MIC_CAPTURE_DIAG=y
 # Audio Engine + Candidate Engine device intake (M2); sole PCM taker in ear_obs.
 CONFIG_DBMAP_EAR_AUDIO_ENGINE=y
+# Critical Observation Path lifecycle (ADR 0003 slice). Auto acoustic START off.
+CONFIG_DBMAP_EAR_OBS_CRITICAL_PATH=y
+CONFIG_DBMAP_EAR_OBS_CRITICAL_AUTO_DETECT=n
 # Bench alignment diagnostics (every N signature publishes); off by default in menuconfig.
 CONFIG_DBMAP_EAR_AE_DIAG=y
 CONFIG_DBMAP_EAR_AE_DIAG_EVERY_N=10

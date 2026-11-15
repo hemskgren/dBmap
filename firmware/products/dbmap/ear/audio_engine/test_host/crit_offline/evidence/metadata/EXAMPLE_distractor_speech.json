@@ -1,0 +1,20 @@
+{
+  "recording_id": "REPLACE_distractor_speech_001",
+  "source": "REPLACE",
+  "label": "speech",
+  "role": "distractor",
+  "origin": "field",
+  "equipment": "REPLACE",
+  "mic_config": "REPLACE",
+  "original_level_notes": "REPLACE",
+  "applied_gain_db": 0.0,
+  "attenuation_notes": null,
+  "sample_rate_hz": 16000,
+  "pcm_format": "wav_s16le_mono",
+  "conversion_command": null,
+  "derived_from": null,
+  "license": "REPLACE",
+  "background_notes": "REPLACE",
+  "event_notes": "Ordinary speech distractor — not a Critical target",
+  "start_seq_hint": null
+}

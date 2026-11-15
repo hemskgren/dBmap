@@ -5,6 +5,10 @@ idf_component_register(
         "lifecycle_v2.c"
         "ear_obs_ota_policy.c"
         "ce_promotion_bridge.c"
+        "ear_obs_manager.c"
+        "ear_promotion_policy.c"
+        "ear_critical_path.c"
+        "ear_obs_ota_cleanup.c"
         "ear_observation.c"
     INCLUDE_DIRS "include"
     REQUIRES
@@ -13,6 +17,7 @@ idf_component_register(
         ear_acoustic
         audio
         ae_runtime
+        audio_engine
         candidate_engine
         observation
         json

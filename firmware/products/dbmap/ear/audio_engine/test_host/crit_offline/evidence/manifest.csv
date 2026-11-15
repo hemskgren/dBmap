@@ -1,0 +1,6 @@
+recording_id,audio_path,label,role,origin,applied_gain_db,pcm_format,channel,start_seq_hint,notes
+synth_impulse_smoke,firmware/products/dbmap/ear/audio_engine/test_host/crit_offline/evidence/fixtures/synth_impulse_smoke.wav,impulse_smoke,synthetic,synthetic,0,wav,mono,,WAV path smoke fixture — not field evidence
+synth_impulse_smoke_g-6,firmware/products/dbmap/ear/audio_engine/test_host/crit_offline/evidence/fixtures/synth_impulse_smoke.wav,impulse_smoke,synthetic,synthetic,-6,wav,mono,,Derived level variant of synth_impulse_smoke
+synth_impulse_smoke_g-12,firmware/products/dbmap/ear/audio_engine/test_host/crit_offline/evidence/fixtures/synth_impulse_smoke.wav,impulse_smoke,synthetic,synthetic,-12,wav,mono,,Derived level variant of synth_impulse_smoke
+synth_impulse_smoke_g-18,firmware/products/dbmap/ear/audio_engine/test_host/crit_offline/evidence/fixtures/synth_impulse_smoke.wav,impulse_smoke,synthetic,synthetic,-18,wav,mono,,Derived level variant of synth_impulse_smoke
+synth_impulse_smoke_g-24,firmware/products/dbmap/ear/audio_engine/test_host/crit_offline/evidence/fixtures/synth_impulse_smoke.wav,impulse_smoke,synthetic,synthetic,-24,wav,mono,,Derived level variant of synth_impulse_smoke

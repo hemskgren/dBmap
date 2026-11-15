@@ -1296,6 +1296,229 @@ static void test_gradual_decay_relative_end(void)
     EXPECT(det.state == DBMAP_ACTIVITY_IDLE);
 }
 
+/** A1-1: Continuous ambient above ENTER still yields >=3 baseline samples. */
+static void test_a1_ambient_above_enter_fills_baseline(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = rel_cfg();
+    dbmap_activity_detector_init(&det, &cfg);
+    uint32_t seq = 0;
+    int64_t t = 0;
+
+    /* Three 1 s windows at -30 dBFS (above enter -45). */
+    for (int i = 0; i < 3; ++i) {
+        seq++;
+        t += 1000000;
+        dbmap_activity_emission_t e = feed(&det, seq, t, -30.0f);
+        if (i == 0) {
+            EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_NONE);
+            EXPECT(det.state == DBMAP_ACTIVITY_PENDING_ENTER);
+            EXPECT(det.baseline_count == 1);
+        } else if (i == 1) {
+            EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_NONE);
+            EXPECT(det.state == DBMAP_ACTIVITY_PENDING_ENTER);
+            EXPECT(det.baseline_count == 2);
+        } else {
+            EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_START);
+            EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
+            EXPECT(det.baseline_frozen);
+            EXPECT(det.baseline_reliable);
+            EXPECT(det.frozen_baseline_n >= 3);
+            EXPECT(fabsf(det.frozen_baseline_dbfs - (-30.0f)) < 0.01f);
+        }
+    }
+}
+
+/** A1-2: Sudden event jump is not accepted into the ring. */
+static void test_a1_sudden_event_not_baseline(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = rel_cfg();
+    dbmap_activity_detector_init(&det, &cfg);
+    uint32_t seq = 0;
+    int64_t t = 0;
+
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -50.0f);
+    EXPECT(det.baseline_count == 1);
+
+    /* +15 dB jump (> CONTAM 6 dB) while still IDLE path into PENDING. */
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -35.0f);
+    EXPECT(det.state == DBMAP_ACTIVITY_PENDING_ENTER);
+    EXPECT(det.baseline_count == 1); /* jump rejected */
+
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -35.0f);
+    EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
+    EXPECT(det.baseline_frozen);
+    EXPECT(!det.baseline_reliable); /* only one pre-event sample */
+    EXPECT(det.frozen_baseline_n == 1);
+}
+
+/** A1-3: Short transient does not move the median of a filled ring. */
+static void test_a1_short_transient_median_stable(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = rel_cfg();
+    dbmap_activity_detector_init(&det, &cfg);
+    uint32_t seq = 0;
+    int64_t t = 0;
+
+    for (int i = 0; i < 3; ++i) {
+        seq++;
+        t += 1000000;
+        feed(&det, seq, t, -48.0f);
+    }
+    EXPECT(det.baseline_count == 3);
+
+    /* Keyboard-like spike: reject; count unchanged. */
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -30.0f);
+    EXPECT(det.baseline_count == 3);
+
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -48.0f);
+    EXPECT(det.baseline_count == 4);
+
+    /* Force START with sustained loud (contamination rejects loud windows). */
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -35.0f);
+    seq++;
+    t += 1000000;
+    dbmap_activity_emission_t e = feed(&det, seq, t, -35.0f);
+    EXPECT(e.kind == DBMAP_ACTIVITY_EMIT_START);
+    EXPECT(det.baseline_reliable);
+    EXPECT(fabsf(det.frozen_baseline_dbfs - (-48.0f)) < 0.01f);
+}
+
+/** A1-4: Quiet-room below-enter seeding still works (regression). */
+static void test_a1_quiet_room_baseline_unchanged(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = rel_cfg();
+    dbmap_activity_detector_init(&det, &cfg);
+    uint32_t seq = 0;
+    int64_t t = 0;
+    seed_baseline_m51(&det, &seq, &t);
+    EXPECT(det.baseline_count >= 3);
+
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -35.0f);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -35.0f);
+    EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
+    EXPECT(det.baseline_reliable);
+    EXPECT(fabsf(det.frozen_baseline_dbfs - (-51.0f)) < 0.01f);
+}
+
+/** A1-5: Stale samples dropped before freeze. */
+static void test_a1_stale_samples_discarded(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = rel_cfg();
+    cfg.baseline_stale_ms = 15000;
+    dbmap_activity_detector_init(&det, &cfg);
+    uint32_t seq = 0;
+    int64_t t = 0;
+
+    for (int i = 0; i < 3; ++i) {
+        seq++;
+        t += 1000000;
+        feed(&det, seq, t, -50.0f);
+    }
+    EXPECT(det.baseline_count == 3);
+
+    /* Jump 20 s ahead (> stale 15 s) then event → freeze drops old ring. */
+    t += 20000000;
+    seq++;
+    feed(&det, seq, t, -35.0f);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -35.0f);
+    EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
+    EXPECT(!det.baseline_reliable);
+    EXPECT(det.frozen_baseline_n == 0);
+}
+
+/** A1-6: Freeze at START; clear and resume collection after END. */
+static void test_a1_freeze_clear_resume(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = rel_cfg();
+    dbmap_activity_detector_init(&det, &cfg);
+    uint32_t seq = 0;
+    int64_t t = 0;
+    seed_baseline_m51(&det, &seq, &t);
+
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -35.0f);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -35.0f);
+    EXPECT(det.baseline_frozen);
+    EXPECT(det.baseline_reliable);
+
+    /* Arm + relative END back to baseline. */
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -51.0f);
+    EXPECT(det.relative_armed);
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -51.0f);
+    seq++;
+    t += 1000000;
+    EXPECT(feed(&det, seq, t, -51.0f).kind == DBMAP_ACTIVITY_EMIT_END);
+    EXPECT(!det.baseline_frozen);
+    EXPECT(det.baseline_count == 0);
+
+    /* Resume: new IDLE ambient collected. */
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -52.0f);
+    EXPECT(det.state == DBMAP_ACTIVITY_IDLE);
+    EXPECT(det.baseline_count == 1);
+    EXPECT(!det.baseline_frozen);
+}
+
+/** A1-7: Elevated ambient baseline can arm Relative END on a louder event. */
+static void test_a1_relative_end_arms_elevated_ambient(void)
+{
+    dbmap_activity_detector_t det;
+    dbmap_activity_config_t cfg = rel_cfg();
+    dbmap_activity_detector_init(&det, &cfg);
+    uint32_t seq = 0;
+    int64_t t = 0;
+
+    /* Fill baseline at -32 (above enter) via IDLE+PENDING then START. */
+    for (int i = 0; i < 3; ++i) {
+        seq++;
+        t += 1000000;
+        feed(&det, seq, t, -32.0f);
+    }
+    EXPECT(det.state == DBMAP_ACTIVITY_ACTIVE);
+    EXPECT(det.baseline_reliable);
+    EXPECT(fabsf(det.frozen_baseline_dbfs - (-32.0f)) < 0.01f);
+    EXPECT(!det.relative_armed); /* first episode window only so far */
+
+    /* Second episode window much louder → contrast >= 5 → arm. */
+    seq++;
+    t += 1000000;
+    feed(&det, seq, t, -20.0f);
+    EXPECT(det.relative_armed);
+    EXPECT(det.measured_contrast_db >= 5.0f);
+}
+
 int main(void)
 {
     test_ear001_loud_to_ambient();
@@ -1327,6 +1550,13 @@ int main(void)
     test_relative_deadband_no_pending_exit();
     test_oscillate_then_settle_relative_end();
     test_gradual_decay_relative_end();
+    test_a1_ambient_above_enter_fills_baseline();
+    test_a1_sudden_event_not_baseline();
+    test_a1_short_transient_median_stable();
+    test_a1_quiet_room_baseline_unchanged();
+    test_a1_stale_samples_discarded();
+    test_a1_freeze_clear_resume();
+    test_a1_relative_end_arms_elevated_ambient();
 
     if (g_failures != 0) {
         fprintf(stderr, "%d failure(s)\n", g_failures);

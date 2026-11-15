@@ -381,6 +381,9 @@ char *dbmap_observation_build_json(const dbmap_observation_fields_t *fields)
     if (fields->termination_reason != NULL) {
         cJSON_AddStringToObject(context, "termination_reason", fields->termination_reason);
     }
+    if (fields->origin != NULL && fields->origin[0] != '\0') {
+        cJSON_AddStringToObject(context, "origin", fields->origin);
+    }
     cJSON_AddItemToObject(root, "context", context);
 
     cJSON *acoustic = cJSON_CreateObject();
