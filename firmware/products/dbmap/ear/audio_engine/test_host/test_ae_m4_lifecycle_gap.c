@@ -12,6 +12,10 @@
  *     firmware/products/dbmap/ear/audio_engine/ae_time.c \
  *     firmware/products/dbmap/ear/audio_engine/ae_engine.c \
  *     firmware/products/dbmap/ear/audio_engine/ae_gap.c \
+ *     firmware/products/dbmap/ear/candidate_engine/ce_decision.c \
+ *     firmware/products/dbmap/ear/candidate_engine/ce_module.c \
+ *     firmware/products/dbmap/ear/candidate_engine/ce_workflow.c \
+ *     firmware/products/dbmap/ear/candidate_engine/ce_manager.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_engine.c \
  *     firmware/products/dbmap/ear/audio_engine/test_host/test_ae_m4_lifecycle_gap.c \
  *     -lm -o /tmp/test_ae_m4 && /tmp/test_ae_m4

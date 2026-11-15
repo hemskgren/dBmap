@@ -11,6 +11,10 @@
  *     firmware/products/dbmap/ear/audio_engine/ae_history.c \
  *     firmware/products/dbmap/ear/audio_engine/ae_time.c \
  *     firmware/products/dbmap/ear/audio_engine/ae_engine.c \
+ *     firmware/products/dbmap/ear/candidate_engine/ce_decision.c \
+ *     firmware/products/dbmap/ear/candidate_engine/ce_module.c \
+ *     firmware/products/dbmap/ear/candidate_engine/ce_workflow.c \
+ *     firmware/products/dbmap/ear/candidate_engine/ce_manager.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_engine.c \
  *     firmware/products/dbmap/ear/candidate_engine/test_host/test_ce_lifecycle.c \
  *     -lm -o /tmp/test_ce_m1 && /tmp/test_ce_m1
