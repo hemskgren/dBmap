@@ -6,9 +6,12 @@
  * Capture fills buffers; product analysis takes jobs via sp_mic_take_pcm_job /
  * sp_mic_take_window_job. No product acoustic types live here.
  *
- * M5: Mic0 (left) and Mic1 (right) PCM may both be retained when live_mic_count
- * ≥ 2. samples / sample_count remain Mic0 aliases for Observation/L0 mono.
+ * When CONFIG_SP_MIC_PCM_RETAIN is enabled, PCM is retained for every live
+ * microphone (NVS mic_count → live acquire count, 1..SP_MIC_COUNT_MAX).
+ * samples / sample_count remain Mic0 aliases for Observation / primary paths.
  */
+
+#include "sp_mic_count.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -19,17 +22,20 @@ extern "C" {
 #endif
 
 typedef struct {
-    /** Mic0 / left PCM (primary). Alias of samples_ch0. */
+    /** Mic0 PCM (primary). Alias of samples_ch[0] when bit0 is set. */
     const int32_t *samples;
     size_t sample_count;
 
-    /** Explicit per-channel PCM (M5). NULL / 0 when channel not retained. */
-    const int32_t *samples_ch0;
-    size_t sample_count_ch0;
-    const int32_t *samples_ch1;
-    size_t sample_count_ch1;
-    /** bit0=ch0 present, bit1=ch1 present. Never invent silent channels. */
+    /**
+     * Per-channel PCM. samples_ch[i] / sample_count_ch[i] are valid only when
+     * (pcm_channel_mask & (1u << i)) != 0. Never invent silent channels.
+     */
+    const int32_t *samples_ch[SP_MIC_COUNT_MAX];
+    size_t sample_count_ch[SP_MIC_COUNT_MAX];
+    /** Bit i set when channel i PCM is present in this job. */
     uint8_t pcm_channel_mask;
+    /** Live mic count at capture (1..SP_MIC_COUNT_MAX); inactive channels omitted. */
+    uint8_t active_mic_count;
 
     int full_scale_bits;
     uint32_t window_ms;
@@ -52,14 +58,14 @@ bool sp_mic_pcm_ready(void);
  * Returns false when L0/PCM capture is off or no window is pending.
  * out may be NULL to discard (still clears pending).
  *
- * For stereo pair metrics + dual PCM, prefer sp_mic_take_window_job().
+ * Prefer sp_mic_take_window_job() when channel snapshots are also required.
  */
 bool sp_mic_take_pcm_job(sp_mic_pcm_job_t *out);
 
 uint32_t sp_mic_pcm_cap_samples(void);
 /** Total SPIRAM bytes for all PCM banks × retained channels. */
 uint32_t sp_mic_pcm_bytes_total(void);
-/** 1 (mono) or 2 (stereo retention allocated). */
+/** Number of channels allocated for retention (equals live count at start). */
 uint8_t sp_mic_pcm_retained_channels(void);
 uint32_t sp_mic_pcm_pending_overwrite(void);
 uint32_t sp_mic_pcm_free_heap_after_init(void);

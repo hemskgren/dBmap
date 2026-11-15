@@ -76,9 +76,9 @@ reinitialize capture/detector/L0 state. Console tags: `platform_boot` then
 
 ### Background RMS (Reported State, Iteration 1)
 
-When `CONFIG_DBMAP_EAR_MIC_BACKGROUND` is enabled (default), each mic object on
+When `CONFIG_SP_MIC_BACKGROUND` is enabled (default), each mic object on
 hello/health/keepalive may include a nested `background` object: rolling RMS
-over `CONFIG_DBMAP_EAR_MIC_BACKGROUND_WINDOW_MS` (default 180 s). Stats use
+over `CONFIG_SP_MIC_BACKGROUND_WINDOW_MS` (default 180 s). Stats use
 linear-mean energy → dBFS. `status` is `partial` or `full` from **elapsed
 collection time**, not from sample count alone. Clipped windows and the first
 post-I2S window (`window_seq == 1`, plus boot settle via
@@ -203,7 +203,7 @@ With `microphone_count=2`, health already reports both channels; Observation / a
 
 [`docs/diagnostics/ear-stereo-capture-integrity.md`](../../docs/diagnostics/ear-stereo-capture-integrity.md).
 
-`sdkconfig.defaults` currently enables `CONFIG_DBMAP_EAR_MIC_CAPTURE_DIAG` so USB console shows dual-channel `capture_diag` (with `window_seq`) after `win#` stops at 30. Turn it off in menuconfig / defaults for quieter production fleet UART if unwanted. The `sdkconfig.defaults.capture_diag` overlay remains for rebuilds that start from a tree without the flag.
+`sdkconfig.defaults` currently enables `CONFIG_SP_MIC_CAPTURE_DIAG` so USB console shows dual-channel `capture_diag` (with `window_seq`) after `win#` stops at 30. Turn it off in menuconfig / defaults for quieter production fleet UART if unwanted. The `sdkconfig.defaults.capture_diag` overlay remains for rebuilds that start from a tree without the flag.
 
 ### Capture diagnostics (dual-mic Test A/B/C)
 

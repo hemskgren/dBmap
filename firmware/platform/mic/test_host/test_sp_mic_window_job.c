@@ -57,7 +57,23 @@ static void init_pcm(sp_mic_window_job_t *job, uint32_t seq, int64_t t_us)
     job->pcm.full_scale_bits = 24;
 }
 
-/** Case 1: PCM N pairs with Mic0 N and Mic1 N when bundled. */
+/** NVS mic_count=1: only channel 0 is active; mic1 stays unmasked. */
+static void test_mono_mic_count_one(void)
+{
+    sp_mic_window_job_t job;
+    init_pcm(&job, 3u, 3000000);
+    sp_mic_window_view_t views[2];
+    fill_view(&views[0], 3u, 3000000, -42.0f, -36.0f, 16000);
+    fill_view(&views[1], 3u, 3000000, -48.0f, -42.0f, 16000);
+    EXPECT(sp_mic_window_job_set_channels_from_views(&job, 1u, 16000u, views) == SP_MIC_API_OK);
+    EXPECT(sp_mic_window_job_channels_coherent(&job));
+    EXPECT((job.channel_mask & 0x01u) != 0u);
+    EXPECT((job.channel_mask & 0x02u) == 0u);
+    EXPECT(job.channels[0].window_seq == 3u);
+    EXPECT(job.channels[1].valid == false);
+}
+
+/** Case 1: PCM N pairs with Mic0 N and Mic1 N when bundled (NVS mic_count=2). */
 static void test_pair_same_window(void)
 {
     sp_mic_window_job_t job;
@@ -148,6 +164,7 @@ static void test_invalid_measurement_unmasked(void)
 
 int main(void)
 {
+    test_mono_mic_count_one();
     test_pair_same_window();
     test_bundle_survives_stale_latest();
     test_reject_newer_snapshot();

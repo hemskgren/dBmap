@@ -13,4 +13,4 @@
 # then periodic capture_diag summary + capture_diag ch0/ch1 lines with window_seq.
 #
 # Procedure: docs/diagnostics/ear-stereo-capture-integrity.md
-CONFIG_DBMAP_EAR_MIC_CAPTURE_DIAG=y
+CONFIG_SP_MIC_CAPTURE_DIAG=y

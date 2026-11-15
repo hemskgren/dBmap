@@ -224,7 +224,7 @@ There is **no** Audio Engine or Candidate Engine component. The name “candidat
 
 | Item | Value | Source |
 | --- | --- | --- |
-| Capture / analysis window | Default **1000 ms** | `CONFIG_DBMAP_EAR_MIC_WINDOW_MS` |
+| Capture / analysis window | Default **1000 ms** | `CONFIG_SP_MIC_WINDOW_MS` |
 | Measure wall time | ≈ window length (~1.00–1.01 s) | USB `measure_us` / health `measure_window_us` |
 | Mic task | `"sp_mic"`, stack **6144**, delay 20 ms between windows | `ear_mic.c` |
 | Observation interval | Default **5000 ms** | `CONFIG_DBMAP_EAR_OBS_INTERVAL_MS` |

@@ -21,7 +21,7 @@ const sp_mic_model_desc_t *sp_mic_model_desc(sp_mic_model_t model)
 
 const sp_mic_model_desc_t *sp_mic_model_selected(void)
 {
-#if CONFIG_DBMAP_EAR_MIC_MODEL_INMP441
+#if CONFIG_SP_MIC_MODEL_INMP441
     return &k_inmp441;
 #else
     /* Keep a single default so the component always links a model. */

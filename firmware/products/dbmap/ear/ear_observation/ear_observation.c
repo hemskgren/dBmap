@@ -45,7 +45,7 @@ static const uint32_t kOtaEndAckTimeoutMs = 5000;
 /* Static capacity from Kconfig; must cover configured PERIODIC interval (+2 edge). */
 #define EAR_OBS_L0_HIST_CAP ((uint32_t)CONFIG_DBMAP_EAR_OBS_L0_MAX_WINDOWS)
 #define EAR_OBS_L0_WINDOWS_NEEDED                                              \
-    (((uint32_t)CONFIG_DBMAP_EAR_OBS_INTERVAL_MS / (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS) + 2u)
+    (((uint32_t)CONFIG_DBMAP_EAR_OBS_INTERVAL_MS / (uint32_t)CONFIG_SP_MIC_WINDOW_MS) + 2u)
 #endif
 
 static const char *TAG = "ear_obs";
@@ -863,8 +863,8 @@ static void l0_finalize_interval(
     dbmap_l0_interval_accum_t acc;
     dbmap_l0_interval_accum_init(
         &acc,
-        (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ,
-        (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS,
+        (uint32_t)CONFIG_SP_MIC_SAMPLE_RATE_HZ,
+        (uint32_t)CONFIG_SP_MIC_WINDOW_MS,
         0,
         interval_start_mono_us,
         interval_end_mono_us,
@@ -933,8 +933,8 @@ static void l1_finalize_interval(
     dbmap_l1_interval_accum_t acc;
     dbmap_l1_interval_accum_init(
         &acc,
-        (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ,
-        (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS,
+        (uint32_t)CONFIG_SP_MIC_SAMPLE_RATE_HZ,
+        (uint32_t)CONFIG_SP_MIC_WINDOW_MS,
         interval_start_mono_us,
         interval_end_mono_us
     );
@@ -988,8 +988,8 @@ static void l2_finalize_interval(
     dbmap_l2_interval_accum_t acc;
     dbmap_l2_interval_accum_init(
         &acc,
-        (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ,
-        (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS,
+        (uint32_t)CONFIG_SP_MIC_SAMPLE_RATE_HZ,
+        (uint32_t)CONFIG_SP_MIC_WINDOW_MS,
         interval_start_mono_us,
         interval_end_mono_us
     );
@@ -1087,7 +1087,7 @@ static void l0_on_new_window(const sp_mic_levels_t *levels, bool levels_ok)
     if (dbmap_ear_mic_get_l2_window(&l2w) == ESP_OK &&
         l2w.window_end_mono_us == levels->measured_at_us) {
         dbmap_l2_continuity_push(
-            &s_l2_continuity, (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS, &l2w
+            &s_l2_continuity, (uint32_t)CONFIG_SP_MIC_WINDOW_MS, &l2w
         );
         l2_ring_push(&l2w, usable);
     }
@@ -1178,8 +1178,8 @@ static void mgr_build_levels(
     l0_finalize_interval(interval_start_mono_us, interval_end_mono_us, kind, out_l0);
 #else
     (void)kind;
-    out_l0->sample_rate_hz = (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ;
-    out_l0->analysis_window_ms = (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS;
+    out_l0->sample_rate_hz = (uint32_t)CONFIG_SP_MIC_SAMPLE_RATE_HZ;
+    out_l0->analysis_window_ms = (uint32_t)CONFIG_SP_MIC_WINDOW_MS;
 #endif
 #if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
     l1_finalize_interval(interval_start_mono_us, interval_end_mono_us, l1_storage);
@@ -1234,8 +1234,8 @@ static bool critical_publish_cb(
     }
     dbmap_l0_interval_t empty_iv;
     memset(&empty_iv, 0, sizeof(empty_iv));
-    empty_iv.sample_rate_hz = (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ;
-    empty_iv.analysis_window_ms = (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS;
+    empty_iv.sample_rate_hz = (uint32_t)CONFIG_SP_MIC_SAMPLE_RATE_HZ;
+    empty_iv.analysis_window_ms = (uint32_t)CONFIG_SP_MIC_WINDOW_MS;
 
     const bool is_end =
         (strcmp(emission_kind, "end") == 0 || strcmp(emission_kind, "complete") == 0);
@@ -1580,8 +1580,8 @@ static void handle_emission(const dbmap_activity_emission_t *emission)
         );
 #else
         memset(&local_iv, 0, sizeof(local_iv));
-        local_iv.sample_rate_hz = (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ;
-        local_iv.analysis_window_ms = (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS;
+        local_iv.sample_rate_hz = (uint32_t)CONFIG_SP_MIC_SAMPLE_RATE_HZ;
+        local_iv.analysis_window_ms = (uint32_t)CONFIG_SP_MIC_WINDOW_MS;
 #endif
 #if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
         dbmap_l1_interval_t local_l1;
@@ -1795,8 +1795,8 @@ static void handle_emission(const dbmap_activity_emission_t *emission)
         );
 #else
         memset(&local_iv, 0, sizeof(local_iv));
-        local_iv.sample_rate_hz = (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ;
-        local_iv.analysis_window_ms = (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS;
+        local_iv.sample_rate_hz = (uint32_t)CONFIG_SP_MIC_SAMPLE_RATE_HZ;
+        local_iv.analysis_window_ms = (uint32_t)CONFIG_SP_MIC_WINDOW_MS;
 #endif
 #if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
         dbmap_l1_interval_t local_l1;
@@ -2435,8 +2435,8 @@ static esp_err_t publish_ota_end_snapshot(const ear_obs_end_snapshot_t *snap)
     const dbmap_l0_interval_t *meas = &snap->measurements;
     if (!snap->has_measurements) {
         memset(&empty_iv, 0, sizeof(empty_iv));
-        empty_iv.sample_rate_hz = (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ;
-        empty_iv.analysis_window_ms = (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS;
+        empty_iv.sample_rate_hz = (uint32_t)CONFIG_SP_MIC_SAMPLE_RATE_HZ;
+        empty_iv.analysis_window_ms = (uint32_t)CONFIG_SP_MIC_WINDOW_MS;
         meas = &empty_iv;
     }
 
@@ -2914,7 +2914,7 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg)
             "Raise DBMAP_EAR_OBS_L0_MAX_WINDOWS or lower INTERVAL_MS.",
             (unsigned long)EAR_OBS_L0_WINDOWS_NEEDED,
             CONFIG_DBMAP_EAR_OBS_INTERVAL_MS,
-            CONFIG_DBMAP_EAR_MIC_WINDOW_MS,
+            CONFIG_SP_MIC_WINDOW_MS,
             (unsigned long)EAR_OBS_L0_HIST_CAP
         );
 #if CONFIG_DBMAP_EAR_OBS_PUBLISH_L0
@@ -3023,14 +3023,14 @@ void dbmap_ear_observation_poll_test_trigger(const sp_effective_t *cfg)
     format_uuid_v4(oid);
     dbmap_l0_interval_t empty_iv;
     memset(&empty_iv, 0, sizeof(empty_iv));
-    empty_iv.sample_rate_hz = (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ;
-    empty_iv.analysis_window_ms = (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS;
+    empty_iv.sample_rate_hz = (uint32_t)CONFIG_SP_MIC_SAMPLE_RATE_HZ;
+    empty_iv.analysis_window_ms = (uint32_t)CONFIG_SP_MIC_WINDOW_MS;
 #if defined(CONFIG_DBMAP_EAR_OBS_L1) && CONFIG_DBMAP_EAR_OBS_L1
     dbmap_l1_interval_t empty_l1;
     dbmap_l1_interval_set_empty(
         &empty_l1,
-        (uint32_t)CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ,
-        (uint32_t)CONFIG_DBMAP_EAR_MIC_WINDOW_MS,
+        (uint32_t)CONFIG_SP_MIC_SAMPLE_RATE_HZ,
+        (uint32_t)CONFIG_SP_MIC_WINDOW_MS,
         start_us,
         capture_us
     );

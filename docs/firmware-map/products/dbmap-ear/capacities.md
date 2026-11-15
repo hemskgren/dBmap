@@ -63,8 +63,8 @@ Detector ENTER/EXIT pair.
 
 | Item | Value | Class | Source | Controls | Binding |
 | --- | --- | --- | --- | --- | --- |
-| Sample rate | 16000 Hz | `configured` | `CONFIG_DBMAP_EAR_MIC_SAMPLE_RATE_HZ` default in `firmware/platform/mic/Kconfig` | PCM / analysis rate | kconfig default |
-| Analysis window | 1000 ms | `configured` | `CONFIG_DBMAP_EAR_MIC_WINDOW_MS` default | Window length | kconfig default |
+| Sample rate | 16000 Hz | `configured` | `CONFIG_SP_MIC_SAMPLE_RATE_HZ` default in `firmware/platform/mic/Kconfig` | PCM / analysis rate | kconfig default |
+| Analysis window | 1000 ms | `configured` | `CONFIG_SP_MIC_WINDOW_MS` default | Window length | kconfig default |
 
 ---
 
