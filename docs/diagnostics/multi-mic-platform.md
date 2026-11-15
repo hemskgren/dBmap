@@ -24,7 +24,9 @@ INMP441 is not a TDM mic: four channels require **two stereo DIN pairs**, not on
 | --- | --- |
 | Platform measure / finalize / enrich / background | **Every acquired live index** |
 | `sp_mic_get_levels` | Primary = index 0 (Observation / activity) |
-| Analysis PCM / L0–L2 / Rel END | **Product mic-0** — unchanged |
+| Analysis PCM retain | **Every live index** (1–4 from NVS `mic_count`) |
+| Platform L0–L2 analyze | **Every live index × every build-enabled layer** (`sp_audio_analyze_*`; serial L1 workspace) |
+| Observation / Rel END / activity | **Product mic-0** — unchanged |
 | Observation `mic_index` | Hard-coded `0` — **product** |
 
 ## 3. What supports 1 / 2 / 3 / 4
@@ -35,7 +37,8 @@ INMP441 is not a TDM mic: four channels require **two stereo DIN pairs**, not on
 | I2S acquire | DIN0 mono | DIN0 stereo | DIN0 stereo + DIN1 mono L | DIN0+DIN1 stereo |
 | Per-ch RMS/peak/samples | yes | yes | yes | yes |
 | Per-ch background hist + enrich | yes | yes | yes | yes |
-| Observation / L0 PCM | mic 0 | mic 0 | mic 0 | mic 0 |
+| Analysis PCM + L0–L2 (all enabled layers) | mic 0 | mic 0–1 | mic 0–2 | mic 0–3 |
+| Observation / activity (product) | mic 0 | mic 0 | mic 0 | mic 0 |
 
 ## 4. Implementation summary
 

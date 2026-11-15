@@ -15,7 +15,8 @@ Primary architecture references:
 | Observation sequence allocator | Durable block reservation; numbers never reused; gaps OK after reboot | `firmware/platform/observation/include/sp_observation_seq.h` — `sp_obs_seq_*` |
 | Mic acquisition | I2S/PCM windows, channel snapshots, background RMS helpers, capture diag | `firmware/platform/mic/` (`ear_mic.c`, `sp_mic_pcm.h`, Kconfig) |
 | Acoustic DSP (L0/L1/L2) | Host-testable combined-scene L0/L1/L2 libraries; build-time `SP_AUDIO_L*` | `firmware/platform/audio/` (`sp_acoustic_l*.c`, `Kconfig`) |
-| Analysis PCM retain | SPIRAM double-buffer handoff for product DSP | `CONFIG_SP_MIC_PCM_RETAIN` in `platform/audio/Kconfig`; fill path in `platform/mic` |
+| Multi-mic analysis | Every active mic × every enabled DSP layer; serial L1 workspace reuse | `sp_audio_analyze_*` in `firmware/platform/audio/` |
+| Analysis PCM retain | SPIRAM double-buffer for all live mics (NVS `mic_count` 1–4) | `CONFIG_SP_MIC_PCM_RETAIN` in `platform/audio/Kconfig`; fill path in `platform/mic` |
 | Shared resource UART diag | CPU MHz, free/min heap, SPIRAM free, task stack HWM | `firmware/platform/node_common/include/sp_diag.h` — `sp_diag_log_resources` |
 | Platform SemVer | Compile-time string from `firmware/platform/VERSION` | `sp_version.h` / `sp_version.c` |
 | Device lifecycle / MQTT helpers | Provision, OTA, connectivity (shared `node_common`) | `firmware/platform/node_common/` |
@@ -37,12 +38,14 @@ a number when allocate returns (even if MQTT later fails).
 
 ## Partially product-coupled today
 
-Platform owns reusable acoustic DSP under `firmware/platform/audio/`. EAR product
-runtime (`ear_acoustic_runtime.c`), AE signatures, Observation, and Candidate
-policy remain under `firmware/products/dbmap/ear/`. Temporary
-`dbmap_acoustic_l*.h` aliases map historical names to `sp_acoustic_*`
-(see `firmware/platform/audio/ALIASES.md`). Microphone Kconfig menu symbols
-remain EAR-named while selecting Platform `SP_MIC_PCM_RETAIN` / `SP_AUDIO_L*`.
+Platform owns reusable acoustic DSP and multi-mic analyze under
+`firmware/platform/audio/`. Microphone hardware Kconfig uses generic `SP_MIC_*`
+(no `DBMAP_NODE_TYPE_EAR` dependency). EAR product runtime
+(`ear_acoustic_runtime.c`), AE signatures, Observation, and Candidate policy
+remain under `firmware/products/dbmap/ear/`. Product `DBMAP_EAR_MIC_L0` selects
+Platform `SP_MIC_PCM_RETAIN` / `SP_AUDIO_L0`. Temporary `dbmap_acoustic_l*.h`
+aliases map historical names to `sp_acoustic_*` (see
+`firmware/platform/audio/ALIASES.md`).
 
 ## Not implemented (Platform future)
 

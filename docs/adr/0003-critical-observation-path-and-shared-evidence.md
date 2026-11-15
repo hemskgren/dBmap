@@ -14,7 +14,7 @@ EAR already has (source-verified):
 - EAR Observation Manager that promote-gates **normal** Observations via CE, binds them to registry slots, and publishes via `dbmap_ear_observation_publish`.
 - AE signatures built and published **after** a completed Platform window job (`ae_runtime/ae_device.c`: `sp_mic_take_window_job` → `ae_signature_build` → `ae_publish_signature`), with global history (`AE_HISTORY_CAPACITY` = 32).
 - Platform per-channel snapshots (`sp_mic_get_channel` / coherent `sp_mic_take_window_job`) with per-mic RMS/peak/quality and shared `window_seq` / `measured_at_us` for a stereo measure window.
-- Default analysis window **1000 ms** (`CONFIG_DBMAP_EAR_MIC_WINDOW_MS`).
+- Default analysis window **1000 ms** (`CONFIG_SP_MIC_WINDOW_MS`).
 - Hub Observation ingest with hierarchical v1 schema and `extra="forbid"` on envelope models (`hub/bootstrap/app/schemas.py`).
 - Hub already accepts optional `context.origin = "critical_path"` on Observation ingest; EAR Critical lifecycle and `origin` emission are this ADR’s product slice. Still no DoA/TDOA, Analysis Scheduler / Resource Manager, or PAUSE/RESUME in protocol.
 
@@ -63,7 +63,7 @@ flowchart LR
 
 **Proposed chain** (no new acquisition architecture for MVP):
 
-1. **Microphone acquisition** — Platform completes a measure window (`measure_window` / `sp_mic_take_window_job`). Configured window length today: **1000 ms** (`CONFIG_DBMAP_EAR_MIC_WINDOW_MS` default) — a `configured` acquisition parameter, **not** a measured Critical latency.
+1. **Microphone acquisition** — Platform completes a measure window (`measure_window` / `sp_mic_take_window_job`). Configured window length today: **1000 ms** (`CONFIG_SP_MIC_WINDOW_MS` default) — a `configured` acquisition parameter, **not** a measured Critical latency.
 2. **Impulse-relevant evidence** — AE builds/publishes `ae_signature_t` (optional pair metrics from the **same** coherent window job).
 3. **Critical trigger decision** — EAR product policy on AE and/or channel features (e.g. crest/peak/quality/flags), **not** gated by CE `min_rms_dbfs`, CE promote, free normal slots, or RMS ACTIVE/ENTER.
 4. **Evidence capture/retention** — copy-by-value into Critical-owned evidence (same shared evidence model as §5–§6).
