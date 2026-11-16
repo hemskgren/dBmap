@@ -3,11 +3,22 @@
 #include "ae_signature.h"
 #include "ce_log.h"
 
+#include <math.h>
 #include <string.h>
 
 _Static_assert((int)AE_CAND_NASCENT == 0, "state_hist index");
 _Static_assert((int)AE_CAND_EXPIRED == 5, "state_hist covers states");
 _Static_assert((int)AE_CAND_REJECTED == 4, "reject index");
+
+/* Identity weights — RMS reduced vs historical ae_signature_distance. */
+#define CE_ID_W_RMS 0.20f
+#define CE_ID_W_BAND 0.30f
+#define CE_ID_W_DOM_HZ 0.02f
+#define CE_ID_W_FLAT 3.0f
+#define CE_ID_W_CENT 0.01f
+#define CE_ID_W_PAIR 0.25f
+
+#define CE_ID_DIST_INF 1.0e6f
 
 static void fingerprint_init(ae_candidate_t *c, const ae_signature_t *sig)
 {
@@ -16,6 +27,26 @@ static void fingerprint_init(ae_candidate_t *c, const ae_signature_t *sig)
         c->band_ema[i] = sig->band_dbfs[i];
     }
     c->mic_mask_seen = sig->mic_mask;
+
+    if (sig->spectral_valid) {
+        c->ema_dominant_hz = sig->dominant_hz;
+        c->ema_flatness = sig->flatness;
+        c->ema_centroid_hz = sig->centroid_hz;
+        c->spectral_ema_valid = true;
+    } else {
+        c->ema_dominant_hz = 0.0f;
+        c->ema_flatness = 0.0f;
+        c->ema_centroid_hz = 0.0f;
+        c->spectral_ema_valid = false;
+    }
+
+    if (sig->pair_valid) {
+        c->ema_delta_rms_db = sig->delta_rms_db;
+        c->pair_ema_valid = true;
+    } else {
+        c->ema_delta_rms_db = 0.0f;
+        c->pair_ema_valid = false;
+    }
 }
 
 static void fingerprint_update(ae_candidate_t *c, const ae_signature_t *sig)
@@ -26,18 +57,59 @@ static void fingerprint_update(ae_candidate_t *c, const ae_signature_t *sig)
         c->band_ema[i] = (1.0f - a) * c->band_ema[i] + a * sig->band_dbfs[i];
     }
     c->mic_mask_seen = (uint8_t)(c->mic_mask_seen | sig->mic_mask);
+
+    if (sig->spectral_valid) {
+        if (c->spectral_ema_valid) {
+            c->ema_dominant_hz =
+                (1.0f - a) * c->ema_dominant_hz + a * sig->dominant_hz;
+            c->ema_flatness = (1.0f - a) * c->ema_flatness + a * sig->flatness;
+            c->ema_centroid_hz =
+                (1.0f - a) * c->ema_centroid_hz + a * sig->centroid_hz;
+        } else {
+            c->ema_dominant_hz = sig->dominant_hz;
+            c->ema_flatness = sig->flatness;
+            c->ema_centroid_hz = sig->centroid_hz;
+            c->spectral_ema_valid = true;
+        }
+    }
+
+    if (sig->pair_valid) {
+        if (c->pair_ema_valid) {
+            c->ema_delta_rms_db =
+                (1.0f - a) * c->ema_delta_rms_db + a * sig->delta_rms_db;
+        } else {
+            c->ema_delta_rms_db = sig->delta_rms_db;
+            c->pair_ema_valid = true;
+        }
+    }
 }
 
-static float fingerprint_distance(const ae_candidate_t *c, const ae_signature_t *sig)
+/**
+ * CE identity distance. Does not invent zeros for missing spectral/pair.
+ * Band comparison uses shape relative to RMS so level changes alone do not
+ * dominate identity. Pair ΔRMS is asymmetry only — not spatial direction.
+ */
+static float identity_distance(const ae_candidate_t *c, const ae_signature_t *sig)
 {
-    ae_signature_t proxy;
-    memset(&proxy, 0, sizeof(proxy));
-    proxy.rms_dbfs = c->ema_rms_dbfs;
+    float dist = CE_ID_W_RMS * fabsf(c->ema_rms_dbfs - sig->rms_dbfs);
+
     for (uint32_t i = 0; i < AE_BAND_COUNT; i++) {
-        proxy.band_dbfs[i] = c->band_ema[i];
+        const float shape_c = c->band_ema[i] - c->ema_rms_dbfs;
+        const float shape_s = sig->band_dbfs[i] - sig->rms_dbfs;
+        dist += CE_ID_W_BAND * fabsf(shape_c - shape_s);
     }
-    /* Spectral fields unused in fingerprint proxy — distance uses RMS+bands. */
-    return ae_signature_distance(&proxy, sig);
+
+    if (c->spectral_ema_valid && sig->spectral_valid) {
+        dist += CE_ID_W_DOM_HZ * fabsf(c->ema_dominant_hz - sig->dominant_hz);
+        dist += CE_ID_W_FLAT * fabsf(c->ema_flatness - sig->flatness);
+        dist += CE_ID_W_CENT * fabsf(c->ema_centroid_hz - sig->centroid_hz);
+    }
+
+    if (c->pair_ema_valid && sig->pair_valid) {
+        dist += CE_ID_W_PAIR * fabsf(c->ema_delta_rms_db - sig->delta_rms_db);
+    }
+
+    return dist;
 }
 
 static ae_candidate_t *slot_alloc(ce_engine_t *eng)
@@ -95,10 +167,22 @@ static void expire_slot(ce_engine_t *eng, ae_candidate_t *c)
     CE_LOGI("expire id=%llu", (unsigned long long)c->candidate_id);
 }
 
-static ae_candidate_t *best_match(ce_engine_t *eng, const ae_signature_t *sig)
+/**
+ * Find best and second-best identity distances among live candidates.
+ * Ties for best keep the later slot (distance <= best_d).
+ */
+static void find_match_ranks(
+    ce_engine_t *eng,
+    const ae_signature_t *sig,
+    ae_candidate_t **best_out,
+    float *best_d_out,
+    float *second_d_out
+)
 {
     ae_candidate_t *best = NULL;
-    float best_d = eng->cfg.match_distance_max;
+    float best_d = CE_ID_DIST_INF;
+    float second_d = CE_ID_DIST_INF;
+
     for (uint8_t i = 0; i < CE_MAX_CANDIDATES; i++) {
         ae_candidate_t *c = &eng->slots[i];
         if (!c->in_use) {
@@ -107,13 +191,21 @@ static ae_candidate_t *best_match(ce_engine_t *eng, const ae_signature_t *sig)
         if (c->state == AE_CAND_REJECTED || c->state == AE_CAND_EXPIRED) {
             continue;
         }
-        float d = fingerprint_distance(c, sig);
+        const float d = identity_distance(c, sig);
         if (d <= best_d) {
+            if (best != NULL) {
+                second_d = best_d;
+            }
             best_d = d;
             best = c;
+        } else if (d < second_d) {
+            second_d = d;
         }
     }
-    return best;
+
+    *best_out = best;
+    *best_d_out = best_d;
+    *second_d_out = second_d;
 }
 
 static void apply_gap(ce_engine_t *eng, const ae_signature_t *sig)
@@ -266,12 +358,36 @@ ce_ingest_t ce_manager_ingest(ce_engine_t *eng, const ae_signature_t *sig)
         return r;
     }
 
-    ae_candidate_t *match = best_match(eng, sig);
-    if (match != NULL) {
-        update_matched(eng, match, sig);
+    ae_candidate_t *best = NULL;
+    float best_d = CE_ID_DIST_INF;
+    float second_d = CE_ID_DIST_INF;
+    find_match_ranks(eng, sig, &best, &best_d, &second_d);
+
+    const float match_max = eng->cfg.match_distance_max;
+    float hyst = eng->cfg.match_hysteresis;
+    if (hyst < 0.0f) {
+        hyst = 0.0f;
+    }
+    float amb_delta = eng->cfg.match_ambiguity_delta;
+    if (amb_delta < 0.0f) {
+        amb_delta = 0.0f;
+    }
+
+    if (best != NULL && best_d <= match_max) {
+        if (second_d <= match_max && (second_d - best_d) < amb_delta) {
+            eng->diag.match_ambiguous++;
+        }
+        update_matched(eng, best, sig);
         eng->diag.associated++;
         r.action = CE_INGEST_UPDATED;
-        r.candidate_id = match->candidate_id;
+        r.candidate_id = best->candidate_id;
+        return r;
+    }
+
+    if (best != NULL && best_d <= match_max + hyst) {
+        eng->diag.match_hysteresis_hold++;
+        r.action = CE_INGEST_HYSTERESIS;
+        r.candidate_id = best->candidate_id;
         return r;
     }
 
@@ -299,6 +415,15 @@ bool ce_manager_promote(ce_engine_t *eng, uint64_t candidate_id)
         return false;
     }
     c->state = AE_CAND_PROMOTED;
+    {
+        /* Engine-monotonic: survives slot clear / candidate_id reuse. */
+        uint32_t gen = eng->next_promotion_gen + 1u;
+        if (gen == 0u) {
+            gen = 1u;
+        }
+        eng->next_promotion_gen = gen;
+        c->promotion_gen = gen;
+    }
     c->promotion_entered = true;
     eng->diag.promote_successes++;
     if (eng->promotion_cb != NULL) {
@@ -306,6 +431,35 @@ bool ce_manager_promote(ce_engine_t *eng, uint64_t candidate_id)
         eng->diag.promotion_enter_events++;
     }
     CE_LOGI("promote id=%llu", (unsigned long long)c->candidate_id);
+    return true;
+}
+
+bool ce_manager_unadmit_promotion(
+    ce_engine_t *eng,
+    uint64_t candidate_id,
+    uint32_t promotion_gen
+)
+{
+    if (eng == NULL || !eng->started || candidate_id == 0u || promotion_gen == 0u) {
+        return false;
+    }
+    ae_candidate_t *c = find_slot(eng, candidate_id);
+    if (c == NULL || !c->promotion_entered) {
+        return false;
+    }
+    if (c->promotion_gen != promotion_gen) {
+        return false;
+    }
+    emit_exit(eng, c);
+    if (c->state == AE_CAND_PROMOTED) {
+        c->state = AE_CAND_ACTIVE;
+    }
+    eng->diag.promotion_unadmit++;
+    CE_LOGI(
+        "unadmit id=%llu gen=%lu",
+        (unsigned long long)c->candidate_id,
+        (unsigned long)promotion_gen
+    );
     return true;
 }
 

@@ -4,6 +4,7 @@
  * From repo root:
  *   cc -std=c11 -Wall -Wextra -Werror -O2 -g \
  *     -I firmware/products/dbmap/ear/audio_engine/include \
+ *     -I firmware/products/dbmap/ear/acoustic_profile/include \
  *     -I firmware/products/dbmap/ear/candidate_engine/include \
  *     -I firmware/products/dbmap/ear/ear_acoustic/include \
  *     -I firmware/products/dbmap/ear/ear_observation/include \
@@ -13,8 +14,12 @@
  *     firmware/products/dbmap/ear/audio_engine/ae_history.c \
  *     firmware/products/dbmap/ear/audio_engine/ae_time.c \
  *     firmware/products/dbmap/ear/audio_engine/ae_engine.c \
+ *     firmware/products/dbmap/ear/acoustic_profile/as_profile_as001.c \
+ *     firmware/products/dbmap/ear/acoustic_profile/as_profile_registry.c \
+ *     firmware/products/dbmap/ear/acoustic_profile/as_profile_match.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_decision.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_module.c \
+ *     firmware/products/dbmap/ear/candidate_engine/ce_module_profile.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_workflow.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_manager.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_engine.c \
@@ -192,6 +197,41 @@ static void feed(ce_engine_t *ce, uint32_t seq, float rms, bool with_l1, bool ga
     ce_engine_on_signature(ce, &sig);
 }
 
+/**
+ * Feed with a shape index so concurrent candidates differ by identity
+ * (relative bands / dominant), not by RMS level alone.
+ */
+static void feed_shaped(
+    ce_engine_t *ce,
+    uint32_t seq,
+    float rms,
+    uint32_t shape_id,
+    bool gap
+)
+{
+    dbmap_l0_window_t l0;
+    dbmap_l1_window_t l1;
+    fill_l0(&l0, rms, (int64_t)seq * 1000000, true);
+    const float s = (float)shape_id * 4.0f;
+    l0.band_dbfs[0] = rms - 2.0f - s;
+    l0.band_dbfs[1] = rms - s;
+    l0.band_dbfs[2] = rms - 1.0f + s * 0.5f;
+    l0.band_dbfs[3] = rms - 4.0f + s;
+    memset(&l1, 0, sizeof(l1));
+    l1.valid = true;
+    l1.window_end_mono_us = l0.window_end_mono_us;
+    l1.centroid_hz = 400.0f + (float)shape_id * 350.0f;
+    l1.bandwidth_hz = 200.0f;
+    l1.dominant_hz = 300.0f + (float)shape_id * 400.0f;
+    l1.flatness = 0.15f + (float)shape_id * 0.08f;
+    if (l1.flatness > 0.95f) {
+        l1.flatness = 0.95f;
+    }
+    ae_signature_t sig;
+    EXPECT(ae_signature_build(seq, &l0, &l1, NULL, NULL, gap, &sig));
+    ce_engine_on_signature(ce, &sig);
+}
+
 static bool decision_is(const ce_engine_t *ce, ce_decision_t want)
 {
     ce_decision_t got;
@@ -207,6 +247,8 @@ static void test_create_associate_and_ids(void)
     EXPECT(start_ce(&ce, 2u, 3u));
     uint16_t ver = 0u;
     EXPECT(ce_module_is_registered(&ce, "ce.evidence", &ver));
+    EXPECT(ver == 1u);
+    EXPECT(ce_module_is_registered(&ce, "as.profile", &ver));
     EXPECT(ver == 1u);
 
     feed(&ce, 1u, -40.0f, false, false);
@@ -244,11 +286,11 @@ static void test_two_concurrent(void)
 {
     ce_engine_t ce;
     EXPECT(start_ce(&ce, 2u, 3u));
-    feed(&ce, 1u, -35.0f, false, false);
-    feed(&ce, 2u, -60.0f, false, false);
+    feed_shaped(&ce, 1u, -40.0f, 0u, false);
+    feed_shaped(&ce, 2u, -40.0f, 3u, false);
     EXPECT(ce_candidate_count(&ce) == 2u);
-    feed(&ce, 3u, -35.2f, false, false);
-    feed(&ce, 4u, -59.5f, false, false);
+    feed_shaped(&ce, 3u, -40.0f, 0u, false);
+    feed_shaped(&ce, 4u, -40.0f, 3u, false);
     EXPECT(ce_candidate_count(&ce) == 2u);
     uint64_t ids[2] = {0u, 0u};
     for (uint8_t i = 0; i < 2u; i++) {
@@ -267,7 +309,7 @@ static void test_capacity_evict_and_drop(void)
     ce_engine_t ce;
     EXPECT(start_ce(&ce, 2u, 3u));
     for (uint32_t i = 0; i < 9u; i++) {
-        feed(&ce, i + 1u, -20.0f - (float)i * 6.0f, false, false);
+        feed_shaped(&ce, i + 1u, -40.0f, i, false);
     }
     EXPECT(ce_candidate_count(&ce) == CE_MAX_CANDIDATES);
     ce_diag_t d;
@@ -278,13 +320,13 @@ static void test_capacity_evict_and_drop(void)
 
     EXPECT(start_ce(&ce, 2u, 3u));
     for (uint32_t i = 0; i < 8u; i++) {
-        feed(&ce, i + 1u, -20.0f - (float)i * 6.0f, false, false);
+        feed_shaped(&ce, i + 1u, -40.0f, i, false);
     }
     for (uint32_t i = 0; i < 8u; i++) {
-        feed(&ce, 9u + i, -20.0f - (float)i * 6.0f, false, false);
+        feed_shaped(&ce, 9u + i, -40.0f, i, false);
     }
     EXPECT(ce_candidate_count(&ce) == 8u);
-    feed(&ce, 17u, -68.0f, false, false);
+    feed_shaped(&ce, 17u, -40.0f, 10u, false);
     EXPECT(ce_candidate_count(&ce) == 8u);
     ce_get_diag(&ce, &d);
     EXPECT(d.create_dropped_full >= 1u);
@@ -759,11 +801,18 @@ static void test_module_runtime(void)
     extra_spy.force_status = CE_MOD_OK;
     fill_spy_desc(&extra, "spy.c", "spy-cfg");
     EXPECT(ce_module_register(&ce, &extra, &extra_spy));
+    /* Built-ins (2) + spy.a/b/c/d = CE_MAX_MODULES (6); next must fail. */
+    ce_module_desc_t slot_d;
+    spy_mod_t spy_d;
+    memset(&spy_d, 0, sizeof(spy_d));
+    spy_d.name = "D";
+    fill_spy_desc(&slot_d, "spy.d", "spy-cfg");
+    EXPECT(ce_module_register(&ce, &slot_d, &spy_d));
     ce_module_desc_t overflow;
     spy_mod_t overflow_spy;
     memset(&overflow_spy, 0, sizeof(overflow_spy));
-    overflow_spy.name = "D";
-    fill_spy_desc(&overflow, "spy.d", "spy-cfg");
+    overflow_spy.name = "E";
+    fill_spy_desc(&overflow, "spy.e", "spy-cfg");
     EXPECT(!ce_module_register(&ce, &overflow, &overflow_spy));
 
     g_desc_a.max_exec = 1u;
@@ -788,7 +837,9 @@ static void test_module_runtime(void)
     EXPECT(g_spy_b.shutdowns == 1);
     EXPECT(g_spy_a.shutdowns == 1);
     EXPECT(extra_spy.shutdowns == 1);
-    EXPECT(strcmp(g_down, "CBA") == 0);
+    EXPECT(spy_d.shutdowns == 1);
+    /* Reverse shutdown of spy.d/c/b/a (built-ins also shut down; spies only). */
+    EXPECT(strcmp(g_down, "DCBA") == 0);
     const int a_shut = g_spy_a.shutdowns;
     ce_stop(&ce);
     EXPECT(g_spy_a.shutdowns == a_shut);

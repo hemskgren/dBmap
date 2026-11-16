@@ -4,15 +4,20 @@
  * From repo root:
  *   cc -std=c11 -Wall -Wextra -O2 -g \
  *     -I firmware/products/dbmap/ear/audio_engine/include \
+ *     -I firmware/products/dbmap/ear/acoustic_profile/include \
  *     -I firmware/products/dbmap/ear/candidate_engine/include \
  *     -I firmware/products/dbmap/ear/ear_acoustic/include \
- *     firmware/products/dbmap/ear/ear_acoustic/acoustic_l0.c \
+ *     -I firmware/platform/audio/include \
  *     firmware/products/dbmap/ear/audio_engine/ae_signature.c \
  *     firmware/products/dbmap/ear/audio_engine/ae_history.c \
  *     firmware/products/dbmap/ear/audio_engine/ae_time.c \
  *     firmware/products/dbmap/ear/audio_engine/ae_engine.c \
+ *     firmware/products/dbmap/ear/acoustic_profile/as_profile_as001.c \
+ *     firmware/products/dbmap/ear/acoustic_profile/as_profile_registry.c \
+ *     firmware/products/dbmap/ear/acoustic_profile/as_profile_match.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_decision.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_module.c \
+ *     firmware/products/dbmap/ear/candidate_engine/ce_module_profile.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_workflow.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_manager.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_engine.c \
@@ -163,6 +168,10 @@ static void test_coast_and_expire(void)
     EXPECT(ce_candidate_count(&ce) == 0u);
 }
 
+/**
+ * Two concurrent candidates via distinct relative band shapes (Stage 1:
+ * level alone must not be the identity key).
+ */
 static void test_two_sources(void)
 {
     ae_engine_t ae;
@@ -172,17 +181,41 @@ static void test_two_sources(void)
     ae_config_set_defaults(&acfg);
     ce_config_set_defaults(&ccfg);
     ccfg.n_enter = 2u;
-    ccfg.match_distance_max = 6.0f;
     EXPECT(ae_start(&ae, &acfg));
     EXPECT(ce_start(&ce, &ccfg));
     EXPECT(ae_add_signature_listener(&ae, ce_on_signature, &ce));
 
-    publish_tone(&ae, 1u, -35.0f, false);
-    publish_tone(&ae, 2u, -60.0f, false); /* far → second nascent */
+    dbmap_l0_window_t l0;
+    ae_signature_t sig;
+
+    fill_l0(&l0, -40.0f, 1000000);
+    EXPECT(ae_signature_build(1u, &l0, NULL, NULL, NULL, false, &sig));
+    EXPECT(ae_publish_signature(&ae, &sig));
+
+    /*
+     * Distinct relative band shape at same RMS → second candidate.
+     * Shape Δ large enough that identity distance > match_max + hysteresis.
+     */
+    fill_l0(&l0, -40.0f, 2000000);
+    l0.band_dbfs[0] = -40.0f - 10.0f;
+    l0.band_dbfs[1] = -40.0f - 10.0f;
+    l0.band_dbfs[2] = -40.0f + 5.0f;
+    l0.band_dbfs[3] = -40.0f + 8.0f;
+    EXPECT(ae_signature_build(2u, &l0, NULL, NULL, NULL, false, &sig));
+    EXPECT(ae_publish_signature(&ae, &sig));
     EXPECT(ce_candidate_count(&ce) == 2u);
 
-    publish_tone(&ae, 3u, -35.2f, false);
-    publish_tone(&ae, 4u, -59.5f, false);
+    fill_l0(&l0, -40.0f, 3000000);
+    EXPECT(ae_signature_build(3u, &l0, NULL, NULL, NULL, false, &sig));
+    EXPECT(ae_publish_signature(&ae, &sig));
+
+    fill_l0(&l0, -40.0f, 4000000);
+    l0.band_dbfs[0] = -40.0f - 10.0f;
+    l0.band_dbfs[1] = -40.0f - 10.0f;
+    l0.band_dbfs[2] = -40.0f + 5.0f;
+    l0.band_dbfs[3] = -40.0f + 8.0f;
+    EXPECT(ae_signature_build(4u, &l0, NULL, NULL, NULL, false, &sig));
+    EXPECT(ae_publish_signature(&ae, &sig));
     EXPECT(ce_candidate_count(&ce) == 2u);
 
     uint8_t active = 0u;

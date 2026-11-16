@@ -1,9 +1,80 @@
 #include "ce_engine.h"
 
+#include "as_profile.h"
 #include "ce_log.h"
 #include "ce_manager.h"
 
 #include <string.h>
+
+#define CE_MOD_FLAG_PROFILE_MATCH (1u << 8)
+
+static int slot_index_by_id(const ce_engine_t *eng, uint64_t candidate_id)
+{
+    for (uint8_t i = 0; i < CE_MAX_CANDIDATES; i++) {
+        if (eng->slots[i].in_use && eng->slots[i].candidate_id == candidate_id) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+/**
+ * Record as.profile workflow result against the candidate slot.
+ * Classification only — never promotes or changes identity state.
+ */
+static void record_classification(
+    ce_engine_t *eng,
+    uint64_t candidate_id,
+    const ce_workflow_result_t *wf
+)
+{
+    const int idx = slot_index_by_id(eng, candidate_id);
+    if (idx < 0) {
+        return;
+    }
+
+    ce_classification_t *cls = &eng->classifications[idx];
+    memset(cls, 0, sizeof(*cls));
+    cls->candidate_id = candidate_id;
+    cls->valid = true;
+    cls->profile_id = AS_PROFILE_ID_NONE;
+    cls->acoustic_class = AS_CLASS_UNSPECIFIED;
+    cls->gap_events_at_match = eng->slots[idx].gap_events;
+
+    if (wf == NULL) {
+        eng->diag.profile_match_misses++;
+        return;
+    }
+
+    bool saw_profile = false;
+    for (uint8_t i = 0; i < wf->result_count; i++) {
+        const ce_module_result_t *r = &wf->results[i];
+        if (r->module_id == NULL || strcmp(r->module_id, "as.profile") != 0) {
+            continue;
+        }
+        saw_profile = true;
+        if (r->status == CE_MOD_OK
+            && (r->flags & CE_MOD_FLAG_PROFILE_MATCH) != 0u
+            && r->code > 0) {
+            cls->matched = true;
+            cls->profile_id = (uint16_t)r->code;
+            cls->distance = r->score;
+            const as_profile_t *p = as_profile_get_by_id(cls->profile_id);
+            if (p != NULL) {
+                cls->acoustic_class = p->acoustic_class;
+            }
+            eng->diag.profile_match_hits++;
+        } else {
+            cls->matched = false;
+            cls->distance = r->score;
+            eng->diag.profile_match_misses++;
+        }
+        break;
+    }
+    if (!saw_profile) {
+        eng->diag.profile_match_misses++;
+    }
+}
 
 void ce_config_set_defaults(ce_config_t *cfg)
 {
@@ -13,6 +84,8 @@ void ce_config_set_defaults(ce_config_t *cfg)
     cfg->n_enter = 2u;
     cfg->t_coast = 3u;
     cfg->match_distance_max = 8.0f;
+    cfg->match_hysteresis = 2.0f;
+    cfg->match_ambiguity_delta = 1.5f;
     cfg->min_rms_dbfs = -80.0f;
 }
 
@@ -38,9 +111,20 @@ bool ce_start(ce_engine_t *eng, const ce_config_t *cfg)
     if (eng->cfg.t_coast == 0u) {
         eng->cfg.t_coast = 1u;
     }
+    if (eng->cfg.match_hysteresis < 0.0f) {
+        eng->cfg.match_hysteresis = 0.0f;
+    }
+    if (eng->cfg.match_ambiguity_delta < 0.0f) {
+        eng->cfg.match_ambiguity_delta = 0.0f;
+    }
     eng->next_id = 1u;
+    eng->next_promotion_gen = 0u;
     ce_runtime_reset(&eng->runtime);
     if (!ce_runtime_register(&eng->runtime, ce_module_evidence_desc(), NULL)) {
+        return false;
+    }
+    if (!ce_runtime_register(&eng->runtime, ce_module_profile_desc(), NULL)) {
+        ce_runtime_shutdown(&eng->runtime);
         return false;
     }
     if (!ce_runtime_start(&eng->runtime)) {
@@ -140,6 +224,7 @@ static void run_workflow(ce_engine_t *eng, uint64_t candidate_id, const ae_signa
     const ce_workflow_t *wf = eng->workflow != NULL ? eng->workflow : ce_workflow_track();
     ce_workflow_result_t result;
     ce_workflow_run(&eng->runtime, wf, &input, &result);
+    record_classification(eng, candidate_id, &result);
     if (result.failed) {
         eng->diag.workflow_failed++;
         CE_LOGW(
@@ -176,6 +261,9 @@ void ce_engine_on_signature(ce_engine_t *eng, const ae_signature_t *sig)
     case CE_INGEST_UPDATED:
     case CE_INGEST_CREATED:
         run_workflow(eng, in.candidate_id, sig);
+        return;
+    case CE_INGEST_HYSTERESIS:
+        /* Near an existing track but outside rematch — no create, no workflow. */
         return;
     case CE_INGEST_IGNORED:
     case CE_INGEST_DUPLICATE:
@@ -242,6 +330,15 @@ bool ce_promote(ce_engine_t *eng, uint64_t candidate_id)
     return ce_manager_promote(eng, candidate_id);
 }
 
+bool ce_unadmit_promotion(
+    ce_engine_t *eng,
+    uint64_t candidate_id,
+    uint32_t promotion_gen
+)
+{
+    return ce_manager_unadmit_promotion(eng, candidate_id, promotion_gen);
+}
+
 bool ce_reject(ce_engine_t *eng, uint64_t candidate_id)
 {
     return ce_manager_reject(eng, candidate_id);
@@ -285,6 +382,27 @@ bool ce_engine_last_decision(const ce_engine_t *eng, ce_decision_t *out)
         return false;
     }
     *out = eng->last_decision;
+    return true;
+}
+
+bool ce_get_classification(
+    const ce_engine_t *eng,
+    uint64_t candidate_id,
+    ce_classification_t *out
+)
+{
+    if (eng == NULL || !eng->started || out == NULL) {
+        return false;
+    }
+    const int idx = slot_index_by_id(eng, candidate_id);
+    if (idx < 0) {
+        return false;
+    }
+    const ce_classification_t *cls = &eng->classifications[idx];
+    if (!cls->valid || cls->candidate_id != candidate_id) {
+        return false;
+    }
+    *out = *cls;
     return true;
 }
 

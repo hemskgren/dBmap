@@ -29,7 +29,12 @@ void ce_bridge_bind_engine(ce_promotion_bridge_t *bridge, ce_engine_t *ce)
     bridge->ce = ce;
 }
 
-static bool queue_push(ce_promotion_bridge_t *bridge, uint64_t id, ce_promotion_event_t ev)
+static bool queue_push(
+    ce_promotion_bridge_t *bridge,
+    uint64_t id,
+    uint32_t promotion_gen,
+    ce_promotion_event_t ev
+)
 {
     if (bridge->q_count >= CE_BRIDGE_QUEUE_CAP) {
         bridge->diag.queue_overflows++;
@@ -37,6 +42,7 @@ static bool queue_push(ce_promotion_bridge_t *bridge, uint64_t id, ce_promotion_
     }
     uint8_t idx = (uint8_t)((bridge->q_head + bridge->q_count) % CE_BRIDGE_QUEUE_CAP);
     bridge->queue[idx].candidate_id = id;
+    bridge->queue[idx].promotion_gen = promotion_gen;
     bridge->queue[idx].ev = ev;
     bridge->q_count++;
     return true;
@@ -63,7 +69,9 @@ void ce_bridge_on_promotion(
     if (bridge == NULL || c == NULL) {
         return;
     }
-    if (!queue_push(bridge, c->candidate_id, ev)) {
+    /* Capture promotion_gen from the CE callback payload — do not look up
+     * by candidate_id later (reuse could substitute a newer generation). */
+    if (!queue_push(bridge, c->candidate_id, c->promotion_gen, ev)) {
         return;
     }
     if (ev == CE_PROMOTION_ENTER) {
@@ -120,7 +128,11 @@ static bool handle_valid(
     return sp_episode_registry_handle_valid(registry, handle);
 }
 
-static void apply_enter(ce_promotion_bridge_t *bridge, uint64_t candidate_id)
+static void apply_enter(
+    ce_promotion_bridge_t *bridge,
+    uint64_t candidate_id,
+    uint32_t promotion_gen
+)
 {
     if (bridge->assoc.bound && bridge->assoc.candidate_id == candidate_id) {
         bridge->diag.enter_idempotent++;
@@ -142,6 +154,7 @@ static void apply_enter(ce_promotion_bridge_t *bridge, uint64_t candidate_id)
     memset(&bridge->assoc, 0, sizeof(bridge->assoc));
     bridge->assoc.bound = true;
     bridge->assoc.candidate_id = candidate_id;
+    bridge->assoc.promotion_gen = promotion_gen;
     memcpy(
         bridge->assoc.observation_id,
         bridge->obs_id,
@@ -151,7 +164,11 @@ static void apply_enter(ce_promotion_bridge_t *bridge, uint64_t candidate_id)
     bridge->diag.assoc_success++;
 }
 
-static void apply_exit(ce_promotion_bridge_t *bridge, uint64_t candidate_id)
+static void apply_exit(
+    ce_promotion_bridge_t *bridge,
+    uint64_t candidate_id,
+    uint32_t promotion_gen
+)
 {
     if (!bridge->assoc.bound) {
         return;
@@ -159,6 +176,17 @@ static void apply_exit(ce_promotion_bridge_t *bridge, uint64_t candidate_id)
     if (bridge->assoc.candidate_id != candidate_id) {
         /* Stale EXIT for a different / replaced candidate. */
         return;
+    }
+    /*
+     * Gen-tagged association: EXIT must carry the matching non-zero
+     * promotion_gen. Zero-gen EXIT never falls back to candidate_id-only
+     * disassoc — that path is forbidden on the production bridge callback.
+     */
+    if (bridge->assoc.promotion_gen != 0u) {
+        if (promotion_gen == 0u || promotion_gen != bridge->assoc.promotion_gen) {
+            bridge->diag.exit_stale_gen++;
+            return;
+        }
     }
     memset(&bridge->assoc, 0, sizeof(bridge->assoc));
     bridge->diag.disassoc_on_exit++;
@@ -177,7 +205,7 @@ static void drain_queue(
                 bridge->diag.assoc_fail_stale_handle++;
                 continue;
             }
-            apply_enter(bridge, ev.candidate_id);
+            apply_enter(bridge, ev.candidate_id, ev.promotion_gen);
             if (bridge->assoc.bound
                 && registry != NULL
                 && !handle_valid(registry, bridge->assoc.ep_handle)) {
@@ -188,7 +216,7 @@ static void drain_queue(
                 }
             }
         } else if (ev.ev == CE_PROMOTION_EXIT) {
-            apply_exit(bridge, ev.candidate_id);
+            apply_exit(bridge, ev.candidate_id, ev.promotion_gen);
         }
     }
 }
@@ -327,6 +355,7 @@ static bool try_reassociate_promoted(
     memset(&bridge->assoc, 0, sizeof(bridge->assoc));
     bridge->assoc.bound = true;
     bridge->assoc.candidate_id = cand_id;
+    bridge->assoc.promotion_gen = live.promotion_gen;
     memcpy(
         bridge->assoc.observation_id,
         bridge->obs_id,

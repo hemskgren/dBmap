@@ -506,10 +506,14 @@ static void test_exit_idempotent_and_stale(void)
 
     ce_bridge_poll(&bridge, &reg);
     EXPECT(ce_bridge_bound_candidate_id(&bridge) == 100u);
+    const uint32_t gen_a = bridge.assoc.promotion_gen;
+    EXPECT(gen_a != 0u);
 
+    /* Valid EXIT for A must carry A's promotion_gen (no zero-gen id-only). */
     ae_candidate_t ex;
     memset(&ex, 0, sizeof(ex));
     ex.candidate_id = 100u;
+    ex.promotion_gen = gen_a;
     ce_bridge_on_promotion(&ex, CE_PROMOTION_EXIT, &bridge);
     /* Mirror expire_slot: EXIT ends the CE promotion lifecycle for A. */
     for (uint8_t i = 0; i < CE_MAX_CANDIDATES; i++) {
@@ -529,7 +533,7 @@ static void test_exit_idempotent_and_stale(void)
     EXPECT(d_b.enter_queued == 2u);
     EXPECT(d_b.promote_calls == 2u);
 
-    /* Second / stale EXIT for A: must not clear B. */
+    /* Second / stale EXIT for A (wrong gen vs B): must not clear B. */
     ce_bridge_on_promotion(&ex, CE_PROMOTION_EXIT, &bridge);
     ce_bridge_poll(&bridge, &reg);
     EXPECT(ce_bridge_is_bound(&bridge));
@@ -539,6 +543,124 @@ static void test_exit_idempotent_and_stale(void)
     ce_bridge_poll(&bridge, &reg);
     EXPECT(ce_bridge_is_bound(&bridge));
     EXPECT(ce_bridge_bound_candidate_id(&bridge) == 101u);
+}
+
+/**
+ * Bridge queue captures promotion_gen at CE callback time. A delayed EXIT with
+ * the old gen must not disassoc a newer association that reused candidate_id.
+ */
+static void test_bridge_same_cid_stale_exit_gen(void)
+{
+    ce_engine_t ce;
+    ce_promotion_bridge_t bridge;
+    sp_episode_registry_t reg;
+    sp_ep_handle_t h;
+
+    ce_engine_ready(&ce);
+    plant_candidate(&ce, 200u, AE_CAND_ACTIVE, 5u, -25.0f, AE_QUALITY_OK);
+    ce_bridge_init(&bridge);
+    ce_bridge_bind_engine(&bridge, &ce);
+    ce_set_promotion_cb(&ce, ce_bridge_on_promotion, &bridge);
+    sp_episode_registry_init(&reg);
+    open_obs(&bridge, &reg, &h, fake_uuid_a);
+
+    EXPECT(ce_promote(&ce, 200u));
+    ae_candidate_t live;
+    EXPECT(ce_find_candidate(&ce, 200u, &live));
+    const uint32_t gen1 = live.promotion_gen;
+    EXPECT(gen1 != 0u);
+
+    ce_bridge_poll(&bridge, &reg);
+    EXPECT(ce_bridge_bound_candidate_id(&bridge) == 200u);
+    EXPECT(bridge.assoc.promotion_gen == gen1);
+
+    /* Capture real EXIT payload via CE reject (gen frozen in callback). */
+    ae_candidate_t exit_g1;
+    memset(&exit_g1, 0, sizeof(exit_g1));
+    {
+        /* Reject emits EXIT synchronously into the bridge queue. */
+        EXPECT(ce_reject(&ce, 200u));
+        EXPECT(bridge.q_count >= 1u);
+        /* Peek the queued EXIT before drain — must carry G1. */
+        const uint8_t idx = bridge.q_head;
+        EXPECT(bridge.queue[idx].ev == CE_PROMOTION_EXIT);
+        EXPECT(bridge.queue[idx].candidate_id == 200u);
+        EXPECT(bridge.queue[idx].promotion_gen == gen1);
+        exit_g1.candidate_id = bridge.queue[idx].candidate_id;
+        exit_g1.promotion_gen = bridge.queue[idx].promotion_gen;
+    }
+    ce_bridge_notify_obs_closed(&bridge);
+    ce_bridge_poll(&bridge, &reg);
+    EXPECT(!ce_bridge_is_bound(&bridge));
+
+    /* Reuse same candidate_id with a new Observation context. */
+    plant_candidate(&ce, 200u, AE_CAND_ACTIVE, 6u, -24.0f, AE_QUALITY_OK);
+    open_obs(&bridge, &reg, &h, fake_uuid_b);
+    EXPECT(ce_promote(&ce, 200u));
+    EXPECT(ce_find_candidate(&ce, 200u, &live));
+    const uint32_t gen2 = live.promotion_gen;
+    EXPECT(gen2 != 0u);
+    EXPECT(gen2 != gen1);
+    ce_bridge_poll(&bridge, &reg);
+    EXPECT(ce_bridge_bound_candidate_id(&bridge) == 200u);
+    EXPECT(bridge.assoc.promotion_gen == gen2);
+
+    ce_bridge_diag_t d0;
+    ce_bridge_get_diag(&bridge, &d0);
+    ce_bridge_on_promotion(&exit_g1, CE_PROMOTION_EXIT, &bridge);
+    ce_bridge_poll(&bridge, &reg);
+    ce_bridge_diag_t d1;
+    ce_bridge_get_diag(&bridge, &d1);
+    EXPECT(d1.exit_stale_gen == d0.exit_stale_gen + 1u);
+    EXPECT(ce_bridge_is_bound(&bridge));
+    EXPECT(ce_bridge_bound_candidate_id(&bridge) == 200u);
+    EXPECT(bridge.assoc.promotion_gen == gen2);
+
+    /* Valid EXIT for G2 clears association only. */
+    EXPECT(ce_reject(&ce, 200u));
+    ce_bridge_poll(&bridge, &reg);
+    EXPECT(!ce_bridge_is_bound(&bridge));
+}
+
+/**
+ * Production bridge callback path: zero-gen EXIT must not disassoc a
+ * gen-tagged live association (no candidate_id-only fallback).
+ */
+static void test_bridge_zero_gen_exit_rejected(void)
+{
+    ce_engine_t ce;
+    ce_promotion_bridge_t bridge;
+    sp_episode_registry_t reg;
+    sp_ep_handle_t h;
+
+    ce_engine_ready(&ce);
+    plant_candidate(&ce, 210u, AE_CAND_ACTIVE, 5u, -25.0f, AE_QUALITY_OK);
+    ce_bridge_init(&bridge);
+    ce_bridge_bind_engine(&bridge, &ce);
+    ce_set_promotion_cb(&ce, ce_bridge_on_promotion, &bridge);
+    sp_episode_registry_init(&reg);
+    open_obs(&bridge, &reg, &h, fake_uuid_a);
+
+    EXPECT(ce_promote(&ce, 210u));
+    ce_bridge_poll(&bridge, &reg);
+    EXPECT(ce_bridge_is_bound(&bridge));
+    EXPECT(bridge.assoc.promotion_gen != 0u);
+    const uint32_t gen = bridge.assoc.promotion_gen;
+    const uint32_t disassoc0 = bridge.diag.disassoc_on_exit;
+    const uint32_t stale0 = bridge.diag.exit_stale_gen;
+
+    ae_candidate_t zero;
+    memset(&zero, 0, sizeof(zero));
+    zero.candidate_id = 210u;
+    /* promotion_gen left 0 — production-path injection via public callback. */
+    ce_bridge_on_promotion(&zero, CE_PROMOTION_EXIT, &bridge);
+    ce_bridge_poll(&bridge, &reg);
+
+    EXPECT(ce_bridge_is_bound(&bridge));
+    EXPECT(ce_bridge_bound_candidate_id(&bridge) == 210u);
+    EXPECT(bridge.assoc.promotion_gen == gen);
+    EXPECT(bridge.diag.disassoc_on_exit == disassoc0);
+    EXPECT(bridge.diag.exit_stale_gen == stale0 + 1u);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1010,6 +1132,8 @@ int main(void)
     test_episode_generation_reuse_cannot_affect_new_assoc();
     test_enter_idempotent();
     test_exit_idempotent_and_stale();
+    test_bridge_same_cid_stale_exit_gen();
+    test_bridge_zero_gen_exit_rejected();
 
     test_obs_authority_bridge_does_not_allocate_or_end();
     test_queue_overflow_artificial_host_saturation();

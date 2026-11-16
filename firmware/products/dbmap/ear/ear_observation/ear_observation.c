@@ -2413,11 +2413,15 @@ static void activity_task(void *arg)
                 s_obs_mgr_uart_diag_last_sig = ad.sig_published;
                 ear_obs_manager_diag_t d;
                 ear_obs_manager_get_diag(&s_obs_mgr, &d);
+                ear_promotion_policy_diag_t pd;
+                ear_promotion_policy_get_diag(&s_promo_pol, &pd);
                 ESP_LOGI(
                     TAG,
                     "obs_mgr diag sig=%lu open=%u pending=%u held=%u "
                     "rsv_ok=%lu rsv_full=%lu bound=%lu pend_q=%lu "
-                    "drain_fail=%lu exit_detach=%lu end=%lu evq_drop=%lu",
+                    "drain_fail=%lu exit_detach=%lu end=%lu evq_drop=%lu "
+                    "promo_cid=%llu decision=%u reason_profile=%u dist=%.3f "
+                    "hold_irr=%lu hold_nocls=%lu",
                     (unsigned long)ad.sig_published,
                     (unsigned)ear_obs_manager_n_open(&s_obs_mgr),
                     (unsigned)ear_obs_manager_n_pending(&s_obs_mgr),
@@ -2429,7 +2433,13 @@ static void activity_task(void *arg)
                     (unsigned long)d.drain_alloc_fail,
                     (unsigned long)d.exit_detach,
                     (unsigned long)d.end_done,
-                    (unsigned long)d.evq_dropped
+                    (unsigned long)d.evq_dropped,
+                    (unsigned long long)pd.last_candidate_id,
+                    (unsigned)pd.last_decision,
+                    (unsigned)pd.last_profile_id,
+                    (double)pd.last_match_distance,
+                    (unsigned long)pd.hold_irrelevant,
+                    (unsigned long)pd.hold_no_class
                 );
                 ce_diag_t cd;
                 ce_get_diag(&s_ce, &cd);

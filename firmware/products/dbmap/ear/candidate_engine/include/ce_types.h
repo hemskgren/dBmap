@@ -5,7 +5,9 @@
 #pragma once
 
 #include "ae_types.h"
+#include "as_profile.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -33,7 +35,22 @@ typedef struct {
     uint8_t quality_summary;
     uint32_t last_window_seq;
     float ema_rms_dbfs;
+    /** Absolute band EMA (dBFS); identity distance uses shape relative to RMS. */
     float band_ema[AE_BAND_COUNT];
+    /**
+     * Spectral EMA — only valid when spectral_ema_valid. Missing/invalid
+     * spectral input must not be treated as zero evidence.
+     */
+    float ema_dominant_hz;
+    float ema_flatness;
+    float ema_centroid_hz;
+    bool spectral_ema_valid;
+    /**
+     * Pair ΔRMS EMA (mic0−mic1 dB) — stereo asymmetry cue only, not DoA/TDOA.
+     * Valid only when pair_ema_valid.
+     */
+    float ema_delta_rms_db;
+    bool pair_ema_valid;
     uint8_t mic_mask_seen;
     bool in_use;
     /**
@@ -42,12 +59,42 @@ typedef struct {
      */
     bool promotion_entered;
     /**
+     * Promotion association generation assigned at CE_PROMOTION_ENTER from
+     * ce_engine_t.next_promotion_gen (engine-monotonic, never zero after the
+     * first ENTER). Preserved on the EXIT callback payload — emit_exit invokes
+     * the callback before clearing promotion_entered and does not clear this
+     * field until slot_clear. Rematch without a new ENTER does not bump it.
+     * Consumers must match this on EXIT so a delayed EXIT cannot affect a
+     * newer association that reused the same candidate_id after slot clear.
+     * Zero means "unset" (never ENTER'd, or synthetic payload without gen).
+     */
+    uint32_t promotion_gen;
+    /**
      * Times a sequence discontinuity or GAP-quality signature was applied to
      * this slot. Not a fabricated timestamp; the signature's own
      * window_end_mono_us remains the evidence clock.
      */
     uint16_t gap_events;
 } ae_candidate_t;
+
+/**
+ * Classification annotation associated with a Candidate (workflow/classifier).
+ * Not part of Stage 1 identity. Does not imply promotion or Observation.
+ */
+typedef struct {
+    uint64_t candidate_id;
+    bool valid;
+    bool matched;
+    uint16_t profile_id;
+    as_acoustic_class_t acoustic_class;
+    float distance;
+    /**
+     * Candidate gap_events at the time this annotation was written.
+     * After a later GAP, gap_events advances and this annotation is stale
+     * for product-relevance gating until a fresh workflow classification.
+     */
+    uint16_t gap_events_at_match;
+} ce_classification_t;
 
 typedef enum {
     CE_PROMOTION_ENTER = 0,
