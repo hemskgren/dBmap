@@ -14,6 +14,7 @@
 #include "sp_health.h"
 #include "sp_i2s_stereo.h"
 #include "sp_mic_count.h"
+#include "sp_mic_error_report.h"
 #include "sp_mic_pcm.h"
 #include "sp_mic_window_job.h"
 #include "driver/i2s_std.h"
@@ -612,11 +613,55 @@ static void set_status(ear_audio_snapshot_t *snap, uint32_t expected_samples)
 }
 
 /**
+ * Per-mic error / transport counters — diagnostics only.
+ * Collection/increment logic is unchanged; hello (include_diag=false) omits them.
+ * Zero emit is gated by CONFIG_SP_MIC_SHOW_ZERO_ERROR_COUNTERS
+ * (show_zero_error_counters; default false).
+ */
+static void enrich_mic_error_counters_diag(cJSON *mic, const ear_audio_snapshot_t *snap)
+{
+    if (mic == NULL || snap == NULL) {
+        return;
+    }
+    if (sp_mic_error_counter_should_emit(snap->read_errors)) {
+        cJSON_AddNumberToObject(mic, "read_errors", snap->read_errors);
+    }
+    if (sp_mic_error_counter_should_emit(snap->timeout_reads)) {
+        cJSON_AddNumberToObject(mic, "timeout_reads", snap->timeout_reads);
+    }
+    if (sp_mic_error_counter_should_emit(snap->empty_reads)) {
+        cJSON_AddNumberToObject(mic, "empty_reads", snap->empty_reads);
+    }
+    if (sp_mic_error_counter_should_emit(snap->missing_data)) {
+        cJSON_AddNumberToObject(mic, "missing_data", snap->missing_data);
+    }
+    if (sp_mic_error_counter_should_emit(snap->clipped_samples)) {
+        cJSON_AddNumberToObject(mic, "clipped_samples", snap->clipped_samples);
+    }
+    if (sp_mic_error_counter_should_emit(snap->partial_reads)) {
+        cJSON_AddNumberToObject(mic, "partial_reads", snap->partial_reads);
+    }
+    /* Bool flag: emit only when capped, unless show-zeros forces presence. */
+    if (snap->counters_capped != 0
+        || sp_mic_show_zero_error_counters()) {
+        cJSON_AddBoolToObject(mic, "counters_capped", snap->counters_capped != 0);
+    }
+}
+
+/**
  * Attach Platform mic fields onto hello/health/keepalive (same path as wifi_rssi_dbm).
  * Reports every acquired live channel. Independent background per index when enabled.
  * Observation / activity still consume mic 0 via sp_mic_get_levels (product).
+ *
+ * Error counters are attached only when include_diag (health/keepalive).
+ * Zero-valued counters follow show_zero_error_counters (firmware Kconfig).
  */
-static void enrich_mic_object(cJSON *mic, const ear_audio_snapshot_t *snap, uint8_t index)
+static void enrich_mic_object(
+    cJSON *mic,
+    const ear_audio_snapshot_t *snap,
+    uint8_t index,
+    bool include_diag
+)
 {
     if (mic == NULL || snap == NULL || s_model == NULL) {
         return;
@@ -642,13 +687,9 @@ static void enrich_mic_object(cJSON *mic, const ear_audio_snapshot_t *snap, uint
         sp_audio_expected_samples((uint32_t)s_mic_cfg.sample_rate_hz, snap->window_ms)
     );
     cJSON_AddNumberToObject(mic, "window_ms", snap->window_ms);
-    /* Per-DIN I2S read counters (shared by L/R on that DIN only). */
-    cJSON_AddNumberToObject(mic, "read_errors", snap->read_errors);
-    cJSON_AddNumberToObject(mic, "timeout_reads", snap->timeout_reads);
-    cJSON_AddNumberToObject(mic, "empty_reads", snap->empty_reads);
-    cJSON_AddNumberToObject(mic, "missing_data", snap->missing_data);
-    cJSON_AddNumberToObject(mic, "clipped_samples", snap->clipped_samples);
-    cJSON_AddBoolToObject(mic, "counters_capped", snap->counters_capped != 0);
+    if (include_diag) {
+        enrich_mic_error_counters_diag(mic, snap);
+    }
     cJSON_AddBoolToObject(mic, "all_zero_window", snap->all_zero_window != 0);
     cJSON_AddStringToObject(mic, "channel_presence", presence);
     cJSON_AddNumberToObject(mic, "raw_min", snap->raw_min);
@@ -663,7 +704,6 @@ static void enrich_mic_object(cJSON *mic, const ear_audio_snapshot_t *snap, uint
     cJSON_AddNumberToObject(mic, "read_calls", snap->read_calls);
     cJSON_AddNumberToObject(mic, "bytes_received", snap->bytes_received);
     cJSON_AddNumberToObject(mic, "complete_frames", snap->complete_frames);
-    cJSON_AddNumberToObject(mic, "partial_reads", snap->partial_reads);
     cJSON_AddNumberToObject(mic, "raw_slot_min", (double)snap->raw_slot_min);
     cJSON_AddNumberToObject(mic, "raw_slot_max", (double)snap->raw_slot_max);
     {
@@ -691,7 +731,6 @@ static void enrich_mic_object(cJSON *mic, const ear_audio_snapshot_t *snap, uint
 
 static void enrich_health(cJSON *state, const sp_effective_t *cfg, bool include_diag)
 {
-    (void)include_diag;
     if (state == NULL || cfg == NULL || s_model == NULL) {
         return;
     }
@@ -781,7 +820,7 @@ static void enrich_health(cJSON *state, const sp_effective_t *cfg, bool include_
     cJSON *mics = cJSON_CreateArray();
     for (uint8_t i = 0; i < live_count; ++i) {
         cJSON *mic = cJSON_CreateObject();
-        enrich_mic_object(mic, &snaps[i], i);
+        enrich_mic_object(mic, &snaps[i], i, include_diag);
 #if CONFIG_SP_MIC_BACKGROUND
         /* Omit background unless this mic is currently signal_present (no stale
          * profile on disconnected / noise / unknown DIN). */

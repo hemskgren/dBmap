@@ -102,8 +102,18 @@ _CONFIG_LINE = re.compile(
 )
 _NOT_SET_LINE = re.compile(r"^# (?P<name>CONFIG_DBMAP_[A-Z0-9_]+) is not set$")
 _SHORT = re.compile(r"^DBMAP_[A-Z0-9_]+$")
+# Firmware mic reporting option (CONFIG_SP_*; included in build metadata only).
+_SP_MIC_SHOW_ZERO = re.compile(
+    r"^CONFIG_SP_MIC_SHOW_ZERO_ERROR_COUNTERS=(?P<value>.*)$"
+)
+_SP_MIC_SHOW_ZERO_NOT_SET = re.compile(
+    r"^# CONFIG_SP_MIC_SHOW_ZERO_ERROR_COUNTERS is not set$"
+)
 # Strict SemVer core (MAJOR.MINOR.PATCH). No pre-release / build metadata.
 _SEMVER_CORE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+
+# Matches Kconfig default for SP_MIC_SHOW_ZERO_ERROR_COUNTERS (default n).
+_DEFAULT_SHOW_ZERO_ERROR_COUNTERS = False
 
 
 def is_valid_sp_version(value: str) -> bool:
@@ -150,6 +160,87 @@ def inject_sp_version(config: dict[str, Any], version: str) -> dict[str, Any]:
         raise TypeError("config.sp must be an object")
     sp["version"] = version
     return config
+
+
+def parse_show_zero_error_counters(text: str) -> bool | None:
+    """
+    Parse CONFIG_SP_MIC_SHOW_ZERO_ERROR_COUNTERS from sdkconfig / defaults text.
+
+    Returns True/False when the symbol appears, or None when absent.
+    """
+    found: bool | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if _SP_MIC_SHOW_ZERO_NOT_SET.match(line):
+            found = False
+            continue
+        match = _SP_MIC_SHOW_ZERO.match(line)
+        if match:
+            raw_value = match.group("value").strip()
+            found = raw_value == "y"
+    return found
+
+
+def inject_show_zero_error_counters(
+    config: dict[str, Any], value: bool
+) -> dict[str, Any]:
+    """
+    Record firmware show_zero_error_counters in build metadata.
+
+    Nested as config.sp.mic.show_zero_error_counters — not a Reported State
+    field and not a Hub/map setting.
+    """
+    if not isinstance(config, dict):
+        raise TypeError("config must be an object")
+    sp = config.get("sp")
+    if sp is None:
+        sp = {}
+        config["sp"] = sp
+    if not isinstance(sp, dict):
+        raise TypeError("config.sp must be an object")
+    mic = sp.get("mic")
+    if mic is None:
+        mic = {}
+        sp["mic"] = mic
+    if not isinstance(mic, dict):
+        raise TypeError("config.sp.mic must be an object")
+    mic["show_zero_error_counters"] = bool(value)
+    return config
+
+
+def resolve_show_zero_error_counters(
+    *,
+    project: Path,
+    chip: str,
+    platform_dir: Path | None = None,
+) -> bool:
+    """Effective firmware option from Kconfig default + sdkconfig.defaults."""
+    value = _DEFAULT_SHOW_ZERO_ERROR_COUNTERS
+    if platform_dir is not None:
+        kconfig = platform_dir / "mic" / "Kconfig"
+        if kconfig.is_file():
+            text = kconfig.read_text(encoding="utf-8")
+            # Prefer an explicit `default n` / `default y` under the symbol.
+            in_symbol = False
+            for raw in text.splitlines():
+                line = raw.strip()
+                if line.startswith("config SP_MIC_SHOW_ZERO_ERROR_COUNTERS"):
+                    in_symbol = True
+                    continue
+                if in_symbol:
+                    if line.startswith(("config ", "endmenu")):
+                        break
+                    if line == "default y":
+                        value = True
+                        break
+                    if line == "default n":
+                        value = False
+                        break
+    for path in defaults_files(project, chip):
+        parsed = parse_show_zero_error_counters(path.read_text(encoding="utf-8"))
+        if parsed is not None:
+            value = parsed
+    return value
 
 
 def short_name(config_name: str) -> str:
@@ -342,6 +433,20 @@ def group_values(
     return config
 
 
+def attach_mic_report_metadata(
+    config: dict[str, Any],
+    *,
+    project: Path,
+    chip: str,
+    platform_dir: Path | None,
+) -> dict[str, Any]:
+    """Always attach config.sp.mic.show_zero_error_counters for Ear builds."""
+    value = resolve_show_zero_error_counters(
+        project=project, chip=chip, platform_dir=platform_dir
+    )
+    return inject_show_zero_error_counters(config, value)
+
+
 def highlights(
     effective: dict[str, Any], kconfig_defaults: dict[str, Any]
 ) -> list[dict[str, Any]]:
@@ -398,6 +503,13 @@ def resolve_effective_dbmap_config(
 
     sp_version = read_platform_version(components)
     nested = group_values(effective, node_type, platform_version=sp_version)
+    if node_type == "ear":
+        attach_mic_report_metadata(
+            nested,
+            project=project,
+            chip=chip,
+            platform_dir=components,
+        )
     return {
         "source": "effective",
         "config": nested,
@@ -406,7 +518,7 @@ def resolve_effective_dbmap_config(
             "Release firmware_version is assigned at build time (sdkconfig.defaults series base + retained patch history) and is not duplicated under config.sp.node.",
             "Builder overlay sets NTP_SERVER from Hub env NTP_SERVER (default se.pool.ntp.org if unset); overrides sdkconfig.defaults.",
             "WIFI_SSID, WIFI_PASSWORD, and BOOTSTRAP_TOKEN are cleared for reusable images.",
-            "config.sp is Sensor Platform; config.product.dbmap is dBmap product (Ear acoustic + observation). Platform mic DSP flags are CONFIG_SP_* and are outside this DBMAP catalog.",
+            "config.sp is Sensor Platform; config.product.dbmap is dBmap product (Ear acoustic + observation). Most Platform mic flags remain CONFIG_SP_* outside the DBMAP catalog; config.sp.mic.show_zero_error_counters is included as build metadata for the firmware reporting option.",
             "config.sp.version is the independent Sensor Platform SemVer from firmware/platform/VERSION (not firmware_version).",
         ],
     }
@@ -426,7 +538,15 @@ def resolve_defaults_file_dbmap_config(
     sp_version = None
     if platform_dir is not None:
         sp_version = read_platform_version(platform_dir)
-    return group_values(file_overrides, node_type, platform_version=sp_version)
+    nested = group_values(file_overrides, node_type, platform_version=sp_version)
+    if node_type == "ear":
+        attach_mic_report_metadata(
+            nested,
+            project=project,
+            chip=chip,
+            platform_dir=platform_dir,
+        )
+    return nested
 
 
 def format_log_block(payload: dict[str, Any]) -> str:
