@@ -21,7 +21,8 @@ extern "C" {
 #endif
 
 #ifndef CE_MAX_MODULES
-#define CE_MAX_MODULES 4u
+/* evidence + as.profile built-ins, plus room for test/product modules. */
+#define CE_MAX_MODULES 6u
 #endif
 
 #define CE_INPUT_SIGNATURE (1u << 0)
@@ -104,6 +105,13 @@ void ce_module_input_set(
 
 /** Built-in evidence probe. Reports quality flags. Score is always 0. */
 const ce_module_desc_t *ce_module_evidence_desc(void);
+
+/**
+ * Acoustic profile classifier (AS-001, …). Score = match distance when
+ * matched; code = profile id (0 = none). Never promotes. Flag bit 8 set on
+ * match (CE_MOD_FLAG_PROFILE_MATCH in ce_module_profile.c).
+ */
+const ce_module_desc_t *ce_module_profile_desc(void);
 
 void ce_runtime_reset(ce_runtime_t *rt);
 

@@ -105,4 +105,17 @@ menu "Sensor Platform microphone"
             or Hub schemas. Enable for multi-mic bring-up; leave off for
             fleet images.
 
+    config SP_MIC_SHOW_ZERO_ERROR_COUNTERS
+        bool "show_zero_error_counters (include zero mic error counters in diag)"
+        default n
+        help
+            Firmware reporting option only. When disabled (default), per-mic
+            diagnostic error counters with value 0 are omitted from
+            health/keepalive payloads to reduce device-to-Hub traffic.
+            When enabled, zero-valued counters are included in diagnostics.
+            Counters are always collected; this does not change increment or
+            reset behavior. Not a Hub/map setting and not a Reported State
+            field. Effective value is recorded in build metadata
+            (config.sp.mic.show_zero_error_counters).
+
 endmenu

@@ -126,7 +126,7 @@ curl -sS --cacert shared/trust/ca.crt \
 
 ## Devices and firmware
 
-Registration, USB configure, flash, and catalog flows: [Register and deploy a device](./device-registration-and-deployment.md). Pins: [Device wiring and pinout](./device-wiring-and-pinout.md).
+Registration, USB configure, flash, and catalog flows: [Register and deploy a device](./device-registration-and-deployment.md). Pins: [Device wiring and pinout](./device-wiring-and-pinout.md). Live EAR UART logs (multi-device tty selection): [EAR USB console](./ear-usb-console.md).
 
 **Output commands (implemented)** — prefer the Hub API (admin token). Intent: short local action (relay and/or speaker), not site-wide automation yet.
 

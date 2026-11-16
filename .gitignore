@@ -44,3 +44,10 @@ firmware/products/dbmap/ear/audio_engine/test_host/crit_offline/evidence/recordi
 !firmware/products/dbmap/ear/audio_engine/test_host/crit_offline/evidence/recordings/.gitkeep
 firmware/products/dbmap/ear/audio_engine/test_host/crit_offline/evidence/converted/**
 !firmware/products/dbmap/ear/audio_engine/test_host/crit_offline/evidence/converted/.gitkeep
+
+# Acoustic profile local media — entire directory (WAV/PCM and copies)
+docs/acoustic-profiles/local-media/**
+!docs/acoustic-profiles/local-media/.gitkeep
+
+# Local USB console capture dumps (investigation artifacts)
+dbmap-usb-console-*.txt

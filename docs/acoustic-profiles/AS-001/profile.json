@@ -1,0 +1,759 @@
+{
+  "id": "AS-001",
+  "name": "Helicopter",
+  "profile_version": "0.1.0-experimental",
+  "status": "experimental_host_verified",
+  "description": "Synthetic helicopter-over-background stimulus. Represents a helicopter-like acoustic event above background using actual Audio Engine signatures. Not Bell 429 model identification.",
+  "reference": "Synthetic helicopter-over-background stimulus (not authentic field recording)",
+  "target": "Detect a helicopter-like acoustic event above background",
+  "ae_signature_schema_version": 1,
+  "source": {
+    "original_wav": "local-media/AS-001/AS001_heli_bg_48k_original.wav",
+    "working_wav": "local-media/AS-001/AS001_heli_bg_mono16k.wav",
+    "format_original": "WAV mono PCM s16le 48 kHz, 32.0 s",
+    "format_ae": "WAV mono PCM s16le 16 kHz (exact 3:1 mean downsample)",
+    "synthetic": true,
+    "stimulus_timing_s": {
+      "bg_pre": [
+        0,
+        5
+      ],
+      "heli_approach": [
+        5,
+        16
+      ],
+      "heli_peak": [
+        16,
+        22
+      ],
+      "heli_recede": [
+        22,
+        27
+      ],
+      "bg_post": [
+        27,
+        32
+      ]
+    },
+    "conversion": "mean-decimate 48 kHz \u2192 16 kHz (factor 3); no gain/AGC"
+  },
+  "extraction": {
+    "tool": "firmware/products/dbmap/ear/audio_engine/test_host/as_profile_extract.c",
+    "dsp": [
+      "sp_acoustic_l0",
+      "sp_acoustic_l1",
+      "sp_acoustic_l2",
+      "ae_signature_build"
+    ],
+    "window_ms": 1000,
+    "sample_rate_hz": 16000,
+    "full_scale_bits": 16,
+    "pair_metrics": "unavailable (mono stimulus)",
+    "signatures_csv": "artifacts/signatures.csv"
+  },
+  "phases": {
+    "bg_pre": {
+      "n": 5,
+      "quality": {
+        "OK": 5
+      },
+      "spectral_valid_n": 5,
+      "dynamics_valid_n": 5,
+      "pair_valid_n": 0,
+      "features": {
+        "rms_dbfs": {
+          "min": -34.4831,
+          "p25": -34.4416,
+          "median": -34.4352,
+          "p75": -34.1538,
+          "max": -33.9854,
+          "mean": -34.2998
+        },
+        "peak_dbfs": {
+          "min": -23.223,
+          "p25": -23.082,
+          "median": -23.0782,
+          "p75": -22.7265,
+          "max": -22.2192,
+          "mean": -22.8658
+        },
+        "crest_db": {
+          "min": 11.2589,
+          "p25": 11.2602,
+          "median": 11.3533,
+          "p75": 11.3633,
+          "max": 11.9347,
+          "mean": 11.4341
+        },
+        "band0_dbfs": {
+          "min": -36.7718,
+          "p25": -36.6025,
+          "median": -36.5247,
+          "p75": -36.2223,
+          "max": -36.0956,
+          "mean": -36.4434
+        },
+        "band1_dbfs": {
+          "min": -40.6573,
+          "p25": -40.5741,
+          "median": -40.5246,
+          "p75": -40.2875,
+          "max": -40.0613,
+          "mean": -40.421
+        },
+        "band2_dbfs": {
+          "min": -47.2304,
+          "p25": -47.2211,
+          "median": -47.1705,
+          "p75": -47.1249,
+          "max": -47.1038,
+          "mean": -47.1701
+        },
+        "band3_dbfs": {
+          "min": -52.5987,
+          "p25": -52.5559,
+          "median": -52.5171,
+          "p75": -52.4432,
+          "max": -52.3174,
+          "mean": -52.4865
+        },
+        "hl_db": {
+          "min": -11.3575,
+          "p25": -11.2043,
+          "median": -11.0111,
+          "p75": -10.9513,
+          "max": -10.8381,
+          "mean": -11.0725
+        },
+        "centroid_hz": {
+          "min": 1835.3549,
+          "p25": 1836.241,
+          "median": 1840.5762,
+          "p75": 1860.8568,
+          "max": 1909.6288,
+          "mean": 1856.5315
+        },
+        "bandwidth_hz": {
+          "min": 1937.1572,
+          "p25": 1946.0975,
+          "median": 1949.1804,
+          "p75": 1952.626,
+          "max": 1962.7566,
+          "mean": 1949.5635
+        },
+        "dominant_hz": {
+          "min": 93.75,
+          "p25": 109.375,
+          "median": 187.5,
+          "p75": 203.125,
+          "max": 203.125,
+          "mean": 159.375
+        },
+        "flatness": {
+          "min": 0.5993,
+          "p25": 0.6004,
+          "median": 0.6013,
+          "p75": 0.6117,
+          "max": 0.623,
+          "mean": 0.6071
+        },
+        "spectral_flux": {
+          "min": 0.9039,
+          "p25": 0.9957,
+          "median": 1.0237,
+          "p75": 1.131,
+          "max": 1.132,
+          "mean": 1.0373
+        },
+        "envelope_cv": {
+          "min": 0.0532,
+          "p25": 0.0589,
+          "median": 0.0726,
+          "p75": 0.0751,
+          "max": 0.0857,
+          "mean": 0.0691
+        }
+      }
+    },
+    "heli_approach": {
+      "n": 11,
+      "quality": {
+        "OK": 11
+      },
+      "spectral_valid_n": 11,
+      "dynamics_valid_n": 11,
+      "pair_valid_n": 0,
+      "features": {
+        "rms_dbfs": {
+          "min": -31.6185,
+          "p25": -14.8702,
+          "median": -11.0129,
+          "p75": -9.8407,
+          "max": -9.3166,
+          "mean": -14.1914
+        },
+        "peak_dbfs": {
+          "min": -20.2851,
+          "p25": -6.3296,
+          "median": -3.5542,
+          "p75": -2.4621,
+          "max": -1.735,
+          "mean": -5.8921
+        },
+        "crest_db": {
+          "min": 7.0305,
+          "p25": 7.4544,
+          "median": 7.6798,
+          "p75": 8.5405,
+          "max": 11.3334,
+          "mean": 8.2993
+        },
+        "band0_dbfs": {
+          "min": -35.9211,
+          "p25": -22.9031,
+          "median": -18.8097,
+          "p75": -18.0291,
+          "max": -17.3321,
+          "mean": -21.862
+        },
+        "band1_dbfs": {
+          "min": -38.1636,
+          "p25": -22.3943,
+          "median": -18.4794,
+          "p75": -17.2454,
+          "max": -16.7278,
+          "mean": -21.5846
+        },
+        "band2_dbfs": {
+          "min": -45.5965,
+          "p25": -30.3828,
+          "median": -26.6158,
+          "p75": -25.856,
+          "max": -25.7967,
+          "mean": -29.8488
+        },
+        "band3_dbfs": {
+          "min": -52.3497,
+          "p25": -50.6955,
+          "median": -49.1055,
+          "p75": -48.6859,
+          "max": -47.9408,
+          "mean": -49.693
+        },
+        "hl_db": {
+          "min": -11.7625,
+          "p25": -11.2903,
+          "median": -10.9528,
+          "p75": -10.758,
+          "max": -10.5806,
+          "mean": -11.0433
+        },
+        "centroid_hz": {
+          "min": 1059.8997,
+          "p25": 1086.909,
+          "median": 1131.6405,
+          "p75": 1262.5365,
+          "max": 1802.7986,
+          "mean": 1236.6198
+        },
+        "bandwidth_hz": {
+          "min": 1244.3643,
+          "p25": 1256.1624,
+          "median": 1316.0525,
+          "p75": 1480.197,
+          "max": 1921.1604,
+          "mean": 1417.0613
+        },
+        "dominant_hz": {
+          "min": 515.625,
+          "p25": 531.25,
+          "median": 546.875,
+          "p75": 546.875,
+          "max": 562.5,
+          "mean": 539.7727
+        },
+        "flatness": {
+          "min": 0.2456,
+          "p25": 0.2522,
+          "median": 0.2718,
+          "p75": 0.3374,
+          "max": 0.5852,
+          "mean": 0.3229
+        },
+        "spectral_flux": {
+          "min": 0.7979,
+          "p25": 0.9014,
+          "median": 0.9116,
+          "p75": 0.9633,
+          "max": 1.024,
+          "mean": 0.9237
+        },
+        "envelope_cv": {
+          "min": 0.1175,
+          "p25": 0.1227,
+          "median": 0.1317,
+          "p75": 0.177,
+          "max": 0.2958,
+          "mean": 0.16
+        }
+      }
+    },
+    "heli_peak": {
+      "n": 6,
+      "quality": {
+        "OK": 6
+      },
+      "spectral_valid_n": 6,
+      "dynamics_valid_n": 6,
+      "pair_valid_n": 0,
+      "features": {
+        "rms_dbfs": {
+          "min": -10.9673,
+          "p25": -10.2689,
+          "median": -9.9255,
+          "p75": -9.5272,
+          "max": -9.401,
+          "mean": -9.9995
+        },
+        "peak_dbfs": {
+          "min": -3.4141,
+          "p25": -2.92,
+          "median": -2.6018,
+          "p75": -2.22,
+          "max": -2.1124,
+          "mean": -2.6415
+        },
+        "crest_db": {
+          "min": 7.2575,
+          "p25": 7.3166,
+          "median": 7.3377,
+          "p75": 7.3489,
+          "max": 7.5532,
+          "mean": 7.358
+        },
+        "band0_dbfs": {
+          "min": -19.2468,
+          "p25": -18.6012,
+          "median": -18.197,
+          "p75": -17.7563,
+          "max": -17.2975,
+          "mean": -18.2139
+        },
+        "band1_dbfs": {
+          "min": -18.4087,
+          "p25": -17.7888,
+          "median": -17.221,
+          "p75": -16.9704,
+          "max": -16.8075,
+          "mean": -17.4205
+        },
+        "band2_dbfs": {
+          "min": -28.1256,
+          "p25": -27.4802,
+          "median": -26.7881,
+          "p75": -26.3662,
+          "max": -26.0515,
+          "mean": -26.9483
+        },
+        "band3_dbfs": {
+          "min": -49.737,
+          "p25": -49.4642,
+          "median": -48.7837,
+          "p75": -48.4,
+          "max": -47.7916,
+          "mean": -48.8432
+        },
+        "hl_db": {
+          "min": -12.3254,
+          "p25": -12.267,
+          "median": -12.1744,
+          "p75": -12.0455,
+          "max": -11.8221,
+          "mean": -12.1328
+        },
+        "centroid_hz": {
+          "min": 1053.7648,
+          "p25": 1058.4319,
+          "median": 1068.1033,
+          "p75": 1078.3461,
+          "max": 1085.2932,
+          "mean": 1068.7055
+        },
+        "bandwidth_hz": {
+          "min": 1244.6664,
+          "p25": 1264.9548,
+          "median": 1274.4134,
+          "p75": 1298.7658,
+          "max": 1320.5911,
+          "mean": 1280.4616
+        },
+        "dominant_hz": {
+          "min": 484.375,
+          "p25": 484.375,
+          "median": 492.1875,
+          "p75": 500.0,
+          "max": 500.0,
+          "mean": 492.1875
+        },
+        "flatness": {
+          "min": 0.2463,
+          "p25": 0.251,
+          "median": 0.255,
+          "p75": 0.263,
+          "max": 0.2681,
+          "mean": 0.2566
+        },
+        "spectral_flux": {
+          "min": 0.9351,
+          "p25": 0.9924,
+          "median": 1.005,
+          "p75": 1.0114,
+          "max": 1.0944,
+          "mean": 1.0069
+        },
+        "envelope_cv": {
+          "min": 0.1217,
+          "p25": 0.1278,
+          "median": 0.1281,
+          "p75": 0.1334,
+          "max": 0.1413,
+          "mean": 0.1304
+        }
+      }
+    },
+    "heli_recede": {
+      "n": 5,
+      "quality": {
+        "OK": 5
+      },
+      "spectral_valid_n": 5,
+      "dynamics_valid_n": 5,
+      "pair_valid_n": 0,
+      "features": {
+        "rms_dbfs": {
+          "min": -31.6699,
+          "p25": -23.101,
+          "median": -16.7583,
+          "p75": -13.0335,
+          "max": -11.8245,
+          "mean": -19.2774
+        },
+        "peak_dbfs": {
+          "min": -18.8609,
+          "p25": -12.4393,
+          "median": -7.7714,
+          "p75": -5.3899,
+          "max": -4.0536,
+          "mean": -9.703
+        },
+        "crest_db": {
+          "min": 7.6436,
+          "p25": 7.7708,
+          "median": 8.9868,
+          "p75": 10.6617,
+          "max": 12.809,
+          "mean": 9.5744
+        },
+        "band0_dbfs": {
+          "min": -35.3007,
+          "p25": -30.5048,
+          "median": -25.4156,
+          "p75": -21.6414,
+          "max": -20.3615,
+          "mean": -26.6448
+        },
+        "band1_dbfs": {
+          "min": -38.4817,
+          "p25": -30.3186,
+          "median": -24.1023,
+          "p75": -20.3673,
+          "max": -19.2055,
+          "mean": -26.4951
+        },
+        "band2_dbfs": {
+          "min": -45.9626,
+          "p25": -39.3262,
+          "median": -33.6022,
+          "p75": -29.9979,
+          "max": -28.8685,
+          "mean": -35.5515
+        },
+        "band3_dbfs": {
+          "min": -52.56,
+          "p25": -52.0975,
+          "median": -51.6767,
+          "p75": -50.3161,
+          "max": -50.1808,
+          "mean": -51.3662
+        },
+        "hl_db": {
+          "min": -12.1017,
+          "p25": -12.0103,
+          "median": -11.8359,
+          "p75": -11.7022,
+          "max": -11.5069,
+          "mean": -11.8314
+        },
+        "centroid_hz": {
+          "min": 1111.7946,
+          "p25": 1161.1757,
+          "median": 1286.2288,
+          "p75": 1534.5541,
+          "max": 1775.0166,
+          "mean": 1373.754
+        },
+        "bandwidth_hz": {
+          "min": 1356.6589,
+          "p25": 1405.9867,
+          "median": 1548.4158,
+          "p75": 1751.8965,
+          "max": 1907.6337,
+          "mean": 1594.1183
+        },
+        "dominant_hz": {
+          "min": 484.375,
+          "p25": 484.375,
+          "median": 484.375,
+          "p75": 500.0,
+          "max": 500.0,
+          "mean": 490.625
+        },
+        "flatness": {
+          "min": 0.2807,
+          "p25": 0.3016,
+          "median": 0.3597,
+          "p75": 0.4709,
+          "max": 0.5769,
+          "mean": 0.3979
+        },
+        "spectral_flux": {
+          "min": 1.0452,
+          "p25": 1.0746,
+          "median": 1.1075,
+          "p75": 1.1235,
+          "max": 1.1465,
+          "mean": 1.0995
+        },
+        "envelope_cv": {
+          "min": 0.1398,
+          "p25": 0.1509,
+          "median": 0.2068,
+          "p75": 0.267,
+          "max": 0.2881,
+          "mean": 0.2105
+        }
+      }
+    },
+    "bg_post": {
+      "n": 5,
+      "quality": {
+        "OK": 5
+      },
+      "spectral_valid_n": 5,
+      "dynamics_valid_n": 5,
+      "pair_valid_n": 0,
+      "features": {
+        "rms_dbfs": {
+          "min": -34.6565,
+          "p25": -34.6381,
+          "median": -34.5706,
+          "p75": -34.4445,
+          "max": -34.3947,
+          "mean": -34.5409
+        },
+        "peak_dbfs": {
+          "min": -23.5239,
+          "p25": -23.4764,
+          "median": -23.2076,
+          "p75": -21.6817,
+          "max": -21.425,
+          "mean": -22.6629
+        },
+        "crest_db": {
+          "min": 11.1326,
+          "p25": 11.1618,
+          "median": 11.363,
+          "p75": 12.7628,
+          "max": 12.9698,
+          "mean": 11.878
+        },
+        "band0_dbfs": {
+          "min": -37.0476,
+          "p25": -36.8525,
+          "median": -36.7397,
+          "p75": -36.5894,
+          "max": -36.3186,
+          "mean": -36.7096
+        },
+        "band1_dbfs": {
+          "min": -40.6971,
+          "p25": -40.634,
+          "median": -40.6194,
+          "p75": -40.4436,
+          "max": -40.3051,
+          "mean": -40.5398
+        },
+        "band2_dbfs": {
+          "min": -47.2018,
+          "p25": -47.1744,
+          "median": -47.1511,
+          "p75": -47.1492,
+          "max": -47.0713,
+          "mean": -47.1496
+        },
+        "band3_dbfs": {
+          "min": -52.5703,
+          "p25": -52.5342,
+          "median": -52.486,
+          "p75": -52.4603,
+          "max": -52.4191,
+          "mean": -52.494
+        },
+        "hl_db": {
+          "min": -11.1283,
+          "p25": -10.9875,
+          "median": -10.7994,
+          "p75": -10.6325,
+          "max": -10.6186,
+          "mean": -10.8333
+        },
+        "centroid_hz": {
+          "min": 1842.2046,
+          "p25": 1860.7172,
+          "median": 1862.6663,
+          "p75": 1865.6438,
+          "max": 1881.3505,
+          "mean": 1862.5165
+        },
+        "bandwidth_hz": {
+          "min": 1943.538,
+          "p25": 1953.4235,
+          "median": 1955.1774,
+          "p75": 1957.4963,
+          "max": 1963.1805,
+          "mean": 1954.5631
+        },
+        "dominant_hz": {
+          "min": 109.375,
+          "p25": 125.0,
+          "median": 125.0,
+          "p75": 156.25,
+          "max": 218.75,
+          "mean": 146.875
+        },
+        "flatness": {
+          "min": 0.6016,
+          "p25": 0.6066,
+          "median": 0.6103,
+          "p75": 0.6111,
+          "max": 0.6152,
+          "mean": 0.609
+        },
+        "spectral_flux": {
+          "min": 0.9189,
+          "p25": 0.9631,
+          "median": 0.9974,
+          "p75": 1.0089,
+          "max": 1.1278,
+          "mean": 1.0032
+        },
+        "envelope_cv": {
+          "min": 0.0784,
+          "p25": 0.0835,
+          "median": 0.0855,
+          "p75": 0.0926,
+          "max": 0.0956,
+          "mean": 0.0871
+        }
+      }
+    }
+  },
+  "background_vs_heli_peak_deltas": {
+    "rms_dbfs": {
+      "bg_pre_mean": -34.2998,
+      "heli_peak_mean": -9.9995,
+      "delta_heli_minus_bg": 24.3003
+    },
+    "peak_dbfs": {
+      "bg_pre_mean": -22.8658,
+      "heli_peak_mean": -2.6415,
+      "delta_heli_minus_bg": 20.2243
+    },
+    "crest_db": {
+      "bg_pre_mean": 11.4341,
+      "heli_peak_mean": 7.358,
+      "delta_heli_minus_bg": -4.0761
+    },
+    "band0_dbfs": {
+      "bg_pre_mean": -36.4434,
+      "heli_peak_mean": -18.2139,
+      "delta_heli_minus_bg": 18.2295
+    },
+    "band1_dbfs": {
+      "bg_pre_mean": -40.421,
+      "heli_peak_mean": -17.4205,
+      "delta_heli_minus_bg": 23.0005
+    },
+    "band2_dbfs": {
+      "bg_pre_mean": -47.1701,
+      "heli_peak_mean": -26.9483,
+      "delta_heli_minus_bg": 20.2218
+    },
+    "band3_dbfs": {
+      "bg_pre_mean": -52.4865,
+      "heli_peak_mean": -48.8432,
+      "delta_heli_minus_bg": 3.6433
+    },
+    "hl_db": {
+      "bg_pre_mean": -11.0725,
+      "heli_peak_mean": -12.1328,
+      "delta_heli_minus_bg": -1.0603
+    },
+    "centroid_hz": {
+      "bg_pre_mean": 1856.5315,
+      "heli_peak_mean": 1068.7055,
+      "delta_heli_minus_bg": -787.826
+    },
+    "bandwidth_hz": {
+      "bg_pre_mean": 1949.5635,
+      "heli_peak_mean": 1280.4616,
+      "delta_heli_minus_bg": -669.1019
+    },
+    "dominant_hz": {
+      "bg_pre_mean": 159.375,
+      "heli_peak_mean": 492.1875,
+      "delta_heli_minus_bg": 332.8125
+    },
+    "flatness": {
+      "bg_pre_mean": 0.6071,
+      "heli_peak_mean": 0.2566,
+      "delta_heli_minus_bg": -0.3505
+    },
+    "spectral_flux": {
+      "bg_pre_mean": 1.0373,
+      "heli_peak_mean": 1.0069,
+      "delta_heli_minus_bg": -0.0304
+    },
+    "envelope_cv": {
+      "bg_pre_mean": 0.0691,
+      "heli_peak_mean": 0.1304,
+      "delta_heli_minus_bg": 0.0613
+    }
+  },
+  "discriminative_notes": [
+    "Strongest separators are band energies and RMS/peak (heli louder, especially B0\u2013B2).",
+    "Spectral dominant_hz drops into low rotor-related region during heli vs broadband-ish bg.",
+    "Envelope_cv / spectral_flux show elevated dynamics during approach/recede vs steady bg.",
+    "Pair features are not available on this mono recording (AE_FLAG_PAIR_MISSING)."
+  ],
+  "validation": {
+    "stimulus_audible_rotor_like": true,
+    "spectrogram_shows_lf_harmonics": true,
+    "ae_signatures_extracted": 32,
+    "device_runtime_classifier": false,
+    "creates_observation": false,
+    "field_recording": false,
+    "model_identification": "none \u2014 helicopter-like only"
+  },
+  "last_updated": "2026-11-15"
+}

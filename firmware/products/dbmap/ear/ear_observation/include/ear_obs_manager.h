@@ -64,6 +64,21 @@ typedef struct {
     uint8_t quality_summary;
     uint8_t state_at_promote;
     uint16_t gap_events;
+    /** CE promotion_gen captured at ENTER (0 if unknown / non-CE path). */
+    uint32_t promotion_gen;
+    /**
+     * P2 product-relevance stamp (deny-by-default).
+     *
+     * Invariant: pending => product_relevance_approved.
+     * Carried from Promotion Policy via reservation ticket at ENTER — not
+     * reconstructed from live CE classification. Drain validates the stamp
+     * only; it never invents approval.
+     */
+    bool product_relevance_approved;
+    uint16_t relevance_profile_id;
+    float relevance_match_distance;
+    /** Non-zero ticket from reservation stamp (Policy / explicit test stamp). */
+    uint32_t relevance_ticket;
     uint8_t sig_count;
     ae_signature_t sigs[EAR_OBS_PROMOTE_SIG_CAP];
 } ear_obs_promote_snapshot_t;
@@ -143,7 +158,16 @@ typedef struct {
     uint32_t drain_alloc_fail;
     uint32_t pending_timeout;
     uint32_t pending_cancel_exit;
+    /** Commit/enqueue/drain refused: snapshot lacked product-relevance stamp. */
+    uint32_t relevance_reject;
+    /** CE unadmit requested after failed Observation admission. */
+    uint32_t promote_unadmit;
     uint32_t exit_detach;
+    /**
+     * EXIT ignored: missing/zero/mismatched promotion_gen against a gen-tagged
+     * binding (no candidate_id-only detach fallback).
+     */
+    uint32_t exit_stale;
     uint32_t end_hint;
     uint32_t end_hint_latched;
     uint32_t end_hint_consumed;
@@ -168,6 +192,19 @@ bool ear_obs_manager_bind_reservation_candidate(
     ear_obs_manager_t *om,
     ear_obs_rsv_handle_t h,
     uint64_t candidate_id
+);
+
+/**
+ * Attach Policy (or explicit test) product-relevance approval to a HELD
+ * reservation. Required before ENTER can create an Observation. Bound to the
+ * reservation's expected candidate_id; consumed at commit.
+ */
+bool ear_obs_manager_stamp_reservation_relevance(
+    ear_obs_manager_t *om,
+    ear_obs_rsv_handle_t h,
+    uint64_t candidate_id,
+    uint16_t profile_id,
+    float match_distance
 );
 
 bool ear_obs_manager_commit_reservation(
@@ -197,10 +234,12 @@ void ear_obs_manager_on_candidate_evidence(
 );
 
 /**
- * RMS activity END hint. If ce_live is already false, END immediately.
- * If ce_live is true, latch the hint (with interval metadata) and END when
- * CE EXIT detaches — so order A (END before EXIT) is not lost.
- * EXIT alone never ENDs.
+ * RMS activity END hint — authoritative Observation termination.
+ * Ends every currently open binding immediately (exactly one END each),
+ * including when ce_live is true. Clears local CE association with the slot.
+ * Does not wait for CE EXIT. EXIT alone never ENDs; EXIT matching uses
+ * (candidate_id, promotion_gen). Repeated hints are no-ops once bindings
+ * are gone. Pending drain runs after all targeted ends.
  */
 void ear_obs_manager_on_activity_end_hint(
     ear_obs_manager_t *om,
@@ -258,6 +297,10 @@ void ear_obs_manager_get_diag(const ear_obs_manager_t *om, ear_obs_manager_diag_
 
 bool ear_obs_manager_binding_ce_live(const ear_obs_manager_t *om, uint64_t candidate_id);
 
+/**
+ * Legacy latch query. Always false under immediate-END contract (P1);
+ * retained so existing call sites compile. Prefer n_open / emit counts.
+ */
 bool ear_obs_manager_binding_end_hint_latched(
     const ear_obs_manager_t *om,
     uint64_t candidate_id
@@ -276,7 +319,13 @@ struct ear_obs_manager {
         ear_obs_promote_snapshot_t snap;
         bool has_snap;
         int64_t held_mono_us;
+        bool relevance_approved;
+        uint16_t relevance_profile_id;
+        float relevance_match_distance;
+        uint32_t relevance_ticket;
     } rsv[EAR_OBS_MGR_RSV_SLOTS];
+
+    uint32_t next_relevance_ticket;
 
     struct {
         bool in_use;
@@ -293,8 +342,11 @@ struct ear_obs_manager {
     struct {
         bool in_use;
         bool ce_live;
+        /* Legacy latch fields unused under immediate-END; kept for layout. */
         bool end_hint_latched;
         uint64_t candidate_id;
+        /** Matches ae_candidate_t.promotion_gen for the live CE association. */
+        uint32_t ce_promotion_gen;
         sp_ep_handle_t ep;
         char observation_id[SP_OBS_EPISODE_ID_LEN];
         int64_t start_mono_us;

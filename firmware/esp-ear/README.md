@@ -284,9 +284,15 @@ Do **not** ship this overlay in production fleet images. Thresholds, hysteresis,
 
 **Capture**
 
+Always pass the **exact** serial port when multiple ESP32s are attached (see
+[EAR USB console](../../docs/ear-usb-console.md)):
+
 ```bash
-idf.py -p /dev/ttyUSB0 flash monitor
-# or: screen /dev/ttyUSB0 115200
+PORT=/dev/ttyACM0   # or /dev/ttyACM1, /dev/ttyUSB0, by-id path, …
+. "$HOME/esp/esp-idf/export.sh"
+cd firmware/esp-ear
+idf.py -p "$PORT" monitor
+# short smoke: stty -F "$PORT" 115200 raw -echo && timeout 5 cat "$PORT"
 # Filter: grep 'ear_obs: diag'
 ```
 

@@ -63,6 +63,24 @@ def test_parse_sdkconfig_bool_int_string_and_not_set():
     }
 
 
+def test_parse_show_zero_error_counters_from_defaults():
+    assert dbmap_config.parse_show_zero_error_counters(
+        "# CONFIG_SP_MIC_SHOW_ZERO_ERROR_COUNTERS is not set\n"
+    ) is False
+    assert dbmap_config.parse_show_zero_error_counters(
+        "CONFIG_SP_MIC_SHOW_ZERO_ERROR_COUNTERS=y\n"
+    ) is True
+    assert dbmap_config.parse_show_zero_error_counters("CONFIG_OTHER=y\n") is None
+
+
+def test_inject_show_zero_error_counters_metadata():
+    config: dict = {"sp": {"version": "0.2.0"}, "product": {"dbmap": {}}}
+    dbmap_config.inject_show_zero_error_counters(config, False)
+    assert config["sp"]["mic"]["show_zero_error_counters"] is False
+    dbmap_config.inject_show_zero_error_counters(config, True)
+    assert config["sp"]["mic"]["show_zero_error_counters"] is True
+
+
 def test_relative_end_kconfig_default_is_enabled():
     kconfig = (
         REPO_FIRMWARE / "products" / "dbmap" / "ear" / "ear_observation" / "Kconfig"
@@ -97,7 +115,7 @@ def test_ear_effective_config_highlights_defaults_overrides(real_firmware_target
     observation = product["observation"]
     acoustic = product["acoustic"]
     assert acoustic["EAR_MIC_L0"] is True
-    assert "mic" not in payload["config"]["sp"]
+    assert payload["config"]["sp"]["mic"]["show_zero_error_counters"] is False
     assert observation["EAR_OBS_PUBLISH_L0"] is True
     assert observation["EAR_OBS_L2"] is True
     assert observation["EAR_OBS_L2_PUBLISH"] is True
@@ -124,7 +142,7 @@ def test_output_effective_config_includes_output_group(real_firmware_targets):
     payload = server._target_dbmap_config("output-esp32")
     sp = payload["config"]["sp"]
     assert "output" in sp
-    assert "mic" not in sp
+    assert "mic" not in sp  # Output builds do not attach mic report metadata
     assert sp["node"]["NODE_TYPE_OUTPUT"] is True
     assert sp["output"]["AUDIO_I2S_BCLK_GPIO"] == 26
     assert sp["version"] == "0.2.0"
@@ -152,11 +170,11 @@ def test_defaults_file_dbmap_config_is_overrides_only(real_firmware_targets):
         platform_dir=REPO_FIRMWARE / "platform",
     )
     assert set(ear) == {"sp", "product"}
-    assert set(ear["sp"]) <= {"node", "version"}
+    assert set(ear["sp"]) <= {"node", "version", "mic"}
     assert ear["sp"]["version"] == "0.2.0"
+    assert ear["sp"]["mic"]["show_zero_error_counters"] is False
     assert "diag" not in ear["sp"]
     assert "backoff" not in ear["sp"]
-    assert "mic" not in ear["sp"]
     observation = ear["product"]["dbmap"]["observation"]
     acoustic = ear["product"]["dbmap"]["acoustic"]
     assert acoustic["EAR_MIC_L0"] is True

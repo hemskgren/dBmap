@@ -245,8 +245,21 @@ object when RAM diagnostics have something to report (for example
 `wifi_disconnects`, `mqtt_disconnects`, `mqtt_reconnects`,
 `mqtt_connect_attempts`, `mqtt_connect_failures`, `desired_failures`,
 and a one-shot `last_reset_reason` after boot). Hello stays lean and omits
-`diag`. Counters are RAM-only and clear on reboot; they are not written to
-NVS. The Hub derives counter deltas from the last retained diag snapshot so
+`diag`. Per-microphone transport error counters
+(`read_errors`, `timeout_reads`, `empty_reads`, `missing_data`,
+`clipped_samples`, plus `partial_reads` / `counters_capped`) are also
+diagnostics-only on health/keepalive: they are omitted from hello. On
+health/keepalive their inclusion of zero values is controlled by the
+**firmware** option `show_zero_error_counters`
+(`CONFIG_SP_MIC_SHOW_ZERO_ERROR_COUNTERS`, default `false`): when false,
+zero-valued counters are omitted from the diagnostic payload to reduce
+device-to-Hub traffic; when true, zeros are included. Counters greater
+than zero remain available in diagnostics. This option is not a Hub or
+map setting and is not itself a Reported State field; its effective value
+is recorded in build metadata as
+`config.sp.mic.show_zero_error_counters`. Counter collection, increment,
+and reset are unchanged. Counters are RAM-only and clear on reboot; they
+are not written to NVS. The Hub derives counter deltas from the last retained diag snapshot so
 a hello that omits `diag` does not re-count cumulative totals. The Hub
 derives `pending_configuration_change` by comparing reported state with
 desired state; the device does not report that flag. These messages are not

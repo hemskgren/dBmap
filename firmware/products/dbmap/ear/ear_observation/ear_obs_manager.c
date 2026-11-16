@@ -6,6 +6,7 @@
 #include "ear_obs_manager.h"
 
 #include "ae_engine.h"
+#include "ce_engine.h"
 
 #include <string.h>
 
@@ -171,6 +172,48 @@ bool ear_obs_manager_bind_reservation_candidate(
     return true;
 }
 
+bool ear_obs_manager_stamp_reservation_relevance(
+    ear_obs_manager_t *om,
+    ear_obs_rsv_handle_t h,
+    uint64_t candidate_id,
+    uint16_t profile_id,
+    float match_distance
+)
+{
+    if (!rsv_handle_valid(om, h, EAR_OBS_RSV_ST_HELD) || candidate_id == 0u) {
+        return false;
+    }
+    if (!om->rsv[h.index].has_expected_id
+        || om->rsv[h.index].expected_candidate_id != candidate_id) {
+        return false;
+    }
+    uint32_t ticket = om->next_relevance_ticket + 1u;
+    if (ticket == 0u) {
+        ticket = 1u;
+    }
+    om->next_relevance_ticket = ticket;
+    om->rsv[h.index].relevance_approved = true;
+    om->rsv[h.index].relevance_profile_id = profile_id;
+    om->rsv[h.index].relevance_match_distance = match_distance;
+    om->rsv[h.index].relevance_ticket = ticket;
+    return true;
+}
+
+static void request_ce_unadmit(
+    ear_obs_manager_t *om,
+    uint64_t candidate_id,
+    uint32_t promotion_gen
+)
+{
+    if (om == NULL || om->cfg.ce == NULL || candidate_id == 0u
+        || promotion_gen == 0u) {
+        return;
+    }
+    if (ce_unadmit_promotion(om->cfg.ce, candidate_id, promotion_gen)) {
+        om->diag.promote_unadmit++;
+    }
+}
+
 void ear_obs_manager_release_reservation(
     ear_obs_manager_t *om,
     ear_obs_rsv_handle_t h
@@ -246,6 +289,11 @@ static bool allocate_and_bind(
     if (om->cfg.registry == NULL || om->cfg.uuid_fn == NULL || snap == NULL) {
         return false;
     }
+    /* pending/open invariant: never bind without product-relevance stamp. */
+    if (!snap->product_relevance_approved || snap->relevance_ticket == 0u) {
+        om->diag.relevance_reject++;
+        return false;
+    }
     if (count_open(om) >= EAR_OBS_MGR_BINDING_CAP) {
         return false;
     }
@@ -288,6 +336,7 @@ static bool allocate_and_bind(
     om->bind[free_bi].in_use = true;
     om->bind[free_bi].ce_live = true;
     om->bind[free_bi].candidate_id = candidate_id;
+    om->bind[free_bi].ce_promotion_gen = snap->promotion_gen;
     om->bind[free_bi].ep = ep;
     memcpy(
         om->bind[free_bi].observation_id,
@@ -338,6 +387,12 @@ static bool pending_enqueue(
     ear_obs_rsv_handle_t rsv_h
 )
 {
+    /* Invariant: pending => product_relevance_approved (+ non-zero ticket). */
+    if (snap == NULL || !snap->product_relevance_approved
+        || snap->relevance_ticket == 0u) {
+        om->diag.relevance_reject++;
+        return false;
+    }
     if (om->pending_count >= EAR_OBS_MGR_PENDING_CAP) {
         return false;
     }
@@ -409,6 +464,16 @@ static void drain_pending_to_open(ear_obs_manager_t *om, int64_t now_mono_us)
         const uint64_t cid = om->pending[head].candidate_id;
         ear_obs_promote_snapshot_t snap = om->pending[head].snap;
 
+        /*
+         * Drain validates the original ENTER stamp only — never invents
+         * product-relevance approval for an otherwise unapproved candidate.
+         */
+        if (!snap.product_relevance_approved) {
+            om->diag.relevance_reject++;
+            pending_remove_at(om, 0u);
+            continue;
+        }
+
         if (!allocate_and_bind(om, cid, &snap, now_mono_us)) {
             om->diag.drain_alloc_fail++;
             break;
@@ -440,6 +505,17 @@ bool ear_obs_manager_commit_reservation(
         om->diag.enter_dup++;
         return true;
     }
+    if (!snapshot->product_relevance_approved
+        || snapshot->relevance_ticket == 0u
+        || !om->rsv[h.index].relevance_approved
+        || om->rsv[h.index].relevance_ticket != snapshot->relevance_ticket) {
+        const uint32_t gen = snapshot->promotion_gen;
+        clear_rsv_slot(om, (uint8_t)h.index);
+        om->diag.relevance_reject++;
+        om->diag.promote_commit_fail++;
+        request_ce_unadmit(om, candidate_id, gen);
+        return false;
+    }
 
     const int64_t now_us =
         snapshot->promote_mono_us != 0 ? snapshot->promote_mono_us
@@ -448,6 +524,8 @@ bool ear_obs_manager_commit_reservation(
     /* Own the snapshot before releasing HELD. */
     ear_obs_promote_snapshot_t owned = *snapshot;
     owned.candidate_id = candidate_id;
+    owned.product_relevance_approved = true;
+    owned.relevance_ticket = snapshot->relevance_ticket;
 
     /* Consume HELD before open/pending transition. */
     clear_rsv_slot(om, (uint8_t)h.index);
@@ -465,6 +543,7 @@ bool ear_obs_manager_commit_reservation(
 
     if (!pending_enqueue(om, candidate_id, &owned, now_us, h)) {
         om->diag.promote_commit_fail++;
+        request_ce_unadmit(om, candidate_id, owned.promotion_gen);
         return false;
     }
     drain_pending_to_open(om, now_us);
@@ -506,6 +585,18 @@ void ear_obs_manager_on_promotion(
     }
     if (!evq_push(om, c->candidate_id, ev, c)) {
         om->diag.evq_dropped++;
+        /*
+         * ENTER never reached the queue: release HELD and ask CE to unadmit
+         * this promotion_gen so the candidate is not stuck PROMOTED.
+         */
+        if (ev == CE_PROMOTION_ENTER) {
+            const int ri = find_held_for_candidate(om, c->candidate_id);
+            if (ri >= 0) {
+                clear_rsv_slot(om, (uint8_t)ri);
+                om->diag.reserve_released++;
+            }
+            request_ce_unadmit(om, c->candidate_id, c->promotion_gen);
+        }
     }
 }
 
@@ -533,7 +624,13 @@ void ear_obs_manager_fill_snapshot_from_candidate(
     out->quality_summary = c->quality_summary;
     out->state_at_promote = (uint8_t)c->state;
     out->gap_events = c->gap_events;
+    out->promotion_gen = c->promotion_gen;
     out->sig_count = 0u;
+    out->product_relevance_approved = false;
+    out->relevance_profile_id = 0u;
+    out->relevance_match_distance = 0.0f;
+    out->relevance_ticket = 0u;
+    (void)om;
 
     if (om != NULL && om->cfg.ae != NULL) {
         ae_signature_t tmp[EAR_OBS_PROMOTE_SIG_CAP];
@@ -547,6 +644,12 @@ void ear_obs_manager_fill_snapshot_from_candidate(
     }
 }
 
+/**
+ * Terminate one open binding exactly once.
+ * Marks the slot unused before emit/release so re-entrant END/EXIT cannot
+ * double-emit or double-release. When defer_drain is true, pending admission
+ * is left to the caller (needed when ending multiple bindings in one hint).
+ */
 static void end_binding(
     ear_obs_manager_t *om,
     uint8_t bi,
@@ -554,10 +657,11 @@ static void end_binding(
     int64_t interval_start_mono_us,
     int64_t interval_end_mono_us,
     bool has_signal_level_dbfs,
-    float signal_level_dbfs
+    float signal_level_dbfs,
+    bool defer_drain
 )
 {
-    if (!om->bind[bi].in_use) {
+    if (bi >= EAR_OBS_MGR_BINDING_CAP || !om->bind[bi].in_use) {
         return;
     }
 
@@ -578,9 +682,18 @@ static void end_binding(
         }
     }
 
+    ear_obs_binding_view_t view;
+    fill_binding_view(om, bi, &view);
+    const sp_ep_handle_t ep = om->bind[bi].ep;
+    const bool have_ep =
+        om->cfg.registry != NULL
+        && sp_episode_registry_handle_valid(om->cfg.registry, ep);
+
+    /* Terminal transition first: subsequent callbacks see an empty slot. */
+    memset(&om->bind[bi], 0, sizeof(om->bind[bi]));
+    om->diag.end_done++;
+
     if (om->cfg.emit_end != NULL) {
-        ear_obs_binding_view_t view;
-        fill_binding_view(om, bi, &view);
         (void)om->cfg.emit_end(
             om->cfg.emit_ctx,
             &view,
@@ -592,14 +705,34 @@ static void end_binding(
         );
     }
 
-    if (om->cfg.registry != NULL
-        && sp_episode_registry_handle_valid(om->cfg.registry, om->bind[bi].ep)) {
-        sp_episode_registry_release(om->cfg.registry, om->bind[bi].ep);
+    if (have_ep) {
+        sp_episode_registry_release(om->cfg.registry, ep);
     }
 
-    memset(&om->bind[bi], 0, sizeof(om->bind[bi]));
-    om->diag.end_done++;
-    drain_pending_to_open(om, iv_end);
+    if (!defer_drain) {
+        drain_pending_to_open(om, iv_end);
+    }
+}
+
+static int find_binding_by_observation_id(
+    const ear_obs_manager_t *om,
+    const char *observation_id
+)
+{
+    if (om == NULL || observation_id == NULL || observation_id[0] == '\0') {
+        return -1;
+    }
+    for (uint8_t i = 0u; i < EAR_OBS_MGR_BINDING_CAP; i++) {
+        if (om->bind[i].in_use
+            && strncmp(
+                   om->bind[i].observation_id,
+                   observation_id,
+                   SP_OBS_EPISODE_ID_LEN
+               ) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
 }
 
 /**
@@ -668,40 +801,55 @@ static void handle_enter(ear_obs_manager_t *om, uint64_t candidate_id, const ae_
         snap.promote_mono_us = now_us;
     }
 
+    /* Carry Policy ticket from HELD reservation — never re-query classification. */
+    if (om->rsv[ri].relevance_approved && om->rsv[ri].relevance_ticket != 0u) {
+        snap.product_relevance_approved = true;
+        snap.relevance_profile_id = om->rsv[ri].relevance_profile_id;
+        snap.relevance_match_distance = om->rsv[ri].relevance_match_distance;
+        snap.relevance_ticket = om->rsv[ri].relevance_ticket;
+    } else {
+        snap.product_relevance_approved = false;
+        snap.relevance_ticket = 0u;
+    }
+
     (void)ear_obs_manager_commit_reservation(om, h, candidate_id, &snap);
 }
 
-static void handle_exit(ear_obs_manager_t *om, uint64_t candidate_id, int64_t now_mono_us)
+static void handle_exit(
+    ear_obs_manager_t *om,
+    uint64_t candidate_id,
+    int64_t now_mono_us,
+    bool have_promotion_gen,
+    uint32_t promotion_gen
+)
 {
+    /*
+     * CE EXIT is detach-only. It never emits Observation END.
+     * Identity is (candidate_id, promotion_gen): a delayed EXIT from an older
+     * ENTER must not detach or otherwise mutate a newer Observation that
+     * reused the same candidate_id (or the same binding slot).
+     * Generation comes from the queued cand_copy taken at CE callback time —
+     * never from a later candidate_id lookup.
+     */
     const int bi = find_binding(om, candidate_id);
     if (bi >= 0) {
+        const uint32_t bound_gen = om->bind[bi].ce_promotion_gen;
+        /*
+         * Gen-tagged binding: EXIT must carry the matching non-zero
+         * promotion_gen. Zero-gen / missing / mismatched EXIT never falls
+         * back to candidate_id-only detach (production safety).
+         */
+        if (bound_gen != 0u) {
+            if (!have_promotion_gen
+                || promotion_gen == 0u
+                || promotion_gen != bound_gen) {
+                om->diag.exit_stale++;
+                return;
+            }
+        }
         if (om->bind[bi].ce_live) {
             om->bind[bi].ce_live = false;
             om->diag.exit_detach++;
-        }
-        /*
-         * Consume latched END hint after detach. EXIT alone does not END;
-         * a prior RMS END that arrived while ce_live must not be lost.
-         */
-        if (om->bind[bi].end_hint_latched) {
-            const int64_t iv_start = om->bind[bi].end_hint_interval_start_mono_us;
-            const int64_t iv_end =
-                om->bind[bi].end_hint_interval_end_mono_us != 0
-                    ? om->bind[bi].end_hint_interval_end_mono_us
-                    : now_mono_us;
-            const bool has_lvl = om->bind[bi].end_hint_has_level;
-            const float lvl = om->bind[bi].end_hint_level_dbfs;
-            om->bind[bi].end_hint_latched = false;
-            om->diag.end_hint_consumed++;
-            end_binding(
-                om,
-                (uint8_t)bi,
-                EAR_OBS_END_HINT_ACTIVITY,
-                iv_start,
-                iv_end,
-                has_lvl,
-                lvl
-            );
         }
     }
 
@@ -767,7 +915,13 @@ static void process_event_queue(ear_obs_manager_t *om, int64_t now_mono_us)
         if (ev == CE_PROMOTION_ENTER) {
             handle_enter(om, cid, have ? &cand_copy : NULL);
         } else if (ev == CE_PROMOTION_EXIT) {
-            handle_exit(om, cid, now_mono_us);
+            handle_exit(
+                om,
+                cid,
+                now_mono_us,
+                have,
+                have ? cand_copy.promotion_gen : 0u
+            );
         }
     }
 }
@@ -828,35 +982,47 @@ void ear_obs_manager_on_activity_end_hint(
     }
     om->diag.end_hint++;
     /*
-     * Order B: ce already detached → END now.
-     * Order A: ce still live → latch hint; handle_exit consumes on detach.
-     * EXIT alone never ENDs. Duplicate hints while latched are idempotent.
+     * Activity END is authoritative for Observation termination.
+     * Every open binding ends immediately, including when ce_live is true.
+     * Snapshot observation_ids first so deferred pending drain cannot cause a
+     * newly admitted Observation to be ended in the same hint.
+     * Repeated hints are no-ops once bindings are cleared.
      */
+    char obs_ids[EAR_OBS_MGR_BINDING_CAP][SP_OBS_EPISODE_ID_LEN];
+    uint8_t n_ids = 0u;
     for (uint8_t i = 0u; i < EAR_OBS_MGR_BINDING_CAP; i++) {
         if (!om->bind[i].in_use) {
             continue;
         }
-        if (!om->bind[i].ce_live) {
-            end_binding(
-                om,
-                i,
-                EAR_OBS_END_HINT_ACTIVITY,
-                interval_start_mono_us,
-                interval_end_mono_us,
-                has_signal_level_dbfs,
-                signal_level_dbfs
-            );
+        memcpy(
+            obs_ids[n_ids],
+            om->bind[i].observation_id,
+            SP_OBS_EPISODE_ID_LEN
+        );
+        n_ids++;
+    }
+
+    for (uint8_t j = 0u; j < n_ids; j++) {
+        const int bi = find_binding_by_observation_id(om, obs_ids[j]);
+        if (bi < 0) {
             continue;
         }
-        if (!om->bind[i].end_hint_latched) {
-            om->diag.end_hint_latched++;
-        }
-        om->bind[i].end_hint_latched = true;
-        om->bind[i].end_hint_interval_start_mono_us = interval_start_mono_us;
-        om->bind[i].end_hint_interval_end_mono_us = interval_end_mono_us;
-        om->bind[i].end_hint_has_level = has_signal_level_dbfs;
-        om->bind[i].end_hint_level_dbfs = signal_level_dbfs;
+        end_binding(
+            om,
+            (uint8_t)bi,
+            EAR_OBS_END_HINT_ACTIVITY,
+            interval_start_mono_us,
+            interval_end_mono_us,
+            has_signal_level_dbfs,
+            signal_level_dbfs,
+            true /* defer_drain */
+        );
     }
+
+    drain_pending_to_open(
+        om,
+        interval_end_mono_us > 0 ? interval_end_mono_us : interval_start_mono_us
+    );
 }
 
 void ear_obs_manager_on_activity_periodic_hint(
@@ -904,11 +1070,29 @@ void ear_obs_manager_force_end_all(
     if (om == NULL) {
         return;
     }
+    char obs_ids[EAR_OBS_MGR_BINDING_CAP][SP_OBS_EPISODE_ID_LEN];
+    uint8_t n_ids = 0u;
     for (uint8_t i = 0u; i < EAR_OBS_MGR_BINDING_CAP; i++) {
-        if (om->bind[i].in_use) {
-            end_binding(om, i, reason, 0, now_mono_us, false, 0.0f);
+        if (!om->bind[i].in_use) {
+            continue;
         }
+        memcpy(
+            obs_ids[n_ids],
+            om->bind[i].observation_id,
+            SP_OBS_EPISODE_ID_LEN
+        );
+        n_ids++;
     }
+    for (uint8_t j = 0u; j < n_ids; j++) {
+        const int bi = find_binding_by_observation_id(om, obs_ids[j]);
+        if (bi < 0) {
+            continue;
+        }
+        end_binding(
+            om, (uint8_t)bi, reason, 0, now_mono_us, false, 0.0f, true
+        );
+    }
+    drain_pending_to_open(om, now_mono_us);
 }
 
 bool ear_obs_manager_binding_end_hint_latched(

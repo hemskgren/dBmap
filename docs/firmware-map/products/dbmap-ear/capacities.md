@@ -43,11 +43,15 @@ pending (above). It is not a third independent pool of size 2 beyond pending.
 | Candidate slots | 8 | `configured` | `CE_MAX_CANDIDATES` in `ce_engine.h` | Max simultaneous Candidates | compile-time |
 | `n_enter` | 2 | `configured` (init default) | `ce_config_set_defaults` in `ce_engine.c` | NASCENT → ACTIVE evidence windows | init-default |
 | `t_coast` | 3 | `configured` (init default) | same | COASTING windows before expire | init-default |
-| `match_distance_max` | 8.0 | `configured` (init default) | same | Max fingerprint distance to associate | init-default |
-| `min_rms_dbfs` | −80.0 | `configured` (init default) | same | **Create** gate for new NASCENT only | init-default |
+| `match_distance_max` | 8.0 | `configured` (init default) | same | Rematch if identity distance ≤ this | init-default |
+| `match_hysteresis` | 2.0 | `configured` (init default) | same | Create only if distance > max + hysteresis | init-default |
+| `match_ambiguity_delta` | 1.5 | `configured` (init default) | same | Ambiguous if second−best < this within match | init-default |
+| `min_rms_dbfs` | −80.0 | `configured` (init default) | same | **Create** energy gate for new NASCENT only | init-default |
 
 **Not Observation capacity.** CE create floor is **not** the RMS Activity
-Detector ENTER/EXIT pair.
+Detector ENTER/EXIT pair. Identity matching uses relative band shape +
+spectral/pair when valid (CE-local distance); RMS weight is reduced and is
+not an identity or promotion threshold.
 
 ---
 

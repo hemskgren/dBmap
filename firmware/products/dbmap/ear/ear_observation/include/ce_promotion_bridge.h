@@ -40,6 +40,8 @@ typedef struct {
     uint32_t assoc_reject_overwrite;
     uint32_t enter_idempotent;
     uint32_t disassoc_on_exit;
+    /** EXIT ignored: same candidate_id but mismatched promotion_gen. */
+    uint32_t exit_stale_gen;
     uint32_t disassoc_on_obs_end;
     uint32_t promote_calls;
     uint32_t promote_skipped;
@@ -62,12 +64,16 @@ typedef struct {
 
 typedef struct {
     uint64_t candidate_id;
+    /** Captured from ae_candidate_t at CE callback time (0 if unset). */
+    uint32_t promotion_gen;
     ce_promotion_event_t ev;
 } ce_bridge_event_t;
 
 typedef struct {
     bool bound;
     uint64_t candidate_id;
+    /** promotion_gen from the ENTER that created this association. */
+    uint32_t promotion_gen;
     char observation_id[SP_OBS_EPISODE_ID_LEN];
     sp_ep_handle_t ep_handle;
 } ce_bridge_assoc_t;
@@ -93,6 +99,10 @@ void ce_bridge_bind_engine(ce_promotion_bridge_t *bridge, ce_engine_t *ce);
 /**
  * CE promotion callback — enqueue only (non-blocking).
  * Register via ce_set_promotion_cb(ce, ce_bridge_on_promotion, bridge).
+ *
+ * EXIT with promotion_gen==0 against a gen-tagged association is ignored
+ * (exit_stale_gen); there is no candidate_id-only disassoc fallback.
+ * Real CE emit_exit always supplies a non-zero promotion_gen after ENTER.
  */
 void ce_bridge_on_promotion(
     const ae_candidate_t *c,

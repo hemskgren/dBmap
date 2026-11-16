@@ -144,7 +144,8 @@ run_host_tests() {
 
   section "Host AE regression tests"
   local EAR_CE="${FIRMWARE_ROOT}/products/dbmap/ear/candidate_engine"
-  local ae_inc="-I${EAR_AE}/include -I${SP_AUDIO}/include -I${EAR_AC}/include -I${SP_MIC}/include ${nc_inc} -I${EAR_CE}/include"
+  local EAR_AP="${FIRMWARE_ROOT}/products/dbmap/ear/acoustic_profile"
+  local ae_inc="-I${EAR_AE}/include -I${SP_AUDIO}/include -I${EAR_AC}/include -I${SP_MIC}/include ${nc_inc} -I${EAR_CE}/include -I${EAR_AP}/include"
   run_host_one ae_align \
     ${ae_inc} \
     "${EAR_AE}/ae_align.c" "${EAR_AE}/ae_signature.c" \
@@ -169,20 +170,75 @@ run_host_tests() {
     "${SP_MIC}/sp_mic_window_job.c" "${SP_MIC}/ear_mic_channel_api.c" \
     "${SP_MIC}/audio_metrics.c" \
     "${EAR_AE}/test_host/test_ae_window_job_align.c" || host_fail=1
-  # M4 links CE module split (decision/module/workflow/manager). Those sources
-  # are not on every branch yet — run when present, otherwise SKIP explicitly
-  # so CI on Platform-DSP-only trees stays green without hiding a real fail.
+  # Mic diagnostic emit policy (show_zero_error_counters); header-only helper.
+  if [[ -f "${SP_MIC}/test_host/test_sp_mic_error_report.c" ]]; then
+    run_host_one sp_mic_error_report \
+      "-I${SP_MIC}/include" \
+      "${SP_MIC}/test_host/test_sp_mic_error_report.c" || host_fail=1
+  else
+    record_skip "host/sp_mic_error_report (test not in tree)"
+  fi
+  # M4 links CE module split (decision/module/workflow/manager/profile) plus
+  # acoustic_profile. Those sources are not on every branch yet — run when
+  # present, otherwise SKIP explicitly so CI on Platform-DSP-only trees stays
+  # green without hiding a real fail.
   if [[ -f "${EAR_CE}/ce_decision.c" && -f "${EAR_CE}/ce_module.c" \
-    && -f "${EAR_CE}/ce_workflow.c" && -f "${EAR_CE}/ce_manager.c" ]]; then
+    && -f "${EAR_CE}/ce_workflow.c" && -f "${EAR_CE}/ce_manager.c" \
+    && -f "${EAR_CE}/ce_module_profile.c" \
+    && -f "${EAR_AP}/as_profile_match.c" \
+    && -f "${EAR_AP}/as_profile_registry.c" \
+    && -f "${EAR_AP}/as_profile_as001.c" ]]; then
+    local ce_srcs=(
+      "${EAR_AE}/ae_signature.c" "${EAR_AE}/ae_history.c"
+      "${EAR_AE}/ae_engine.c" "${EAR_AE}/ae_time.c"
+      "${EAR_AP}/as_profile_as001.c" "${EAR_AP}/as_profile_registry.c"
+      "${EAR_AP}/as_profile_match.c"
+      "${EAR_CE}/ce_decision.c" "${EAR_CE}/ce_module.c"
+      "${EAR_CE}/ce_module_profile.c" "${EAR_CE}/ce_workflow.c"
+      "${EAR_CE}/ce_manager.c" "${EAR_CE}/ce_engine.c"
+    )
     run_host_one ae_m4_lifecycle_gap \
       ${ae_inc} \
-      "${EAR_AE}/ae_gap.c" "${EAR_AE}/ae_signature.c" "${EAR_AE}/ae_history.c" \
-      "${EAR_AE}/ae_engine.c" "${EAR_AE}/ae_time.c" \
-      "${EAR_CE}/ce_decision.c" "${EAR_CE}/ce_module.c" "${EAR_CE}/ce_workflow.c" \
-      "${EAR_CE}/ce_manager.c" "${EAR_CE}/ce_engine.c" \
+      "${EAR_AE}/ae_gap.c" "${ce_srcs[@]}" \
       "${EAR_AE}/test_host/test_ae_m4_lifecycle_gap.c" || host_fail=1
+    run_host_one ce_lifecycle \
+      ${ae_inc} \
+      "${ce_srcs[@]}" \
+      "${EAR_CE}/test_host/test_ce_lifecycle.c" || host_fail=1
+    run_host_one ce_identity \
+      ${ae_inc} \
+      "${ce_srcs[@]}" \
+      "${EAR_CE}/test_host/test_ce_identity.c" || host_fail=1
+    if [[ -f "${EAR_AP}/test_host/test_as_profile_as001.c" ]]; then
+      run_host_one as_profile_as001 \
+        ${ae_inc} \
+        "${ce_srcs[@]}" \
+        "${EAR_AP}/test_host/test_as_profile_as001.c" || host_fail=1
+    else
+      record_skip "host/as_profile_as001 (test not in tree)"
+    fi
+    local EAR_OBS="${FIRMWARE_ROOT}/products/dbmap/ear/ear_observation"
+    local PLAT_OBS="${FIRMWARE_ROOT}/platform/observation"
+    if [[ -f "${EAR_OBS}/test_host/test_ear_obs_manager.c" \
+      && -f "${EAR_OBS}/ear_obs_manager.c" \
+      && -f "${EAR_OBS}/ear_promotion_policy.c" \
+      && -f "${PLAT_OBS}/episode_registry.c" ]]; then
+      run_host_one ear_obs_manager \
+        ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
+        "${ce_srcs[@]}" \
+        "${PLAT_OBS}/episode_registry.c" \
+        "${EAR_OBS}/ear_obs_manager.c" \
+        "${EAR_OBS}/ear_promotion_policy.c" \
+        "${EAR_OBS}/test_host/test_ear_obs_manager.c" || host_fail=1
+    else
+      record_skip "host/ear_obs_manager (OM sources/tests not in tree)"
+    fi
   else
-    record_skip "host/ae_m4_lifecycle_gap (CE module sources not in tree)"
+    record_skip "host/ae_m4_lifecycle_gap (CE/profile sources not in tree)"
+    record_skip "host/ce_lifecycle (CE/profile sources not in tree)"
+    record_skip "host/ce_identity (CE/profile sources not in tree)"
+    record_skip "host/as_profile_as001 (CE/profile sources not in tree)"
+    record_skip "host/ear_obs_manager (CE/profile sources not in tree)"
   fi
 
   return "${host_fail}"

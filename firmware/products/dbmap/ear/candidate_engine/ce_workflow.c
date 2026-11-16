@@ -10,6 +10,17 @@ static const ce_workflow_step_t k_track_steps[] = {
         .on_error = CE_DECISION_ERROR,
         .module_id = "ce.evidence",
     },
+    /*
+     * Profile classifier: semantic match only. SKIP/missing must not fail the
+     * track; fuse_track ignores profile score and does not promote from it.
+     */
+    {
+        .kind = CE_WK_MODULE,
+        .cond = CE_COND_QUALITY_USABLE,
+        .on_missing = CE_DECISION_CONTINUE,
+        .on_error = CE_DECISION_KEEP,
+        .module_id = "as.profile",
+    },
     {
         .kind = CE_WK_DECIDE,
         .cond = CE_COND_ALWAYS,
@@ -20,7 +31,7 @@ static const ce_workflow_step_t k_track_steps[] = {
 static const ce_workflow_t k_track = {
     .id = "ce.track",
     .steps = k_track_steps,
-    .step_count = 2u,
+    .step_count = 3u,
 };
 
 const ce_workflow_t *ce_workflow_track(void)

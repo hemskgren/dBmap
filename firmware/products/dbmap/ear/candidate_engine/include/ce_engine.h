@@ -46,8 +46,22 @@ extern "C" {
 typedef struct {
     uint32_t n_enter;           /* NASCENT → ACTIVE */
     uint32_t t_coast;           /* windows in COASTING before EXPIRED */
-    float match_distance_max;   /* associate if distance <= this */
-    float min_rms_dbfs;         /* ignore quieter than this for create */
+    /**
+     * Associate (rematch) if identity distance <= this.
+     * Create requires distance > match_distance_max + match_hysteresis.
+     */
+    float match_distance_max;
+    /**
+     * Hysteresis margin above match_distance_max. Signatures in
+     * (match_max, match_max + hysteresis] neither update nor create.
+     */
+    float match_hysteresis;
+    /**
+     * When best and second-best are both <= match_distance_max and
+     * (second - best) < this, count as ambiguous; still update only best.
+     */
+    float match_ambiguity_delta;
+    float min_rms_dbfs;         /* NASCENT create energy gate only — not identity */
 } ce_config_t;
 
 /** Aggregate lifecycle counters (not per-signature logs). */
@@ -60,6 +74,8 @@ typedef struct {
     uint32_t promote_successes;
     uint32_t promotion_enter_events;
     uint32_t promotion_exit_events;
+    /** Unadmit after ENTER was not observation-admitted (gen-matched). */
+    uint32_t promotion_unadmit;
     /** in_use counts by ae_cand_state_t index 0..5 */
     uint8_t state_hist[6];
     uint8_t in_use_count;
@@ -70,6 +86,10 @@ typedef struct {
     uint32_t ignored_unusable;
     uint32_t ignored_duplicate;
     uint32_t ignored_low_energy;
+    /** Signature near an existing candidate but outside rematch; create suppressed. */
+    uint32_t match_hysteresis_hold;
+    /** Two+ candidates within match_max and closer than match_ambiguity_delta. */
+    uint32_t match_ambiguous;
     uint32_t workflow_completed;
     uint32_t workflow_failed;
     uint32_t module_exec;
@@ -79,13 +99,27 @@ typedef struct {
     uint32_t decision_count[CE_DECISION_COUNT];
     /** Slots cleared by ce_stop / ce_manager_release_for_stop (not expire). */
     uint32_t stop_cleared;
+    /** Profile match annotations after successful ingest (not promotion). */
+    uint32_t profile_match_hits;
+    uint32_t profile_match_misses;
 } ce_diag_t;
 
 typedef struct {
     bool started;
     ce_config_t cfg;
     ae_candidate_t slots[CE_MAX_CANDIDATES];
+    /**
+     * Parallel classification annotations (workflow as.profile). Indexed like
+     * slots[]; not Stage 1 identity state.
+     */
+    ce_classification_t classifications[CE_MAX_CANDIDATES];
     uint64_t next_id;
+    /**
+     * Monotonic CE promotion association generation (never zero after first
+     * ENTER). Survives candidate slot clear/reuse so EXIT payloads remain
+     * distinguishable across candidate_id reuse. uint32_t wrap skips 0.
+     */
+    uint32_t next_promotion_gen;
     uint32_t last_processed_seq;
     ce_promotion_cb_t promotion_cb;
     void *promotion_ctx;
@@ -134,6 +168,19 @@ bool ce_find_candidate(const ce_engine_t *eng, uint64_t id, ae_candidate_t *out)
 bool ce_promote(ce_engine_t *eng, uint64_t candidate_id);
 
 /**
+ * Undo an ENTER that was not admitted into an Observation.
+ * CE-owned: emits one EXIT when (candidate_id, promotion_gen) matches a live
+ * promotion_entered association, restores ACTIVE if currently PROMOTED, and
+ * clears promotion_entered. Gen mismatch / already-cleared → no-op (false).
+ * Does not reject or expire the candidate.
+ */
+bool ce_unadmit_promotion(
+    ce_engine_t *eng,
+    uint64_t candidate_id,
+    uint32_t promotion_gen
+);
+
+/**
  * Terminal reject. Emits one EXIT if this lifecycle had entered promotion.
  * The slot leaves in_use so a later promote of the same id fails.
  */
@@ -152,6 +199,16 @@ bool ce_module_is_registered(
 
 /** False until a signature or workflow run has recorded a decision. */
 bool ce_engine_last_decision(const ce_engine_t *eng, ce_decision_t *out);
+
+/**
+ * Latest workflow profile classification for a live candidate.
+ * False if the candidate is missing or has no classification annotation yet.
+ */
+bool ce_get_classification(
+    const ce_engine_t *eng,
+    uint64_t candidate_id,
+    ce_classification_t *out
+);
 
 /** Copy counters and refresh state histogram and module totals. */
 void ce_get_diag(const ce_engine_t *eng, ce_diag_t *out);

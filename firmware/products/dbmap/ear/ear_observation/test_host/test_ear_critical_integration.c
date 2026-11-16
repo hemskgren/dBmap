@@ -38,6 +38,7 @@
  */
 #include "ae_engine.h"
 #include "ae_signature.h"
+#include "as_profile.h"
 #include "ce_engine.h"
 #include "ear_critical_path.h"
 #include "ear_obs_manager.h"
@@ -280,13 +281,39 @@ static void snapshot_registry(
     }
 }
 
+static void mark_as001_relevant(ce_engine_t *ce, uint64_t id)
+{
+    for (uint8_t i = 0; i < CE_MAX_CANDIDATES; i++) {
+        if (!ce->slots[i].in_use || ce->slots[i].candidate_id != id) {
+            continue;
+        }
+        ce_classification_t *cls = &ce->classifications[i];
+        memset(cls, 0, sizeof(*cls));
+        cls->candidate_id = id;
+        cls->valid = true;
+        cls->matched = true;
+        cls->profile_id = AS_PROFILE_ID_AS001;
+        cls->acoustic_class = AS_CLASS_HELICOPTER_LIKE;
+        cls->distance = 1.0f;
+        cls->gap_events_at_match = ce->slots[i].gap_events;
+        return;
+    }
+}
+
 static bool promote_with_reserve(integ_t *f, uint64_t cid, int64_t now_us)
 {
+    mark_as001_relevant(&f->ce, cid);
     ear_obs_rsv_handle_t h;
     if (ear_obs_manager_reserve(&f->om, &h) != EAR_OBS_RSV_OK) {
         return false;
     }
     if (!ear_obs_manager_bind_reservation_candidate(&f->om, h, cid)) {
+        ear_obs_manager_release_reservation(&f->om, h);
+        return false;
+    }
+    if (!ear_obs_manager_stamp_reservation_relevance(
+            &f->om, h, cid, AS_PROFILE_ID_AS001, 1.0f
+        )) {
         ear_obs_manager_release_reservation(&f->om, h);
         return false;
     }
