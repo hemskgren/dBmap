@@ -18,7 +18,11 @@ EAR already has (source-verified):
 - Hub Observation ingest with hierarchical v1 schema and `extra="forbid"` on envelope models (`hub/bootstrap/app/schemas.py`).
 - Hub already accepts optional `context.origin = "critical_path"` on Observation ingest; EAR Critical lifecycle and `origin` emission are this ADR’s product slice. Still no DoA/TDOA, Analysis Scheduler / Resource Manager, or PAUSE/RESUME in protocol.
 
-**Normal-path END latch (verified):** while `ce_live`, RMS END hints are latched; `handle_exit` detaches only and may then consume a latched END (`ear_obs_manager.c`). EXIT alone never ENDs. Product END can therefore wait indefinitely on CE EXIT if no other END path runs — a **normal-lifecycle** defect to fix separately from Critical.
+**Normal-path END (P1):** Observation Manager owns Observation END. An activity
+END hint terminates every open binding immediately (exactly one END each),
+including when `ce_live` is true, and clears the local CE association. CE EXIT
+remains detach-only and never emits Observation END. Rematch after END cannot
+revive a closed Observation.
 
 Product need: capture abrupt HIGH/CRITICAL impulses **without** waiting for normal slots, CE create/promote, or RMS ACTIVE, using the ordinary Observation MQTT envelope, with shared acoustic evidence that survives deferred analysis.
 
@@ -184,15 +188,16 @@ DoA is shared (not Critical-only); urgency differs (immediate attempt for short 
 
 Critical MUST be able to **START, update, and END** without CE creation, promotion, or EXIT. Critical MUST NOT depend on PAUSE/RESUME. END is terminal.
 
-#### Normal Observation lifecycle (separate work item)
+#### Normal Observation lifecycle (P1 implemented)
 
-| Verified today | Implication |
+| Rule | Implication |
 | --- | --- |
 | EXIT detach-only | Correct; keep |
-| RMS END while `ce_live` → latch; END after EXIT consume | CE can delay product END until EXIT |
-| No product END-while-CE-live API in Manager beyond latch path | Normal Obs may linger (e.g. quiet-office / dual-Obs cases) |
+| Activity END ends all open bindings immediately | No wait on CE EXIT; capacity recovers |
+| Rematch after END | Cannot revive closed Obs; new promote = new identity |
 
-**Requirement (separate from Critical MVP):** normal Observations must eventually END without CE EXIT indefinitely vetoing product END. **Critical implementation must not depend on completing that redesign.** CE EXIT remains detach-only under both tracks.
+CE EXIT remains detach-only under both Critical and normal tracks. Critical
+implementation does not depend on this path.
 
 PAUSE/RESUME (future): preserve identity/history; RESUME needs fresh evidence; Hub PAUSE timeout only after successful PAUSE receipt (≠ outage); max duration unspecified. Critical must not require PAUSE.
 
@@ -256,7 +261,7 @@ Hub-before-emit remains the hard dependency for origin; other steps may overlap 
 3. Numeric **overflow evidence** and **pending-event** capacities (B snapshot depth vs C queue depth); confirm B vs C after RAM/soak.
 4. Impulse-list max depth / RAM budget.
 5. Critical reporting cadence for short events.
-6. Normal-path END-without-EXIT schedule (separate work).
+6. Normal-path END-without-EXIT — done in P1 (activity END is authoritative).
 7. Hub PAUSE timeout (when PAUSE exists).
 8. DoA investment timing.
 9. Lab method for “event occurrence” timestamps in latency tests (§2).

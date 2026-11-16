@@ -23,6 +23,8 @@ Start here, then go deeper only as needed:
 7. Domain docs as relevant (`docs/ear-test-runner.md`, `docs/hub-map-analysis.md`,
    `docs/simulator.md`, `docs/health-and-availability.md`, ADRs under `docs/adr/`,
    `docs/sensor-platform-architecture.md`)
+8. `docs/ear-usb-console.md` — EAR USB UART logs; always use an explicit
+   `/dev/ttyACM*` / `/dev/ttyUSB*` (or `by-id`) when multiple ESP32s are attached
 
 Do not invent endpoints, auth, or DB paths. Discover them from the docs and code.
 Do not weaken existing security, authorization, or secret-handling requirements.
@@ -52,6 +54,11 @@ them. Examples:
 
 Read-only inspection via documented APIs/CLIs is fine when the task needs it.
 When unsure whether an action is live-affecting, ask first.
+
+Read-only EAR USB console attach (115200) is allowed when the task needs live
+firmware logs. Follow `docs/ear-usb-console.md`: require an explicit tty path
+from the user when more than one device may be connected; never guess among
+`/dev/ttyACM*`. Do not flash/erase/monitor-flash unless requested.
 
 ## Data-access decision procedure (mandatory)
 
