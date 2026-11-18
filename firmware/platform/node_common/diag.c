@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "sp_diag_memory.h"
 #include "sp_lifecycle.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -13,6 +14,7 @@
 #include "sdkconfig.h"
 
 static const char *TAG_SP = "sp";
+static const char *TAG_MEM = "sp_mem";
 
 #ifndef CONFIG_DBMAP_DIAG_ENABLED
 #define CONFIG_DBMAP_DIAG_ENABLED 1
@@ -43,6 +45,17 @@ typedef struct {
 
 static sp_diag_config_t s_cfg;
 static sp_diag_state_t s_state;
+static sp_diag_mem_reporter_t s_mem_rep;
+static uint32_t s_mem_pending_fp;
+static bool s_mem_pending;
+
+typedef struct {
+    char name[16];
+    TaskHandle_t handle;
+    bool used;
+} sp_diag_tracked_task_t;
+
+static sp_diag_tracked_task_t s_tracked_tasks[SP_DIAG_TRACKED_TASKS];
 
 static void saturate_inc(uint16_t *counter)
 {
@@ -96,6 +109,9 @@ void sp_diag_init(void)
 {
     memset(&s_state, 0, sizeof(s_state));
     sp_diag_config_defaults(&s_cfg);
+    sp_diag_mem_reporter_init(&s_mem_rep);
+    s_mem_pending_fp = 0u;
+    s_mem_pending = false;
     const char *reason = reset_reason_name(esp_reset_reason());
     strncpy(s_state.last_reset_reason, reason, sizeof(s_state.last_reset_reason) - 1);
     s_state.reset_reason_pending = true;
@@ -220,6 +236,65 @@ void sp_diag_note_obs_skipped_disconnected(void)
     saturate_inc(&s_state.mqtt_observation_skipped_disconnected_count);
 }
 
+static void sp_diag_mem_fill_sample(sp_diag_mem_sample_t *sample)
+{
+    memset(sample, 0, sizeof(*sample));
+    sample->free_heap = (uint32_t)esp_get_free_heap_size();
+    sample->min_free_heap = (uint32_t)esp_get_minimum_free_heap_size();
+    sample->free_internal = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    sample->min_free_internal =
+        (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    sample->largest_internal =
+        (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+
+    uint32_t min_hwm = UINT32_MAX;
+    bool any = false;
+    for (uint32_t i = 0; i < SP_DIAG_TRACKED_TASKS; ++i) {
+        if (!s_tracked_tasks[i].used || s_tracked_tasks[i].handle == NULL) {
+            continue;
+        }
+        const uint32_t hwm =
+            (uint32_t)uxTaskGetStackHighWaterMark(s_tracked_tasks[i].handle);
+        if (hwm < min_hwm) {
+            min_hwm = hwm;
+        }
+        any = true;
+    }
+    if (any) {
+        sample->stack_sampled = true;
+        sample->stack_hwm_min_bytes = min_hwm;
+    }
+}
+
+static cJSON *sp_diag_mem_build_json(const sp_diag_mem_anomaly_t *anom)
+{
+    cJSON *mem = cJSON_CreateObject();
+    if (mem == NULL || anom == NULL) {
+        return mem;
+    }
+    if (anom->kinds & SP_DIAG_MEM_KIND_FREE_HEAP) {
+        cJSON_AddNumberToObject(mem, "free_heap", anom->free_heap);
+    }
+    if (anom->kinds & SP_DIAG_MEM_KIND_MIN_FREE_HEAP) {
+        cJSON_AddNumberToObject(mem, "min_free_heap", anom->min_free_heap);
+    }
+    if (anom->kinds
+        & (SP_DIAG_MEM_KIND_FREE_INTERNAL | SP_DIAG_MEM_KIND_FRAGMENTATION)) {
+        cJSON_AddNumberToObject(mem, "free_internal", anom->free_internal);
+    }
+    if (anom->kinds & SP_DIAG_MEM_KIND_MIN_FREE_INTERNAL) {
+        cJSON_AddNumberToObject(mem, "min_free_internal", anom->min_free_internal);
+    }
+    if (anom->kinds
+        & (SP_DIAG_MEM_KIND_LARGEST_INTERNAL | SP_DIAG_MEM_KIND_FRAGMENTATION)) {
+        cJSON_AddNumberToObject(mem, "largest_internal", anom->largest_internal);
+    }
+    if (anom->kinds & SP_DIAG_MEM_KIND_STACK_HWM) {
+        cJSON_AddNumberToObject(mem, "stack_hwm_min", anom->stack_hwm_min_bytes);
+    }
+    return mem;
+}
+
 void sp_diag_attach_json(cJSON *state_object)
 {
     if (state_object == NULL || !s_cfg.enabled) {
@@ -236,7 +311,19 @@ void sp_diag_attach_json(cJSON *state_object)
         s_state.mqtt_observation_complete_rejected_count > 0 ||
         s_state.mqtt_observation_skipped_disconnected_count > 0;
     const bool has_reset = s_state.reset_reason_pending && s_state.last_reset_reason[0] != '\0';
-    if (!has_counters && !has_reset) {
+
+    sp_diag_mem_sample_t sample;
+    sp_diag_mem_anomaly_t anom;
+    sp_diag_mem_fill_sample(&sample);
+    sp_diag_mem_evaluate(&sample, &anom);
+    const bool report_mem = sp_diag_mem_should_report(&s_mem_rep, &anom);
+    /* Do not keep a stale pending fingerprint across a healthy evaluation. */
+    if (!report_mem) {
+        s_mem_pending = false;
+        s_mem_pending_fp = 0u;
+    }
+
+    if (!has_counters && !has_reset && !report_mem) {
         return;
     }
 
@@ -300,21 +387,36 @@ void sp_diag_attach_json(cJSON *state_object)
     if (has_reset) {
         cJSON_AddStringToObject(diag, "last_reset_reason", s_state.last_reset_reason);
     }
+    if (report_mem) {
+        cJSON *mem = sp_diag_mem_build_json(&anom);
+        if (mem != NULL) {
+            cJSON_AddItemToObject(diag, "mem", mem);
+            s_mem_pending = true;
+            s_mem_pending_fp = anom.fingerprint;
+            ESP_LOGW(
+                TAG_MEM,
+                "anomaly kinds=0x%lx free_heap=%lu free_internal=%lu "
+                "largest_internal=%lu stack_hwm_min=%lu",
+                (unsigned long)anom.kinds,
+                (unsigned long)anom.free_heap,
+                (unsigned long)anom.free_internal,
+                (unsigned long)anom.largest_internal,
+                (unsigned long)anom.stack_hwm_min_bytes
+            );
+        }
+    }
     cJSON_AddItemToObject(state_object, "diag", diag);
 }
 
 void sp_diag_clear_oneshots(void)
 {
     s_state.reset_reason_pending = false;
+    if (s_mem_pending) {
+        sp_diag_mem_note_published(&s_mem_rep, s_mem_pending_fp);
+        s_mem_pending = false;
+        s_mem_pending_fp = 0u;
+    }
 }
-
-typedef struct {
-    char name[16];
-    TaskHandle_t handle;
-    bool used;
-} sp_diag_tracked_task_t;
-
-static sp_diag_tracked_task_t s_tracked_tasks[SP_DIAG_TRACKED_TASKS];
 
 void sp_diag_register_task(const char *name, void *task_handle)
 {

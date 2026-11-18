@@ -1,0 +1,557 @@
+{
+  "id": "AS-002",
+  "name": "Faran \u00f6ver (Swedish public warning siren tone)",
+  "profile_version": "0.1.0-experimental",
+  "status": "experimental_host_and_device_bench",
+  "description": "Characteristic continuous monotonic siren tone used in Swedish public warning messages (Faran \u00f6ver continuous ~30 s form). Spoken announcements in the MCF sample are excluded from the signature. Shares the same siren timbre family as VMA; temporal 7s/14s patterning is out of scope for this profile.",
+  "reference": "MCF official Faran \u00f6ver sample (MP3) + EAR-001 indoor office captures at ~3 m",
+  "target": "Recognize the shared continuous public-warning siren sound (not full message classification)",
+  "ae_signature_schema_version": 1,
+  "related_profiles": {
+    "VMA": {
+      "status": "not_a_separate_AS_profile_yet",
+      "shared": "Same characteristic siren timbre / tonal midband energy",
+      "difference": "VMA temporal pattern \u22487 s on / \u224814 s silence repeating; Faran \u00f6ver \u224830 s continuous",
+      "this_task": "Do not implement a VMA classifier; document the shared acoustic core only"
+    }
+  },
+  "source": {
+    "original_mp3": "local-media/AS-002/02-faran-over-.mp3",
+    "original_mp3_alias": "local-media/AS-002/AS002_faran_over_mcf_original.mp3",
+    "provenance_url": "https://www.mcf.se/contentassets/ffc078def2284745ae47c8282f83839f/02-faran-over-.mp3",
+    "provenance_org": "Myndigheten f\u00f6r samh\u00e4llsskydd och beredskap / MCF sample used in tests/audio/faran-over.json",
+    "format_original": "MP3 stereo 44100 Hz, duration 38.58 s, ~128 kb/s",
+    "working_wav_48k": "local-media/AS-002/AS002_faran_over_48k_mono.wav",
+    "working_wav_16k": "local-media/AS-002/AS002_faran_over_mono16k.wav",
+    "siren_wav_16k": "local-media/AS-002/AS002_faran_over_siren_mono16k.wav",
+    "synthetic": false,
+    "authentic_outdoor_siren": false,
+    "stimulus_timing_s": {
+      "spoken_intro": [
+        0.0,
+        3.0
+      ],
+      "siren_continuous": [
+        3.0,
+        30.0
+      ],
+      "spoken_outro": [
+        30.0,
+        35.5
+      ],
+      "trailing_silence": [
+        35.5,
+        38.58
+      ]
+    },
+    "conversion": "ffmpeg stereo\u2192mono; 44.1 kHz\u219248 kHz and \u219216 kHz s16le; siren crop -ss 3 -to 30; no gain/AGC"
+  },
+  "extraction": {
+    "tool": "firmware/products/dbmap/ear/audio_engine/test_host/as_profile_extract.c",
+    "dsp": [
+      "sp_acoustic_l0",
+      "sp_acoustic_l1",
+      "sp_acoustic_l2",
+      "ae_signature_build"
+    ],
+    "window_ms": 1000,
+    "sample_rate_hz": 16000,
+    "full_scale_bits": 16,
+    "pair_metrics": "unavailable (mono host stimulus)",
+    "signatures_csv": "artifacts/signatures.csv",
+    "signatures_full_source_csv": "artifacts/signatures_full_source.csv",
+    "note_phase_column": "signatures.csv phase rewritten to siren_continuous; extract tool still emits AS-001-oriented labels on full-source CSV"
+  },
+  "phases": {
+    "siren_continuous": {
+      "n": 27,
+      "quality": {
+        "OK": 27
+      },
+      "spectral_valid_n": 27,
+      "dynamics_valid_n": 27,
+      "pair_valid_n": 0,
+      "features": {
+        "rms_dbfs": {
+          "min": -15.1027,
+          "p25": -13.1335,
+          "median": -12.6621,
+          "p75": -12.313,
+          "max": -11.5664,
+          "mean": -12.9424
+        },
+        "peak_dbfs": {
+          "min": -8.5562,
+          "p25": -6.8216,
+          "median": -6.6067,
+          "p75": -6.1307,
+          "max": -5.7456,
+          "mean": -6.6497
+        },
+        "crest_db": {
+          "min": 5.2514,
+          "p25": 5.8222,
+          "median": 6.0763,
+          "p75": 6.7839,
+          "max": 8.07,
+          "mean": 6.2927
+        },
+        "band0_dbfs": {
+          "min": -26.9959,
+          "p25": -24.1644,
+          "median": -23.68,
+          "p75": -23.022,
+          "max": -21.6874,
+          "mean": -23.9758
+        },
+        "band1_dbfs": {
+          "min": -17.0978,
+          "p25": -14.81,
+          "median": -14.3321,
+          "p75": -13.8724,
+          "max": -13.1093,
+          "mean": -14.6336
+        },
+        "band2_dbfs": {
+          "min": -20.7683,
+          "p25": -19.6376,
+          "median": -18.9702,
+          "p75": -18.5964,
+          "max": -17.972,
+          "mean": -19.1326
+        },
+        "band3_dbfs": {
+          "min": -39.1536,
+          "p25": -38.0987,
+          "median": -37.7644,
+          "p75": -37.455,
+          "max": -36.9123,
+          "mean": -37.7961
+        },
+        "hl_db": {
+          "min": -6.0621,
+          "p25": -5.3459,
+          "median": -5.0087,
+          "p75": -4.4904,
+          "max": -3.5569,
+          "mean": -4.92
+        },
+        "centroid_hz": {
+          "min": 1217.9735,
+          "p25": 1259.4677,
+          "median": 1273.1577,
+          "p75": 1320.4477,
+          "max": 1380.6726,
+          "mean": 1284.6807
+        },
+        "bandwidth_hz": {
+          "min": 1032.3263,
+          "p25": 1079.4522,
+          "median": 1094.9756,
+          "p75": 1135.2715,
+          "max": 1210.6815,
+          "mean": 1108.1739
+        },
+        "dominant_hz": {
+          "min": 343.75,
+          "p25": 687.5,
+          "median": 687.5,
+          "p75": 687.5,
+          "max": 687.5,
+          "mean": 662.037
+        },
+        "flatness": {
+          "min": 0.1127,
+          "p25": 0.1306,
+          "median": 0.1364,
+          "p75": 0.1391,
+          "max": 0.149,
+          "mean": 0.1354
+        },
+        "spectral_flux": {
+          "min": 0.23,
+          "p25": 0.2778,
+          "median": 0.3229,
+          "p75": 0.3786,
+          "max": 0.443,
+          "mean": 0.3269
+        },
+        "envelope_cv": {
+          "min": 0.0322,
+          "p25": 0.0489,
+          "median": 0.0647,
+          "p75": 0.0756,
+          "max": 0.1725,
+          "mean": 0.0709
+        }
+      }
+    }
+  },
+  "device_bench": {
+    "hardware": "EAR-001 / ESP32-S3 dual INMP441 stereo_lr",
+    "firmware": "0.8.23",
+    "capture_tool": "AE_SIG_CSV capture (channel 0 only in CSV)",
+    "physical_replay_by_agent": false,
+    "reason_no_new_capture": "No /dev/ttyACM* attached; cannot verify ESP32 capture. HA media keys exist but agent did not start playback without a capture path.",
+    "recordings": {
+      "vol35": {
+        "playback_nominal_percent": 35,
+        "distance_m_approx": 3,
+        "environment": "indoor_office_with_background_noise",
+        "ear_firmware": "0.8.23",
+        "csv": "artifacts/device_ear001_vol35.csv",
+        "siren_windows_selected": 13,
+        "siren_seq_span": [
+          25,
+          37
+        ],
+        "early_7s": {
+          "n": 7,
+          "rms_dbfs": [
+            -28.334,
+            -26.362,
+            -27.483,
+            -25.233,
+            -27.794,
+            -27.555,
+            -28.782
+          ],
+          "flatness": [
+            0.4769,
+            0.4812,
+            0.4837,
+            0.4684,
+            0.4637,
+            0.4565,
+            0.458
+          ],
+          "dominant_hz": [
+            343.75,
+            343.75,
+            343.75,
+            343.75,
+            343.75,
+            343.75,
+            343.75
+          ],
+          "stable_tonal": false
+        },
+        "features": {
+          "rms_dbfs": {
+            "n": 13,
+            "mean": -27.538,
+            "median": -27.7624,
+            "min": -29.3964,
+            "max": -25.2327
+          },
+          "peak_dbfs": {
+            "n": 13,
+            "mean": -19.0079,
+            "median": -18.4328,
+            "min": -21.0204,
+            "max": -17.5919
+          },
+          "crest_db": {
+            "n": 13,
+            "mean": 8.5301,
+            "median": 8.345,
+            "min": 6.742,
+            "max": 11.0089
+          },
+          "dominant_hz": {
+            "n": 13,
+            "mean": 343.75,
+            "median": 343.75,
+            "min": 343.75,
+            "max": 343.75
+          },
+          "flatness": {
+            "n": 13,
+            "mean": 0.4661,
+            "median": 0.4684,
+            "min": 0.4382,
+            "max": 0.4847
+          },
+          "centroid_hz": {
+            "n": 13,
+            "mean": 1511.8424,
+            "median": 1508.4429,
+            "min": 1438.4095,
+            "max": 1566.9967
+          },
+          "band0_dbfs": {
+            "n": 13,
+            "mean": -40.1042,
+            "median": -40.0195,
+            "min": -40.9397,
+            "max": -39.4269
+          },
+          "band1_dbfs": {
+            "n": 13,
+            "mean": -50.9441,
+            "median": -50.9856,
+            "min": -52.2241,
+            "max": -49.4828
+          },
+          "band2_dbfs": {
+            "n": 13,
+            "mean": -57.6055,
+            "median": -57.7219,
+            "min": -58.3855,
+            "max": -56.286
+          }
+        },
+        "notes": "Weak spectral contrast vs office noise; flatness remains ~0.45\u20130.48; B0>B1. Not reliable for spectral-only recognition."
+      },
+      "vol55": {
+        "playback_nominal_percent": 55,
+        "distance_m_approx": 3,
+        "environment": "indoor_office_with_background_noise",
+        "ear_firmware": "0.8.23",
+        "csv": "artifacts/device_ear001_vol55.csv",
+        "siren_windows_selected": 26,
+        "siren_seq_span": [
+          12,
+          37
+        ],
+        "early_7s": {
+          "n": 7,
+          "rms_dbfs": [
+            -43.654,
+            -43.908,
+            -42.441,
+            -42.123,
+            -42.074,
+            -39.727,
+            -40.669
+          ],
+          "flatness": [
+            0.192,
+            0.1964,
+            0.1824,
+            0.1738,
+            0.1742,
+            0.1516,
+            0.1678
+          ],
+          "dominant_hz": [
+            343.75,
+            343.75,
+            343.75,
+            343.75,
+            343.75,
+            343.75,
+            343.75
+          ],
+          "stable_tonal": true
+        },
+        "features": {
+          "rms_dbfs": {
+            "n": 26,
+            "mean": -40.2086,
+            "median": -39.8036,
+            "min": -43.9079,
+            "max": -38.1146
+          },
+          "peak_dbfs": {
+            "n": 26,
+            "mean": -30.2489,
+            "median": -29.875,
+            "min": -33.3748,
+            "max": -28.3966
+          },
+          "crest_db": {
+            "n": 26,
+            "mean": 9.9597,
+            "median": 9.8713,
+            "min": 8.6975,
+            "max": 11.5268
+          },
+          "dominant_hz": {
+            "n": 26,
+            "mean": 343.75,
+            "median": 343.75,
+            "min": 343.75,
+            "max": 343.75
+          },
+          "flatness": {
+            "n": 26,
+            "mean": 0.1602,
+            "median": 0.1534,
+            "min": 0.1362,
+            "max": 0.2014
+          },
+          "centroid_hz": {
+            "n": 26,
+            "mean": 1126.8413,
+            "median": 1122.4197,
+            "min": 1039.8115,
+            "max": 1258.248
+          },
+          "band0_dbfs": {
+            "n": 26,
+            "mean": -49.6895,
+            "median": -49.4419,
+            "min": -53.624,
+            "max": -47.1001
+          },
+          "band1_dbfs": {
+            "n": 26,
+            "mean": -41.7179,
+            "median": -41.2782,
+            "min": -45.6521,
+            "max": -39.3989
+          },
+          "band2_dbfs": {
+            "n": 26,
+            "mean": -48.8049,
+            "median": -48.5106,
+            "min": -51.4464,
+            "max": -46.9685
+          }
+        },
+        "notes": "Low flatness and stable dominant across early windows; mid bands (B1/B2) dominate B0 \u2014 matches host siren shape at reduced absolute level."
+      },
+      "vol75": {
+        "playback_nominal_percent": 75,
+        "distance_m_approx": 3,
+        "environment": "indoor_office_with_background_noise",
+        "ear_firmware": "0.8.23",
+        "csv": "artifacts/device_ear001_vol75.csv",
+        "siren_windows_selected": 27,
+        "siren_seq_span": [
+          11,
+          37
+        ],
+        "early_7s": {
+          "n": 7,
+          "rms_dbfs": [
+            -40.704,
+            -36.458,
+            -36.274,
+            -34.897,
+            -34.783,
+            -34.893,
+            -32.801
+          ],
+          "flatness": [
+            0.1448,
+            0.1199,
+            0.1275,
+            0.1157,
+            0.1152,
+            0.1134,
+            0.1052
+          ],
+          "dominant_hz": [
+            687.5,
+            687.5,
+            687.5,
+            687.5,
+            687.5,
+            687.5,
+            687.5
+          ],
+          "stable_tonal": true
+        },
+        "features": {
+          "rms_dbfs": {
+            "n": 27,
+            "mean": -33.2429,
+            "median": -32.8014,
+            "min": -40.7039,
+            "max": -30.7507
+          },
+          "peak_dbfs": {
+            "n": 27,
+            "mean": -24.1144,
+            "median": -23.6994,
+            "min": -27.2404,
+            "max": -22.0486
+          },
+          "crest_db": {
+            "n": 27,
+            "mean": 9.1285,
+            "median": 8.8096,
+            "min": 7.9072,
+            "max": 14.1916
+          },
+          "dominant_hz": {
+            "n": 27,
+            "mean": 659.1435,
+            "median": 687.5,
+            "min": 343.75,
+            "max": 687.5
+          },
+          "flatness": {
+            "n": 27,
+            "mean": 0.1082,
+            "median": 0.1063,
+            "min": 0.0937,
+            "max": 0.1448
+          },
+          "centroid_hz": {
+            "n": 27,
+            "mean": 1083.8012,
+            "median": 1068.7999,
+            "min": 986.2583,
+            "max": 1234.4589
+          },
+          "band0_dbfs": {
+            "n": 27,
+            "mean": -44.1838,
+            "median": -43.7171,
+            "min": -53.7663,
+            "max": -41.3278
+          },
+          "band1_dbfs": {
+            "n": 27,
+            "mean": -34.6792,
+            "median": -34.2232,
+            "min": -42.8558,
+            "max": -32.0109
+          },
+          "band2_dbfs": {
+            "n": 27,
+            "mean": -40.5939,
+            "median": -40.3954,
+            "min": -46.5873,
+            "max": -38.691
+          }
+        },
+        "notes": "Low flatness and stable dominant across early windows; mid bands (B1/B2) dominate B0 \u2014 matches host siren shape at reduced absolute level."
+      }
+    },
+    "lr_console": {
+      "vol35": "Large L/R imbalance in win lines (mean L\u2212R \u2248 +21 dB); right much quieter \u2014 treat as capture/geometry caveat",
+      "vol55": "Balanced (mean L\u2212R \u2248 \u22121.9 dB, |median|\u22480.5 dB)",
+      "vol75": "Balanced (mean L\u2212R \u2248 \u22120.7 dB, |median|\u22480.4 dB)"
+    }
+  },
+  "discriminative_notes": [
+    "Host clean siren: B1 strongest, flatness \u22480.11\u20130.15, dominant mostly 687.5 Hz (sometimes 343.75 Hz bin).",
+    "Device vol55/75: same tonal shape at lower absolute RMS; dominant may lock to 343.75 or 687.5 depending on SNR.",
+    "Device vol35 indoor: absolute level closer to office noise; flatness stays high (~0.45) and B0>B1 \u2014 spectral signature unreliable.",
+    "Absolute RMS/peak track playback level; relative band shape and low flatness are more robust when SNR is adequate.",
+    "5\u20137 consecutive 1 s windows of low flatness + midband dominance are enough to recognize the common siren at vol55/75; not at vol35 in this office."
+  ],
+  "recognition_hypothesis_5_to_7_s": {
+    "evaluated": true,
+    "host_clean": "Supported \u2014 every 1 s window in siren crop already shows the tonal midband signature",
+    "device_vol55": "Supported \u2014 first 7 contiguous siren windows already flatness\u22480.15\u20130.19 and stable dominant",
+    "device_vol75": "Supported \u2014 first 7 windows flatness\u22480.10\u20130.15, dominant 687.5 Hz",
+    "device_vol35": "Not supported for spectral recognition in this office capture",
+    "full_30_s_not_required": true
+  },
+  "validation": {
+    "stimulus_continuous_siren": true,
+    "spoken_sections_excluded_from_signature": true,
+    "ae_signatures_extracted_siren": 27,
+    "device_runtime_classifier": false,
+    "creates_observation": false,
+    "field_outdoor_siren": false,
+    "esp32_realistic_indoor_bench": true,
+    "esp32_reliable_at_low_playback_snr": false
+  },
+  "last_updated": "2026-11-17"
+}

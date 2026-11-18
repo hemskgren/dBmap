@@ -40,6 +40,15 @@ typedef struct {
     /** When set, a late GOT_IP may still complete this abandoned generation. */
     bool allow_late_ip;
     uint32_t late_ip_generation;
+    /**
+     * Next connect must esp_wifi_disconnect() first (watchdog, lost IP, or
+     * a connect call that failed while the STA was still associated).
+     */
+    bool disconnect_before_next_connect;
+    /** Worker has been asked to disconnect; STA_DISCONNECTED starts connect. */
+    bool awaiting_disconnect;
+    /** LOST_IP: the next GOT_IP is a new lease even if no connect is in flight. */
+    bool accept_renewed_ip;
 } sp_wifi_reconnect_sm_t;
 
 typedef enum {
@@ -51,6 +60,11 @@ typedef enum {
     SP_WIFI_SM_SCHEDULE_RECONNECT,
     /** Caller should call esp_wifi_connect() now. */
     SP_WIFI_SM_START_CONNECT,
+    /**
+     * Caller should esp_wifi_disconnect() on the recovery task. The matching
+     * STA_DISCONNECTED (or a failed disconnect call) starts the next connect.
+     */
+    SP_WIFI_SM_DISCONNECT_FOR_RETRY,
 } sp_wifi_sm_action_t;
 
 typedef struct {
@@ -62,8 +76,15 @@ typedef struct {
     /** Arm watchdog for connect_generation after START_CONNECT succeeds. */
     bool arm_watchdog;
     uint32_t watchdog_generation;
-    /** GOT_IP accepted for the current or abandoned-late generation. */
+    /** GOT_IP accepted for the current attempt, a late lease, or a renewal. */
     bool ip_acquired;
+    /**
+     * Timer create/start failed. Reservation is held. Retry the arm from the
+     * recovery task after the existing backoff delay — do not arm inline.
+     */
+    bool defer_arm_to_worker;
+    /** Intentional recovery disconnect: do not count another backoff failure. */
+    bool skip_backoff;
 } sp_wifi_sm_result_t;
 
 void sp_wifi_reconnect_sm_init(
@@ -121,21 +142,58 @@ sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_connect_start_failed(
 );
 
 /**
- * GOT_IP. Accepts current in-flight attempt, or a late IP for an abandoned
- * boot-timeout generation. Ignores stale IP once a newer attempt has started.
+ * GOT_IP. Accepts the current in-flight attempt, a late IP for an abandoned
+ * boot-timeout or in-flight-watchdog generation, or the next lease after
+ * LOST_IP. Ignores a stale IP once a newer attempt has moved on.
  */
 sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_got_ip(
     sp_wifi_reconnect_sm_t *sm
 );
 
 /**
+ * IP_EVENT_STA_LOST_IP. The glue must clear the GOT_IP latch before this.
+ * Schedules reconnect and requires disconnect-before-connect when not OTA.
+ * The following GOT_IP is accepted as a renewal.
+ */
+sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_lost_ip(
+    sp_wifi_reconnect_sm_t *sm,
+    bool ota_pending
+);
+
+/**
  * In-flight watchdog fired for ``generation``. Ignores stale generations.
- * On match: clears in_flight and atomically reserves SCHEDULE_RECONNECT.
+ * On match: allows late GOT_IP for this generation, clears in_flight, and
+ * reserves reconnect. The later connect disconnects the STA first.
+ * A disconnect-wait watchdog instead returns START_CONNECT.
  */
 sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_watchdog(
     sp_wifi_reconnect_sm_t *sm,
     uint32_t generation,
     bool ota_pending
+);
+
+/**
+ * Reconnect timer could not be created or started. Keeps a single
+ * reservation and asks the caller to retry the arm from the recovery task.
+ */
+sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_reconnect_arm_failed(
+    sp_wifi_reconnect_sm_t *sm
+);
+
+/**
+ * Recovery task was about to disconnect but an address is already held.
+ * Drops the disconnect wait so a late GOT_IP is not followed by a bounce.
+ */
+sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_disconnect_skipped(
+    sp_wifi_reconnect_sm_t *sm
+);
+
+/**
+ * esp_wifi_disconnect() failed. Clears the disconnect wait so the caller
+ * can esp_wifi_connect() directly without posting a second start.
+ */
+sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_disconnect_api_failed(
+    sp_wifi_reconnect_sm_t *sm
 );
 
 /**

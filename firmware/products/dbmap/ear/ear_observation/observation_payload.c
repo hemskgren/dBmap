@@ -423,6 +423,44 @@ char *dbmap_observation_build_json(const dbmap_observation_fields_t *fields)
         cJSON_AddItemToObject(acoustic, "dynamics", dyn);
     }
     cJSON_AddNullToObject(acoustic, "classification");
+    if (fields->assessment != NULL && fields->assessment->present
+        && fields->assessment->n_nodes > 0u
+        && fields->assessment->n_nodes <= EAR_CLS_PATH_MAX_NODES) {
+        cJSON *assessment = cJSON_CreateObject();
+        if (assessment == NULL) {
+            cJSON_Delete(root);
+            return NULL;
+        }
+        cJSON_AddStringToObject(assessment, "schema", "ear_hyp_v2");
+        cJSON_AddNumberToObject(assessment, "version", 1);
+        cJSON *path = cJSON_CreateArray();
+        if (path == NULL) {
+            cJSON_Delete(assessment);
+            cJSON_Delete(root);
+            return NULL;
+        }
+        for (uint8_t i = 0u; i < fields->assessment->n_nodes; i++) {
+            const ear_cls_path_node_wire_t *node = &fields->assessment->nodes[i];
+            if (node->id[0] == '\0') {
+                cJSON_Delete(path);
+                cJSON_Delete(assessment);
+                cJSON_Delete(root);
+                return NULL;
+            }
+            cJSON *item = cJSON_CreateObject();
+            if (item == NULL) {
+                cJSON_Delete(path);
+                cJSON_Delete(assessment);
+                cJSON_Delete(root);
+                return NULL;
+            }
+            cJSON_AddStringToObject(item, "id", node->id);
+            cJSON_AddNumberToObject(item, "confidence", (double)node->confidence);
+            cJSON_AddItemToArray(path, item);
+        }
+        cJSON_AddItemToObject(assessment, "path", path);
+        cJSON_AddItemToObject(acoustic, "assessment", assessment);
+    }
     cJSON_AddItemToObject(root, "acoustic", acoustic);
 
     cJSON *spatial = cJSON_CreateObject();

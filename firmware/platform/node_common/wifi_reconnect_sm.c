@@ -11,6 +11,8 @@ static sp_wifi_sm_result_t result_none(void)
         .arm_watchdog = false,
         .watchdog_generation = 0,
         .ip_acquired = false,
+        .defer_arm_to_worker = false,
+        .skip_backoff = false,
     };
     return r;
 }
@@ -46,6 +48,9 @@ void sp_wifi_reconnect_sm_init(
         in_flight_timeout_ms == 0 ? SP_WIFI_IN_FLIGHT_TIMEOUT_MS : in_flight_timeout_ms;
     sm->allow_late_ip = false;
     sm->late_ip_generation = 0;
+    sm->disconnect_before_next_connect = false;
+    sm->awaiting_disconnect = false;
+    sm->accept_renewed_ip = false;
 }
 
 bool sp_wifi_reconnect_sm_can_schedule(const sp_wifi_reconnect_sm_t *sm)
@@ -81,12 +86,22 @@ sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_disconnected(
     if (sm == NULL) {
         return r;
     }
+    const bool intentional = sm->awaiting_disconnect;
     sm->in_flight = false;
     sm->watchdog_armed = false;
     sm->allow_late_ip = false;
+    sm->accept_renewed_ip = false;
+    sm->disconnect_before_next_connect = false;
+    sm->awaiting_disconnect = false;
     r.cancel_watchdog = true;
 
     if (ota_pending) {
+        return r;
+    }
+    if (intentional) {
+        sm->in_flight = true;
+        r.action = SP_WIFI_SM_START_CONNECT;
+        r.skip_backoff = true;
         return r;
     }
 
@@ -109,6 +124,25 @@ sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_reconnect_timer(
     /* Timer consumed the reservation. */
     sm->reconnect_armed = false;
     if (ota_pending || has_ip || sm->in_flight) {
+        if (ota_pending || has_ip) {
+            sm->disconnect_before_next_connect = false;
+            sm->awaiting_disconnect = false;
+        }
+        return r;
+    }
+    if (sm->disconnect_before_next_connect) {
+        sm->awaiting_disconnect = true;
+        sm->in_flight = true;
+        if (sm->watchdog_generation < UINT32_MAX) {
+            sm->watchdog_generation++;
+        } else {
+            sm->watchdog_generation = 1;
+        }
+        sm->watchdog_armed = true;
+        r.cancel_watchdog = true;
+        r.arm_watchdog = true;
+        r.watchdog_generation = sm->watchdog_generation;
+        r.action = SP_WIFI_SM_DISCONNECT_FOR_RETRY;
         return r;
     }
     sm->in_flight = true;
@@ -131,6 +165,9 @@ sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_connect_accepted(
     }
     sm->in_flight = true;
     sm->allow_late_ip = false;
+    sm->accept_renewed_ip = false;
+    sm->disconnect_before_next_connect = false;
+    sm->awaiting_disconnect = false;
     sm->watchdog_generation = sm->connect_generation;
     sm->watchdog_armed = true;
     r.cancel_watchdog = true; /* replace any prior oneshot */
@@ -150,7 +187,9 @@ sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_connect_start_failed(
     sm->in_flight = false;
     sm->watchdog_armed = false;
     sm->allow_late_ip = false;
+    sm->awaiting_disconnect = false;
     r.cancel_watchdog = true;
+    sm->disconnect_before_next_connect = true;
     if (try_reserve_reconnect(sm)) {
         r.action = SP_WIFI_SM_SCHEDULE_RECONNECT;
     }
@@ -171,8 +210,9 @@ sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_got_ip(
         !sm->in_flight
         && sm->allow_late_ip
         && sm->late_ip_generation == sm->connect_generation;
+    const bool renewed = sm->accept_renewed_ip;
 
-    if (!current_attempt && !late_for_abandoned) {
+    if (!current_attempt && !late_for_abandoned && !renewed) {
         /* Stale GOT_IP after a newer attempt started (or unrelated). */
         return r;
     }
@@ -181,6 +221,9 @@ sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_got_ip(
     sm->disconnect_counted = false;
     sm->watchdog_armed = false;
     sm->allow_late_ip = false;
+    sm->accept_renewed_ip = false;
+    sm->disconnect_before_next_connect = false;
+    sm->awaiting_disconnect = false;
     sm->reconnect_armed = false;
     r.cancel_reconnect_timer = true;
     r.cancel_watchdog = true;
@@ -202,15 +245,29 @@ sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_watchdog(
         return r;
     }
     sm->watchdog_armed = false;
-    sm->allow_late_ip = false;
+    if (sm->awaiting_disconnect) {
+        /* Disconnect event never arrived. Use the same 30 s watchdog. */
+        sm->awaiting_disconnect = false;
+        sm->disconnect_before_next_connect = false;
+        sm->in_flight = true;
+        r.action = SP_WIFI_SM_START_CONNECT;
+        r.skip_backoff = true;
+        return r;
+    }
+    if (sm->in_flight || sm->connect_generation != 0) {
+        sm->allow_late_ip = true;
+        sm->late_ip_generation = sm->connect_generation;
+    }
     if (ota_pending) {
         sm->in_flight = false;
+        sm->disconnect_before_next_connect = false;
         return r;
     }
     if (!sm->in_flight) {
         return r;
     }
     sm->in_flight = false;
+    sm->disconnect_before_next_connect = true;
     if (try_reserve_reconnect(sm)) {
         r.action = SP_WIFI_SM_SCHEDULE_RECONNECT;
     }
@@ -232,6 +289,7 @@ sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_boot_wait_timeout(
     }
     sm->in_flight = false;
     sm->watchdog_armed = false;
+    sm->disconnect_before_next_connect = true;
     r.cancel_watchdog = true;
     if (try_reserve_reconnect(sm)) {
         r.action = SP_WIFI_SM_SCHEDULE_RECONNECT;
@@ -251,8 +309,97 @@ sp_wifi_sm_result_t sp_wifi_reconnect_sm_prepare_ota_reboot(
     sm->in_flight = false;
     sm->watchdog_armed = false;
     sm->allow_late_ip = false;
+    sm->accept_renewed_ip = false;
+    sm->disconnect_before_next_connect = false;
+    sm->awaiting_disconnect = false;
     r.cancel_reconnect_timer = true;
     r.cancel_watchdog = true;
+    return r;
+}
+
+sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_lost_ip(
+    sp_wifi_reconnect_sm_t *sm,
+    bool ota_pending
+)
+{
+    sp_wifi_sm_result_t r = result_none();
+    if (sm == NULL) {
+        return r;
+    }
+    sm->accept_renewed_ip = true;
+    sm->allow_late_ip = false;
+    sm->in_flight = false;
+    sm->watchdog_armed = false;
+    sm->awaiting_disconnect = false;
+    r.cancel_watchdog = true;
+    if (ota_pending) {
+        sm->disconnect_before_next_connect = false;
+        return r;
+    }
+    sm->disconnect_before_next_connect = true;
+    if (try_reserve_reconnect(sm)) {
+        r.action = SP_WIFI_SM_SCHEDULE_RECONNECT;
+    }
+    return r;
+}
+
+sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_reconnect_arm_failed(
+    sp_wifi_reconnect_sm_t *sm
+)
+{
+    sp_wifi_sm_result_t r = result_none();
+    if (sm == NULL) {
+        return r;
+    }
+    sm->in_flight = false;
+    sm->awaiting_disconnect = false;
+    sm->watchdog_armed = false;
+    r.cancel_watchdog = true;
+    if (!sm->reconnect_armed) {
+        (void)try_reserve_reconnect(sm);
+    }
+    if (sm->reconnect_armed) {
+        r.action = SP_WIFI_SM_SCHEDULE_RECONNECT;
+        r.defer_arm_to_worker = true;
+    }
+    return r;
+}
+
+sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_disconnect_skipped(
+    sp_wifi_reconnect_sm_t *sm
+)
+{
+    sp_wifi_sm_result_t r = result_none();
+    if (sm == NULL) {
+        return r;
+    }
+    if (!sm->awaiting_disconnect && !sm->disconnect_before_next_connect) {
+        return r;
+    }
+    sm->awaiting_disconnect = false;
+    sm->disconnect_before_next_connect = false;
+    sm->in_flight = false;
+    sm->watchdog_armed = false;
+    sm->reconnect_armed = false;
+    r.cancel_watchdog = true;
+    r.cancel_reconnect_timer = true;
+    return r;
+}
+
+sp_wifi_sm_result_t sp_wifi_reconnect_sm_on_disconnect_api_failed(
+    sp_wifi_reconnect_sm_t *sm
+)
+{
+    sp_wifi_sm_result_t r = result_none();
+    if (sm == NULL) {
+        return r;
+    }
+    sm->awaiting_disconnect = false;
+    sm->disconnect_before_next_connect = false;
+    sm->watchdog_armed = false;
+    sm->in_flight = true;
+    r.cancel_watchdog = true;
+    r.skip_backoff = true;
     return r;
 }
 

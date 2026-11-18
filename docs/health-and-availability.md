@@ -230,8 +230,24 @@ Implemented in `node_common` (firmware):
   | `desired_failures` | Desired HTTPS checks that failed |
 
 - One-shot `last_reset_reason` after boot, cleared after a successful health publish.
+- Anomaly-only nested `diag.mem` (RAM; sampled at health/keepalive attach):
+
+  | Field (only when anomalous) | Meaning |
+  | --- | --- |
+  | `free_heap` / `min_free_heap` | Combined heap below compile-time floor |
+  | `free_internal` / `min_free_internal` | Internal DRAM below floor |
+  | `largest_internal` | Contiguous internal block below floor (alone or with `free_internal` when fragmented) |
+  | `stack_hwm_min` | Minimum FreeRTOS stack HWM among registered tasks below floor |
+
+  No healthy-state memory fields. No `memory_health` wire field. Unchanged
+  anomalies are fingerprint-deduped until the condition clears or worsens
+  across a 4 KiB quantum. Hub D2 does **not** treat `mem` as a counter
+  field or health rule (latest snapshot only; no dedicated clear/replace
+  event). Clearing is therefore undefined at the Hub: a later counter-only
+  `diag` may drop `mem` from `last_diag_json`, while a health with no `diag`
+  leaves the previous snapshot untouched.
 - `protocol_version: 1` on health/keepalive.
-- Tunables default from Kconfig (`DBMAP_DIAG_*`). Future Desired `payload.diag` + `config_version` bump can override them via `dbmap_diag_apply_desired_payload()` once config sync exists.
+- Tunables default from Kconfig (`DBMAP_DIAG_*`). Future Desired `payload.diag` + `config_version` bump can override them via `dbmap_diag_apply_desired_payload()` once config sync exists. Memory floors are compile-time constants in `sp_diag_memory.h`.
 
 #### Network retry backoff (`node_common`)
 

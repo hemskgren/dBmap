@@ -19,6 +19,8 @@ extern "C" {
 
 #define AS_PROFILE_ID_NONE 0u
 #define AS_PROFILE_ID_AS001 1u
+/** SE public-alert siren promote stamp (not an AS-001 profile match). */
+#define AS_PROFILE_ID_AS002 2u
 
 typedef enum {
     AS_CLASS_UNSPECIFIED = 0,

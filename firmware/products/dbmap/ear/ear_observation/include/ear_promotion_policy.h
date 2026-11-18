@@ -5,11 +5,19 @@
  * Observation create/bind remains with ear_obs_manager (ENTER/commit).
  *
  * P2: deny-by-default. Ambient ACTIVE energy alone never authorizes promote.
- * First experimental allow signal: AS-001 helicopter-like classification
- * annotation (provisional profile match — not verified aircraft detection),
- * fresh vs candidate gap_events. Successful decisions stamp a reservation
- * relevance ticket carried to ENTER (not reconstructed at OM).
- * Non-relevant candidates are soft-skipped (no ce_reject).
+ * Allow signals:
+ *   - AS-001 helicopter-like classification annotation (provisional)
+ *   - Optional SE public-alert siren evidence (ear_siren_se_public) when
+ *     attached via ear_promotion_policy_set_siren — ALARM streak only; does
+ *     not emit FARAN_OVER/VMA leaves.
+ * Successful decisions stamp a reservation relevance ticket carried to ENTER
+ * (not reconstructed at OM). Non-relevant candidates are soft-skipped
+ * (no ce_reject).
+ *
+ * Same-signature guard: at most one concurrent open/pending Observation per
+ * relevance_profile_id (AS-001 vs AS-002 are different signatures). Does not
+ * impose a global one-Observation-per-EAR limit. Future spatial/DOA keys may
+ * refine identity further; this gate uses the promote profile stamp only.
  *
  * Ranking among approved candidates: evidence_count ↓, ema_rms_dbfs ↓,
  * candidate_id ↑. Does not use fixed RMS enter thresholds as promotion criteria.
@@ -18,6 +26,7 @@
 
 #include "ce_engine.h"
 #include "ear_obs_manager.h"
+#include "ear_siren_se_public.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -34,6 +43,8 @@ typedef enum {
     EAR_PROMO_DECISION_HOLD_BUSY = 4,
     EAR_PROMO_DECISION_HOLD_RESERVE_FULL = 5,
     EAR_PROMO_DECISION_PROMOTE_FAIL = 6,
+    /** Open/pending Obs already exists for this relevance_profile_id. */
+    EAR_PROMO_DECISION_HOLD_SIGNATURE_OPEN = 7,
 } ear_promo_decision_t;
 
 typedef struct {
@@ -41,6 +52,7 @@ typedef struct {
     uint32_t select_none;
     uint32_t hold_irrelevant;
     uint32_t hold_no_class;
+    uint32_t hold_signature_open;
     uint32_t reserve_ok;
     uint32_t reserve_full;
     uint32_t promote_ok;
@@ -56,6 +68,8 @@ typedef struct {
 typedef struct {
     ce_engine_t *ce;
     ear_obs_manager_t *om;
+    /** Optional; NULL keeps AS-001-only promote allow. */
+    const ear_siren_se_public_t *siren;
     ear_promotion_policy_diag_t diag;
 } ear_promotion_policy_t;
 
@@ -63,6 +77,12 @@ void ear_promotion_policy_init(
     ear_promotion_policy_t *pol,
     ce_engine_t *ce,
     ear_obs_manager_t *om
+);
+
+/** Attach optional siren evidence source (may be NULL to detach). */
+void ear_promotion_policy_set_siren(
+    ear_promotion_policy_t *pol,
+    const ear_siren_se_public_t *siren
 );
 
 /**
@@ -77,16 +97,33 @@ bool ear_promotion_candidate_product_relevant(
 );
 
 /**
- * Deterministic selection among product-relevant ACTIVE candidates that have
- * not yet entered promotion. Ranking: evidence_count ↓, ema_rms_dbfs ↓,
- * candidate_id ↑.
+ * True when candidate may promote via AS-001 **or** attached siren ALARM
+ * evidence. Soft-skip ambient-only candidates when neither applies.
+ * Does not apply the same-signature open guard (caller checks that).
  */
-bool ear_promotion_select_primary(const ce_engine_t *ce, uint64_t *out_candidate_id);
+bool ear_promotion_candidate_promote_relevant(
+    const ear_promotion_policy_t *pol,
+    uint64_t candidate_id,
+    uint16_t *out_profile_id,
+    float *out_distance
+);
+
+/**
+ * Deterministic selection among product-relevant ACTIVE candidates that have
+ * not yet entered promotion and whose relevance_profile_id is not already
+ * represented by an open/pending Observation. Ranking: evidence_count ↓,
+ * ema_rms_dbfs ↓, candidate_id ↑.
+ */
+bool ear_promotion_select_primary(
+    const ear_promotion_policy_t *pol,
+    uint64_t *out_candidate_id
+);
 
 /**
  * If a relevance-approved primary exists and capacity allows: reserve, bind,
  * promote. On ce_promote failure: release reservation. Non-relevant candidates
- * are soft-skipped. ENTER is committed via manager poll.
+ * are soft-skipped. Same-signature open/pending → HOLD_SIGNATURE_OPEN.
+ * ENTER is committed via manager poll.
  */
 void ear_promotion_policy_poll(ear_promotion_policy_t *pol, int64_t now_mono_us);
 

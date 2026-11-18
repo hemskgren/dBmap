@@ -54,8 +54,10 @@ void sp_diag_note_obs_skipped_disconnected(void);
 
 /**
  * Attach a compact `diag` object when enabled and there is something to report.
+ * May include anomaly-only nested `mem` metrics (see sp_diag_memory.h).
  * After a successful MQTT publish of health/keepalive, call
- * sp_diag_clear_oneshots() so reset reason is sent at most once per boot.
+ * sp_diag_clear_oneshots() so reset reason is sent at most once per boot and
+ * a memory anomaly fingerprint is marked published.
  */
 void sp_diag_attach_json(cJSON *state_object);
 void sp_diag_clear_oneshots(void);

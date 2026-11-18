@@ -1,0 +1,10 @@
+# Optional explicit overlay for AE signature CSV capture.
+# EAR sdkconfig.defaults already sets CONFIG_DBMAP_EAR_AE_SIG_CAPTURE=y.
+# Use this overlay when regenerating an older sdkconfig that lacks the flag:
+#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.ae_sig_capture" …
+#
+# Does not change AE feature math, CE, P2, Observation lifecycle, or MQTT.
+# Procedure: docs/diagnostics/ear-ae-sig-capture-as001.md
+CONFIG_DBMAP_EAR_AE_SIG_CAPTURE=y
+CONFIG_DBMAP_EAR_AE_DIAG=y
+CONFIG_DBMAP_EAR_AE_DIAG_EVERY_N=10

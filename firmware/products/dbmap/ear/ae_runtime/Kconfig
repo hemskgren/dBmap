@@ -27,4 +27,16 @@ menu "dBmap Audio Engine"
         range 1 120
         default 10
 
+    config DBMAP_EAR_AE_SIG_CAPTURE
+        bool "AE signature CSV capture (AS-001 calibration)"
+        default n
+        depends on DBMAP_EAR_AUDIO_ENGINE
+        help
+            Bounded observational capture of AE signature features to UART as
+            AE_SIG_CSV lines for host comparison with AS-001 signatures.csv.
+            Does not change AE feature math, CE, P2, Observation, or MQTT.
+            Symbol default is n; EAR sdkconfig.defaults enables it (y).
+            Hub List config key: EAR_AE_SIG_CAPTURE.
+            Reported in capabilities.observation as AE_SIG_CAPTURE true/false.
+
 endmenu

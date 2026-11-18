@@ -9,6 +9,7 @@ Living registry of **host-derived acoustic profiles** built from Audio Engine
 | ID | Name | Version | Status | Location |
 | --- | --- | --- | --- | --- |
 | AS-001 | Helicopter | 0.1.0-experimental | experimental / host-verified + provisional `as.profile` workflow match | [AS-001/](./AS-001/) |
+| AS-002 | Faran över (siren tone) | 0.1.0-experimental | experimental / host AE + EAR-001 indoor bench; no firmware matcher yet | [AS-002/](./AS-002/) |
 
 ## Entry layout (per profile)
 
@@ -55,3 +56,6 @@ This registry does **not** implement Device Desired/Reported emission.
 Host extractor (firmware DSP, no invented features):
 
 `firmware/products/dbmap/ear/audio_engine/test_host/as_profile_extract.c`
+
+Live EAR signature capture (bench overlay, compare to host CSV):  
+[`docs/diagnostics/ear-ae-sig-capture-as001.md`](../diagnostics/ear-ae-sig-capture-as001.md).

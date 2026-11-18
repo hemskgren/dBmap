@@ -96,6 +96,7 @@ static dbmap_observation_fields_t base_fields(const dbmap_l0_interval_t *iv)
         .measurements = iv,
         .signature = NULL,
         .dynamics = NULL,
+        .assessment = NULL,
     };
     return fields;
 }
@@ -414,6 +415,43 @@ static void test_origin_critical_path(void)
     }
 }
 
+static void test_assessment_ear_hyp_v2_path(void)
+{
+    dbmap_l0_interval_t iv = sample_interval();
+    dbmap_observation_fields_t fields = base_fields(&iv);
+    ear_cls_assessment_wire_t assess;
+    memset(&assess, 0, sizeof(assess));
+    assess.present = true;
+    assess.n_nodes = 3u;
+    assess.deepest = EAR_CLS_NODE_FARAN_OVER;
+    assess.deepest_confidence = 0.72f;
+    strncpy(assess.nodes[0].id, "ALARM", sizeof(assess.nodes[0].id) - 1u);
+    assess.nodes[0].confidence = 0.95f;
+    strncpy(assess.nodes[1].id, "SE_PUBLIC_ALERT", sizeof(assess.nodes[1].id) - 1u);
+    assess.nodes[1].confidence = 0.90f;
+    strncpy(assess.nodes[2].id, "FARAN_OVER", sizeof(assess.nodes[2].id) - 1u);
+    assess.nodes[2].confidence = 0.72f;
+    fields.assessment = &assess;
+    char *json = dbmap_observation_build_json(&fields);
+    EXPECT(json != NULL);
+    if (json) {
+        EXPECT(strstr(json, "\"assessment\"") != NULL);
+        EXPECT(strstr(json, "\"schema\":\"ear_hyp_v2\"") != NULL);
+        EXPECT(strstr(json, "\"path\"") != NULL);
+        EXPECT(strstr(json, "\"id\":\"ALARM\"") != NULL);
+        EXPECT(strstr(json, "\"id\":\"SE_PUBLIC_ALERT\"") != NULL);
+        EXPECT(strstr(json, "\"id\":\"FARAN_OVER\"") != NULL);
+        EXPECT(strstr(json, "\"confidence\":") != NULL);
+        EXPECT(strstr(json, "\"id\":\"ALARM\"") != NULL);
+        /* cJSON may print 0.95 as 0.95 or a float approximation; require digits. */
+        EXPECT(strstr(json, "0.9") != NULL);
+        EXPECT(strstr(json, "0.72") != NULL);
+        EXPECT(strstr(json, "\"classification\":null") != NULL);
+        EXPECT(strstr(json, "ear_hyp_v1") == NULL);
+        free(json);
+    }
+}
+
 int main(void)
 {
     test_hierarchical_start();
@@ -425,6 +463,7 @@ int main(void)
     test_dynamics_overflow_option_a();
     test_dynamics_schema_and_version();
     test_origin_critical_path();
+    test_assessment_ear_hyp_v2_path();
     if (g_failures) {
         fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;

@@ -9,6 +9,8 @@
 #include "sp_lifecycle.h"
 #include "sp_mdns.h"
 #include "sp_mdns_policy.h"
+#include "sp_connectivity.h"
+#include "sp_net_dispatch.h"
 #include "sp_wifi_reconnect_sm.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -19,6 +21,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/portmacro.h"
+#include "freertos/task.h"
 static const char *TAG = "sp_wifi";
 static EventGroupHandle_t s_wifi;
 #define GOT_IP BIT0
@@ -27,8 +30,18 @@ static sp_backoff_t s_backoff;
 static sp_wifi_reconnect_sm_t s_sm;
 static esp_timer_handle_t s_reconnect_timer;
 static esp_timer_handle_t s_watchdog_timer;
+static esp_timer_handle_t s_stable_timer;
 static uint32_t s_watchdog_timer_generation;
 static esp_netif_t *s_sta_netif;
+static uint32_t s_iface_generation = 1;
+static uint32_t s_stage3_target_generation;
+static bool s_stage3_restart_active;
+static sp_wifi_stage3_event_fn s_s3_stop_ok;
+static sp_wifi_stage3_event_fn s_s3_stop_fail;
+static sp_wifi_stage3_event_fn s_s3_start_ok;
+static sp_wifi_stage3_event_fn s_s3_start_fail;
+static sp_wifi_stage3_event_fn s_s3_connect_started;
+static void (*s_s3_got_ip)(uint32_t iface_generation);
 
 /**
  * Serializes SM mutations across the Wi-Fi event task and esp_timer task.
@@ -170,8 +183,35 @@ static uint32_t wifi_rand32(void)
     return esp_random();
 }
 
+static void cancel_stable_timer(void)
+{
+    if (s_stable_timer == NULL) {
+        return;
+    }
+    esp_timer_stop(s_stable_timer);
+    esp_timer_delete(s_stable_timer);
+    s_stable_timer = NULL;
+}
+
+static void wifi_stable_timer_cb(void *arg)
+{
+    (void)arg;
+    /* Backoff fields only. No Wi-Fi or MQTT driver call. */
+    if (s_stable_timer != NULL) {
+        esp_timer_delete(s_stable_timer);
+        s_stable_timer = NULL;
+    }
+    if (sp_backoff_poll_stable(&s_backoff, now_ms())) {
+        ESP_LOGI(TAG, "Wi-Fi address stable; backoff reset");
+    }
+}
+
 static void wifi_reconnect_timer_cb(void *arg);
 static void wifi_in_flight_watchdog_cb(void *arg);
+static void wifi_stable_timer_cb(void *arg);
+static void apply_sm_result(const sp_wifi_sm_result_t *result);
+static void start_wifi_connect_attempt(void);
+static bool arm_reserved_reconnect_timer(void);
 
 /** Delete reconnect timer handle only; SM owns reconnect_armed. */
 static void delete_reconnect_timer_handle(void)
@@ -195,6 +235,31 @@ static void cancel_watchdog_timer(void)
     s_watchdog_timer_generation = 0;
 }
 
+static void handle_watchdog_result(const sp_wifi_sm_result_t *result, uint32_t generation)
+{
+    if (result == NULL) {
+        return;
+    }
+    if (result->action == SP_WIFI_SM_SCHEDULE_RECONNECT) {
+        ESP_LOGW(
+            TAG,
+            "Wi-Fi in-flight timeout (%lu ms) generation=%lu; clearing in_flight "
+            "and scheduling reconnect",
+            (unsigned long)s_sm.in_flight_timeout_ms,
+            (unsigned long)generation
+        );
+        sp_backoff_set_in_flight(&s_backoff, false);
+        sp_backoff_note_failure(&s_backoff, now_ms());
+    } else if (result->action == SP_WIFI_SM_START_CONNECT) {
+        ESP_LOGW(
+            TAG,
+            "Wi-Fi disconnect wait expired generation=%lu; connecting",
+            (unsigned long)generation
+        );
+    }
+    apply_sm_result(result);
+}
+
 static void arm_watchdog_timer(uint32_t generation)
 {
     cancel_watchdog_timer();
@@ -205,6 +270,13 @@ static void arm_watchdog_timer(uint32_t generation)
     };
     if (esp_timer_create(&args, &s_watchdog_timer) != ESP_OK) {
         ESP_LOGW(TAG, "failed to create in-flight Wi-Fi watchdog timer");
+        portENTER_CRITICAL(&s_wifi_sm_lock);
+        sp_wifi_sm_result_t failed =
+            sp_wifi_reconnect_sm_on_watchdog(
+                &s_sm, generation, sp_lifecycle_ota_reboot_pending()
+            );
+        portEXIT_CRITICAL(&s_wifi_sm_lock);
+        handle_watchdog_result(&failed, generation);
         return;
     }
     if (esp_timer_start_once(
@@ -214,24 +286,44 @@ static void arm_watchdog_timer(uint32_t generation)
         != ESP_OK) {
         cancel_watchdog_timer();
         ESP_LOGW(TAG, "failed to start in-flight Wi-Fi watchdog timer");
+        portENTER_CRITICAL(&s_wifi_sm_lock);
+        sp_wifi_sm_result_t failed =
+            sp_wifi_reconnect_sm_on_watchdog(
+                &s_sm, generation, sp_lifecycle_ota_reboot_pending()
+            );
+        portEXIT_CRITICAL(&s_wifi_sm_lock);
+        handle_watchdog_result(&failed, generation);
         return;
     }
     s_watchdog_timer_generation = generation;
 }
 
-static void apply_sm_result(const sp_wifi_sm_result_t *result);
+static void defer_reconnect_arm(uint32_t delay_ms)
+{
+    if (delay_ms < 1) {
+        delay_ms = 1;
+    }
+    ESP_LOGW(
+        TAG,
+        "Wi-Fi reconnect timer was not armed; retrying from recovery task in %lu ms",
+        (unsigned long)delay_ms
+    );
+    sp_net_dispatch_post_after(SP_NET_OP_WIFI_ARM_TIMER, delay_ms);
+}
 
 /**
  * Create the oneshot for an SM-held reconnect reservation.
  * Must not re-check can_schedule — reservation is already exclusive.
+ * On create/start failure the reservation stays held and the recovery task
+ * retries after the existing backoff delay.
  */
-static void arm_reserved_reconnect_timer(void)
+static bool arm_reserved_reconnect_timer(void)
 {
     if (sp_lifecycle_ota_reboot_pending()) {
         portENTER_CRITICAL(&s_wifi_sm_lock);
         sp_wifi_reconnect_sm_release_reconnect_reservation(&s_sm);
         portEXIT_CRITICAL(&s_wifi_sm_lock);
-        return;
+        return false;
     }
 
     uint32_t delay = sp_backoff_delay_ms(&s_backoff, wifi_rand32);
@@ -248,22 +340,25 @@ static void arm_reserved_reconnect_timer(void)
         .callback = &wifi_reconnect_timer_cb,
         .name = "wifi_bo",
     };
-    if (esp_timer_create(&args, &s_reconnect_timer) != ESP_OK) {
-        portENTER_CRITICAL(&s_wifi_sm_lock);
-        sp_wifi_reconnect_sm_release_reconnect_reservation(&s_sm);
-        portEXIT_CRITICAL(&s_wifi_sm_lock);
-        return;
-    }
-    if (esp_timer_start_once(s_reconnect_timer, (uint64_t)delay * 1000ULL) != ESP_OK) {
+    if (esp_timer_create(&args, &s_reconnect_timer) != ESP_OK
+        || esp_timer_start_once(s_reconnect_timer, (uint64_t)delay * 1000ULL) != ESP_OK) {
         delete_reconnect_timer_handle();
         portENTER_CRITICAL(&s_wifi_sm_lock);
-        sp_wifi_reconnect_sm_release_reconnect_reservation(&s_sm);
+        sp_wifi_sm_result_t failed =
+            sp_wifi_reconnect_sm_on_reconnect_arm_failed(&s_sm);
         portEXIT_CRITICAL(&s_wifi_sm_lock);
-        return;
+        if (failed.cancel_watchdog) {
+            cancel_watchdog_timer();
+        }
+        if (failed.defer_arm_to_worker) {
+            defer_reconnect_arm(delay);
+        }
+        return false;
     }
     ESP_LOGI(TAG, "scheduling Wi-Fi reconnect in %lu ms (failures=%lu)",
              (unsigned long)delay,
              (unsigned long)s_backoff.consecutive_failures);
+    return true;
 }
 
 static void apply_sm_result(const sp_wifi_sm_result_t *result)
@@ -280,8 +375,17 @@ static void apply_sm_result(const sp_wifi_sm_result_t *result)
     if (result->arm_watchdog) {
         arm_watchdog_timer(result->watchdog_generation);
     }
+    if (result->defer_arm_to_worker) {
+        /* Caller already arranged a deferred arm. Do not try inline. */
+        return;
+    }
     if (result->action == SP_WIFI_SM_SCHEDULE_RECONNECT) {
-        arm_reserved_reconnect_timer();
+        (void)arm_reserved_reconnect_timer();
+    } else if (result->action == SP_WIFI_SM_START_CONNECT) {
+        /* Driver call runs on the recovery task, not the timer or event task. */
+        sp_net_dispatch_post(SP_NET_OP_WIFI_CONNECT);
+    } else if (result->action == SP_WIFI_SM_DISCONNECT_FOR_RETRY) {
+        sp_net_dispatch_post(SP_NET_OP_WIFI_DISCONNECT_FOR_RETRY);
     }
 }
 
@@ -332,9 +436,8 @@ static void wifi_reconnect_timer_cb(void *arg)
         esp_timer_delete(s_reconnect_timer);
         s_reconnect_timer = NULL;
     }
-    if (result.action == SP_WIFI_SM_START_CONNECT) {
-        start_wifi_connect_attempt();
-    }
+    /* START_CONNECT / DISCONNECT are posted from apply. No driver call here. */
+    apply_sm_result(&result);
 }
 
 static void wifi_in_flight_watchdog_cb(void *arg)
@@ -358,18 +461,7 @@ static void wifi_in_flight_watchdog_cb(void *arg)
         && !result.cancel_watchdog && !result.arm_watchdog) {
         return;
     }
-    if (result.action == SP_WIFI_SM_SCHEDULE_RECONNECT) {
-        ESP_LOGW(
-            TAG,
-            "Wi-Fi in-flight timeout (%lu ms) generation=%lu; clearing in_flight "
-            "and scheduling reconnect",
-            (unsigned long)s_sm.in_flight_timeout_ms,
-            (unsigned long)generation
-        );
-        sp_backoff_set_in_flight(&s_backoff, false);
-        sp_backoff_note_failure(&s_backoff, now_ms());
-    }
-    apply_sm_result(&result);
+    handle_watchdog_result(&result, generation);
 }
 
 static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -394,14 +486,64 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 
     ESP_LOGI(TAG, "got IPv4 address " IPSTR, IP2STR(&event->ip_info.ip));
     xEventGroupSetBits(s_wifi, GOT_IP);
+    sp_connectivity_note_wifi_has_ip(true);
     apply_sm_result(&result);
+    if (s_s3_got_ip != NULL) {
+        s_s3_got_ip(s_iface_generation);
+    }
     sp_backoff_note_success(&s_backoff, now_ms());
+    if (s_backoff.cfg.stable_reset_ms > 0) {
+        const esp_timer_create_args_t stable_args = {
+            .callback = &wifi_stable_timer_cb,
+            .name = "wifi_st",
+        };
+        if (s_stable_timer != NULL) {
+            esp_timer_stop(s_stable_timer);
+            esp_timer_delete(s_stable_timer);
+            s_stable_timer = NULL;
+        }
+        if (esp_timer_create(&stable_args, &s_stable_timer) == ESP_OK) {
+            if (esp_timer_start_once(
+                    s_stable_timer,
+                    (uint64_t)s_backoff.cfg.stable_reset_ms * 1000ULL
+                )
+                != ESP_OK) {
+                esp_timer_delete(s_stable_timer);
+                s_stable_timer = NULL;
+            }
+        }
+    }
+    /* Every accepted address, including one that arrives after the boot wait. */
+    esp_err_t ps_err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (ps_err == ESP_OK) {
+        ESP_LOGI(TAG, "Wi-Fi power save disabled for stable MQTT");
+    } else {
+        ESP_LOGW(TAG, "could not disable Wi-Fi power save: %s", esp_err_to_name(ps_err));
+    }
 }
 
 static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
     (void)base;
+    if (id == WIFI_EVENT_STA_START) {
+        ESP_LOGI(TAG, "Wi-Fi STA started (iface_gen=%lu)",
+                 (unsigned long)s_iface_generation);
+        if (s_stage3_restart_active && s_s3_start_ok != NULL) {
+            s_s3_start_ok();
+        }
+        return;
+    }
+    if (id == WIFI_EVENT_STA_STOP) {
+        ESP_LOGI(TAG, "Wi-Fi STA stopped (iface_gen=%lu)",
+                 (unsigned long)s_iface_generation);
+        xEventGroupClearBits(s_wifi, GOT_IP);
+        sp_connectivity_note_wifi_has_ip(false);
+        if (s_stage3_restart_active && s_s3_stop_ok != NULL) {
+            s_s3_stop_ok();
+        }
+        return;
+    }
     if (id == WIFI_EVENT_STA_CONNECTED) {
         const wifi_event_sta_connected_t *event = data;
         ESP_LOGI(
@@ -424,6 +566,8 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
         /* reason 201 = WIFI_REASON_NO_AP_FOUND: keep retrying with backoff, not fatal.
          * reason 2 (AUTH_EXPIRE) and 205 (BEACON_TIMEOUT) use the same generic path. */
         xEventGroupClearBits(s_wifi, GOT_IP);
+        sp_connectivity_note_wifi_has_ip(false);
+        cancel_stable_timer();
         sp_backoff_set_in_flight(&s_backoff, false);
 
         const bool ota_pending = sp_lifecycle_ota_reboot_pending();
@@ -443,21 +587,187 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
             return;
         }
 
-        /* Advance backoff on every failed join attempt. Counting only the first
-         * disconnect left delays stuck near the 1 s initial value while the AP
-         * remained missing. */
-        sp_backoff_note_failure(&s_backoff, now_ms());
         portENTER_CRITICAL(&s_wifi_sm_lock);
         const bool note_diag = sp_wifi_reconnect_sm_take_disconnect_diag(&s_sm);
         sp_wifi_sm_result_t result =
             sp_wifi_reconnect_sm_on_disconnected(&s_sm, false);
         portEXIT_CRITICAL(&s_wifi_sm_lock);
+        /* An intentional recovery disconnect already counted a failure on the
+         * watchdog or lost-IP path. A real AP drop still advances backoff. */
+        if (!result.skip_backoff) {
+            sp_backoff_note_failure(&s_backoff, now_ms());
+        }
         if (note_diag) {
             sp_diag_note_wifi_disconnect();
         }
         apply_sm_result(&result);
         log_sta_disconnected_rate_limited((int)event->reason);
     }
+}
+
+static void on_lost_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)arg;
+    (void)base;
+    (void)id;
+    (void)data;
+    /* Clear the latch before any other work so MQTT cannot keep a dead address. */
+    if (s_wifi != NULL) {
+        xEventGroupClearBits(s_wifi, GOT_IP);
+    }
+    sp_connectivity_note_wifi_has_ip(false);
+    cancel_stable_timer();
+    const bool ota_pending = sp_lifecycle_ota_reboot_pending();
+    portENTER_CRITICAL(&s_wifi_sm_lock);
+    sp_wifi_sm_result_t result =
+        sp_wifi_reconnect_sm_on_lost_ip(&s_sm, ota_pending);
+    portEXIT_CRITICAL(&s_wifi_sm_lock);
+    if (!ota_pending) {
+        sp_backoff_set_in_flight(&s_backoff, false);
+        sp_backoff_note_failure(&s_backoff, now_ms());
+    }
+    apply_sm_result(&result);
+    ESP_LOGW(
+        TAG,
+        "IPv4 address lost (armed=%d failures=%lu netif_ip=%d)",
+        s_sm.reconnect_armed ? 1 : 0,
+        (unsigned long)s_backoff.consecutive_failures,
+        sta_netif_has_ip() ? 1 : 0
+    );
+}
+
+static void wifi_worker_connect(void)
+{
+    start_wifi_connect_attempt();
+}
+
+static void wifi_worker_disconnect_for_retry(void)
+{
+    if (sp_wifi_has_ip()) {
+        portENTER_CRITICAL(&s_wifi_sm_lock);
+        sp_wifi_sm_result_t skipped =
+            sp_wifi_reconnect_sm_on_disconnect_skipped(&s_sm);
+        portEXIT_CRITICAL(&s_wifi_sm_lock);
+        apply_sm_result(&skipped);
+        ESP_LOGI(TAG, "skipping recovery disconnect; IPv4 address is held");
+        return;
+    }
+    esp_err_t err = esp_wifi_disconnect();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "disconnect before retry failed: %s", esp_err_to_name(err));
+        portENTER_CRITICAL(&s_wifi_sm_lock);
+        sp_wifi_sm_result_t failed =
+            sp_wifi_reconnect_sm_on_disconnect_api_failed(&s_sm);
+        portEXIT_CRITICAL(&s_wifi_sm_lock);
+        apply_sm_result(&failed);
+        start_wifi_connect_attempt();
+    }
+}
+
+static void wifi_worker_arm_timer(void)
+{
+    (void)arm_reserved_reconnect_timer();
+}
+
+static void wifi_worker_iface_restart(void)
+{
+    esp_err_t err;
+
+    if (!s_stage3_restart_active
+        || s_stage3_target_generation != s_iface_generation) {
+        ESP_LOGW(
+            TAG,
+            "ignoring stale iface restart (active=%d target=%lu cur=%lu)",
+            s_stage3_restart_active ? 1 : 0,
+            (unsigned long)s_stage3_target_generation,
+            (unsigned long)s_iface_generation
+        );
+        return;
+    }
+
+    ESP_LOGW(
+        TAG,
+        "Stage 3 Wi-Fi interface restart (iface_gen=%lu)",
+        (unsigned long)s_iface_generation
+    );
+
+    /* Drop stale address before stop so MQTT cannot keep a false IP. */
+    if (s_wifi != NULL) {
+        xEventGroupClearBits(s_wifi, GOT_IP);
+    }
+    sp_connectivity_note_wifi_has_ip(false);
+    cancel_stable_timer();
+    delete_reconnect_timer_handle();
+    cancel_watchdog_timer();
+    portENTER_CRITICAL(&s_wifi_sm_lock);
+    sp_wifi_reconnect_sm_prepare_ota_reboot(&s_sm);
+    /* Re-init SM for a clean connect after start (keep timeout). */
+    sp_wifi_reconnect_sm_init(&s_sm, SP_WIFI_IN_FLIGHT_TIMEOUT_MS);
+    portEXIT_CRITICAL(&s_wifi_sm_lock);
+    sp_backoff_set_in_flight(&s_backoff, false);
+
+    err = esp_wifi_stop();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_stop failed: %s", esp_err_to_name(err));
+        s_stage3_restart_active = false;
+        if (s_s3_stop_fail != NULL) {
+            s_s3_stop_fail();
+        }
+        return;
+    }
+    /* STA_STOP may already have run; a second stop_ok is ignored by the SM. */
+    if (s_s3_stop_ok != NULL) {
+        s_s3_stop_ok();
+    }
+
+    err = esp_wifi_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(err));
+        s_stage3_restart_active = false;
+        if (s_s3_start_fail != NULL) {
+            s_s3_start_fail();
+        }
+        return;
+    }
+    /* STA_START may already have run; duplicate start_ok is ignored. */
+    if (s_s3_start_ok != NULL) {
+        s_s3_start_ok();
+    }
+    start_wifi_connect_attempt();
+    if (s_s3_connect_started != NULL) {
+        s_s3_connect_started();
+    }
+    s_stage3_restart_active = false;
+}
+
+void sp_wifi_set_stage3_hooks(
+    sp_wifi_stage3_event_fn on_stop_ok,
+    sp_wifi_stage3_event_fn on_stop_fail,
+    sp_wifi_stage3_event_fn on_start_ok,
+    sp_wifi_stage3_event_fn on_start_fail,
+    sp_wifi_stage3_event_fn on_connect_started,
+    void (*on_got_ip)(uint32_t iface_generation)
+)
+{
+    s_s3_stop_ok = on_stop_ok;
+    s_s3_stop_fail = on_stop_fail;
+    s_s3_start_ok = on_start_ok;
+    s_s3_start_fail = on_start_fail;
+    s_s3_connect_started = on_connect_started;
+    s_s3_got_ip = on_got_ip;
+}
+
+void sp_wifi_request_iface_restart(uint32_t iface_generation)
+{
+    s_stage3_target_generation = iface_generation;
+    s_iface_generation = iface_generation;
+    s_stage3_restart_active = true;
+    sp_net_dispatch_post(SP_NET_OP_WIFI_IFACE_RESTART);
+}
+
+uint32_t sp_wifi_iface_generation(void)
+{
+    return s_iface_generation;
 }
 
 bool sp_wifi_has_ip(void)
@@ -474,6 +784,12 @@ esp_err_t sp_wifi_start(const sp_network_t *net)
     sp_backoff_config_wifi(&bo_cfg);
     sp_backoff_init(&s_backoff, &bo_cfg);
     sp_wifi_reconnect_sm_init(&s_sm, SP_WIFI_IN_FLIGHT_TIMEOUT_MS);
+    sp_net_dispatch_start();
+    sp_net_dispatch_bind(SP_NET_OP_WIFI_CONNECT, wifi_worker_connect);
+    sp_net_dispatch_bind(SP_NET_OP_WIFI_DISCONNECT_FOR_RETRY, wifi_worker_disconnect_for_retry);
+    sp_net_dispatch_bind(SP_NET_OP_WIFI_ARM_TIMER, wifi_worker_arm_timer);
+    sp_net_dispatch_bind(SP_NET_OP_WIFI_IFACE_RESTART, wifi_worker_iface_restart);
+    sp_connectivity_start();
 
     s_wifi = xEventGroupCreate();
     if (s_wifi == NULL) {
@@ -492,7 +808,14 @@ esp_err_t sp_wifi_start(const sp_network_t *net)
     ESP_ERROR_CHECK(esp_event_handler_register(
         WIFI_EVENT, WIFI_EVENT_STA_CONNECTED, &on_wifi_event, NULL
     ));
+    ESP_ERROR_CHECK(esp_event_handler_register(
+        WIFI_EVENT, WIFI_EVENT_STA_START, &on_wifi_event, NULL
+    ));
+    ESP_ERROR_CHECK(esp_event_handler_register(
+        WIFI_EVENT, WIFI_EVENT_STA_STOP, &on_wifi_event, NULL
+    ));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &on_ip, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_LOST_IP, &on_lost_ip, NULL));
 
     wifi_config_t wifi_config = {0};
     strncpy((char *)wifi_config.sta.ssid, net->ssid, sizeof(wifi_config.sta.ssid));
@@ -520,14 +843,6 @@ esp_err_t sp_wifi_start(const sp_network_t *net)
         return ESP_ERR_TIMEOUT;
     }
     ESP_LOGI(TAG, "Wi-Fi up");
-
-    /* Modem sleep commonly stalls MQTT/TLS keepalive writes on ESP32 station links. */
-    esp_err_t ps_err = esp_wifi_set_ps(WIFI_PS_NONE);
-    if (ps_err == ESP_OK) {
-        ESP_LOGI(TAG, "Wi-Fi power save disabled for stable MQTT");
-    } else {
-        ESP_LOGW(TAG, "could not disable Wi-Fi power save: %s", esp_err_to_name(ps_err));
-    }
 
     if (sp_network_needs_mdns(net)) {
         esp_err_t mdns_err = sp_mdns_ensure();

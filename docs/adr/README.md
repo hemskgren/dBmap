@@ -13,3 +13,4 @@ Companion overviews:
 - [Sensor Platform architecture](../sensor-platform-architecture.md)
 - [Firmware Map](../firmware-map/README.md) (composition / capacity index; does not replace source config)
 - [Audio Engine and Candidate Engine design](../architecture/audio-and-candidate-engine.md) (AE/CE v1 plus minimal module/workflow; full Engine Runtime is not this ADR)
+- [Sensor Platform connectivity recovery](../architecture/sensor-platform-connectivity-recovery.md) (proposal only; Wi-Fi / MQTT stall review, not an accepted ADR)

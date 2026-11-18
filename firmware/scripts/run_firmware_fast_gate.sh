@@ -142,6 +142,41 @@ run_host_tests() {
     "${FIRMWARE_ROOT}/platform/node_common/mic_count.c" \
     "${FIRMWARE_ROOT}/platform/node_common/test_host/test_mic_count.c" || host_fail=1
 
+  section "Host Platform connectivity recovery"
+  local nc_host_inc="${nc_inc} -I${FIRMWARE_ROOT}/platform/node_common/test_host"
+  run_host_one wifi_reconnect_sm \
+    ${nc_inc} \
+    "${FIRMWARE_ROOT}/platform/node_common/wifi_reconnect_sm.c" \
+    "${FIRMWARE_ROOT}/platform/node_common/test_host/test_wifi_reconnect_sm.c" || host_fail=1
+  run_host_one backoff \
+    ${nc_host_inc} \
+    "${FIRMWARE_ROOT}/platform/node_common/backoff.c" \
+    "${FIRMWARE_ROOT}/platform/node_common/test_host/test_backoff.c" || host_fail=1
+  run_host_one mqtt_progress \
+    ${nc_inc} \
+    "${FIRMWARE_ROOT}/platform/node_common/mqtt_progress.c" \
+    "${FIRMWARE_ROOT}/platform/node_common/test_host/test_mqtt_progress.c" || host_fail=1
+  run_host_one net_dispatch_sm \
+    ${nc_inc} \
+    "${FIRMWARE_ROOT}/platform/node_common/net_dispatch_sm.c" \
+    "${FIRMWARE_ROOT}/platform/node_common/test_host/test_net_dispatch_sm.c" || host_fail=1
+  run_host_one connectivity_supervisor_sm \
+    ${nc_inc} \
+    "${FIRMWARE_ROOT}/platform/node_common/connectivity_supervisor_sm.c" \
+    "${FIRMWARE_ROOT}/platform/node_common/test_host/test_connectivity_supervisor_sm.c" || host_fail=1
+  run_host_one connectivity_stage3_sm \
+    ${nc_inc} \
+    "${FIRMWARE_ROOT}/platform/node_common/connectivity_stage3_sm.c" \
+    "${FIRMWARE_ROOT}/platform/node_common/test_host/test_connectivity_stage3_sm.c" || host_fail=1
+  run_host_one connectivity_stage4_sm \
+    ${nc_inc} \
+    "${FIRMWARE_ROOT}/platform/node_common/connectivity_stage4_sm.c" \
+    "${FIRMWARE_ROOT}/platform/node_common/test_host/test_connectivity_stage4_sm.c" || host_fail=1
+  run_host_one diag_memory \
+    ${nc_inc} \
+    "${FIRMWARE_ROOT}/platform/node_common/diag_memory.c" \
+    "${FIRMWARE_ROOT}/platform/node_common/test_host/test_diag_memory.c" || host_fail=1
+
   section "Host AE regression tests"
   local EAR_CE="${FIRMWARE_ROOT}/products/dbmap/ear/candidate_engine"
   local EAR_AP="${FIRMWARE_ROOT}/products/dbmap/ear/acoustic_profile"
@@ -217,21 +252,57 @@ run_host_tests() {
     else
       record_skip "host/as_profile_as001 (test not in tree)"
     fi
+    local EAR_AE_RT="${FIRMWARE_ROOT}/products/dbmap/ear/ae_runtime"
+    if [[ -f "${EAR_AE_RT}/test_host/test_ae_sig_capture.c" \
+      && -f "${EAR_AE_RT}/ae_sig_capture.c" ]]; then
+      run_host_one ae_sig_capture \
+        ${ae_inc} "-I${EAR_AE_RT}/include" \
+        -DCONFIG_DBMAP_EAR_AE_SIG_CAPTURE=1 \
+        "${EAR_AP}/as_profile_as001.c" "${EAR_AP}/as_profile_registry.c" \
+        "${EAR_AP}/as_profile_match.c" \
+        "${EAR_AE_RT}/ae_sig_capture.c" \
+        "${EAR_AE_RT}/test_host/test_ae_sig_capture.c" || host_fail=1
+    else
+      record_skip "host/ae_sig_capture (sources/tests not in tree)"
+    fi
     local EAR_OBS="${FIRMWARE_ROOT}/products/dbmap/ear/ear_observation"
     local PLAT_OBS="${FIRMWARE_ROOT}/platform/observation"
     if [[ -f "${EAR_OBS}/test_host/test_ear_obs_manager.c" \
       && -f "${EAR_OBS}/ear_obs_manager.c" \
       && -f "${EAR_OBS}/ear_promotion_policy.c" \
+      && -f "${EAR_OBS}/ear_cls_progressive.c" \
       && -f "${PLAT_OBS}/episode_registry.c" ]]; then
       run_host_one ear_obs_manager \
         ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
         "${ce_srcs[@]}" \
         "${PLAT_OBS}/episode_registry.c" \
+        "${EAR_OBS}/ear_cls_progressive.c" \
         "${EAR_OBS}/ear_obs_manager.c" \
         "${EAR_OBS}/ear_promotion_policy.c" \
+        "${EAR_OBS}/ear_siren_se_public.c" \
         "${EAR_OBS}/test_host/test_ear_obs_manager.c" || host_fail=1
+      run_host_one ear_cls_progressive \
+        ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
+        "${ce_srcs[@]}" \
+        "${PLAT_OBS}/episode_registry.c" \
+        "${EAR_OBS}/ear_cls_progressive.c" \
+        "${EAR_OBS}/ear_obs_manager.c" \
+        "${EAR_OBS}/ear_promotion_policy.c" \
+        "${EAR_OBS}/ear_siren_se_public.c" \
+        "${EAR_OBS}/test_host/test_ear_cls_progressive.c" || host_fail=1
+      run_host_one ear_siren_se_public \
+        ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
+        "${ce_srcs[@]}" \
+        "${PLAT_OBS}/episode_registry.c" \
+        "${EAR_OBS}/ear_cls_progressive.c" \
+        "${EAR_OBS}/ear_obs_manager.c" \
+        "${EAR_OBS}/ear_promotion_policy.c" \
+        "${EAR_OBS}/ear_siren_se_public.c" \
+        "${EAR_OBS}/test_host/test_ear_siren_se_public.c" || host_fail=1
     else
       record_skip "host/ear_obs_manager (OM sources/tests not in tree)"
+      record_skip "host/ear_cls_progressive (OM sources/tests not in tree)"
+      record_skip "host/ear_siren_se_public (OM sources/tests not in tree)"
     fi
   else
     record_skip "host/ae_m4_lifecycle_gap (CE/profile sources not in tree)"

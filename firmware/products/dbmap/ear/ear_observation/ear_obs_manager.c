@@ -6,9 +6,27 @@
 #include "ear_obs_manager.h"
 
 #include "ae_engine.h"
+#include "as_profile.h"
 #include "ce_engine.h"
 
 #include <string.h>
+
+static uint32_t as002_absence_hold_ms(const ear_obs_manager_t *om)
+{
+    if (om == NULL || om->cfg.as002_signature_absence_hold_ms == 0u) {
+        return EAR_OBS_AS002_SIGNATURE_ABSENCE_HOLD_MS_DEFAULT;
+    }
+    return om->cfg.as002_signature_absence_hold_ms;
+}
+
+static bool binding_is_as002(const ear_obs_manager_t *om, uint8_t bi)
+{
+    if (om == NULL || bi >= EAR_OBS_MGR_BINDING_CAP || !om->bind[bi].in_use) {
+        return false;
+    }
+    return om->bind[bi].snap.product_relevance_approved
+        && om->bind[bi].snap.relevance_profile_id == AS_PROFILE_ID_AS002;
+}
 
 #define EAR_OBS_RSV_MAGIC 0xE0B50001u
 #define EAR_OBS_PRODUCER_MGR 2u
@@ -50,6 +68,35 @@ uint8_t ear_obs_manager_n_held(const ear_obs_manager_t *om)
     return om == NULL ? 0u : count_held(om);
 }
 
+bool ear_obs_manager_has_signature_observation(
+    const ear_obs_manager_t *om,
+    uint16_t relevance_profile_id
+)
+{
+    if (om == NULL || relevance_profile_id == 0u) {
+        return false;
+    }
+    for (uint8_t i = 0u; i < EAR_OBS_MGR_BINDING_CAP; i++) {
+        if (!om->bind[i].in_use) {
+            continue;
+        }
+        if (om->bind[i].snap.product_relevance_approved
+            && om->bind[i].snap.relevance_profile_id == relevance_profile_id) {
+            return true;
+        }
+    }
+    for (uint8_t i = 0u; i < EAR_OBS_MGR_PENDING_CAP; i++) {
+        if (!om->pending[i].in_use || om->pending[i].cancelled) {
+            continue;
+        }
+        if (om->pending[i].snap.product_relevance_approved
+            && om->pending[i].snap.relevance_profile_id == relevance_profile_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void ear_obs_manager_get_diag(const ear_obs_manager_t *om, ear_obs_manager_diag_t *out)
 {
     if (out == NULL) {
@@ -79,6 +126,10 @@ void ear_obs_manager_init(ear_obs_manager_t *om, const ear_obs_manager_config_t 
     }
     if (om->cfg.producer_tag == 0u) {
         om->cfg.producer_tag = EAR_OBS_PRODUCER_MGR;
+    }
+    if (om->cfg.as002_signature_absence_hold_ms == 0u) {
+        om->cfg.as002_signature_absence_hold_ms =
+            EAR_OBS_AS002_SIGNATURE_ABSENCE_HOLD_MS_DEFAULT;
     }
 }
 
@@ -277,6 +328,7 @@ static void fill_binding_view(
     memcpy(out->observation_id, om->bind[bi].observation_id, sizeof(out->observation_id));
     out->ce_live = om->bind[bi].ce_live;
     out->start_mono_us = om->bind[bi].start_mono_us;
+    out->assessment = om->bind[bi].cls_wire;
 }
 
 static bool allocate_and_bind(
@@ -346,6 +398,22 @@ static bool allocate_and_bind(
     om->bind[free_bi].start_mono_us = now_mono_us;
     om->bind[free_bi].last_emit_mono_us = now_mono_us;
     om->bind[free_bi].snap = *snap;
+    ear_cls_state_init(&om->bind[free_bi].cls);
+    memset(&om->bind[free_bi].cls_wire, 0, sizeof(om->bind[free_bi].cls_wire));
+    om->bind[free_bi].as002_sig_track =
+        (snap->product_relevance_approved
+         && snap->relevance_profile_id == AS_PROFILE_ID_AS002);
+    om->bind[free_bi].as002_absent_ms = 0u;
+    if (om->cls_arm_valid) {
+        (void)ear_cls_apply(
+            &om->bind[free_bi].cls,
+            &om->cls_arm,
+            EAR_CLS_PHASE_START,
+            &om->bind[free_bi].cls_wire
+        );
+        om->cls_arm_valid = false;
+        ear_cls_evidence_clear(&om->cls_arm);
+    }
 
     if (om->cfg.emit_start != NULL) {
         ear_obs_binding_view_t view;
@@ -971,6 +1039,7 @@ void ear_obs_manager_on_candidate_evidence(
 
 void ear_obs_manager_on_activity_end_hint(
     ear_obs_manager_t *om,
+    ear_obs_activity_end_kind_t kind,
     int64_t interval_start_mono_us,
     int64_t interval_end_mono_us,
     bool has_signal_level_dbfs,
@@ -982,11 +1051,8 @@ void ear_obs_manager_on_activity_end_hint(
     }
     om->diag.end_hint++;
     /*
-     * Activity END is authoritative for Observation termination.
-     * Every open binding ends immediately, including when ce_live is true.
      * Snapshot observation_ids first so deferred pending drain cannot cause a
      * newly admitted Observation to be ended in the same hint.
-     * Repeated hints are no-ops once bindings are cleared.
      */
     char obs_ids[EAR_OBS_MGR_BINDING_CAP][SP_OBS_EPISODE_ID_LEN];
     uint8_t n_ids = 0u;
@@ -1002,9 +1068,15 @@ void ear_obs_manager_on_activity_end_hint(
         n_ids++;
     }
 
+    const bool end_as002 = (kind == EAR_OBS_ACT_END_INVALID_HOLD);
+
     for (uint8_t j = 0u; j < n_ids; j++) {
         const int bi = find_binding_by_observation_id(om, obs_ids[j]);
         if (bi < 0) {
+            continue;
+        }
+        if (!end_as002 && binding_is_as002(om, (uint8_t)bi)) {
+            om->diag.activity_end_as002_skipped++;
             continue;
         }
         end_binding(
@@ -1023,6 +1095,89 @@ void ear_obs_manager_on_activity_end_hint(
         om,
         interval_end_mono_us > 0 ? interval_end_mono_us : interval_start_mono_us
     );
+}
+
+void ear_obs_manager_on_as002_siren_window(
+    ear_obs_manager_t *om,
+    bool usable,
+    bool tonal_vote,
+    uint32_t window_ms,
+    int64_t window_end_mono_us,
+    bool has_signal_level_dbfs,
+    float signal_level_dbfs
+)
+{
+    if (om == NULL) {
+        return;
+    }
+
+    const uint32_t hold_ms = as002_absence_hold_ms(om);
+    const uint32_t win_ms = window_ms > 0u ? window_ms : 1000u;
+
+    /* Snapshot ids: ending one AS002 must not disturb iteration if capacity grows. */
+    char obs_ids[EAR_OBS_MGR_BINDING_CAP][SP_OBS_EPISODE_ID_LEN];
+    uint8_t n_ids = 0u;
+    for (uint8_t i = 0u; i < EAR_OBS_MGR_BINDING_CAP; i++) {
+        if (!om->bind[i].in_use || !om->bind[i].as002_sig_track) {
+            continue;
+        }
+        memcpy(
+            obs_ids[n_ids],
+            om->bind[i].observation_id,
+            SP_OBS_EPISODE_ID_LEN
+        );
+        n_ids++;
+    }
+
+    for (uint8_t j = 0u; j < n_ids; j++) {
+        const int bi = find_binding_by_observation_id(om, obs_ids[j]);
+        if (bi < 0 || !om->bind[bi].as002_sig_track) {
+            continue;
+        }
+
+        if (!usable) {
+            om->diag.as002_sig_absent_pause++;
+            continue;
+        }
+
+        if (tonal_vote) {
+            om->bind[bi].as002_absent_ms = 0u;
+            om->diag.as002_sig_support_reset++;
+            continue;
+        }
+
+        /* Usable non-tonal: advance absence; never use streak/consecutive. */
+        const uint32_t prev = om->bind[bi].as002_absent_ms;
+        if (prev > UINT32_MAX - win_ms) {
+            om->bind[bi].as002_absent_ms = UINT32_MAX;
+        } else {
+            om->bind[bi].as002_absent_ms = prev + win_ms;
+        }
+        om->diag.as002_sig_absent_advance++;
+
+        if (om->bind[bi].as002_absent_ms < hold_ms) {
+            continue;
+        }
+
+        const int64_t iv_end =
+            window_end_mono_us > 0 ? window_end_mono_us
+                                   : om->bind[bi].last_emit_mono_us;
+        int64_t iv_start = iv_end - ((int64_t)win_ms * 1000LL);
+        if (iv_start < om->bind[bi].start_mono_us) {
+            iv_start = om->bind[bi].start_mono_us;
+        }
+        om->diag.as002_sig_end++;
+        end_binding(
+            om,
+            (uint8_t)bi,
+            EAR_OBS_END_SIGNATURE,
+            iv_start,
+            iv_end,
+            has_signal_level_dbfs,
+            signal_level_dbfs,
+            false /* drain pending after this single end */
+        );
+    }
 }
 
 void ear_obs_manager_on_activity_periodic_hint(
@@ -1134,6 +1289,8 @@ void ear_obs_manager_on_engine_stop(ear_obs_manager_t *om, int64_t now_mono_us)
             om->diag.exit_detach++;
         }
     }
+    om->cls_arm_valid = false;
+    ear_cls_evidence_clear(&om->cls_arm);
 }
 
 void ear_obs_manager_forget_bindings(ear_obs_manager_t *om)
@@ -1155,6 +1312,8 @@ void ear_obs_manager_forget_bindings(ear_obs_manager_t *om)
             memset(&om->bind[bi], 0, sizeof(om->bind[bi]));
         }
     }
+    om->cls_arm_valid = false;
+    ear_cls_evidence_clear(&om->cls_arm);
 }
 
 void ear_obs_manager_poll(ear_obs_manager_t *om, int64_t now_mono_us)
@@ -1211,5 +1370,60 @@ void ear_obs_manager_poll(ear_obs_manager_t *om, int64_t now_mono_us)
             }
         }
     }
+}
+
+void ear_obs_manager_arm_cls_evidence(
+    ear_obs_manager_t *om,
+    const ear_cls_evidence_t *evidence
+)
+{
+    if (om == NULL) {
+        return;
+    }
+    if (evidence == NULL) {
+        om->cls_arm_valid = false;
+        ear_cls_evidence_clear(&om->cls_arm);
+        return;
+    }
+    om->cls_arm = *evidence;
+    om->cls_arm_valid = true;
+}
+
+bool ear_obs_manager_feed_cls_evidence(
+    ear_obs_manager_t *om,
+    uint64_t candidate_id,
+    const ear_cls_evidence_t *evidence,
+    ear_cls_phase_t phase
+)
+{
+    if (om == NULL || evidence == NULL) {
+        return false;
+    }
+    const int bi = find_binding(om, candidate_id);
+    if (bi < 0) {
+        return false;
+    }
+    return ear_cls_apply(
+        &om->bind[bi].cls, evidence, phase, &om->bind[bi].cls_wire
+    );
+}
+
+bool ear_obs_manager_get_cls_assessment(
+    const ear_obs_manager_t *om,
+    uint64_t candidate_id,
+    ear_cls_assessment_wire_t *out_wire
+)
+{
+    if (om == NULL) {
+        return false;
+    }
+    const int bi = find_binding(om, candidate_id);
+    if (bi < 0) {
+        return false;
+    }
+    if (out_wire != NULL) {
+        *out_wire = om->bind[bi].cls_wire;
+    }
+    return om->bind[bi].cls_wire.present;
 }
 

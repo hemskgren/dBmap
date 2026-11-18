@@ -75,6 +75,20 @@ def _valid_assessment(**overrides) -> dict:
     return base
 
 
+def _valid_assessment_v2(**overrides) -> dict:
+    base = {
+        "schema": "ear_hyp_v2",
+        "version": 1,
+        "path": [
+            {"id": "ALARM", "confidence": 0.95},
+            {"id": "SE_PUBLIC_ALERT", "confidence": 0.90},
+            {"id": "FARAN_OVER", "confidence": 0.72},
+        ],
+    }
+    base.update(overrides)
+    return base
+
+
 def _valid_evidence(**overrides) -> dict:
     base = {
         "schema": "ear_ev_v1",
@@ -213,11 +227,14 @@ def test_track_id_optional_null_and_uuid_accepted() -> None:
 
 
 def test_assessment_ear_hyp_v1_accepted() -> None:
+    from app.schemas import ObservationAssessmentV1
+
     payload = _hierarchical(
         include_assessment_key=True, assessment=_valid_assessment()
     )
     body = ObservationBody.model_validate(payload)
     assert body.acoustic.assessment is not None
+    assert isinstance(body.acoustic.assessment, ObservationAssessmentV1)
     assert body.acoustic.assessment.assessment_schema == "ear_hyp_v1"
     assert body.acoustic.assessment.version == 1
     assert body.acoustic.assessment.primary.family == "helicopter"
@@ -225,6 +242,91 @@ def test_assessment_ear_hyp_v1_accepted() -> None:
     assert len(body.acoustic.assessment.alternates) == 1
     assert body.acoustic.assessment.clutter is not None
     assert body.acoustic.assessment.clutter.family == "hvac_or_fan"
+
+
+def test_assessment_ear_hyp_v2_accepted() -> None:
+    from app.schemas import ObservationAssessmentV2
+
+    payload = _hierarchical(
+        include_assessment_key=True, assessment=_valid_assessment_v2()
+    )
+    body = ObservationBody.model_validate(payload)
+    assert body.acoustic.assessment is not None
+    assert isinstance(body.acoustic.assessment, ObservationAssessmentV2)
+    assert body.acoustic.assessment.assessment_schema == "ear_hyp_v2"
+    assert body.acoustic.assessment.version == 1
+    assert len(body.acoustic.assessment.path) == 3
+    assert body.acoustic.assessment.path[0].id == "ALARM"
+    assert body.acoustic.assessment.path[0].confidence == 0.95
+    assert body.acoustic.assessment.path[1].id == "SE_PUBLIC_ALERT"
+    assert body.acoustic.assessment.path[1].confidence == 0.90
+    assert body.acoustic.assessment.path[2].id == "FARAN_OVER"
+    assert body.acoustic.assessment.path[2].confidence == 0.72
+
+
+def test_assessment_ear_hyp_v2_broad_only_accepted() -> None:
+    from app.schemas import ObservationAssessmentV2
+
+    payload = _hierarchical(
+        include_assessment_key=True,
+        assessment=_valid_assessment_v2(
+            path=[{"id": "ALARM", "confidence": 0.8}]
+        ),
+    )
+    body = ObservationBody.model_validate(payload)
+    assert isinstance(body.acoustic.assessment, ObservationAssessmentV2)
+    assert len(body.acoustic.assessment.path) == 1
+
+
+def test_assessment_ear_hyp_v2_rejects_malformed() -> None:
+    with pytest.raises(ValidationError):
+        ObservationBody.model_validate(
+            _hierarchical(
+                include_assessment_key=True,
+                assessment=_valid_assessment_v2(path=[]),
+            )
+        )
+    with pytest.raises(ValidationError):
+        ObservationBody.model_validate(
+            _hierarchical(
+                include_assessment_key=True,
+                assessment=_valid_assessment_v2(
+                    path=[{"id": "ALARM", "confidence": 1.5}]
+                ),
+            )
+        )
+    with pytest.raises(ValidationError):
+        ObservationBody.model_validate(
+            _hierarchical(
+                include_assessment_key=True,
+                assessment=_valid_assessment_v2(
+                    path=[{"id": "ALARM", "confidence": -0.1}]
+                ),
+            )
+        )
+    with pytest.raises(ValidationError):
+        ObservationBody.model_validate(
+            _hierarchical(
+                include_assessment_key=True,
+                assessment=_valid_assessment_v2(
+                    path=[{"id": "", "confidence": 0.5}]
+                ),
+            )
+        )
+    # v2 must not carry v1 primary (discriminator picks v2; extra forbid).
+    bad = _valid_assessment_v2()
+    bad["primary"] = {"family": "ALARM", "tier": "possible"}
+    with pytest.raises(ValidationError):
+        ObservationBody.model_validate(
+            _hierarchical(include_assessment_key=True, assessment=bad)
+        )
+    # v1 must not be silently treated as v2 via path field.
+    bad_v1 = _valid_assessment()
+    bad_v1["path"] = [{"id": "ALARM", "confidence": 0.9}]
+    with pytest.raises(ValidationError):
+        ObservationBody.model_validate(
+            _hierarchical(include_assessment_key=True, assessment=bad_v1)
+        )
 
 
 def test_compact_evidence_ear_ev_v1_accepted() -> None:
@@ -459,8 +561,73 @@ def test_mqtt_ingest_accepts_extended_payload() -> None:
         match = next(r for r in rows if r.identity.sequence_number == 99)
         assert str(match.identity.track_id) == track
         assert match.acoustic.assessment is not None
+        from app.schemas import ObservationAssessmentV1
+
+        assert isinstance(match.acoustic.assessment, ObservationAssessmentV1)
         assert match.acoustic.assessment.alternates == []
         assert match.acoustic.assessment.clutter is None
+
+
+def test_mqtt_ingest_v2_preserves_path_confidence() -> None:
+    from app.schemas import ObservationAssessmentV2
+
+    client = TestClient(create_app())
+    headers = {"Authorization": "Bearer test-admin"}
+    created = client.post(
+        "/api/v1/nodes",
+        json={"node_type": "ear"},
+        headers=headers,
+    )
+    node_id = created.json()["node_id"]
+    _activate_ear(node_id)
+    observation_id = str(uuid4())
+    start = _hierarchical(
+        node_id=node_id,
+        sequence_number=1,
+        kind="start",
+        observation_id=observation_id,
+        include_assessment_key=True,
+        assessment=_valid_assessment_v2(
+            path=[{"id": "ALARM", "confidence": 0.91}]
+        ),
+    )
+    periodic = _hierarchical(
+        node_id=node_id,
+        sequence_number=2,
+        kind="periodic",
+        observation_id=observation_id,
+        include_assessment_key=True,
+        assessment=_valid_assessment_v2(),
+    )
+    _ingest_observation(node_id, json.dumps(start).encode("utf-8"))
+    _ingest_observation(node_id, json.dumps(periodic).encode("utf-8"))
+
+    listed = client.get(
+        f"/api/v1/observations?node_id={node_id}&observation_id={observation_id}&order=oldest",
+        headers=headers,
+    )
+    assert listed.status_code == 200
+    reports = listed.json()["reports"]
+    assert len(reports) == 2
+    assert reports[0]["identity"]["observation_id"] == observation_id
+    assert reports[1]["identity"]["observation_id"] == observation_id
+    assert reports[0]["identity"]["sequence_number"] == 1
+    assert reports[1]["identity"]["sequence_number"] == 2
+    assert reports[0]["acoustic"]["assessment"]["schema"] == "ear_hyp_v2"
+    assert reports[0]["acoustic"]["assessment"]["path"] == [
+        {"id": "ALARM", "confidence": 0.91}
+    ]
+    assert reports[1]["acoustic"]["assessment"]["path"][2]["id"] == "FARAN_OVER"
+    assert reports[1]["acoustic"]["assessment"]["path"][2]["confidence"] == 0.72
+
+    with SessionLocal() as db:
+        rows = list_observations(db, node_id, limit=10, observation_id=observation_id)
+        assert len(rows) == 2
+        by_seq = {r.identity.sequence_number: r for r in rows}
+        assert isinstance(by_seq[2].acoustic.assessment, ObservationAssessmentV2)
+        assert by_seq[1].acoustic.assessment.path[0].confidence == 0.91
+        assert by_seq[2].acoustic.assessment.path[0].confidence == 0.95
+        assert by_seq[2].acoustic.assessment.path[2].confidence == 0.72
 
 
 def test_old_stored_payload_without_new_keys_still_lists() -> None:

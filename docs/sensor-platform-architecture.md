@@ -75,7 +75,7 @@ flowchart TB
 | --- | --- | --- |
 | Observation envelope (`protocol_version`, `identity`, `context`, `spatial`, …) | **Platform** | Implemented |
 | Acoustic `measurements` L0, `signature` L1, `dynamics` L2 | **dBmap** | Implemented (Ear + Hub) |
-| `assessment` `ear_hyp_v1`, `evidence` `ear_ev_v1`, `debug` `ear_dbg_v1` | **dBmap** | Hub accepts; firmware emit not required for Hub compatibility |
+| `assessment` `ear_hyp_v1` / `ear_hyp_v2`, `evidence` `ear_ev_v1`, `debug` `ear_dbg_v1` | **dBmap** | Hub accepts both assessment schemas; firmware emit not required for Hub compatibility |
 | Future `nose_*` / `mon_*` schemas | Product-specific | Not defined |
 
 The platform Observation envelope must eventually admit non-acoustic products **without** requiring L0/L1/L2. Until that pluggability work lands, current Ear payloads remain acoustic as deployed.

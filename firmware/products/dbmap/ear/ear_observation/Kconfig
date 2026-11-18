@@ -77,6 +77,20 @@ menu "dBmap Ear Observation"
             sample. Exit-hold and periodic timers do not advance during invalid
             windows.
 
+    config DBMAP_EAR_OBS_AS002_SIGNATURE_ABSENCE_HOLD_MS
+        int "AS002 signature absence hold before Observation END (ms)"
+        range 5000 600000
+        default 60000
+        depends on DBMAP_EAR_AUDIO_ENGINE
+        help
+            First-stage AS002 END: after this many milliseconds of usable AE
+            windows without a current-window siren tonal vote, end the open
+            AS002 Observation. Ambient RMS alone cannot keep it open. INVALID
+            / unusable windows pause the timer (unknown evidence). Default
+            60000 ms is conservative within the reviewed 45–60 s range so
+            short-pulse gaps (~14 s) do not premature-END. Global siren votes
+            are not source-specific identity.
+
     config DBMAP_EAR_OBS_RELATIVE_END
         bool "Relative END: freeze pre-event RMS baseline for exit"
         default y
