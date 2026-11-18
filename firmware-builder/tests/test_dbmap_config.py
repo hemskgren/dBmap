@@ -120,6 +120,7 @@ def test_ear_effective_config_highlights_defaults_overrides(real_firmware_target
     assert observation["EAR_OBS_L2"] is True
     assert observation["EAR_OBS_L2_PUBLISH"] is True
     assert observation["EAR_OBS_SERIAL_DIAG"] is True
+    assert observation["EAR_AE_SIG_CAPTURE"] is True
     assert observation["EAR_OBS_RELATIVE_END"] is True
     assert observation["EAR_OBS_REL_RETURN_MARGIN_DB_X1000"] == 4000
     assert observation["EAR_OBS_REL_EXIT_HOLD_MS"] == 2000
@@ -135,6 +136,7 @@ def test_ear_effective_config_highlights_defaults_overrides(real_firmware_target
     assert "EAR_OBS_SERIAL_DIAG" in highlight_keys
     assert "EAR_OBS_PUBLISH_L0" in highlight_keys
     assert "EAR_OBS_L2" in highlight_keys
+    assert "EAR_AE_SIG_CAPTURE" in highlight_keys
     # EAR_MIC_L0 and Relative END match Kconfig default y → not defaults-file highlights.
 
 
@@ -179,6 +181,7 @@ def test_defaults_file_dbmap_config_is_overrides_only(real_firmware_targets):
     acoustic = ear["product"]["dbmap"]["acoustic"]
     assert acoustic["EAR_MIC_L0"] is True
     assert observation["EAR_OBS_SERIAL_DIAG"] is True
+    assert observation["EAR_AE_SIG_CAPTURE"] is True
     assert observation["EAR_OBS_L2"] is True
     assert observation["EAR_OBS_L2_PUBLISH"] is True
     assert observation["EAR_OBS_RELATIVE_END"] is True

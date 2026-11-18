@@ -73,3 +73,7 @@ CONFIG_DBMAP_EAR_OBS_CRITICAL_AUTO_DETECT=n
 # Bench alignment diagnostics (every N signature publishes); off by default in menuconfig.
 CONFIG_DBMAP_EAR_AE_DIAG=y
 CONFIG_DBMAP_EAR_AE_DIAG_EVERY_N=10
+# Bounded AE signature CSV capture for AS-001 calibration (UART AE_SIG_CSV_*).
+# Reported as capabilities.observation.AE_SIG_CAPTURE. Turn off for quieter
+# production fleet UART if unwanted (Kconfig / menuconfig).
+CONFIG_DBMAP_EAR_AE_SIG_CAPTURE=y

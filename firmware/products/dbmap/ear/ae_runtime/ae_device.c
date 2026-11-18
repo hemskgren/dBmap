@@ -2,6 +2,7 @@
 
 #include "ae_align.h"
 #include "ae_gap.h"
+#include "ae_sig_capture.h"
 #include "ae_signature.h"
 #include "ae_stereo.h"
 #include "dbmap_ear_acoustic.h"
@@ -117,6 +118,46 @@ static void maybe_diag_log(void)
 #endif
 }
 
+/** Drain at most a few CSV lines per poll — keeps UART off the sample loop. */
+static void maybe_sig_capture_drain(void)
+{
+#if defined(CONFIG_DBMAP_EAR_AE_SIG_CAPTURE) && CONFIG_DBMAP_EAR_AE_SIG_CAPTURE
+    if (ae_sig_capture_take_start_marker()) {
+        ae_sig_capture_diag_t d;
+        ae_sig_capture_get_diag(&d);
+        ESP_LOGI(
+            TAG,
+            "AE_SIG_CSV_BEGIN session_id=%lu capacity=%lu settle=%u header=%s",
+            (unsigned long)d.session_id,
+            (unsigned long)ae_sig_capture_capacity(),
+            (unsigned)AE_SIG_CAPTURE_SETTLE_N,
+            AE_SIG_CSV_HEADER
+        );
+    }
+    char line[512];
+    for (uint32_t i = 0; i < 4u; i++) {
+        if (!ae_sig_capture_drain_one(line, sizeof(line))) {
+            break;
+        }
+        ESP_LOGI(TAG, "%s %s", AE_SIG_CSV_PREFIX, line);
+    }
+    if (ae_sig_capture_take_end_marker()) {
+        ae_sig_capture_diag_t d;
+        ae_sig_capture_get_diag(&d);
+        ESP_LOGI(
+            TAG,
+            "AE_SIG_CSV_END session_id=%lu stored=%lu drained=%lu overflow=%lu",
+            (unsigned long)d.session_id,
+            (unsigned long)d.stored,
+            (unsigned long)d.drained,
+            (unsigned long)d.overflow
+        );
+    }
+#else
+    (void)0;
+#endif
+}
+
 esp_err_t ae_device_start(void)
 {
     if (s_active) {
@@ -124,6 +165,19 @@ esp_err_t ae_device_start(void)
     }
     memset(&s_diag, 0, sizeof(s_diag));
     s_diag_publish_count = 0u;
+#if defined(CONFIG_DBMAP_EAR_AE_SIG_CAPTURE) && CONFIG_DBMAP_EAR_AE_SIG_CAPTURE
+    /* Session id = boot-relative seconds so console captures are correlatable. */
+    {
+        const uint32_t sid = (uint32_t)(esp_timer_get_time() / 1000000LL);
+        ae_sig_capture_reset(sid == 0u ? 1u : sid);
+        ESP_LOGI(
+            TAG,
+            "ae_sig_capture enabled capacity=%lu settle=%u (AE_SIG_CAPTURE=1)",
+            (unsigned long)ae_sig_capture_capacity(),
+            (unsigned)AE_SIG_CAPTURE_SETTLE_N
+        );
+    }
+#endif
     ae_config_t acfg;
     ae_config_set_defaults(&acfg);
     if (!ae_start(&s_ae, &acfg)) {
@@ -327,6 +381,8 @@ esp_err_t ae_device_poll(void)
     if (gap.gap_before) {
         s_diag.gap_sigs_published++;
     }
+    /* Capture after publish: CE listeners already ran; capture is read-only. */
+    ae_sig_capture_on_signature(&sig);
     {
         const int64_t t_post1 = esp_timer_get_time();
         const uint32_t pus =
@@ -340,6 +396,7 @@ esp_err_t ae_device_poll(void)
     }
     s_diag_publish_count++;
     maybe_diag_log();
+    maybe_sig_capture_drain();
     return ESP_OK;
 }
 

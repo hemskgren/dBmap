@@ -23,6 +23,7 @@ Initial Ear application for ESP32-S3 + one I2S MEMS microphone.
 | `protocol_version` | `1` | Observation envelope version |
 | `detector_kind` | `"rms_activity"` | Windowed RMS activity (not a sound-family classifier) |
 | `detector_version` | `1` | Detector implementation version |
+| `AE_SIG_CAPTURE` | `true`/`false` | Bench AE signature CSV capture (`CONFIG_DBMAP_EAR_AE_SIG_CAPTURE`; EAR `sdkconfig.defaults` = y) |
 
 ### Sequence-number NVS strategy
 

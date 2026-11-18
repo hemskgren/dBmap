@@ -69,6 +69,8 @@ GROUP_KEYS: dict[str, tuple[str, ...]] = {
         "EAR_OBS_L2",
         "EAR_OBS_L2_PUBLISH",
         "EAR_OBS_SERIAL_DIAG",
+        # AE signature CSV capture (AS-001 calibration); ear sdkconfig.defaults on.
+        "EAR_AE_SIG_CAPTURE",
     ),
     # Platform Output hardware profile pins (defaults today; future per-board overlays).
     "output": (
