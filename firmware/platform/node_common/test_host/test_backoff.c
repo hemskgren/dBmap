@@ -123,6 +123,27 @@ static void test_independent_state(void)
     EXPECT(https.current_delay_ms == https_cfg.initial_ms);
 }
 
+static void test_wifi_resets_only_after_stable_address(void)
+{
+    sp_backoff_t wifi;
+    sp_backoff_config_t cfg;
+    sp_backoff_config_wifi(&cfg);
+    EXPECT(cfg.initial_ms == 1000);
+    EXPECT(cfg.max_ms == 60000);
+    EXPECT(cfg.jitter_percent == 20);
+    EXPECT(cfg.stable_reset_ms == 30000);
+    sp_backoff_init(&wifi, &cfg);
+    sp_backoff_note_failure(&wifi, 0);
+    sp_backoff_note_failure(&wifi, 1000);
+    EXPECT(wifi.consecutive_failures == 2);
+    sp_backoff_note_success(&wifi, 5000);
+    EXPECT(wifi.consecutive_failures == 2);
+    EXPECT(sp_backoff_poll_stable(&wifi, 5000 + 29999) == false);
+    EXPECT(sp_backoff_poll_stable(&wifi, 5000 + 30000) == true);
+    EXPECT(wifi.consecutive_failures == 0);
+    EXPECT(wifi.current_delay_ms == cfg.initial_ms);
+}
+
 static void test_in_flight_and_ready(void)
 {
     sp_backoff_t state;
@@ -146,6 +167,7 @@ int main(void)
     test_overflow_safe();
     test_jitter_bounds();
     test_reset_and_stable();
+    test_wifi_resets_only_after_stable_address();
     test_independent_state();
     test_in_flight_and_ready();
     if (g_failures != 0) {

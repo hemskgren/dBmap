@@ -21,6 +21,12 @@ typedef esp_err_t (*sp_ota_acoustic_close_fn)(void);
  */
 esp_err_t sp_ota_register_acoustic_close(sp_ota_acoustic_close_fn fn);
 
+/**
+ * Invoke the registered Ear acoustic-close callback (OTA / Stage 4).
+ * Returns ESP_OK when no callback is registered (Output / intentional no-op).
+ */
+esp_err_t sp_ota_invoke_acoustic_close(void);
+
 /* Download Desired esp-output.bin into the inactive OTA slot. Fail closed: abort keeps running image. */
 esp_err_t sp_ota_apply(
     const sp_effective_t *cfg,

@@ -80,6 +80,9 @@ static void test_connect_accepted_no_event_timeout_recovery(void)
     EXPECT(sm.reconnect_armed == true);
     EXPECT(sm.in_flight == false);
     EXPECT(sm.watchdog_armed == false);
+    EXPECT(sm.allow_late_ip == true);
+    EXPECT(sm.late_ip_generation == gen);
+    EXPECT(sm.disconnect_before_next_connect == true);
 }
 
 static void test_stale_watchdog_after_newer_attempt(void)
@@ -224,9 +227,16 @@ static void test_boot_timeout_late_got_ip_ignored_after_newer_attempt(void)
 
     (void)sp_wifi_reconnect_sm_on_boot_wait_timeout(&sm);
     EXPECT(sm.reconnect_armed == true);
+    EXPECT(sm.disconnect_before_next_connect == true);
 
-    /* Newer attempt starts before late IP arrives. */
-    (void)sp_wifi_reconnect_sm_on_reconnect_timer(&sm, false, false);
+    /* Backoff timer asks for a disconnect, then the disconnect starts connect. */
+    sp_wifi_sm_result_t timer =
+        sp_wifi_reconnect_sm_on_reconnect_timer(&sm, false, false);
+    EXPECT(timer.action == SP_WIFI_SM_DISCONNECT_FOR_RETRY);
+    sp_wifi_sm_result_t disc =
+        sp_wifi_reconnect_sm_on_disconnected(&sm, false);
+    EXPECT(disc.action == SP_WIFI_SM_START_CONNECT);
+    EXPECT(disc.skip_backoff == true);
     (void)sp_wifi_reconnect_sm_on_connect_accepted(&sm);
     EXPECT(sm.connect_generation == 2);
     EXPECT(sm.in_flight == true);
@@ -246,6 +256,7 @@ static void test_boot_timeout_late_got_ip_ignored_after_newer_attempt(void)
     (void)sp_wifi_reconnect_sm_on_connect_accepted(&sm); /* gen 1 */
     (void)sp_wifi_reconnect_sm_on_boot_wait_timeout(&sm);
     (void)sp_wifi_reconnect_sm_on_reconnect_timer(&sm, false, false);
+    (void)sp_wifi_reconnect_sm_on_disconnected(&sm, false); /* intentional */
     (void)sp_wifi_reconnect_sm_on_connect_accepted(&sm); /* gen 2 */
     (void)sp_wifi_reconnect_sm_on_disconnected(&sm, false);
     EXPECT(sm.reconnect_armed == true);
@@ -321,6 +332,90 @@ static void test_in_flight_timeout_constant_matches_boot_wait(void)
     EXPECT(SP_WIFI_IN_FLIGHT_TIMEOUT_MS == 30000u);
 }
 
+static void test_watchdog_then_late_got_ip(void)
+{
+    sp_wifi_reconnect_sm_t sm;
+    sp_wifi_reconnect_sm_init(&sm, 30000);
+    sp_wifi_reconnect_sm_claim_in_flight(&sm);
+    sp_wifi_sm_result_t accepted = sp_wifi_reconnect_sm_on_connect_accepted(&sm);
+
+    sp_wifi_sm_result_t wd =
+        sp_wifi_reconnect_sm_on_watchdog(&sm, accepted.watchdog_generation, false);
+    EXPECT(wd.action == SP_WIFI_SM_SCHEDULE_RECONNECT);
+    EXPECT(sm.allow_late_ip == true);
+
+    sp_wifi_sm_result_t late = sp_wifi_reconnect_sm_on_got_ip(&sm);
+    EXPECT(late.ip_acquired == true);
+    EXPECT(late.cancel_reconnect_timer == true);
+    EXPECT(sm.reconnect_armed == false);
+    EXPECT(sm.allow_late_ip == false);
+    EXPECT(sm.disconnect_before_next_connect == false);
+}
+
+static void test_lost_ip_clears_hold_and_accepts_renewed_lease(void)
+{
+    sp_wifi_reconnect_sm_t sm;
+    sp_wifi_reconnect_sm_init(&sm, 30000);
+    sp_wifi_reconnect_sm_claim_in_flight(&sm);
+    (void)sp_wifi_reconnect_sm_on_connect_accepted(&sm);
+    sp_wifi_sm_result_t got = sp_wifi_reconnect_sm_on_got_ip(&sm);
+    EXPECT(got.ip_acquired == true);
+
+    sp_wifi_sm_result_t lost = sp_wifi_reconnect_sm_on_lost_ip(&sm, false);
+    EXPECT(lost.action == SP_WIFI_SM_SCHEDULE_RECONNECT);
+    EXPECT(lost.cancel_watchdog == true);
+    EXPECT(sm.accept_renewed_ip == true);
+    EXPECT(sm.disconnect_before_next_connect == true);
+    EXPECT(sm.in_flight == false);
+    EXPECT(sm.reconnect_armed == true);
+
+    sp_wifi_sm_result_t renewed = sp_wifi_reconnect_sm_on_got_ip(&sm);
+    EXPECT(renewed.ip_acquired == true);
+    EXPECT(sm.accept_renewed_ip == false);
+    EXPECT(sm.reconnect_armed == false);
+    EXPECT(sm.disconnect_before_next_connect == false);
+}
+
+static void test_reconnect_arm_failure_keeps_one_reservation(void)
+{
+    sp_wifi_reconnect_sm_t sm;
+    sp_wifi_reconnect_sm_init(&sm, 30000);
+    sp_wifi_sm_result_t disc = sp_wifi_reconnect_sm_on_disconnected(&sm, false);
+    EXPECT(disc.action == SP_WIFI_SM_SCHEDULE_RECONNECT);
+
+    sp_wifi_sm_result_t failed = sp_wifi_reconnect_sm_on_reconnect_arm_failed(&sm);
+    EXPECT(failed.action == SP_WIFI_SM_SCHEDULE_RECONNECT);
+    EXPECT(failed.defer_arm_to_worker == true);
+    EXPECT(sm.reconnect_armed == true);
+    EXPECT(sm.in_flight == false);
+    EXPECT(sp_wifi_reconnect_sm_can_schedule(&sm) == false);
+
+    sp_wifi_sm_result_t again = sp_wifi_reconnect_sm_on_reconnect_arm_failed(&sm);
+    EXPECT(again.defer_arm_to_worker == true);
+    EXPECT(sm.reconnect_armed == true);
+    EXPECT(sp_wifi_reconnect_sm_can_schedule(&sm) == false);
+}
+
+static void test_disconnect_wait_then_start_without_extra_backoff(void)
+{
+    sp_wifi_reconnect_sm_t sm;
+    sp_wifi_reconnect_sm_init(&sm, 30000);
+    sp_wifi_reconnect_sm_claim_in_flight(&sm);
+    (void)sp_wifi_reconnect_sm_on_connect_accepted(&sm);
+    (void)sp_wifi_reconnect_sm_on_watchdog(&sm, sm.watchdog_generation, false);
+
+    sp_wifi_sm_result_t timer =
+        sp_wifi_reconnect_sm_on_reconnect_timer(&sm, false, false);
+    EXPECT(timer.action == SP_WIFI_SM_DISCONNECT_FOR_RETRY);
+    EXPECT(timer.arm_watchdog == true);
+    EXPECT(sm.awaiting_disconnect == true);
+
+    sp_wifi_sm_result_t disc = sp_wifi_reconnect_sm_on_disconnected(&sm, false);
+    EXPECT(disc.action == SP_WIFI_SM_START_CONNECT);
+    EXPECT(disc.skip_backoff == true);
+    EXPECT(sm.awaiting_disconnect == false);
+}
+
 static void test_reason_2_and_205_generic_path(void)
 {
     /* Reasons 2/205 share on_disconnected — no special branch in the SM. */
@@ -347,6 +442,10 @@ int main(void)
     test_ota_pending_behavior();
     test_reconnect_timer_skips_when_has_ip();
     test_in_flight_timeout_constant_matches_boot_wait();
+    test_watchdog_then_late_got_ip();
+    test_lost_ip_clears_hold_and_accepts_renewed_lease();
+    test_reconnect_arm_failure_keeps_one_reservation();
+    test_disconnect_wait_then_start_without_extra_backoff();
     test_reason_2_and_205_generic_path();
 
     if (g_failures != 0) {

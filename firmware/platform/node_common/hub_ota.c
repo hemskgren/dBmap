@@ -38,6 +38,14 @@ esp_err_t sp_ota_register_acoustic_close(sp_ota_acoustic_close_fn fn)
     return ESP_OK;
 }
 
+esp_err_t sp_ota_invoke_acoustic_close(void)
+{
+    if (s_acoustic_close == NULL) {
+        return ESP_OK;
+    }
+    return s_acoustic_close();
+}
+
 static esp_err_t publish_ota_status(
     const sp_effective_t *cfg,
     const char *event,
@@ -116,8 +124,8 @@ static void persist_pending_and_reboot(
     }
 
     /* Ear may close an open Observation episode (bounded PUBACK). Output: NULL no-op. */
-    if (s_acoustic_close != NULL) {
-        esp_err_t close_err = s_acoustic_close();
+    {
+        esp_err_t close_err = sp_ota_invoke_acoustic_close();
         if (close_err == ESP_OK) {
             ESP_LOGI(TAG, "acoustic close before OTA reboot completed");
         } else {

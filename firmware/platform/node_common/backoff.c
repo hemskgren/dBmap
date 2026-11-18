@@ -104,7 +104,9 @@ void sp_backoff_config_wifi(sp_backoff_config_t *out)
     out->initial_ms = SP_BACKOFF_WIFI_INITIAL_MS;
     out->max_ms = SP_BACKOFF_WIFI_MAX_MS;
     out->jitter_percent = 20;
-    out->stable_reset_ms = 0;
+    /* Same stable window as MQTT (existing Kconfig, default 30 s). A brief
+     * GOT_IP must not clear the failure progression. */
+    out->stable_reset_ms = SP_BACKOFF_MQTT_STABLE_MS;
 }
 
 void sp_backoff_config_https(sp_backoff_config_t *out)
