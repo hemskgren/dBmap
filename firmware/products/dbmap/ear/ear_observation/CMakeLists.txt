@@ -7,8 +7,10 @@ idf_component_register(
         "ce_promotion_bridge.c"
         "ear_obs_manager.c"
         "ear_promotion_policy.c"
+        "ear_siren_se_public.c"
         "ear_critical_path.c"
         "ear_obs_ota_cleanup.c"
+        "ear_cls_progressive.c"
         "ear_observation.c"
     INCLUDE_DIRS "include"
     REQUIRES

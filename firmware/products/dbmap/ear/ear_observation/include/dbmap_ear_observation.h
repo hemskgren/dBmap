@@ -7,6 +7,7 @@
 #include "dbmap_acoustic_l1.h"
 #include "dbmap_acoustic_l2.h"
 #include "dbmap_observation_payload.h"
+#include "ear_cls_progressive.h"
 #include "sp_types.h"
 #include "esp_err.h"
 
@@ -75,7 +76,10 @@ esp_err_t dbmap_ear_observation_publish(
     const dbmap_l2_interval_t *dynamics
 );
 
-/** Same as dbmap_ear_observation_publish with optional context.origin. */
+/**
+ * Same as dbmap_ear_observation_publish with optional context.origin and
+ * optional progressive assessment (ear_hyp_v2). assessment NULL omits the key.
+ */
 esp_err_t dbmap_ear_observation_publish_ex(
     const sp_effective_t *cfg,
     const char *observation_id,
@@ -90,7 +94,8 @@ esp_err_t dbmap_ear_observation_publish_ex(
     const dbmap_l0_interval_t *measurements,
     const dbmap_l1_interval_t *signature,
     const dbmap_l2_interval_t *dynamics,
-    const char *origin
+    const char *origin,
+    const ear_cls_assessment_wire_t *assessment
 );
 
 /**

@@ -174,16 +174,42 @@ the observation interval; the hub normalizes it to UTC.
 `episode_duration_ms` spans the Ear episode when emissions share an
 `observation_id`. `timing_quality` is `synchronized`, `estimated`, or
 `unsynchronized`. `acoustic.classification` (schema `l2`) and `spatial.bearing`
-may be `null`. Optional EAR fields `acoustic.assessment` (`schema: ear_hyp_v1`),
-`acoustic.evidence` (`schema: ear_ev_v1`), and development-only
-`acoustic.debug` (`schema: ear_dbg_v1`) may be omitted or null; when present they
-use strict nested objects (`extra` forbidden). These `ear_*` schemas are
-**dBmap-specific** product schemas on the Observation envelope, not universal
-platform requirements ([Sensor Platform architecture](./sensor-platform-architecture.md)).
+may be `null`. Optional EAR fields `acoustic.assessment`
+(`schema: ear_hyp_v1` or `ear_hyp_v2`), `acoustic.evidence` (`schema: ear_ev_v1`),
+and development-only `acoustic.debug` (`schema: ear_dbg_v1`) may be omitted or
+null; when present they use strict nested objects (`extra` forbidden). These
+`ear_*` schemas are **dBmap-specific** product schemas on the Observation
+envelope, not universal platform requirements
+([Sensor Platform architecture](./sensor-platform-architecture.md)).
 Do not place EAR hypotheses in `classification.hints`. `spatial.position` is
 reserved (currently `null`). A future `unique_tracks` API metric (distinct
 `track_id`) is a separate follow-up; `unique_observations` continues to count
 distinct `observation_id` values only.
+
+#### `acoustic.assessment` schemas
+
+| Schema | Shape | Notes |
+| --- | --- | --- |
+| `ear_hyp_v1` | `primary.family` + `tier` (`possible`\|`probable`); optional `alternates` / `clutter` | Legacy EAR hypothesis. Hub still accepts. Does **not** carry per-level confidence. |
+| `ear_hyp_v2` | Ordered `path[]` of `{id, confidence}` (0.0–1.0), root→deepest | Progressive taxonomy reporting. Confidence is independent of depth. Not a silent reinterpretation of v1. |
+
+Example `ear_hyp_v2`:
+
+```json
+{
+  "schema": "ear_hyp_v2",
+  "version": 1,
+  "path": [
+    {"id": "ALARM", "confidence": 0.95},
+    {"id": "SE_PUBLIC_ALERT", "confidence": 0.90},
+    {"id": "FARAN_OVER", "confidence": 0.72}
+  ]
+}
+```
+
+A path may stop at a broad node (e.g. only `ALARM`). Hub stores each MQTT report
+as today; refinement keeps the same `identity.observation_id` with a new
+`sequence_number`.
 
 Retained observations are rejected. Duplicate MQTT delivery is safe when the
 same `(node_id, sequence_number)` pair is reused. Stored `payload_json` preserves
@@ -244,8 +270,11 @@ level. Health and keepalive may also include an optional compact `diag`
 object when RAM diagnostics have something to report (for example
 `wifi_disconnects`, `mqtt_disconnects`, `mqtt_reconnects`,
 `mqtt_connect_attempts`, `mqtt_connect_failures`, `desired_failures`,
-and a one-shot `last_reset_reason` after boot). Hello stays lean and omits
-`diag`. Per-microphone transport error counters
+a one-shot `last_reset_reason` after boot, and an anomaly-only nested
+`mem` object when heap/stack pressure is detected). Healthy memory
+samples are omitted; unchanged memory anomalies are not re-attached until
+the fingerprint changes or the condition clears and returns. Hello stays
+lean and omits `diag`. Per-microphone transport error counters
 (`read_errors`, `timeout_reads`, `empty_reads`, `missing_data`,
 `clipped_samples`, plus `partial_reads` / `counters_capped`) are also
 diagnostics-only on health/keepalive: they are omitted from hello. On

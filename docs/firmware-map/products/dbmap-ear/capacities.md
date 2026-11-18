@@ -60,6 +60,9 @@ not an identity or promotion threshold.
 | Item | Value | Class | Source | Controls | Binding |
 | --- | --- | --- | --- | --- | --- |
 | Signature history capacity | 32 | `configured` | `AE_HISTORY_CAPACITY` in `ae_history.h`; hint in `ae_config_set_defaults` | Global rolling signature ring | compile-time |
+| AE signature CSV capture | on (EAR `sdkconfig.defaults`) | `configured` | `CONFIG_DBMAP_EAR_AE_SIG_CAPTURE=y` in `firmware/esp-ear/sdkconfig.defaults`; Kconfig symbol default n; List key `EAR_AE_SIG_CAPTURE` | Bounded UART CSV for AS-001 calibration | kconfig |
+| Capture buffer capacity | 48 | `configured` | `AE_SIG_CAPTURE_CAPACITY` in `ae_sig_capture.h` | Max stored AE windows per session | compile-time |
+| Reported map key | `AE_SIG_CAPTURE` bool | `configured` | `capabilities.observation.AE_SIG_CAPTURE` in `ear_observation.c` | Build metadata visible on hello/health | compile-time |
 
 ---
 

@@ -1,8 +1,16 @@
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    Tag,
+    field_validator,
+    model_validator,
+)
 
 
 def normalize_chip_mac(value: str | None) -> str | None:
@@ -618,7 +626,16 @@ class ObservationHypothesisItem(BaseModel):
     tier: Literal["possible", "probable"]
 
 
-class ObservationAssessment(BaseModel):
+class ObservationAssessmentPathNode(BaseModel):
+    """One node in an ear_hyp_v2 taxonomy path (confidence is independent of depth)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=64)
+    confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
+
+
+class ObservationAssessmentV1(BaseModel):
     """EAR preliminary assessment (schema ear_hyp_v1). Not Hub classification."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -628,6 +645,36 @@ class ObservationAssessment(BaseModel):
     primary: ObservationHypothesisItem
     alternates: list[ObservationHypothesisItem] = Field(default_factory=list, max_length=8)
     clutter: ObservationHypothesisItem | None = None
+
+
+class ObservationAssessmentV2(BaseModel):
+    """
+    EAR hierarchical assessment (schema ear_hyp_v2).
+
+    Ordered root→deepest path with independent per-node confidence.
+    Not a reinterpretation of ear_hyp_v1 (which uses primary.family + tier).
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    assessment_schema: Literal["ear_hyp_v2"] = Field(alias="schema")
+    version: Literal[1] = 1
+    path: list[ObservationAssessmentPathNode] = Field(min_length=1, max_length=8)
+
+
+def _assessment_schema_discriminator(value: Any) -> str:
+    if isinstance(value, dict):
+        schema = value.get("schema", value.get("assessment_schema"))
+        return schema if isinstance(schema, str) else ""
+    schema = getattr(value, "assessment_schema", None)
+    return schema if isinstance(schema, str) else ""
+
+
+ObservationAssessment = Annotated[
+    Annotated[ObservationAssessmentV1, Tag("ear_hyp_v1")]
+    | Annotated[ObservationAssessmentV2, Tag("ear_hyp_v2")],
+    Discriminator(_assessment_schema_discriminator),
+]
 
 
 class ObservationEvidencePathVotes(BaseModel):

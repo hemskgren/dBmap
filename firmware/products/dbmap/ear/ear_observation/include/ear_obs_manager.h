@@ -14,6 +14,7 @@
 #include "ae_types.h"
 #include "ce_engine.h"
 #include "ce_types.h"
+#include "ear_cls_progressive.h"
 #include "sp_episode_registry.h"
 
 #include <stdbool.h>
@@ -87,7 +88,35 @@ typedef enum {
     EAR_OBS_END_HINT_ACTIVITY = 1,
     EAR_OBS_END_OTA = 2,
     EAR_OBS_END_EXPLICIT = 3,
+    /** AS002 usable-window tonal support absent longer than configured hold. */
+    EAR_OBS_END_SIGNATURE = 4,
 } ear_obs_end_reason_t;
+
+/**
+ * Activity END fan-in kind. Distinguishes ambient RMS END from invalid-hold
+ * safety so AS002 can ignore the former but not the latter.
+ */
+typedef enum {
+    /**
+     * Natural / relative / secondary-ambient RMS END.
+     * Ends non-AS002 bindings; leaves AS002 signature-backed Obs open.
+     */
+    EAR_OBS_ACT_END_AMBIENT = 1,
+    /**
+     * Activity max-invalid-hold safety (CONFIG_DBMAP_EAR_OBS_MAX_INVALID_HOLD_MS).
+     * Ends every open binding, including AS002.
+     */
+    EAR_OBS_ACT_END_INVALID_HOLD = 2,
+} ear_obs_activity_end_kind_t;
+
+/**
+ * Default AS002 signature-absence hold (ms). Conservative within the reviewed
+ * 45–60 s range so short-pulse (~14 s) gaps do not premature-END. Overridden
+ * by ear_obs_manager_config_t.as002_signature_absence_hold_ms / Kconfig.
+ */
+#ifndef EAR_OBS_AS002_SIGNATURE_ABSENCE_HOLD_MS_DEFAULT
+#define EAR_OBS_AS002_SIGNATURE_ABSENCE_HOLD_MS_DEFAULT 60000u
+#endif
 
 typedef struct {
     uint64_t candidate_id;
@@ -95,6 +124,12 @@ typedef struct {
     char observation_id[SP_OBS_EPISODE_ID_LEN];
     bool ce_live;
     int64_t start_mono_us;
+    /**
+     * Progressive ALARM taxonomy assessment for this open episode.
+     * present=false when no classification evidence yet. Never implies a
+     * new Observation — same observation_id for the episode.
+     */
+    ear_cls_assessment_wire_t assessment;
 } ear_obs_binding_view_t;
 
 typedef bool (*ear_obs_emit_start_fn)(
@@ -141,6 +176,11 @@ typedef struct {
      * ear_obs_manager_on_activity_periodic_hint (RMS cadence + L0 windows).
      */
     bool enable_poll_periodic;
+    /**
+     * AS002: usable non-tonal windows must accumulate this many ms before
+     * signature END. 0 → EAR_OBS_AS002_SIGNATURE_ABSENCE_HOLD_MS_DEFAULT.
+     */
+    uint32_t as002_signature_absence_hold_ms;
 } ear_obs_manager_config_t;
 
 typedef struct {
@@ -177,6 +217,16 @@ typedef struct {
     uint32_t periodic_hint;
     /** Promotion callback arrived while EAR_OBS_MGR_EVENT_Q was full. */
     uint32_t evq_dropped;
+    /** AS002 signature-absence END emissions. */
+    uint32_t as002_sig_end;
+    /** AS002 loss timer resets on current-window tonal support. */
+    uint32_t as002_sig_support_reset;
+    /** AS002 loss timer advances on usable non-tonal windows. */
+    uint32_t as002_sig_absent_advance;
+    /** AS002 loss timer paused (INVALID/unusable). */
+    uint32_t as002_sig_absent_pause;
+    /** Ambient activity END skipped an AS002 binding. */
+    uint32_t activity_end_as002_skipped;
 } ear_obs_manager_diag_t;
 
 typedef struct ear_obs_manager ear_obs_manager_t;
@@ -234,17 +284,42 @@ void ear_obs_manager_on_candidate_evidence(
 );
 
 /**
- * RMS activity END hint — authoritative Observation termination.
- * Ends every currently open binding immediately (exactly one END each),
- * including when ce_live is true. Clears local CE association with the slot.
- * Does not wait for CE EXIT. EXIT alone never ENDs; EXIT matching uses
- * (candidate_id, promotion_gen). Repeated hints are no-ops once bindings
- * are gone. Pending drain runs after all targeted ends.
+ * RMS activity END hint.
+ *
+ * EAR_OBS_ACT_END_AMBIENT: ends open bindings except AS002 (signature-backed
+ * Obs ignore ambient RMS END).
+ * EAR_OBS_ACT_END_INVALID_HOLD: ends every open binding, including AS002
+ * (preserves max-invalid-hold safety).
+ *
+ * Does not wait for CE EXIT. EXIT alone never ENDs. Pending drain runs after
+ * targeted ends. Repeated hints are no-ops once targeted bindings are gone.
  */
 void ear_obs_manager_on_activity_end_hint(
     ear_obs_manager_t *om,
+    ear_obs_activity_end_kind_t kind,
     int64_t interval_start_mono_us,
     int64_t interval_end_mono_us,
+    bool has_signal_level_dbfs,
+    float signal_level_dbfs
+);
+
+/**
+ * Feed one siren current-window outcome into open AS002 bindings.
+ *
+ * usable + tonal_vote → reset absence hold (global siren timbre support; not
+ * source-specific identity).
+ * usable + !tonal_vote → advance absence hold by window_ms; END that binding
+ * alone when hold expires.
+ * !usable → pause hold (unknown evidence; never counts as support).
+ *
+ * Does not use consecutive/streak as current support.
+ */
+void ear_obs_manager_on_as002_siren_window(
+    ear_obs_manager_t *om,
+    bool usable,
+    bool tonal_vote,
+    uint32_t window_ms,
+    int64_t window_end_mono_us,
     bool has_signal_level_dbfs,
     float signal_level_dbfs
 );
@@ -259,6 +334,39 @@ void ear_obs_manager_on_activity_periodic_hint(
     int64_t interval_end_mono_us,
     bool has_signal_level_dbfs,
     float signal_level_dbfs
+);
+
+/**
+ * Arm progressive evidence applied once at the next Observation bind
+ * (START phase), before emit_start. Does not promote or create episodes.
+ * Cleared after consumption or on engine stop / forget_bindings.
+ */
+void ear_obs_manager_arm_cls_evidence(
+    ear_obs_manager_t *om,
+    const ear_cls_evidence_t *evidence
+);
+
+/**
+ * Feed progressive ALARM-taxonomy evidence into an open Observation without
+ * promoting again. Refinement updates assessment only; observation_id is
+ * unchanged. phase selects START / PERIODIC / END correction rules.
+ * Returns false if candidate has no open binding.
+ */
+bool ear_obs_manager_feed_cls_evidence(
+    ear_obs_manager_t *om,
+    uint64_t candidate_id,
+    const ear_cls_evidence_t *evidence,
+    ear_cls_phase_t phase
+);
+
+/**
+ * Copy current progressive assessment for an open binding into out_wire.
+ * Returns false when unbound or assessment not present.
+ */
+bool ear_obs_manager_get_cls_assessment(
+    const ear_obs_manager_t *om,
+    uint64_t candidate_id,
+    ear_cls_assessment_wire_t *out_wire
 );
 
 void ear_obs_manager_force_end_all(
@@ -292,6 +400,18 @@ void ear_obs_manager_fill_snapshot_from_candidate(
 uint8_t ear_obs_manager_n_open(const ear_obs_manager_t *om);
 uint8_t ear_obs_manager_n_pending(const ear_obs_manager_t *om);
 uint8_t ear_obs_manager_n_held(const ear_obs_manager_t *om);
+
+/**
+ * True when an open or pending Observation already carries the given
+ * product-relevance profile stamp (e.g. AS-001 or AS-002). Used by Promotion
+ * Policy to prevent a second concurrent Observation for the same recognized
+ * acoustic signature while still allowing a different profile on the same EAR.
+ * profile_id AS_PROFILE_ID_NONE always returns false.
+ */
+bool ear_obs_manager_has_signature_observation(
+    const ear_obs_manager_t *om,
+    uint16_t relevance_profile_id
+);
 
 void ear_obs_manager_get_diag(const ear_obs_manager_t *om, ear_obs_manager_diag_t *out);
 
@@ -357,6 +477,15 @@ struct ear_obs_manager {
         float end_hint_level_dbfs;
         ear_obs_promote_snapshot_t snap;
         uint32_t evidence_updates;
+        /** Progressive ALARM taxonomy state (refinement; not a promote gate). */
+        ear_cls_state_t cls;
+        ear_cls_assessment_wire_t cls_wire;
+        /**
+         * AS002 signature-absence tracking (global siren current-window votes).
+         * Accumulates only on usable non-tonal windows; paused on unusable.
+         */
+        bool as002_sig_track;
+        uint32_t as002_absent_ms;
     } bind[EAR_OBS_MGR_BINDING_CAP];
 
     struct {
@@ -367,6 +496,10 @@ struct ear_obs_manager {
     } evq[EAR_OBS_MGR_EVENT_Q];
     uint8_t evq_head;
     uint8_t evq_count;
+
+    /** One-shot evidence for the next allocate_and_bind (START). */
+    bool cls_arm_valid;
+    ear_cls_evidence_t cls_arm;
 };
 
 #ifdef __cplusplus

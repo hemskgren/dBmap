@@ -3778,7 +3778,26 @@ components:
       required:
         - measurements
       title: ObservationAcoustic
-    ObservationAssessment:
+    ObservationAssessmentPathNode:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - confidence
+      properties:
+        id:
+          type: string
+          minLength: 1
+          maxLength: 64
+          title: Id
+        confidence:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          title: Confidence
+      title: ObservationAssessmentPathNode
+      description: One ear_hyp_v2 taxonomy node (confidence independent of depth).
+    ObservationAssessmentV1:
       properties:
         schema:
           type: string
@@ -3807,8 +3826,46 @@ components:
       required:
         - schema
         - primary
-      title: ObservationAssessment
+      title: ObservationAssessmentV1
       description: EAR preliminary assessment (schema ear_hyp_v1). Not Hub classification.
+    ObservationAssessmentV2:
+      properties:
+        schema:
+          type: string
+          enum:
+            - ear_hyp_v2
+          title: Schema
+        version:
+          type: integer
+          enum:
+            - 1
+          title: Version
+          default: 1
+        path:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items:
+            $ref: "#/components/schemas/ObservationAssessmentPathNode"
+          title: Path
+      additionalProperties: false
+      type: object
+      required:
+        - schema
+        - path
+      title: ObservationAssessmentV2
+      description: >
+        EAR hierarchical assessment (schema ear_hyp_v2). Ordered root→deepest
+        path with independent per-node confidence. Distinct from ear_hyp_v1
+        (primary.family + tier); Hub does not reinterpret v1 as v2.
+    ObservationAssessment:
+      oneOf:
+        - $ref: "#/components/schemas/ObservationAssessmentV1"
+        - $ref: "#/components/schemas/ObservationAssessmentV2"
+      title: ObservationAssessment
+      description: >
+        EAR assessment union. ear_hyp_v1 (family/tier) and ear_hyp_v2
+        (path + per-node confidence) are both accepted; they are not equivalent.
     ObservationBearing:
       properties:
         deg:

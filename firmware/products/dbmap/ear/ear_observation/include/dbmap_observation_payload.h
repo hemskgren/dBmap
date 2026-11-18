@@ -6,6 +6,7 @@
 #include "dbmap_acoustic_l0.h"
 #include "dbmap_acoustic_l1.h"
 #include "dbmap_acoustic_l2.h"
+#include "ear_cls_progressive.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -58,6 +59,12 @@ typedef struct {
      */
     const dbmap_l2_interval_t *dynamics;
     /* classification always null on physical Ear path */
+    /**
+     * Optional EAR assessment (schema ear_hyp_v2). NULL omits the key.
+     * Emits ordered path[] of {id, confidence}. Hub also accepts legacy
+     * ear_hyp_v1; this builder emits v2 only.
+     */
+    const ear_cls_assessment_wire_t *assessment;
 
     /* spatial: bearing/position always null on physical Ear Stage 1 */
 } dbmap_observation_fields_t;

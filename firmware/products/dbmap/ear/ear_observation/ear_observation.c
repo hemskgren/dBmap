@@ -14,6 +14,7 @@
 #include "ce_engine.h"
 #include "ear_obs_manager.h"
 #include "ear_promotion_policy.h"
+#include "ear_siren_se_public.h"
 #include "ear_critical_path.h"
 #include "ear_obs_ota_cleanup.h"
 #include "ae_engine.h"
@@ -102,7 +103,9 @@ static bool s_mqtt_episode_rearm_required;
 static ce_engine_t s_ce;
 static ear_obs_manager_t s_obs_mgr;
 static ear_promotion_policy_t s_promo_pol;
+static ear_siren_se_public_t s_siren;
 static bool s_obs_mgr_ready;
+static bool s_siren_listener_bound;
 #if defined(CONFIG_DBMAP_EAR_AE_DIAG) && CONFIG_DBMAP_EAR_AE_DIAG
 static uint32_t s_obs_mgr_uart_diag_last_sig;
 #endif
@@ -640,6 +643,11 @@ static void observation_enrich(cJSON *state, const sp_effective_t *cfg, bool inc
     cJSON_AddBoolToObject(observation, "EAR_OBS_RELATIVE_END", false);
     cJSON_AddBoolToObject(observation, "EAR_OBS_REL_LATE_ARM", false);
 #endif
+#if defined(CONFIG_DBMAP_EAR_AE_SIG_CAPTURE) && CONFIG_DBMAP_EAR_AE_SIG_CAPTURE
+    cJSON_AddBoolToObject(observation, "AE_SIG_CAPTURE", true);
+#else
+    cJSON_AddBoolToObject(observation, "AE_SIG_CAPTURE", false);
+#endif
     cJSON_AddItemToObject(capabilities, "observation", observation);
 }
 
@@ -683,6 +691,7 @@ esp_err_t dbmap_ear_observation_publish(
         measurements,
         signature,
         dynamics,
+        NULL,
         NULL
     );
 }
@@ -701,7 +710,8 @@ esp_err_t dbmap_ear_observation_publish_ex(
     const dbmap_l0_interval_t *measurements,
     const dbmap_l1_interval_t *signature,
     const dbmap_l2_interval_t *dynamics,
-    const char *origin
+    const char *origin,
+    const ear_cls_assessment_wire_t *assessment
 )
 {
     if (cfg == NULL || cfg->identity.node_id[0] == '\0' || cfg->topics.observation[0] == '\0') {
@@ -795,6 +805,8 @@ esp_err_t dbmap_ear_observation_publish_ex(
         .measurements = measurements,
         .signature = signature,
         .dynamics = dynamics,
+        .assessment = (assessment != NULL && assessment->present) ? assessment
+                                                                  : NULL,
     };
 
     const int64_t t_pub0 = esp_timer_get_time();
@@ -1277,7 +1289,8 @@ static bool critical_publish_cb(
         &empty_iv,
         NULL,
         NULL,
-        origin
+        origin,
+        NULL
     );
     if (err != ESP_OK) {
         ESP_LOGW(
@@ -1339,7 +1352,9 @@ static bool mgr_emit_start(
         lvl = (double)local_iv.rms_mean_dbfs;
     }
 #endif
-    esp_err_t err = dbmap_ear_observation_publish(
+    const ear_cls_assessment_wire_t *assess =
+        (binding->assessment.present) ? &binding->assessment : NULL;
+    esp_err_t err = dbmap_ear_observation_publish_ex(
         s_cfg,
         binding->observation_id,
         has_lvl,
@@ -1352,7 +1367,9 @@ static bool mgr_emit_start(
         NULL,
         &local_iv,
         sig_ptr,
-        dyn_ptr
+        dyn_ptr,
+        NULL,
+        assess
     );
     if (err != ESP_OK) {
         note_reject_for_kind("start");
@@ -1417,7 +1434,9 @@ static bool mgr_emit_periodic(
         lvl = (double)local_iv.rms_mean_dbfs;
     }
 #endif
-    esp_err_t err = dbmap_ear_observation_publish(
+    const ear_cls_assessment_wire_t *assess =
+        (binding->assessment.present) ? &binding->assessment : NULL;
+    esp_err_t err = dbmap_ear_observation_publish_ex(
         s_cfg,
         binding->observation_id,
         has_lvl,
@@ -1430,7 +1449,9 @@ static bool mgr_emit_periodic(
         NULL,
         &local_iv,
         sig_ptr,
-        dyn_ptr
+        dyn_ptr,
+        NULL,
+        assess
     );
     if (err != ESP_OK) {
         note_reject_for_kind("periodic");
@@ -1488,7 +1509,9 @@ static bool mgr_emit_end(
         lvl = (double)local_iv.rms_mean_dbfs;
     }
 #endif
-    esp_err_t err = dbmap_ear_observation_publish(
+    const ear_cls_assessment_wire_t *assess =
+        (binding->assessment.present) ? &binding->assessment : NULL;
+    esp_err_t err = dbmap_ear_observation_publish_ex(
         s_cfg,
         binding->observation_id,
         has_lvl,
@@ -1501,7 +1524,9 @@ static bool mgr_emit_end(
         term,
         &local_iv,
         sig_ptr,
-        dyn_ptr
+        dyn_ptr,
+        NULL,
+        assess
     );
     if (err != ESP_OK) {
         note_reject_for_kind("end");
@@ -1536,6 +1561,61 @@ static void mgr_feed_evidence(int64_t now_mono_us)
         }
         ear_obs_manager_on_candidate_evidence(
             &s_obs_mgr, live.candidate_id, NULL, &live
+        );
+    }
+}
+
+static void siren_on_ae_signature(const ae_signature_t *sig, void *user)
+{
+    (void)user;
+    ear_siren_se_public_on_signature(&s_siren, sig);
+    if (!s_obs_mgr_ready) {
+        return;
+    }
+    /*
+     * AS002 signature-absence END uses current-window tonal_vote only
+     * (global siren timbre support — not source-specific identity).
+     */
+    ear_siren_last_window_t lw;
+    ear_siren_se_public_get_last_window(&s_siren, &lw);
+    if (lw.kind == EAR_SIREN_LAST_NONE) {
+        return;
+    }
+    const bool usable = (lw.kind == EAR_SIREN_LAST_USABLE);
+    ear_obs_manager_on_as002_siren_window(
+        &s_obs_mgr,
+        usable,
+        usable && lw.tonal_vote,
+        lw.window_ms,
+        lw.window_end_mono_us,
+        lw.has_rms_dbfs,
+        lw.rms_dbfs
+    );
+}
+
+/**
+ * Arm progressive evidence for the next promote START, and refine open
+ * Observations. Does not promote — policy_poll remains the gate.
+ */
+static void siren_apply_cls_evidence(void)
+{
+    if (!s_obs_mgr_ready) {
+        return;
+    }
+    ear_cls_evidence_t ev;
+    if (!ear_siren_se_public_fill_evidence(&s_siren, &ev)) {
+        return;
+    }
+    ear_obs_manager_arm_cls_evidence(&s_obs_mgr, &ev);
+    for (uint8_t i = 0u; i < EAR_OBS_MGR_BINDING_CAP; i++) {
+        if (!s_obs_mgr.bind[i].in_use) {
+            continue;
+        }
+        (void)ear_obs_manager_feed_cls_evidence(
+            &s_obs_mgr,
+            s_obs_mgr.bind[i].candidate_id,
+            &ev,
+            EAR_CLS_PHASE_PERIODIC
         );
     }
 }
@@ -1688,9 +1768,14 @@ static void handle_emission(const dbmap_activity_emission_t *emission)
                 emission->signal_level_dbfs
             );
         } else if (emission->kind == DBMAP_ACTIVITY_EMIT_END) {
-            /* RMS END → manager hint (latch or immediate); manager owns END. */
+            /* RMS END → manager hint; INVALID_HOLD still ends AS002. */
+            const ear_obs_activity_end_kind_t end_kind =
+                (emission->termination == DBMAP_ACTIVITY_TERM_INVALID_HOLD)
+                    ? EAR_OBS_ACT_END_INVALID_HOLD
+                    : EAR_OBS_ACT_END_AMBIENT;
             ear_obs_manager_on_activity_end_hint(
                 &s_obs_mgr,
+                end_kind,
                 emission->interval_start_mono_us,
                 emission->interval_end_mono_us,
                 true,
@@ -2380,8 +2465,12 @@ static void activity_task(void *arg)
         if (s_obs_mgr_ready) {
             const int64_t now_us = esp_timer_get_time();
             const int64_t t_pm0 = now_us;
+            /* Siren evidence was updated in AE listeners during ae_device_poll. */
+            siren_apply_cls_evidence();
             ear_promotion_policy_poll(&s_promo_pol, now_us);
             ear_obs_manager_poll(&s_obs_mgr, now_us);
+            /* Re-apply after ENTER so START-armed path can refine same cycle. */
+            siren_apply_cls_evidence();
             mgr_feed_evidence(now_us);
             {
                 const uint32_t dt =
@@ -2960,13 +3049,29 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg)
         mcfg.emit_ctx = NULL;
         /* PERIODIC driven by RMS activity hints (L0 window cadence). */
         mcfg.enable_poll_periodic = false;
+#if defined(CONFIG_DBMAP_EAR_OBS_AS002_SIGNATURE_ABSENCE_HOLD_MS)
+        mcfg.as002_signature_absence_hold_ms =
+            (uint32_t)CONFIG_DBMAP_EAR_OBS_AS002_SIGNATURE_ABSENCE_HOLD_MS;
+#else
+        mcfg.as002_signature_absence_hold_ms =
+            EAR_OBS_AS002_SIGNATURE_ABSENCE_HOLD_MS_DEFAULT;
+#endif
         ear_obs_manager_init(&s_obs_mgr, &mcfg);
         ear_promotion_policy_init(&s_promo_pol, &s_ce, &s_obs_mgr);
+        ear_siren_se_public_init(&s_siren);
+        ear_promotion_policy_set_siren(&s_promo_pol, &s_siren);
         ce_set_promotion_cb(&s_ce, ear_obs_manager_on_promotion, &s_obs_mgr);
+        s_siren_listener_bound = false;
+        if (mcfg.ae != NULL) {
+            s_siren_listener_bound =
+                ae_add_signature_listener(mcfg.ae, siren_on_ae_signature, NULL);
+        }
         s_obs_mgr_ready = true;
         ESP_LOGI(
             TAG,
-            "EAR obs manager ready (promotion-gated; RMS not Obs authority)"
+            "EAR obs manager ready (promotion-gated; RMS not Obs authority; "
+            "siren_listener=%d)",
+            s_siren_listener_bound ? 1 : 0
         );
 #if defined(CONFIG_DBMAP_EAR_OBS_CRITICAL_PATH) && CONFIG_DBMAP_EAR_OBS_CRITICAL_PATH
         {

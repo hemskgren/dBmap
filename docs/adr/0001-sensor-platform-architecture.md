@@ -63,7 +63,7 @@ Canonical concepts:
 | **Track** | Continuity of a physical or pattern source on one device across Observation episodes (`track_id` when present) |
 | **Event** | Hub-correlated multi-device (or multi-track) occurrence; **not** a Hub first-class entity yet |
 
-The generic Observation **envelope** (protocol version, identity, context, spatial, message type) must support **multiple product schema families**. Acoustic L0/L1/L2 and `ear_hyp_v1` / `ear_ev_v1` / `ear_dbg_v1` are **dBmap-specific schemas**, not universal platform requirements. Future products must not be forced to provide acoustic fields.
+The generic Observation **envelope** (protocol version, identity, context, spatial, message type) must support **multiple product schema families**. Acoustic L0/L1/L2 and `ear_hyp_v1` / `ear_hyp_v2` / `ear_ev_v1` / `ear_dbg_v1` are **dBmap-specific schemas**, not universal platform requirements. Future products must not be forced to provide acoustic fields. `ear_hyp_v2` adds an ordered taxonomy path with per-node confidence; Hub continues to accept `ear_hyp_v1` without reinterpretation.
 
 **Current Hub extension** (optional `identity.track_id`, optional acoustic `assessment` / `evidence` / `debug`, `termination_reason: report_rotation`) remains **protocol v1** and **backward compatible** with firmware that omits those fields. Hub acceptance does not imply firmware already emits them, and does not imply Hub product interpretation of assessment families.
 

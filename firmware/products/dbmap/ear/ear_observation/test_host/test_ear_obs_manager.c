@@ -138,6 +138,7 @@ static bool emit_end(
         g_emit.reenter_end = false;
         ear_obs_manager_on_activity_end_hint(
             g_emit.reenter_om,
+            EAR_OBS_ACT_END_AMBIENT,
             interval_start_mono_us,
             interval_end_mono_us,
             has_signal_level_dbfs,
@@ -810,11 +811,11 @@ static void test_end_once(void)
     plant(&f.ce, 110u, AE_CAND_ACTIVE, 3u, -30.0f);
     EXPECT(promote_with_reserve(&f, 110u, 1000));
     EXPECT(ear_obs_manager_binding_ce_live(&f.om, 110u));
-    ear_obs_manager_on_activity_end_hint(&f.om, 1500, 2000, true, -38.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 1500, 2000, true, -38.0f);
     EXPECT(g_emit.ends == 1u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(sp_episode_registry_in_use_count(&f.reg) == 0u);
-    ear_obs_manager_on_activity_end_hint(&f.om, 2500, 3000, true, -38.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 2500, 3000, true, -38.0f);
     EXPECT(g_emit.ends == 1u);
     fixture_fini(&f);
 }
@@ -832,7 +833,7 @@ static void test_end_order_a_end_before_exit(void)
     memcpy(obs_id, g_emit.last_obs_id, sizeof(obs_id));
 
     /* Activity END terminates immediately while ce_live remains true. */
-    ear_obs_manager_on_activity_end_hint(&f.om, 1800, 2000, true, -45.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 1800, 2000, true, -45.0f);
     EXPECT(g_emit.ends == 1u);
     EXPECT(g_emit.last_end_reason == EAR_OBS_END_HINT_ACTIVITY);
     EXPECT(g_emit.last_end_cand == 400u);
@@ -844,7 +845,7 @@ static void test_end_order_a_end_before_exit(void)
     EXPECT(!ear_obs_manager_binding_end_hint_latched(&f.om, 400u));
 
     /* Repeated END: no second emission. */
-    ear_obs_manager_on_activity_end_hint(&f.om, 1900, 2100, true, -46.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 1900, 2100, true, -46.0f);
     EXPECT(g_emit.ends == 1u);
 
     /* EXIT after END: detach-only no-op (binding already gone). */
@@ -875,14 +876,14 @@ static void test_end_order_b_exit_before_end(void)
     EXPECT(g_emit.ends == 0u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
 
-    ear_obs_manager_on_activity_end_hint(&f.om, 1600, 1700, true, -44.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 1600, 1700, true, -44.0f);
     EXPECT(g_emit.ends == 1u);
     EXPECT(g_emit.last_end_start == 1600);
     EXPECT(g_emit.last_end_end == 1700);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(sp_episode_registry_in_use_count(&f.reg) == 0u);
 
-    ear_obs_manager_on_activity_end_hint(&f.om, 1800, 1900, true, -44.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 1800, 1900, true, -44.0f);
     EXPECT(g_emit.ends == 1u);
     fixture_fini(&f);
 }
@@ -943,7 +944,7 @@ static void test_two_open_mixed_ce_live_shared_end(void)
     EXPECT(ear_obs_manager_n_open(&f.om) == 2u);
 
     /* Global RMS END: both open bindings terminate immediately. */
-    ear_obs_manager_on_activity_end_hint(&f.om, 2600, 2700, true, -48.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 2600, 2700, true, -48.0f);
     EXPECT(g_emit.ends == 2u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(sp_episode_registry_in_use_count(&f.reg) == 0u);
@@ -993,7 +994,7 @@ static void test_two_open_both_live_end_latches_both(void)
     memcpy(obs_b, g_emit.last_obs_id, sizeof(obs_b));
     EXPECT(strncmp(obs_a, obs_b, SP_OBS_EPISODE_ID_LEN) != 0);
 
-    ear_obs_manager_on_activity_end_hint(&f.om, 3000, 3100, true, -50.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 3000, 3100, true, -50.0f);
     EXPECT(g_emit.ends == 2u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(sp_episode_registry_in_use_count(&f.reg) == 0u);
@@ -1017,7 +1018,7 @@ static void test_rematch_after_end_no_revive(void)
     char obs_id[SP_OBS_EPISODE_ID_LEN];
     memcpy(obs_id, g_emit.last_obs_id, sizeof(obs_id));
 
-    ear_obs_manager_on_activity_end_hint(&f.om, 2000, 2100, true, -50.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 2000, 2100, true, -50.0f);
     EXPECT(g_emit.ends == 1u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
 
@@ -1044,7 +1045,7 @@ static void test_new_promote_after_end_stale_exit_safe(void)
     memcpy(old_obs, g_emit.last_obs_id, sizeof(old_obs));
     const uint32_t starts_before = g_emit.starts;
 
-    ear_obs_manager_on_activity_end_hint(&f.om, 2000, 2100, true, -50.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 2000, 2100, true, -50.0f);
     EXPECT(g_emit.ends == 1u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(ear_obs_manager_n_held(&f.om) == 0u);
@@ -1102,7 +1103,7 @@ static void test_capacity_recovery_after_end(void)
         ear_obs_manager_release_reservation(&f.om, h);
     }
 
-    ear_obs_manager_on_activity_end_hint(&f.om, 4000, 4100, true, -55.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 4000, 4100, true, -55.0f);
     EXPECT(g_emit.ends == 2u);
     /* Pending may drain into freed slots. */
     EXPECT(ear_obs_manager_n_open(&f.om) <= 2u);
@@ -1134,7 +1135,7 @@ static void test_end_without_exit_unsticks_bindings(void)
     /* Candidates remain live; no EXIT. Activity END must still free capacity. */
     EXPECT(ear_obs_manager_binding_ce_live(&f.om, 480u));
     EXPECT(ear_obs_manager_binding_ce_live(&f.om, 481u));
-    ear_obs_manager_on_activity_end_hint(&f.om, 3000, 3100, true, -52.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 3000, 3100, true, -52.0f);
     EXPECT(g_emit.ends == 2u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(ear_obs_manager_n_held(&f.om) == 0u);
@@ -1304,7 +1305,7 @@ static void test_ce_exit_payload_gen_propagates_stale_safe(void)
     }
     EXPECT(slot != 255u);
 
-    ear_obs_manager_on_activity_end_hint(&f.om, 2000, 2100, true, -50.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 2000, 2100, true, -50.0f);
     EXPECT(g_emit.ends == 1u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
 
@@ -1354,7 +1355,7 @@ static void test_ce_exit_payload_gen_propagates_stale_safe(void)
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     EXPECT(g_emit.ends == 1u);
 
-    ear_obs_manager_on_activity_end_hint(&f.om, 3300, 3400, true, -52.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 3300, 3400, true, -52.0f);
     EXPECT(g_emit.ends == 2u);
     EXPECT(strncmp(g_emit.last_end_obs_id, new_obs, SP_OBS_EPISODE_ID_LEN) == 0);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
@@ -1414,7 +1415,7 @@ static void test_zero_gen_exit_rejected_on_live_binding(void)
     EXPECT(g_emit.ends == ends0);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
 
-    ear_obs_manager_on_activity_end_hint(&f.om, 1700, 1800, true, -50.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 1700, 1800, true, -50.0f);
     EXPECT(g_emit.ends == ends0 + 1u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(sp_episode_registry_in_use_count(&f.reg) == 0u);
@@ -1439,7 +1440,7 @@ static void test_end_metadata_snapshot(void)
     }
     EXPECT(start_mono > 0);
 
-    ear_obs_manager_on_activity_end_hint(&f.om, 20000, 21000, true, -41.5f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 20000, 21000, true, -41.5f);
     EXPECT(g_emit.ends == 1u);
     EXPECT(g_emit.last_end_cand == 510u);
     EXPECT(strncmp(g_emit.last_end_obs_id, obs_id, SP_OBS_EPISODE_ID_LEN) == 0);
@@ -1463,7 +1464,7 @@ static void test_end_publish_fail_still_releases(void)
     EXPECT(sp_episode_registry_in_use_count(&f.reg) == 1u);
 
     g_emit.fail_end = true;
-    ear_obs_manager_on_activity_end_hint(&f.om, 2000, 2100, true, -50.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 2000, 2100, true, -50.0f);
     g_emit.fail_end = false;
 
     EXPECT(g_emit.ends == 1u);
@@ -1492,7 +1493,7 @@ static void test_end_reentrant_exactly_once(void)
 
     g_emit.reenter_om = &f.om;
     g_emit.reenter_end = true;
-    ear_obs_manager_on_activity_end_hint(&f.om, 2000, 2100, true, -50.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 2000, 2100, true, -50.0f);
     EXPECT(!g_emit.reenter_end);
     EXPECT(g_emit.ends == 1u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
@@ -1503,7 +1504,7 @@ static void test_end_reentrant_exactly_once(void)
     EXPECT(d.end_done == 1u);
 
     /* Repeated END after cleanup remains harmless. */
-    ear_obs_manager_on_activity_end_hint(&f.om, 2200, 2300, true, -50.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 2200, 2300, true, -50.0f);
     EXPECT(g_emit.ends == 1u);
     ear_obs_manager_get_diag(&f.om, &d);
     EXPECT(d.end_done == 1u);
@@ -1661,7 +1662,7 @@ static void test_p2_pending_drain_rejects_unapproved(void)
     f.om.pending[f.om.pending_order[0]].snap.product_relevance_approved = false;
 
     const uint32_t starts_before = g_emit.starts;
-    ear_obs_manager_on_activity_end_hint(&f.om, 4000, 4100, true, -55.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 4000, 4100, true, -55.0f);
     EXPECT(ear_obs_manager_n_pending(&f.om) == 0u);
     EXPECT(!find_binding_like(&f, 752u));
     EXPECT(g_emit.starts == starts_before); /* drain must not START 752 */
@@ -1671,11 +1672,11 @@ static void test_p2_pending_drain_rejects_unapproved(void)
     fixture_fini(&f);
 }
 
-static void test_p2_two_approved_cap_deterministic(void)
+static void test_p2_same_signature_one_observation(void)
 {
     fixture_t f;
     fixture_init(&f, true);
-    /* Ranking: evidence ↓, ema ↓, id ↑ → 761 then 760 then 762. */
+    /* Ranking would prefer 761 then 760 — same AS-001 signature must not dual-open. */
     plant(&f.ce, 760u, AE_CAND_ACTIVE, 5u, -30.0f);
     plant(&f.ce, 761u, AE_CAND_ACTIVE, 8u, -25.0f);
     plant(&f.ce, 762u, AE_CAND_ACTIVE, 5u, -35.0f);
@@ -1687,17 +1688,17 @@ static void test_p2_two_approved_cap_deterministic(void)
         ear_promotion_policy_poll(&f.pol, (int64_t)(i + 1) * 1000);
         ear_obs_manager_poll(&f.om, (int64_t)(i + 1) * 1000);
     }
-    EXPECT(ear_obs_manager_n_open(&f.om) == 2u);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     EXPECT(find_binding_like(&f, 761u));
-    EXPECT(find_binding_like(&f, 760u));
+    EXPECT(!find_binding_like(&f, 760u));
     EXPECT(!find_binding_like(&f, 762u));
-    /* Third approved may be pending — still capacity-limited open=2. */
-    EXPECT(ear_obs_manager_n_open(&f.om) + ear_obs_manager_n_pending(&f.om) <= 4u);
-    EXPECT(g_emit.starts == 2u || g_emit.starts == 3u);
-    if (ear_obs_manager_n_pending(&f.om) > 0u) {
-        EXPECT(f.om.pending[f.om.pending_order[0]].candidate_id == 762u);
-        EXPECT(f.om.pending[f.om.pending_order[0]].snap.product_relevance_approved);
-    }
+    EXPECT(ear_obs_manager_n_pending(&f.om) == 0u);
+    EXPECT(g_emit.starts == 1u);
+    ear_promotion_policy_diag_t pd;
+    ear_promotion_policy_get_diag(&f.pol, &pd);
+    EXPECT(pd.hold_signature_open >= 1u);
+    EXPECT(pd.last_decision == EAR_PROMO_DECISION_HOLD_SIGNATURE_OPEN
+           || pd.hold_signature_open >= 1u);
     fixture_fini(&f);
 }
 
@@ -1966,7 +1967,7 @@ static void test_p2_unadmit_gen_protects_newer(void)
     const uint32_t gen1 = c.promotion_gen;
     EXPECT(gen1 != 0u);
 
-    ear_obs_manager_on_activity_end_hint(&f.om, 2000, 2100, true, -50.0f);
+    ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 2000, 2100, true, -50.0f);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(ce_unadmit_promotion(&f.ce, 830u, gen1));
     ear_obs_manager_poll(&f.om, 2200);
@@ -2034,7 +2035,7 @@ int main(void)
     test_p2_held_irrelevant_consumes_no_capacity();
     test_p2_pending_entries_are_approved();
     test_p2_pending_drain_rejects_unapproved();
-    test_p2_two_approved_cap_deterministic();
+    test_p2_same_signature_one_observation();
     test_p2_no_repeat_while_promoted();
     test_p2_commit_rejects_unapproved_snapshot();
     test_p2_classification_cleared_before_enter();
