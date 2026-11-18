@@ -205,6 +205,21 @@ run_host_tests() {
     "${SP_MIC}/sp_mic_window_job.c" "${SP_MIC}/ear_mic_channel_api.c" \
     "${SP_MIC}/audio_metrics.c" \
     "${EAR_AE}/test_host/test_ae_window_job_align.c" || host_fail=1
+  run_host_one ae_stereo_integrity \
+    ${ae_inc} \
+    "${EAR_AE}/ae_align.c" "${EAR_AE}/ae_stereo.c" "${EAR_AE}/ae_signature.c" \
+    "${SP_MIC}/i2s_stereo.c" "${SP_MIC}/audio_metrics.c" \
+    "${EAR_AE}/test_host/test_ae_stereo_integrity.c" || host_fail=1
+  run_host_one ae_features_from_pcm \
+    ${ae_inc} \
+    "${SP_AUDIO}/sp_acoustic_l0.c" "${SP_AUDIO}/sp_acoustic_l1.c" \
+    "${EAR_AE}/ae_signature.c" \
+    "${EAR_AE}/test_host/test_ae_features_from_pcm.c" || host_fail=1
+  run_host_one ae_window_validity_contract \
+    ${ae_inc} \
+    "${EAR_AE}/ae_align.c" "${EAR_AE}/ae_gap.c" "${EAR_AE}/ae_time.c" \
+    "${EAR_AE}/ae_signature.c" "${EAR_AE}/ae_history.c" "${EAR_AE}/ae_engine.c" \
+    "${EAR_AE}/test_host/test_ae_window_validity_contract.c" || host_fail=1
   # Mic diagnostic emit policy (show_zero_error_counters); header-only helper.
   if [[ -f "${SP_MIC}/test_host/test_sp_mic_error_report.c" ]]; then
     run_host_one sp_mic_error_report \
@@ -217,21 +232,27 @@ run_host_tests() {
   # acoustic_profile. Those sources are not on every branch yet — run when
   # present, otherwise SKIP explicitly so CI on Platform-DSP-only trees stays
   # green without hiding a real fail.
+  local EAR_SE="${FIRMWARE_ROOT}/products/dbmap/ear/signature_engine"
+  local EAR_OBS_INC="${FIRMWARE_ROOT}/products/dbmap/ear/ear_observation/include"
   if [[ -f "${EAR_CE}/ce_decision.c" && -f "${EAR_CE}/ce_module.c" \
     && -f "${EAR_CE}/ce_workflow.c" && -f "${EAR_CE}/ce_manager.c" \
     && -f "${EAR_CE}/ce_module_profile.c" \
     && -f "${EAR_AP}/as_profile_match.c" \
     && -f "${EAR_AP}/as_profile_registry.c" \
-    && -f "${EAR_AP}/as_profile_as001.c" ]]; then
+    && -f "${EAR_AP}/as_profile_as001.c" \
+    && -f "${EAR_SE}/sig_engine.c" \
+    && -f "${EAR_SE}/ear_siren_se_public.c" ]]; then
     local ce_srcs=(
       "${EAR_AE}/ae_signature.c" "${EAR_AE}/ae_history.c"
       "${EAR_AE}/ae_engine.c" "${EAR_AE}/ae_time.c"
       "${EAR_AP}/as_profile_as001.c" "${EAR_AP}/as_profile_registry.c"
       "${EAR_AP}/as_profile_match.c"
+      "${EAR_SE}/sig_engine.c" "${EAR_SE}/ear_siren_se_public.c"
       "${EAR_CE}/ce_decision.c" "${EAR_CE}/ce_module.c"
       "${EAR_CE}/ce_module_profile.c" "${EAR_CE}/ce_workflow.c"
       "${EAR_CE}/ce_manager.c" "${EAR_CE}/ce_engine.c"
     )
+    ae_inc="${ae_inc} -I${EAR_SE}/include -I${EAR_OBS_INC}"
     run_host_one ae_m4_lifecycle_gap \
       ${ae_inc} \
       "${EAR_AE}/ae_gap.c" "${ce_srcs[@]}" \
@@ -251,6 +272,35 @@ run_host_tests() {
         "${EAR_AP}/test_host/test_as_profile_as001.c" || host_fail=1
     else
       record_skip "host/as_profile_as001 (test not in tree)"
+    fi
+    if [[ -f "${EAR_AP}/test_host/test_as001_as002_compare.c" \
+      && -f "${EAR_SE}/ear_siren_se_public.c" ]]; then
+      run_host_one as001_as002_compare \
+        ${ae_inc} \
+        "${EAR_AP}/as_profile_as001.c" "${EAR_AP}/as_profile_registry.c" \
+        "${EAR_AP}/as_profile_match.c" \
+        "${EAR_SE}/ear_siren_se_public.c" \
+        "${EAR_AP}/test_host/test_as001_as002_compare.c" || host_fail=1
+    else
+      record_skip "host/as001_as002_compare (sources/tests not in tree)"
+    fi
+    if [[ -f "${EAR_SE}/test_host/test_sig_engine.c" ]]; then
+      run_host_one sig_engine \
+        ${ae_inc} -DSIG_ENGINE_ALLOW_HOST_HOOKS=1 \
+        "${EAR_AP}/as_profile_as001.c" "${EAR_AP}/as_profile_registry.c" \
+        "${EAR_AP}/as_profile_match.c" \
+        "${EAR_SE}/sig_engine.c" "${EAR_SE}/ear_siren_se_public.c" \
+        "${EAR_SE}/test_host/test_sig_engine.c" || host_fail=1
+    else
+      record_skip "host/sig_engine (test not in tree)"
+    fi
+    if [[ -f "${EAR_SE}/test_host/test_sig_engine_ce_primary.c" ]]; then
+      run_host_one sig_engine_ce_primary \
+        ${ae_inc} \
+        "${ce_srcs[@]}" \
+        "${EAR_SE}/test_host/test_sig_engine_ce_primary.c" || host_fail=1
+    else
+      record_skip "host/sig_engine_ce_primary (test not in tree)"
     fi
     local EAR_AE_RT="${FIRMWARE_ROOT}/products/dbmap/ear/ae_runtime"
     if [[ -f "${EAR_AE_RT}/test_host/test_ae_sig_capture.c" \
@@ -279,7 +329,6 @@ run_host_tests() {
         "${EAR_OBS}/ear_cls_progressive.c" \
         "${EAR_OBS}/ear_obs_manager.c" \
         "${EAR_OBS}/ear_promotion_policy.c" \
-        "${EAR_OBS}/ear_siren_se_public.c" \
         "${EAR_OBS}/test_host/test_ear_obs_manager.c" || host_fail=1
       run_host_one ear_cls_progressive \
         ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
@@ -288,7 +337,6 @@ run_host_tests() {
         "${EAR_OBS}/ear_cls_progressive.c" \
         "${EAR_OBS}/ear_obs_manager.c" \
         "${EAR_OBS}/ear_promotion_policy.c" \
-        "${EAR_OBS}/ear_siren_se_public.c" \
         "${EAR_OBS}/test_host/test_ear_cls_progressive.c" || host_fail=1
       run_host_one ear_siren_se_public \
         ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
@@ -297,8 +345,11 @@ run_host_tests() {
         "${EAR_OBS}/ear_cls_progressive.c" \
         "${EAR_OBS}/ear_obs_manager.c" \
         "${EAR_OBS}/ear_promotion_policy.c" \
-        "${EAR_OBS}/ear_siren_se_public.c" \
         "${EAR_OBS}/test_host/test_ear_siren_se_public.c" || host_fail=1
+      run_host_one ae_sig_module_independence \
+        ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
+        "${ce_srcs[@]}" \
+        "${EAR_OBS}/test_host/test_ae_sig_module_independence.c" || host_fail=1
     else
       record_skip "host/ear_obs_manager (OM sources/tests not in tree)"
       record_skip "host/ear_cls_progressive (OM sources/tests not in tree)"

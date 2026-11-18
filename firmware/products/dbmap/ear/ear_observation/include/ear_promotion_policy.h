@@ -68,8 +68,13 @@ typedef struct {
 typedef struct {
     ce_engine_t *ce;
     ear_obs_manager_t *om;
-    /** Optional; NULL keeps AS-001-only promote allow. */
+    /**
+     * Optional standalone detector for host tests.
+     * Production uses as002_from_engine instead (published Signature Engine).
+     */
     const ear_siren_se_public_t *siren;
+    /** When true, AS-002 promote eligibility uses sig_engine published state. */
+    bool as002_from_engine;
     ear_promotion_policy_diag_t diag;
 } ear_promotion_policy_t;
 
@@ -83,6 +88,15 @@ void ear_promotion_policy_init(
 void ear_promotion_policy_set_siren(
     ear_promotion_policy_t *pol,
     const ear_siren_se_public_t *siren
+);
+
+/**
+ * Use Signature Engine published AS-002 state for promote eligibility
+ * (production). Clears any standalone siren pointer.
+ */
+void ear_promotion_policy_use_sig_engine_as002(
+    ear_promotion_policy_t *pol,
+    bool enable
 );
 
 /**

@@ -60,6 +60,17 @@ bool ae_channel_matches_pcm(
     const ae_channel_snap_t *ch
 );
 
+/**
+ * True when a feature window is ready and its acquisition end time equals the
+ * PCM/job end time. Device intake uses this so L0/L1/L2 from window A cannot
+ * silently be published under job B's identity.
+ */
+bool ae_feature_matches_job_end(
+    bool feature_ready,
+    int64_t feature_end_mono_us,
+    int64_t job_end_mono_us
+);
+
 #ifdef __cplusplus
 }
 #endif

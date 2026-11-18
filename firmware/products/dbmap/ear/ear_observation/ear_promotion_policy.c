@@ -1,6 +1,7 @@
 #include "ear_promotion_policy.h"
 
 #include "as_profile.h"
+#include "sig_engine.h"
 
 #include <string.h>
 
@@ -17,6 +18,7 @@ void ear_promotion_policy_init(
     pol->ce = ce;
     pol->om = om;
     pol->siren = NULL;
+    pol->as002_from_engine = false;
 }
 
 void ear_promotion_policy_set_siren(
@@ -28,6 +30,54 @@ void ear_promotion_policy_set_siren(
         return;
     }
     pol->siren = siren;
+    if (siren != NULL) {
+        pol->as002_from_engine = false;
+    }
+}
+
+void ear_promotion_policy_use_sig_engine_as002(
+    ear_promotion_policy_t *pol,
+    bool enable
+)
+{
+    if (pol == NULL) {
+        return;
+    }
+    pol->as002_from_engine = enable;
+    if (enable) {
+        pol->siren = NULL;
+    }
+}
+
+static bool as002_promote_ok(const ear_promotion_policy_t *pol, float *out_consec)
+{
+    if (pol == NULL) {
+        return false;
+    }
+    if (pol->as002_from_engine) {
+        /*
+         * One coherent published snapshot for the whole decision — do not
+         * call allows_promote and consecutive as separate locked reads.
+         */
+        sig_as002_snapshot_t snap;
+        if (!sig_engine_copy_as002_snapshot(&snap) || !snap.valid) {
+            return false;
+        }
+        if (snap.allows_promote == 0u) {
+            return false;
+        }
+        if (out_consec != NULL) {
+            *out_consec = (float)snap.consecutive;
+        }
+        return true;
+    }
+    if (pol->siren != NULL && ear_siren_se_public_allows_promote(pol->siren)) {
+        if (out_consec != NULL) {
+            *out_consec = (float)ear_siren_se_public_consecutive(pol->siren);
+        }
+        return true;
+    }
+    return false;
 }
 
 bool ear_promotion_candidate_product_relevant(
@@ -92,22 +142,25 @@ bool ear_promotion_candidate_promote_relevant(
         )) {
         return true;
     }
-    if (pol->siren != NULL && ear_siren_se_public_allows_promote(pol->siren)) {
-        ae_candidate_t cand;
-        if (!ce_find_candidate(pol->ce, candidate_id, &cand)) {
-            return false;
+    {
+        float consec = 0.0f;
+        if (as002_promote_ok(pol, &consec)) {
+            ae_candidate_t cand;
+            if (!ce_find_candidate(pol->ce, candidate_id, &cand)) {
+                return false;
+            }
+            if (cand.quality_summary != AE_QUALITY_OK
+                && cand.quality_summary != AE_QUALITY_DEGRADED) {
+                return false;
+            }
+            if (out_profile_id != NULL) {
+                *out_profile_id = AS_PROFILE_ID_AS002;
+            }
+            if (out_distance != NULL) {
+                *out_distance = consec;
+            }
+            return true;
         }
-        if (cand.quality_summary != AE_QUALITY_OK
-            && cand.quality_summary != AE_QUALITY_DEGRADED) {
-            return false;
-        }
-        if (out_profile_id != NULL) {
-            *out_profile_id = AS_PROFILE_ID_AS002;
-        }
-        if (out_distance != NULL) {
-            *out_distance = (float)ear_siren_se_public_consecutive(pol->siren);
-        }
-        return true;
     }
     return false;
 }
@@ -206,8 +259,7 @@ void ear_promotion_policy_poll(ear_promotion_policy_t *pol, int64_t now_mono_us)
     bool any_active = false;
     bool any_active_no_class = false;
     bool any_active_irrelevant = false;
-    const bool siren_ok =
-        (pol->siren != NULL && ear_siren_se_public_allows_promote(pol->siren));
+    const bool siren_ok = as002_promote_ok(pol, NULL);
     for (uint8_t i = 0; i < CE_MAX_CANDIDATES; i++) {
         const ae_candidate_t *c = &pol->ce->slots[i];
         if (!c->in_use || c->state != AE_CAND_ACTIVE || c->promotion_entered) {

@@ -22,7 +22,7 @@
 #pragma once
 
 #include "ae_types.h"
-#include "ear_cls_progressive.h"
+#include "ear_cls_evidence.h"
 
 #include <stdbool.h>
 #include <stdint.h>

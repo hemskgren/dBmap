@@ -57,3 +57,12 @@ void ae_align_channels(const ae_align_input_t *in, ae_align_result_t *out)
         out->pair.stereo_degraded = in->mic0.degraded || in->mic1.degraded;
     }
 }
+
+bool ae_feature_matches_job_end(
+    bool feature_ready,
+    int64_t feature_end_mono_us,
+    int64_t job_end_mono_us
+)
+{
+    return feature_ready && feature_end_mono_us == job_end_mono_us;
+}
