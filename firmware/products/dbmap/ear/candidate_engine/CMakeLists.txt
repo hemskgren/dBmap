@@ -10,5 +10,6 @@ idf_component_register(
     REQUIRES
         audio_engine
         acoustic_profile
+        signature_engine
         log
 )

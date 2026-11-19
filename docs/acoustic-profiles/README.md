@@ -9,7 +9,7 @@ Living registry of **host-derived acoustic profiles** built from Audio Engine
 | ID | Name | Version | Status | Location |
 | --- | --- | --- | --- | --- |
 | AS-001 | Helicopter | 0.1.0-experimental | experimental / host-verified + provisional `as.profile` workflow match | [AS-001/](./AS-001/) |
-| AS-002 | Faran över (siren tone) | 0.1.0-experimental | experimental / host AE + EAR-001 indoor bench; no firmware matcher yet | [AS-002/](./AS-002/) |
+| AS-002 | Faran över (siren tone) | 0.1.0-experimental | experimental / Core Signature Engine (gates + streak); host AE + EAR-001 indoor bench | [AS-002/](./AS-002/) |
 
 ## Entry layout (per profile)
 

@@ -26,6 +26,8 @@
  */
 #pragma once
 
+#include "ear_cls_evidence.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -79,18 +81,7 @@ typedef enum {
 #define EAR_CLS_END_CORR_MARGIN 0.20f
 #define EAR_CLS_END_CORR_SUPPORT_RATIO 1.5f
 
-typedef struct {
-    bool alarm_ok;
-    float alarm_confidence;
-    bool se_public_alert_ok;
-    float se_public_alert_confidence;
-    bool faran_over_ok;
-    float faran_over_confidence;
-    uint32_t faran_over_support_ms;
-    bool vma_ok;
-    float vma_confidence;
-    uint32_t vma_support_ms;
-} ear_cls_evidence_t;
+/* ear_cls_evidence_t is defined in ear_cls_evidence.h (signature_engine). */
 
 typedef struct {
     char id[EAR_CLS_NODE_ID_MAX];

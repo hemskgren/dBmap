@@ -330,12 +330,21 @@ esp_err_t ae_device_poll(void)
 #endif
 
     /* Feature windows must match PCM end time (same analyze job). */
-    const dbmap_l0_window_t *l0p =
-        (l0.valid && l0.window_end_mono_us == job->window_end_mono_us) ? &l0 : NULL;
-    const dbmap_l1_window_t *l1p =
-        (l1.valid && l1.window_end_mono_us == job->window_end_mono_us) ? &l1 : NULL;
-    const dbmap_l2_window_t *l2p =
-        (l2.eligible && l2.window_end_mono_us == job->window_end_mono_us) ? &l2 : NULL;
+    const dbmap_l0_window_t *l0p = ae_feature_matches_job_end(
+                                       l0.valid, l0.window_end_mono_us, job->window_end_mono_us
+                                   )
+        ? &l0
+        : NULL;
+    const dbmap_l1_window_t *l1p = ae_feature_matches_job_end(
+                                       l1.valid, l1.window_end_mono_us, job->window_end_mono_us
+                                   )
+        ? &l1
+        : NULL;
+    const dbmap_l2_window_t *l2p = ae_feature_matches_job_end(
+                                       l2.eligible, l2.window_end_mono_us, job->window_end_mono_us
+                                   )
+        ? &l2
+        : NULL;
 
     if (l0p == NULL) {
         /* Should not happen after successful analyze; skip signature. */
