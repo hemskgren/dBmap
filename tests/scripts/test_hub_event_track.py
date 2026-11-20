@@ -2078,12 +2078,20 @@ def test_observation_lifecycle_summary_multi_device_open_and_periodic() -> None:
     assert by_device["EAR-001"].unique_observations == 2
     assert by_device["EAR-001"].completed_observations == 1
     assert by_device["EAR-001"].open_observations == 1
+    assert by_device["EAR-001"].report_count == 5
     assert by_device["EAR-001"].shortest_completed_ms == 5080.0
     assert by_device["EAR-001"].total_completed_ms == 5080.0
+    assert by_device["EAR-001"].lifecycle_status == (
+        "mixed (1 completed, 1 open)"
+    )
+    assert by_device["EAR-001"].activity_start is not None
+    assert by_device["EAR-001"].latest_activity is not None
     assert by_device["EAR-002"].unique_observations == 2
     assert by_device["EAR-002"].completed_observations == 1
     assert by_device["EAR-002"].open_observations == 1
+    assert by_device["EAR-002"].report_count == 3
     assert by_device["EAR-002"].total_completed_ms == 2500.0
+    assert summary.combined.report_count == 8
 
     assert any(
         "incomplete retained history; still counted as unique" in note
@@ -2106,12 +2114,16 @@ def test_observation_lifecycle_summary_multi_device_open_and_periodic() -> None:
     assert "hub_snapshot_id: 42" in text
     assert "oldest report:" in text
     assert "fetched at:" in text
-    assert "Device" in text and "Unique" in text and "Completed" in text
+    assert "devices:       2" in text
+    assert "Device" in text and "Reports" in text and "Unique" in text
+    assert "Completed" in text
     assert "ALL" in text
     assert "EAR-001" in text
     assert "EAR-002" in text
     assert "5080 ms (5.1s)" in text
     assert "2500 ms (2.5s)" in text
+    assert "Device activity" in text
+    assert "lifecycle status: mixed (1 completed, 1 open)" in text
     assert "Data-quality notes" in text
 
     payload = hub_event_track.observation_lifecycle_summary_to_dict(
@@ -2119,10 +2131,16 @@ def test_observation_lifecycle_summary_multi_device_open_and_periodic() -> None:
         fetch_meta={"snapshot_id": 42, "complete_snapshot": True},
     )
     assert payload["report_count"] == 8
+    assert payload["device_count"] == 2
     assert payload["oldest_report_event_time_utc"] == "2026-11-10T10:00:00+00:00"
     assert payload["fetched_at_utc"] == "2026-11-10T12:24:15+00:00"
     assert payload["combined"]["unique_observations"] == 4
+    assert payload["combined"]["report_count"] == 8
     assert payload["combined"]["total_completed_ms"] == 7580.0
+    assert payload["devices"][0]["report_count"] == 5
+    assert payload["devices"][0]["lifecycle_status"] == (
+        "mixed (1 completed, 1 open)"
+    )
     assert payload["hub_snapshot_id"] == 42
     assert len(payload["devices"]) == 2
 
@@ -2418,3 +2436,288 @@ def test_lifecycle_summary_duplicate_end_uses_latest_sequence_duration() -> None
     assert summary.combined.completed_observations == 1
     assert summary.combined.total_completed_ms == 5100.0
     assert any("duplicate END/COMPLETE" in note for note in summary.quality_notes)
+
+
+def test_lifecycle_report_counts_come_from_retained_reports() -> None:
+    """Report counts must not be inferred from unique observation counts."""
+    oid = "66666666-6666-4666-8666-666666666666"
+    observations = [
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-010",
+            sequence_number=1,
+            event_time_utc="2026-11-10T17:00:00Z",
+            emission_kind="start",
+            episode_duration_ms=1000.0,
+        ),
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-010",
+            sequence_number=2,
+            event_time_utc="2026-11-10T17:00:01Z",
+            emission_kind="periodic",
+            episode_duration_ms=2000.0,
+        ),
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-010",
+            sequence_number=3,
+            event_time_utc="2026-11-10T17:00:02Z",
+            emission_kind="periodic",
+            episode_duration_ms=3000.0,
+        ),
+        _hierarchical_report(
+            observation_id=oid,
+            node_id="EAR-010",
+            sequence_number=4,
+            event_time_utc="2026-11-10T17:00:05Z",
+            emission_kind="end",
+            episode_duration_ms=5000.0,
+        ),
+    ]
+    summary = hub_event_track.summarize_observation_lifecycles(observations)
+    assert summary.combined.unique_observations == 1
+    assert summary.combined.report_count == 4
+    assert summary.devices[0].report_count == 4
+    assert summary.devices[0].unique_observations == 1
+    assert summary.devices[0].lifecycle_status == "all completed"
+
+
+def test_brief_and_list_share_analysis_and_counts() -> None:
+    reports = [
+        _obs(
+            "a1",
+            "SIM-EAR-001",
+            "2026-11-05T18:00:20Z",
+            duration_ms=10000,
+            bearing_deg=150.0,
+        ),
+        _obs(
+            "b1",
+            "SIM-EAR-002",
+            "2026-11-05T18:00:22Z",
+            duration_ms=10000,
+            bearing_deg=210.0,
+        ),
+        _obs(
+            "c1",
+            "SIM-EAR-003",
+            "2026-11-05T18:00:24Z",
+            duration_ms=10000,
+            bearing_deg=0.0,
+        ),
+    ]
+    lifecycle = hub_event_track.summarize_observation_lifecycles(reports)
+    shared_kwargs = dict(
+        event_gap_seconds=30.0,
+        max_association_distance_m=5000.0,
+        allow_long_range_sim_ears=True,
+        association_temporal_gap_seconds=20.0,
+        min_ears_for_event=3,
+        min_promote_score=4,
+        include_cross_ear_correlation=True,
+    )
+    list_snapshot = hub_event_track.AnalysisSnapshot(
+        reports=reports,
+        nodes=TRIANGLE_NODES,
+        config=hub_event_track.AnalysisConfig(
+            **shared_kwargs,
+            include_site_context=True,
+            include_cross_ear_geometry=True,
+            presentation="list",
+        ),
+        snapshot_id=7,
+        fetch_meta={"snapshot_id": 7, "complete_snapshot": True},
+    )
+    brief_snapshot = hub_event_track.AnalysisSnapshot(
+        reports=reports,
+        nodes=TRIANGLE_NODES,
+        config=hub_event_track.AnalysisConfig(
+            **shared_kwargs,
+            include_site_context=False,
+            include_cross_ear_geometry=False,
+            presentation="brief",
+        ),
+        snapshot_id=7,
+        fetch_meta={"snapshot_id": 7, "complete_snapshot": True},
+    )
+    list_result = hub_event_track.analyze(list_snapshot)
+    brief_result = hub_event_track.analyze(brief_snapshot)
+
+    assert list_result.report_count == brief_result.report_count == 3
+    assert list_result.report_count == lifecycle.report_count
+    assert list_result.correlation is not None
+    assert brief_result.correlation is not None
+    assert len(list_result.correlation.events) == len(brief_result.correlation.events)
+    assert len(list_result.correlation.events) == 1
+    assert (
+        list_result.correlation.events[0].event_id
+        == brief_result.correlation.events[0].event_id
+    )
+
+    brief_text = "\n".join(brief_result.lines)
+    list_text = "\n".join(list_result.lines)
+    assert "A. Activity overview" in brief_text
+    assert "B. Event association" in brief_text
+    assert "C. Localization" in brief_text
+    assert "D. Data quality" in brief_text
+    assert "E. Key findings" in brief_text
+    assert "Window W1:" in brief_text
+    assert "Events (promoted): 1" in brief_text
+    assert "Event 1:" in brief_text
+    assert "association uncertainty=" in brief_text
+    assert f"Observation reports: {lifecycle.report_count}" in brief_text
+    assert (
+        f"Unique observations: {lifecycle.combined.unique_observations}"
+        in brief_text
+    )
+    assert "Devices: 3" in brief_text
+    assert "association evidence:" in brief_text
+    assert "Temporal:" in brief_text
+    assert "Ear diversity (+2)" in brief_text
+    assert "Bearing unavailable" in brief_text or "Bearing:" in brief_text
+    assert "Acoustic association abstained" in brief_text
+    # Brief must not dump internal ids or full diagnostic traces.
+    assert "event-" not in brief_text
+    assert "cand-" not in brief_text
+    assert "Join attempt diagnostics" not in brief_text
+    assert "Membership stage trace" not in brief_text
+    assert "Integrity:" in brief_text
+    assert "Association rejections" in brief_text
+    # List retains full diagnostic sections and per-Ear episodes.
+    assert "Cross-EAR Event association" in list_text
+    assert "Assembled Observations" in list_text
+    assert "Ear activity episode A1" in list_text
+    assert "Track is not implemented" in list_text
+
+
+def test_brief_activity_windows_merge_overlapping_episodes() -> None:
+    reports = [
+        _obs("a1", "SIM-EAR-001", "2026-11-05T18:00:20Z", duration_ms=10000),
+        _obs("b1", "SIM-EAR-002", "2026-11-05T18:00:22Z", duration_ms=10000),
+        _obs("c1", "SIM-EAR-003", "2026-11-05T18:05:00Z", duration_ms=5000),
+    ]
+    episodes = hub_event_track._collect_activity_episodes(reports, 30.0)
+    windows = hub_event_track._group_activity_windows(episodes)
+    assert len(windows) == 2
+    first, second = windows
+    assert set(first["ear_ids"]) == {"SIM-EAR-001", "SIM-EAR-002"}
+    assert first["report_count"] == 2
+    assert first["unique_observations"] == 2
+    assert second["ear_ids"] == ["SIM-EAR-003"]
+    assert second["report_count"] == 1
+
+    # Brief presentation filters to multi-EAR windows only, keeping indices.
+    snapshot = hub_event_track.AnalysisSnapshot(
+        reports=reports,
+        nodes=TRIANGLE_NODES,
+        config=hub_event_track.AnalysisConfig(
+            presentation="brief",
+            include_site_context=False,
+            include_cross_ear_geometry=False,
+            include_cross_ear_correlation=False,
+        ),
+        fetch_meta={"complete_snapshot": True},
+    )
+    text = "\n".join(hub_event_track.analyze(snapshot).lines)
+    assert "Window W1:" in text
+    assert "SIM-EAR-001, SIM-EAR-002" in text
+    assert "Window W2:" not in text
+    assert "EARs=SIM-EAR-003" not in text
+
+
+def test_brief_localization_reason_uses_bearing_coverage() -> None:
+    reports = [
+        _obs("a1", "SIM-EAR-001", "2026-11-05T18:00:20Z", bearing_deg=None),
+        _obs("b1", "SIM-EAR-002", "2026-11-05T18:00:22Z", bearing_deg=None),
+        _obs("c1", "SIM-EAR-003", "2026-11-05T18:00:24Z", bearing_deg=None),
+    ]
+    # Force a promoted-like localization item path via analyze with low thresholds
+    # may not promote without bearings/score; exercise helper directly.
+    reason = hub_event_track._localization_principal_reason(
+        None,
+        bearing_count=0,
+        observation_count=3,
+    )
+    assert "no bearings available on 3 Observation(s)" in reason
+    assert "Localization is separate" not in reason
+
+    snapshot = hub_event_track.AnalysisSnapshot(
+        reports=reports[:2],
+        nodes=TRIANGLE_NODES,
+        config=hub_event_track.AnalysisConfig(
+            max_association_distance_m=5000.0,
+            allow_long_range_sim_ears=True,
+            presentation="brief",
+            include_site_context=False,
+            include_cross_ear_geometry=False,
+            min_ears_for_event=3,
+            min_promote_score=4,
+        ),
+        fetch_meta={"complete_snapshot": True},
+    )
+    result = hub_event_track.analyze(snapshot)
+    text = "\n".join(result.lines)
+    assert "Event Candidates (open): 1" in text
+    assert "Candidate 1:" in text
+    assert "association uncertainty=" in text
+    assert "bearings available: 0/2" in text
+    assert "reason: no bearings available on 2 Observation(s)" in text
+    assert "geometry: insufficient (no bearings)" in text
+    assert "Localization is separate from Event association" not in text
+    assert "observations: a1, b1" not in text
+    assert "observations=2" in text
+    assert "cand-" not in text
+
+
+def test_brief_key_findings_include_complete_association_evidence() -> None:
+    notes = [
+        "created from a1 (SIM-EAR-001) + b1 (SIM-EAR-002)",
+        (
+            "intervals overlap by 8.0s; "
+            "site distance 229m ≤ 500m; "
+            "bearing missing on one or both Observations; "
+            "acoustic association abstains (scenario/unverified source_family "
+            "not used for association score)"
+        ),
+        "joined c1 from SIM-EAR-003",
+    ]
+    headline = hub_event_track._association_evidence_headline(
+        notes,
+        {"ear_diversity": 2, "temporal": 2, "bearing": 0, "acoustic": 0},
+    )
+    assert "Temporal:" in headline and "+2" in headline
+    assert "Ear diversity (+2)" in headline
+    assert "229m ≤ 500m" in headline
+    assert "Bearing unavailable (+0" in headline
+    assert "Acoustic association abstained (+0" in headline
+    assert "source_family" in headline
+    assert "a1" not in headline
+
+
+def test_brief_evidence_summary_strips_ids_and_categorizes() -> None:
+    notes = [
+        (
+            "created from a1 (SIM-EAR-001) + b1 (SIM-EAR-002)"
+        ),
+        (
+            "intervals overlap by 8.0s; "
+            "site distance 567m ≤ 5000m; "
+            "bearings present and not contradictory; "
+            "acoustic association abstains (scenario/unverified source_family "
+            "not used for association score)"
+        ),
+        "joined c1 from SIM-EAR-003",
+    ]
+    lines = hub_event_track._summarize_association_evidence(
+        notes,
+        {"ear_diversity": 2, "temporal": 2, "bearing": 1, "acoustic": 0},
+    )
+    text = "\n".join(lines)
+    assert "Temporal: intervals overlap by 8.0s" in text
+    assert "Site distance: 567m ≤ 5000m" in text
+    assert "Bearing:" in text
+    assert "Acoustic:" in text
+    assert "a1" not in text
+    assert "b1" not in text
+    assert "c1" not in text

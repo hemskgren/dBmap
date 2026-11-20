@@ -2,6 +2,7 @@
 import argparse
 import json
 import math
+import re
 import ssl
 import sys
 import time
@@ -12,7 +13,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from itertools import combinations, pairwise
-from typing import Any
+from typing import Any, Literal
 
 from lib.cross_ear_bearing_geometry import (
     analyze_cross_ear_geometry,
@@ -56,9 +57,12 @@ MAX_OBSERVATION_PAGE_SIZE = 500
 WATCH_OBSERVATION_PAGE_SIZE = 500
 
 
+PresentationLevel = Literal["summary", "brief", "list"]
+
+
 @dataclass
 class AnalysisConfig:
-    """Deterministic analysis parameters shared by list and watch (B2.7 Phase A)."""
+    """Deterministic analysis parameters shared by list, brief, and watch (B2.7 Phase A)."""
 
     event_gap_seconds: float = DEFAULT_EVENT_GAP_SECONDS
     max_association_distance_m: float = DEFAULT_MAX_ASSOCIATION_DISTANCE_M
@@ -72,6 +76,7 @@ class AnalysisConfig:
     include_site_context: bool = True
     include_observation_details: bool = False
     include_temporal_localization: bool = False
+    presentation: PresentationLevel = "list"
 
 
 @dataclass
@@ -597,11 +602,29 @@ class DeviceObservationStats:
     unique_observations: int = 0
     completed_observations: int = 0
     open_observations: int = 0
+    report_count: int = 0
     shortest_completed_ms: float | None = None
     longest_completed_ms: float | None = None
     total_completed_ms: float = 0.0
     completed_with_duration: int = 0
+    activity_start: datetime | None = None
+    activity_end: datetime | None = None
+    latest_activity: datetime | None = None
     quality_notes: list[str] = field(default_factory=list)
+
+    @property
+    def lifecycle_status(self) -> str:
+        """Human lifecycle label from completed/open counts (not association status)."""
+        if self.unique_observations <= 0:
+            return "none"
+        if self.open_observations == 0:
+            return "all completed"
+        if self.completed_observations == 0:
+            return "all open"
+        return (
+            f"mixed ({self.completed_observations} completed, "
+            f"{self.open_observations} open)"
+        )
 
 
 @dataclass
@@ -636,6 +659,26 @@ def summarize_observation_lifecycles(
     quality_notes: list[str] = []
     skipped_missing_identity = 0
     oldest_report_event_time: datetime | None = None
+    per_device: dict[str, DeviceObservationStats] = {}
+    combined = DeviceObservationStats(node_id="ALL")
+    combined.report_count = len(observations)
+
+    def ensure_device(node_id: str) -> DeviceObservationStats:
+        stats = per_device.get(node_id)
+        if stats is None:
+            stats = DeviceObservationStats(node_id=node_id)
+            per_device[node_id] = stats
+        return stats
+
+    def record_activity(stats: DeviceObservationStats, stamp: datetime | None) -> None:
+        if stamp is None:
+            return
+        if stats.activity_start is None or stamp < stats.activity_start:
+            stats.activity_start = stamp
+        if stats.activity_end is None or stamp > stats.activity_end:
+            stats.activity_end = stamp
+        if stats.latest_activity is None or stamp > stats.latest_activity:
+            stats.latest_activity = stamp
 
     for item in observations:
         fields = observation_fields(item)
@@ -645,6 +688,12 @@ def summarize_observation_lifecycles(
         ):
             oldest_report_event_time = event_stamp
         node_id = fields.get("node_id")
+        if isinstance(node_id, str) and node_id:
+            # Report counts/activity come from retained reports, not observation aggregates.
+            device = ensure_device(node_id)
+            device.report_count += 1
+            record_activity(device, event_stamp)
+            record_activity(combined, event_stamp)
         observation_id = fields.get("observation_id")
         if not isinstance(node_id, str) or not node_id:
             skipped_missing_identity += 1
@@ -689,19 +738,10 @@ def summarize_observation_lifecycles(
             "or observation_id"
         )
 
-    per_device: dict[str, DeviceObservationStats] = {}
-    combined = DeviceObservationStats(node_id="ALL")
     missing_start_count = 0
     duplicate_start_count = 0
     duplicate_end_count = 0
     missing_episode_ms_count = 0
-
-    def ensure_device(node_id: str) -> DeviceObservationStats:
-        stats = per_device.get(node_id)
-        if stats is None:
-            stats = DeviceObservationStats(node_id=node_id)
-            per_device[node_id] = stats
-        return stats
 
     def pick_terminal_episode_ms(
         candidates: list[dict[str, Any]],
@@ -828,6 +868,7 @@ def format_observation_lifecycle_summary(
     *,
     fetch_meta: dict[str, Any] | None = None,
 ) -> list[str]:
+    combined = summary.combined
     lines = [
         "Observation lifecycle summary",
         (
@@ -837,6 +878,10 @@ def format_observation_lifecycle_summary(
         f"  oldest report: {format_local_datetime(summary.oldest_report_event_time)}",
         f"  fetched at:    {format_local_datetime(summary.fetched_at)}",
         f"  reports:       {summary.report_count}",
+        f"  devices:       {len(summary.devices)}",
+        f"  unique obs:    {combined.unique_observations}",
+        f"  completed:     {combined.completed_observations}",
+        f"  open:          {combined.open_observations}",
     ]
     if fetch_meta:
         snapshot_id = fetch_meta.get("snapshot_id")
@@ -854,9 +899,10 @@ def format_observation_lifecycle_summary(
                 "(node_id, sequence_number) delivery(ies) while fetching"
             )
 
-    rows: list[DeviceObservationStats] = [summary.combined, *summary.devices]
+    rows: list[DeviceObservationStats] = [combined, *summary.devices]
     headers = (
         "Device",
+        "Reports",
         "Unique",
         "Completed",
         "Open",
@@ -867,6 +913,7 @@ def format_observation_lifecycle_summary(
     table_rows = [
         (
             stats.node_id,
+            str(stats.report_count),
             str(stats.unique_observations),
             str(stats.completed_observations),
             str(stats.open_observations),
@@ -900,11 +947,30 @@ def format_observation_lifecycle_summary(
         )
     lines.append("")
     lines.append(
+        "Reports = retained MQTT/Hub reports for the device; "
         "Unique = distinct (node_id, observation_id); "
         "Completed = retained END or COMPLETE; "
         "Open = no retained END/COMPLETE (may be uncertain after prune); "
         "durations from END/COMPLETE episode_duration_ms."
     )
+
+    lines.append("")
+    lines.append("Device activity")
+    if not summary.devices:
+        lines.append("  none")
+    for stats in summary.devices:
+        lines.append(f"  {stats.node_id}:")
+        lines.append(f"    observations: {stats.unique_observations}")
+        lines.append(f"    reports: {stats.report_count}")
+        lines.append(
+            "    activity: "
+            f"{format_local_datetime(stats.activity_start)} to "
+            f"{format_local_datetime(stats.activity_end)}"
+        )
+        lines.append(
+            f"    latest activity: {format_local_datetime(stats.latest_activity)}"
+        )
+        lines.append(f"    lifecycle status: {stats.lifecycle_status}")
 
     notes = list(summary.quality_notes)
     if notes:
@@ -915,9 +981,16 @@ def format_observation_lifecycle_summary(
     return lines
 
 
+def _datetime_to_utc_iso(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.astimezone(UTC).isoformat(timespec="seconds")
+
+
 def device_observation_stats_to_dict(stats: DeviceObservationStats) -> dict[str, Any]:
     return {
         "node_id": stats.node_id,
+        "report_count": stats.report_count,
         "unique_observations": stats.unique_observations,
         "completed_observations": stats.completed_observations,
         "open_observations": stats.open_observations,
@@ -927,6 +1000,10 @@ def device_observation_stats_to_dict(stats: DeviceObservationStats) -> dict[str,
             stats.total_completed_ms if stats.completed_with_duration else None
         ),
         "completed_with_duration": stats.completed_with_duration,
+        "activity_start_utc": _datetime_to_utc_iso(stats.activity_start),
+        "activity_end_utc": _datetime_to_utc_iso(stats.activity_end),
+        "latest_activity_utc": _datetime_to_utc_iso(stats.latest_activity),
+        "lifecycle_status": stats.lifecycle_status,
     }
 
 
@@ -935,20 +1012,13 @@ def observation_lifecycle_summary_to_dict(
     *,
     fetch_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    oldest = summary.oldest_report_event_time
-    fetched = summary.fetched_at
     payload: dict[str, Any] = {
         "report_count": summary.report_count,
-        "oldest_report_event_time_utc": (
-            oldest.astimezone(UTC).isoformat(timespec="seconds")
-            if oldest is not None
-            else None
+        "device_count": len(summary.devices),
+        "oldest_report_event_time_utc": _datetime_to_utc_iso(
+            summary.oldest_report_event_time
         ),
-        "fetched_at_utc": (
-            fetched.astimezone(UTC).isoformat(timespec="seconds")
-            if fetched is not None
-            else None
-        ),
+        "fetched_at_utc": _datetime_to_utc_iso(summary.fetched_at),
         "combined": device_observation_stats_to_dict(summary.combined),
         "devices": [
             device_observation_stats_to_dict(device) for device in summary.devices
@@ -1403,8 +1473,908 @@ def run_cross_ear_correlation(
     )
 
 
+def _score_breakdown_text(breakdown: dict[str, int] | None) -> str:
+    if not breakdown:
+        return "(no score components)"
+    parts = [
+        f"{key}={breakdown[key]}"
+        for key in ("ear_diversity", "temporal", "bearing", "acoustic")
+        if key in breakdown
+    ]
+    for key in sorted(breakdown):
+        if key in {"ear_diversity", "temporal", "bearing", "acoustic"}:
+            continue
+        parts.append(f"{key}={breakdown[key]}")
+    return "(" + ", ".join(parts) + ")" if parts else "(no score components)"
+
+
+def _member_bearing_count(members: list[AssembledObservation]) -> int:
+    return sum(
+        1
+        for member in members
+        if member.bearing_deg is not None or member.bearing_samples
+    )
+
+
+_UUID_RE = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+    re.IGNORECASE,
+)
+_INTERNAL_ID_RE = re.compile(r"\b(?:event|cand)-[0-9a-f]+\b", re.IGNORECASE)
+
+
+def _strip_internal_ids(text: str) -> str:
+    """Remove observation UUIDs and internal event/candidate ids from brief text."""
+    cleaned = _UUID_RE.sub("<id>", text)
+    cleaned = _INTERNAL_ID_RE.sub("<id>", cleaned)
+    # "joined <id> from EAR-001" / "created from <id> (EAR-001) + <id> (EAR-002)"
+    cleaned = re.sub(
+        r"\b(?:joined|created from)\s+\S+(?:\s+\([^)]+\))?"
+        r"(?:\s*\+\s*\S+(?:\s+\([^)]+\))?)?",
+        lambda match: (
+            "joined an Observation"
+            if match.group(0).startswith("joined")
+            else "seeded from Observations"
+        ),
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" ;,")
+    return cleaned
+
+
+def _summarize_association_evidence(
+    evidence_notes: list[str],
+    score_breakdown: dict[str, int] | None,
+) -> list[str]:
+    """Human-readable association evidence without UUIDs / internal object ids."""
+    breakdown = dict(score_breakdown or {})
+    temporal_bits: list[str] = []
+    site_bits: list[str] = []
+    bearing_bits: list[str] = []
+    acoustic_bits: list[str] = []
+    membership_bits: list[str] = []
+    promotion_bits: list[str] = []
+
+    expanded_notes: list[str] = []
+    for raw in evidence_notes:
+        note = raw.strip()
+        if not note:
+            continue
+        # Pairwise evidence is often one semicolon-joined reason string.
+        parts = [part.strip() for part in note.split(";") if part.strip()]
+        expanded_notes.extend(parts if parts else [note])
+
+    for note in expanded_notes:
+        lower = note.lower()
+        if lower.startswith("created from") or lower.startswith("joined "):
+            if lower.startswith("created from"):
+                membership_bits.append("seeded from a compatible Ear pair")
+            elif "post-promotion" in lower:
+                membership_bits.append(
+                    "accepted an additional Ear after Event promotion"
+                )
+            else:
+                membership_bits.append("accepted an additional Ear into membership")
+            continue
+        if "promotion withheld" in lower:
+            promotion_bits.append(_strip_internal_ids(note))
+            continue
+        cleaned = _strip_internal_ids(note)
+        if not cleaned:
+            continue
+        if any(
+            token in lower
+            for token in ("interval", "overlap", "gap", "temporal")
+        ):
+            temporal_bits.append(cleaned)
+        elif "site distance" in lower or "installation" in lower:
+            site_bits.append(cleaned)
+        elif "bearing" in lower:
+            bearing_bits.append(cleaned)
+        elif "acoustic" in lower or "source_family" in lower:
+            acoustic_bits.append(cleaned)
+        else:
+            # Keep unclassified technical evidence without ids.
+            membership_bits.append(cleaned)
+
+    def first_unique(items: list[str]) -> str | None:
+        seen: set[str] = set()
+        for item in items:
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            return item
+        return None
+
+    lines: list[str] = []
+    temporal = first_unique(temporal_bits)
+    if temporal:
+        lines.append(
+            f"Temporal: {temporal} "
+            f"(score +{breakdown.get('temporal', 0)})"
+        )
+    elif "temporal" in breakdown:
+        lines.append(
+            f"Temporal: no explicit note recorded "
+            f"(score +{breakdown.get('temporal', 0)})"
+        )
+
+    site = first_unique(site_bits)
+    if site:
+        site_text = re.sub(
+            r"^site distance\s+", "", site, flags=re.IGNORECASE
+        )
+        lines.append(f"Site distance: {site_text}")
+    bearing = first_unique(bearing_bits)
+    if bearing:
+        bearing_text = re.sub(r"^bearings?\s+", "", bearing, flags=re.IGNORECASE)
+        lines.append(
+            f"Bearing: {bearing_text} "
+            f"(score +{breakdown.get('bearing', 0)})"
+        )
+    elif "bearing" in breakdown:
+        lines.append(
+            f"Bearing: no explicit note recorded "
+            f"(score +{breakdown.get('bearing', 0)})"
+        )
+    acoustic = first_unique(acoustic_bits)
+    if acoustic:
+        acoustic_text = re.sub(
+            r"^acoustic\s+", "", acoustic, flags=re.IGNORECASE
+        )
+        lines.append(
+            f"Acoustic: {acoustic_text} "
+            f"(score +{breakdown.get('acoustic', 0)})"
+        )
+    elif "acoustic" in breakdown:
+        lines.append(
+            f"Acoustic: abstained / not scored "
+            f"(score +{breakdown.get('acoustic', 0)})"
+        )
+    if "ear_diversity" in breakdown:
+        lines.append(
+            f"Ear diversity: score +{breakdown.get('ear_diversity', 0)}"
+        )
+    membership = first_unique(membership_bits)
+    if membership:
+        lines.append(f"Membership: {membership}")
+    for item in promotion_bits:
+        lines.append(f"Promotion: {_strip_internal_ids(item)}")
+    if not lines:
+        lines.append("none recorded")
+    return lines
+
+
+def _localization_principal_reason(
+    localization,
+    *,
+    bearing_count: int = 0,
+    observation_count: int = 0,
+) -> str:
+    """Actual technical reason a position is unavailable (never architectural prose)."""
+    if localization is not None and (
+        localization.latitude is not None and localization.longitude is not None
+    ):
+        return "n/a"
+    if observation_count > 0 and bearing_count <= 0:
+        return (
+            f"no bearings available on {observation_count} Observation(s); "
+            "cannot form LOB intersections"
+        )
+    if observation_count > 0 and bearing_count == 1:
+        return (
+            "only 1 Observation has a bearing; "
+            "need bearings from ≥2 Ears for intersection geometry"
+        )
+    if localization is None:
+        if observation_count <= 0:
+            return "no Observations available for localization"
+        return "no localization result was produced for this association item"
+    if localization.details.get("position_withheld"):
+        for note in localization.quality_notes:
+            text = note.strip()
+            if text:
+                return text
+        return (
+            "position withheld: geometry or multi-ray evidence insufficient "
+            "for a defensible estimate"
+        )
+    for note in localization.quality_notes:
+        text = note.strip()
+        if text:
+            return text
+    epoch_reason = localization.details.get("epoch_evaluation_unavailable_reason")
+    if isinstance(epoch_reason, str) and epoch_reason.strip():
+        return epoch_reason.strip()
+    forward_pairs = sum(
+        1
+        for pair in localization.pairs
+        if getattr(pair, "intersection_status", None) == "forward_intersection"
+    )
+    if forward_pairs < 1:
+        return "no forward LOB intersections among member bearings"
+    return f"localization status={localization.status}; no further reason recorded"
+
+
+def _localization_geometry_sufficiency(
+    localization,
+    *,
+    bearing_count: int = 0,
+) -> str:
+    if bearing_count <= 0:
+        return "insufficient (no bearings)"
+    if bearing_count < 2:
+        return "insufficient (<2 bearings)"
+    if localization is None:
+        return "unavailable"
+    forward_pairs = sum(
+        1
+        for pair in localization.pairs
+        if getattr(pair, "intersection_status", None) == "forward_intersection"
+    )
+    contributors = len(localization.contributing_ears or [])
+    if localization.status == "useful":
+        return (
+            f"sufficient for status=useful "
+            f"(contributors={contributors}, forward_pairs={forward_pairs})"
+        )
+    if localization.status == "weak":
+        return (
+            f"limited/weak "
+            f"(contributors={contributors}, forward_pairs={forward_pairs})"
+        )
+    if localization.details.get("position_withheld"):
+        return "insufficient (position withheld)"
+    if contributors < 2:
+        return (
+            f"insufficient "
+            f"(bearings={bearing_count}, contributors={contributors})"
+        )
+    if forward_pairs < 1:
+        return (
+            f"insufficient (no forward intersection pairs; "
+            f"bearings={bearing_count}, contributors={contributors})"
+        )
+    return (
+        f"insufficient for a useful fix "
+        f"(contributors={contributors}, forward_pairs={forward_pairs})"
+    )
+
+
+def _format_brief_association_membership(
+    *,
+    label: str,
+    ear_ids: list[str],
+    observation_count: int,
+    score: int,
+    score_breakdown: dict[str, int],
+    qualitative_uncertainty: str,
+    evidence_notes: list[str],
+) -> list[str]:
+    lines = [
+        (
+            f"    {label}: {len(ear_ids)} Ear(s) "
+            f"({', '.join(ear_ids) if ear_ids else 'none'}); "
+            f"observations={observation_count}; "
+            f"association score={score} {_score_breakdown_text(score_breakdown)}; "
+            f"association uncertainty={qualitative_uncertainty}"
+        ),
+    ]
+    evidence = _summarize_association_evidence(evidence_notes, score_breakdown)
+    lines.append("      association evidence:")
+    for note in evidence:
+        lines.append(f"        - {note}")
+    return lines
+
+
+def _format_brief_localization_item(
+    *,
+    label: str,
+    members: list[AssembledObservation],
+    localization,
+) -> list[str]:
+    observation_count = len(members)
+    bearing_count = _member_bearing_count(members)
+    lines = [
+        f"    {label}:",
+        (
+            f"      bearings available: {bearing_count}/"
+            f"{observation_count} Observation(s)"
+        ),
+    ]
+    if localization is None:
+        lines.append("      localization status: unavailable")
+        lines.append("      estimated position: unavailable")
+        lines.append(
+            "      reason: "
+            + _localization_principal_reason(
+                None,
+                bearing_count=bearing_count,
+                observation_count=observation_count,
+            )
+        )
+        lines.append(
+            "      geometry: "
+            + _localization_geometry_sufficiency(
+                None, bearing_count=bearing_count
+            )
+        )
+        return lines
+    lines.append(f"      localization status: {localization.status}")
+    if localization.latitude is not None and localization.longitude is not None:
+        lines.append(
+            f"      estimated position: {localization.latitude:.6f},"
+            f"{localization.longitude:.6f}"
+        )
+        lines.append("      reason: n/a (position available)")
+    else:
+        lines.append("      estimated position: unavailable")
+        lines.append(
+            "      reason: "
+            + _localization_principal_reason(
+                localization,
+                bearing_count=bearing_count,
+                observation_count=observation_count,
+            )
+        )
+    lines.append(
+        "      geometry: "
+        + _localization_geometry_sufficiency(
+            localization, bearing_count=bearing_count
+        )
+    )
+    return lines
+
+
+def _collect_activity_episodes(
+    observations: list[dict[str, Any]],
+    event_gap_seconds: float,
+) -> list[dict[str, Any]]:
+    """Build per-Ear activity episode descriptors (list keeps these ungrouped)."""
+    parse_positive_interval(event_gap_seconds)
+    observations_by_ear: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in observations:
+        node_id = observation_fields(item).get("node_id")
+        if isinstance(node_id, str) and node_id:
+            observations_by_ear[node_id].append(item)
+
+    episodes: list[dict[str, Any]] = []
+    for node_id, ear_observations in sorted(observations_by_ear.items()):
+        for episode, reason in proposed_event_groups(
+            ear_observations, event_gap_seconds
+        ):
+            episode_times = [observation_time(item) for item in episode]
+            known_times = [item for item in episode_times if item is not None]
+            start = min(known_times) if known_times else None
+            end = None
+            if known_times:
+                last_observation = max(
+                    episode,
+                    key=lambda item: (
+                        observation_time(item)
+                        or datetime.min.replace(tzinfo=UTC)
+                    ),
+                )
+                last_time = observation_time(last_observation)
+                duration_ms = observation_fields(last_observation).get(
+                    "duration_ms", 0
+                )
+                if (
+                    not isinstance(duration_ms, (int, float))
+                    or isinstance(duration_ms, bool)
+                    or not math.isfinite(duration_ms)
+                ):
+                    duration_ms = 0
+                if last_time is not None:
+                    end = last_time + timedelta(milliseconds=max(duration_ms, 0))
+            unique_obs = unique_observation_count(episode)
+            episodes.append(
+                {
+                    "node_id": node_id,
+                    "report_count": len(episode),
+                    "unique_observations": unique_obs,
+                    "start": start,
+                    "end": end,
+                    "reason": reason,
+                }
+            )
+    return episodes
+
+
+def _intervals_overlap(
+    start_a: datetime | None,
+    end_a: datetime | None,
+    start_b: datetime | None,
+    end_b: datetime | None,
+) -> bool:
+    if start_a is None or end_a is None or start_b is None or end_b is None:
+        return False
+    return start_a <= end_b and start_b <= end_a
+
+
+def _group_activity_windows(
+    episodes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Presentation-only merge of temporally overlapping per-EAR episodes.
+
+    These windows are not Events and do not imply shared-source identity.
+    """
+    dated = [item for item in episodes if item.get("start") and item.get("end")]
+    undated = [item for item in episodes if item not in dated]
+    dated_sorted = sorted(
+        dated,
+        key=lambda item: (
+            item["start"],
+            item["end"],
+            item.get("node_id") or "",
+        ),
+    )
+    windows: list[dict[str, Any]] = []
+    for episode in dated_sorted:
+        merged_into = None
+        for window in windows:
+            if _intervals_overlap(
+                window["start"],
+                window["end"],
+                episode["start"],
+                episode["end"],
+            ):
+                merged_into = window
+                break
+        if merged_into is None:
+            windows.append(
+                {
+                    "start": episode["start"],
+                    "end": episode["end"],
+                    "ear_ids": {episode["node_id"]},
+                    "report_count": int(episode["report_count"]),
+                    "unique_observations": int(episode["unique_observations"]),
+                }
+            )
+            continue
+        merged_into["start"] = min(merged_into["start"], episode["start"])
+        merged_into["end"] = max(merged_into["end"], episode["end"])
+        merged_into["ear_ids"].add(episode["node_id"])
+        merged_into["report_count"] += int(episode["report_count"])
+        merged_into["unique_observations"] += int(episode["unique_observations"])
+
+    # Episodes without usable timestamps stay as singleton windows.
+    for episode in undated:
+        windows.append(
+            {
+                "start": episode.get("start"),
+                "end": episode.get("end"),
+                "ear_ids": {episode["node_id"]},
+                "report_count": int(episode["report_count"]),
+                "unique_observations": int(episode["unique_observations"]),
+            }
+        )
+
+    normalized: list[dict[str, Any]] = []
+    for window in windows:
+        normalized.append(
+            {
+                "start": window["start"],
+                "end": window["end"],
+                "ear_ids": sorted(window["ear_ids"]),
+                "report_count": window["report_count"],
+                "unique_observations": window["unique_observations"],
+            }
+        )
+    normalized.sort(
+        key=lambda item: (
+            item["start"] is None,
+            item["start"] or datetime.max.replace(tzinfo=UTC),
+            item["end"] or datetime.max.replace(tzinfo=UTC),
+            ",".join(item["ear_ids"]),
+        )
+    )
+    return normalized
+
+
+def _association_evidence_headline(
+    evidence_notes: list[str],
+    score_breakdown: dict[str, int] | None,
+) -> str:
+    """Complete association-evidence summary for Key findings (no ids).
+
+    Covers temporal, ear diversity, site-distance constraint, bearing, and
+    acoustic abstention so promotion is not mistaken for source identification
+    or bearing support.
+    """
+    breakdown = dict(score_breakdown or {})
+    parts = _summarize_association_evidence(evidence_notes, breakdown)
+    by_prefix: dict[str, str] = {}
+    for part in parts:
+        for prefix in (
+            "Temporal:",
+            "Site distance:",
+            "Bearing:",
+            "Acoustic:",
+            "Ear diversity:",
+        ):
+            if part.startswith(prefix):
+                by_prefix[prefix] = part
+                break
+
+    def _compact_score(text: str) -> str:
+        return re.sub(r"\(score \+(\d+)\)", r"(+\1)", text)
+
+    bits: list[str] = []
+    temporal_pts = int(breakdown.get("temporal", 0))
+    if "Temporal:" in by_prefix:
+        bits.append(_compact_score(by_prefix["Temporal:"]))
+    else:
+        bits.append(f"Temporal overlap (+{temporal_pts})")
+
+    ear_pts = int(breakdown.get("ear_diversity", 0))
+    bits.append(f"Ear diversity (+{ear_pts})")
+
+    if "Site distance:" in by_prefix:
+        site_text = by_prefix["Site distance:"].removeprefix("Site distance:").strip()
+        bits.append(
+            f"Site distance {site_text} (association constraint satisfied)"
+        )
+    else:
+        bits.append("Site distance: not recorded in association evidence")
+
+    bearing_pts = int(breakdown.get("bearing", 0))
+    bearing_note = by_prefix.get("Bearing:", "")
+    bearing_lower = bearing_note.lower()
+    if (
+        bearing_pts <= 0
+        or "missing" in bearing_lower
+        or "unavailable" in bearing_lower
+    ):
+        bits.append(
+            f"Bearing unavailable (+{bearing_pts}; "
+            "not used as association support)"
+        )
+    elif bearing_note:
+        bits.append(_compact_score(bearing_note))
+    else:
+        bits.append(f"Bearing (+{bearing_pts})")
+
+    acoustic_pts = int(breakdown.get("acoustic", 0))
+    acoustic_note = by_prefix.get("Acoustic:", "")
+    if acoustic_pts <= 0 or "abstain" in acoustic_note.lower():
+        bits.append(
+            f"Acoustic association abstained (+{acoustic_pts}; "
+            "scenario/unverified source_family not used for association scoring)"
+        )
+    elif acoustic_note:
+        bits.append(_compact_score(acoustic_note))
+    else:
+        bits.append(f"Acoustic (+{acoustic_pts})")
+
+    return "; ".join(bits)
+
+
+def format_brief_report(
+    snapshot: AnalysisSnapshot,
+    correlation: CorrelationResult | None,
+    *,
+    lifecycle: ObservationLifecycleSummary | None = None,
+) -> list[str]:
+    """Analytical findings presentation (intermediate between summary and list)."""
+    config = snapshot.config
+    fetch_meta = snapshot.fetch_meta or {}
+    lifecycle = lifecycle or summarize_observation_lifecycles(snapshot.reports)
+    complete = bool(fetch_meta.get("complete_snapshot"))
+    fetch_note = (
+        "complete snapshot"
+        if complete
+        else "page/incomplete snapshot (prefer complete snapshot)"
+    )
+    if snapshot.snapshot_id is not None:
+        fetch_note += f"; hub_snapshot_id={snapshot.snapshot_id}"
+
+    lines = [
+        (
+            f"Cross-EAR brief analysis at "
+            f"{format_local_datetime(datetime.now(tz=UTC))} (Europe/Stockholm)"
+        ),
+        (
+            "Script-local experimental analysis over Hub retained reports; "
+            "not Hub-persisted Events. Ground truth ignored."
+        ),
+        f"Observation reports: {lifecycle.report_count} ({fetch_note})",
+        f"Unique observations: {lifecycle.combined.unique_observations}",
+        f"Devices: {len(lifecycle.devices)}",
+    ]
+    if snapshot.filter_status_lines:
+        lines.extend(snapshot.filter_status_lines)
+    if fetch_meta.get("complete_snapshot") is False:
+        warning = fetch_meta.get("completeness_warning") or (
+            "snapshot may be incomplete versus Hub total_count"
+        )
+        lines.append(f"Warning: {warning}")
+
+    # A. Activity overview — presentation windows only (not Events).
+    lines.append("")
+    lines.append("A. Activity overview")
+    lines.append(
+        "  Cross-EAR activity windows group temporally overlapping per-EAR "
+        f"episodes (episode silence gap {config.event_gap_seconds:g}s). "
+        "Only windows with ≥2 distinct EARs are shown. "
+        "Windows are not Events and do not imply a shared acoustic source."
+    )
+    episodes = _collect_activity_episodes(
+        snapshot.reports, config.event_gap_seconds
+    )
+    windows = _group_activity_windows(episodes)
+    # Presentation filter only: keep original window indices, hide single-EAR
+    # windows. Underlying episodes/analysis still include every EAR.
+    cross_ear_windows = [
+        (index, window)
+        for index, window in enumerate(windows, start=1)
+        if len(window.get("ear_ids") or []) >= 2
+    ]
+    if not cross_ear_windows:
+        lines.append("    none (no multi-EAR activity windows)")
+    else:
+        for index, window in cross_ear_windows:
+            start_text = format_local_datetime(window["start"])
+            end_text = format_local_datetime(window["end"])
+            ears = ", ".join(window["ear_ids"]) if window["ear_ids"] else "none"
+            lines.append(
+                f"    Window W{index}: {start_text} to {end_text}; "
+                f"EARs={ears}; "
+                f"observations={window['unique_observations']}; "
+                f"reports={window['report_count']}"
+            )
+
+    open_candidates: list[Any] = []
+    promoted_events: list[Any] = []
+    unresolved: list[Any] = []
+    rejected: list[Any] = []
+
+    # B. Event association
+    lines.append("")
+    lines.append("B. Event association")
+    lines.append(
+        "  Script-local membership only (not Hub-persisted Events). "
+        "Source identification is not claimed from association alone."
+    )
+    if not config.include_cross_ear_correlation:
+        lines.append("  Cross-EAR correlation omitted (--no-cross-ear-correlation).")
+    elif correlation is None:
+        lines.append("  Cross-EAR correlation result: unavailable")
+    else:
+        open_candidates = [
+            item for item in correlation.candidates if item.status == "EventCandidate"
+        ]
+        promoted_events = list(correlation.events)
+        unresolved = list(getattr(correlation, "unresolved", None) or [])
+        rejected = list(correlation.rejected)
+        params = correlation.parameters
+        lines.append(
+            "  parameters: "
+            f"association_gap={params['association_temporal_gap_seconds']:g}s, "
+            f"association_radius={params['max_association_distance_m']:g}m, "
+            f"min_ears_for_event={params['min_ears_for_event']}, "
+            f"min_promote_score={params['min_promote_score']}"
+        )
+        lines.append(f"  Events (promoted): {len(promoted_events)}")
+        if not promoted_events:
+            lines.append("    none")
+        for index, event in enumerate(promoted_events, start=1):
+            lines.extend(
+                _format_brief_association_membership(
+                    label=f"Event {index}",
+                    ear_ids=list(event.ear_ids),
+                    observation_count=len(event.observation_ids),
+                    score=event.score,
+                    score_breakdown=dict(event.score_breakdown),
+                    qualitative_uncertainty=event.qualitative_uncertainty,
+                    evidence_notes=list(event.evidence_notes),
+                )
+            )
+        lines.append(f"  Event Candidates (open): {len(open_candidates)}")
+        if not open_candidates:
+            lines.append("    none")
+        for index, candidate in enumerate(open_candidates, start=1):
+            lines.extend(
+                _format_brief_association_membership(
+                    label=f"Candidate {index}",
+                    ear_ids=list(candidate.ear_ids),
+                    observation_count=len(candidate.observation_ids),
+                    score=candidate.score,
+                    score_breakdown=dict(candidate.score_breakdown),
+                    qualitative_uncertainty=candidate.qualitative_uncertainty,
+                    evidence_notes=list(candidate.evidence_notes),
+                )
+            )
+
+    # C. Localization
+    lines.append("")
+    lines.append("C. Localization")
+    if not config.include_cross_ear_correlation:
+        lines.append("  unavailable (correlation omitted)")
+    elif correlation is None:
+        lines.append("  unavailable (correlation result missing)")
+    elif not promoted_events and not open_candidates:
+        lines.append("  none (no promoted Events or open Candidates)")
+    else:
+        for index, event in enumerate(promoted_events, start=1):
+            lines.extend(
+                _format_brief_localization_item(
+                    label=f"Event {index}",
+                    members=list(event.members),
+                    localization=event.localization,
+                )
+            )
+        for index, candidate in enumerate(open_candidates, start=1):
+            lines.extend(
+                _format_brief_localization_item(
+                    label=f"Candidate {index}",
+                    members=list(candidate.members),
+                    localization=candidate.localization,
+                )
+            )
+
+    # D. Data quality — integrity vs normal association filtering
+    lines.append("")
+    lines.append("D. Data quality")
+    lines.append("  Integrity:")
+    lines.append(
+        f"    Completed observations: {lifecycle.combined.completed_observations}"
+    )
+    lines.append(
+        f"    Open observations: {lifecycle.combined.open_observations}"
+    )
+    sequence_gap_observations = 0
+    total_sequence_gaps = 0
+    if correlation is not None:
+        for assembled in correlation.observations:
+            if assembled.sequence_gaps > 0:
+                sequence_gap_observations += 1
+                total_sequence_gaps += assembled.sequence_gaps
+        lines.append(
+            f"    Sequence gaps: {total_sequence_gaps} missing sequence number(s) "
+            f"across {sequence_gap_observations} Observation(s)"
+        )
+        lines.append(f"    Unresolved associations: {len(unresolved)}")
+        if unresolved:
+            for item in unresolved:
+                lines.append(
+                    f"      - Observation on {item.node_id}: "
+                    f"{_strip_internal_ids(item.reason)} "
+                    f"(compatible candidates={len(item.compatible_candidate_ids)}, "
+                    f"compatible events={len(item.compatible_event_ids)})"
+                )
+        else:
+            lines.append("      none")
+    else:
+        lines.append("    Sequence gaps: unavailable (correlation not run)")
+        lines.append("    Unresolved associations: unavailable (correlation not run)")
+    if lifecycle.quality_notes:
+        lines.append("    Lifecycle notes:")
+        for note in lifecycle.quality_notes:
+            lines.append(f"      - {note}")
+    else:
+        lines.append("    Lifecycle notes: none")
+
+    lines.append(
+        "  Association rejections (normal filtering; not integrity failures):"
+    )
+    if correlation is None:
+        lines.append("    unavailable (correlation not run)")
+    elif not rejected:
+        lines.append("    none")
+    else:
+        reason_counts: dict[str, int] = defaultdict(int)
+        for item in rejected:
+            reason_counts[_strip_internal_ids(item.reason)] += 1
+        lines.append(f"    {len(rejected)} rejected association attempt(s):")
+        for reason, count in sorted(reason_counts.items()):
+            lines.append(f"      - {count}× {reason}")
+
+    # E. Key findings — analytical, avoid repeating A–D counters
+    lines.append("")
+    lines.append("E. Key findings")
+    findings: list[str] = []
+    if not snapshot.reports:
+        findings.append("No retained observation reports in this snapshot.")
+    elif config.include_cross_ear_correlation and correlation is not None:
+        if promoted_events:
+            for index, event in enumerate(promoted_events, start=1):
+                ears = ", ".join(event.ear_ids) if event.ear_ids else "none"
+                headline = _association_evidence_headline(
+                    list(event.evidence_notes),
+                    dict(event.score_breakdown),
+                )
+                findings.append(
+                    f"Established Event {index} across {len(event.ear_ids)} EAR(s) "
+                    f"({ears}) with association score={event.score} "
+                    f"and association uncertainty="
+                    f"{event.qualitative_uncertainty}. "
+                    f"Promoted from temporal and EAR-diversity evidence; "
+                    f"full association evidence: {headline}."
+                )
+                bearing_count = _member_bearing_count(list(event.members))
+                if (
+                    event.localization is not None
+                    and event.localization.latitude is not None
+                    and event.localization.longitude is not None
+                ):
+                    findings.append(
+                        f"Event {index} localization produced an estimated position "
+                        f"({event.localization.status})."
+                    )
+                else:
+                    reason = _localization_principal_reason(
+                        event.localization,
+                        bearing_count=bearing_count,
+                        observation_count=len(event.members),
+                    )
+                    findings.append(
+                        f"Event {index} could not be localized: {reason}"
+                    )
+        else:
+            findings.append(
+                "No promoted Events under current association thresholds."
+            )
+
+        if open_candidates:
+            for index, candidate in enumerate(open_candidates, start=1):
+                ears = ", ".join(candidate.ear_ids) if candidate.ear_ids else "none"
+                findings.append(
+                    f"Open Candidate {index} remains with {len(candidate.ear_ids)} "
+                    f"EAR(s) ({ears}), association score={candidate.score}, "
+                    f"association uncertainty="
+                    f"{candidate.qualitative_uncertainty} "
+                    "(below promotion threshold or still accumulating evidence)."
+                )
+
+        if unresolved:
+            findings.append(
+                f"{len(unresolved)} Observation(s) left unresolved due to "
+                "multi-compatible association ambiguity (not force-assigned)."
+            )
+
+        integrity_bits: list[str] = []
+        if total_sequence_gaps > 0:
+            integrity_bits.append(
+                f"{total_sequence_gaps} sequence gap(s) across "
+                f"{sequence_gap_observations} Observation(s)"
+            )
+        if lifecycle.quality_notes:
+            integrity_bits.append(
+                "; ".join(lifecycle.quality_notes[:2])
+            )
+        if fetch_meta.get("complete_snapshot") is False:
+            integrity_bits.append(
+                "snapshot may be incomplete versus Hub total_count"
+            )
+        if integrity_bits:
+            findings.append(
+                "Data-quality limitations: " + "; ".join(integrity_bits) + "."
+            )
+
+        findings.append(
+            "Association establishes multi-Ear membership only; "
+            "it does not identify the acoustic source family."
+        )
+    elif not config.include_cross_ear_correlation:
+        findings.append(
+            "Cross-EAR association/localization analysis was omitted for this run."
+        )
+    else:
+        findings.append(
+            "Cross-EAR association/localization analysis result was unavailable."
+        )
+    if not findings:
+        findings.append("No additional findings.")
+    for finding in findings:
+        lines.append(f"  - {finding}")
+    return lines
+
+
 def analyze(snapshot: AnalysisSnapshot) -> AnalysisResult:
-    """Shared deterministic analysis entry point for list and watch (B2.7 Phase A)."""
+    """Shared deterministic analysis entry point for list, brief, and watch."""
     config = snapshot.config
     correlation = None
     if config.include_cross_ear_correlation:
@@ -1417,27 +2387,30 @@ def analyze(snapshot: AnalysisSnapshot) -> AnalysisResult:
             min_ears_for_event=config.min_ears_for_event,
             min_promote_score=config.min_promote_score,
         )
-    lines = report(
-        snapshot.reports,
-        config.event_gap_seconds,
-        snapshot.nodes,
-        max_association_distance_m=config.max_association_distance_m,
-        allow_long_range_sim_ears=config.allow_long_range_sim_ears,
-        association_temporal_gap_seconds=config.association_temporal_gap_seconds,
-        min_ears_for_event=config.min_ears_for_event,
-        min_promote_score=config.min_promote_score,
-        include_cross_ear_correlation=config.include_cross_ear_correlation,
-        environmental_context=snapshot.environmental_context,
-        include_site_context=config.include_site_context,
-        include_cross_ear_geometry=config.include_cross_ear_geometry,
-        cross_ear_geometry_detail=config.cross_ear_geometry_detail,
-        include_observation_details=config.include_observation_details,
-        include_temporal_localization=config.include_temporal_localization,
-        filter_status_lines=snapshot.filter_status_lines or None,
-        hub_snapshot_id=snapshot.snapshot_id,
-        fetch_meta=snapshot.fetch_meta,
-        precomputed_correlation=correlation,
-    )
+    if config.presentation == "brief":
+        lines = format_brief_report(snapshot, correlation)
+    else:
+        lines = report(
+            snapshot.reports,
+            config.event_gap_seconds,
+            snapshot.nodes,
+            max_association_distance_m=config.max_association_distance_m,
+            allow_long_range_sim_ears=config.allow_long_range_sim_ears,
+            association_temporal_gap_seconds=config.association_temporal_gap_seconds,
+            min_ears_for_event=config.min_ears_for_event,
+            min_promote_score=config.min_promote_score,
+            include_cross_ear_correlation=config.include_cross_ear_correlation,
+            environmental_context=snapshot.environmental_context,
+            include_site_context=config.include_site_context,
+            include_cross_ear_geometry=config.include_cross_ear_geometry,
+            cross_ear_geometry_detail=config.cross_ear_geometry_detail,
+            include_observation_details=config.include_observation_details,
+            include_temporal_localization=config.include_temporal_localization,
+            filter_status_lines=snapshot.filter_status_lines or None,
+            hub_snapshot_id=snapshot.snapshot_id,
+            fetch_meta=snapshot.fetch_meta,
+            precomputed_correlation=correlation,
+        )
     return AnalysisResult(
         snapshot=snapshot,
         correlation=correlation,
@@ -2045,23 +3018,33 @@ def main() -> int:
         return 1
     parser = argparse.ArgumentParser(
         description=(
-            "Summarize Ear observation reports, per-Ear activity episodes, and "
-            "experimental script-local Cross-EAR Event Candidates/Events; "
-            "use --details for the per-report listing. "
+            "Hub observation analysis at three presentation levels: "
+            "summary (operational overview), brief (analytical findings), "
+            "list (full diagnostics). Also supports watch. "
             "Ground-truth simulator IDs are not used for association."
         )
     )
     add_hub_connection_arguments(parser)
     commands = parser.add_subparsers(dest="command", required=True)
-    list_command = commands.add_parser("list", help="Show the current report once")
+    list_command = commands.add_parser(
+        "list",
+        help="Full diagnostic analysis of the current complete snapshot",
+    )
+    brief_command = commands.add_parser(
+        "brief",
+        help=(
+            "Analytical findings for the complete snapshot "
+            "(activity, association, localization, data quality, key findings)"
+        ),
+    )
     watch_command = commands.add_parser(
-        "watch", help="Re-fetch and report new observations"
+        "watch", help="Re-fetch and report new observations (list-level detail)"
     )
     summary_command = commands.add_parser(
         "summary",
         help=(
-            "Summarize unique/completed/open observations and completed "
-            "episode durations from Hub retained observation history"
+            "Operational overview: unique/completed/open observations, "
+            "durations, and per-device activity from Hub retained history"
         ),
     )
     summary_command.add_argument(
@@ -2082,7 +3065,7 @@ def main() -> int:
             "(machine-readable; skips the human table)"
         ),
     )
-    for command in (list_command, watch_command):
+    for command in (list_command, brief_command, watch_command):
         command.add_argument(
             "--event-gap-seconds",
             type=float,
@@ -2145,6 +3128,7 @@ def main() -> int:
             action="store_true",
             help="Omit experimental Cross-EAR Candidate/Event correlation",
         )
+    for command in (list_command, watch_command):
         command.add_argument(
             "--details",
             action="store_true",
@@ -2166,25 +3150,27 @@ def main() -> int:
             action="store_true",
             help="Omit the Cross-Ear Bearing Geometry diagnostic section",
         )
-    list_command.add_argument(
-        "--node-id",
-        action="append",
-        default=[],
-        metavar="NODE_ID",
-        help=(
-            "Filter reports by Node ID (repeatable; same as the web Observations filter). "
-            "A single value is also sent to the hub API."
-        ),
-    )
-    list_command.add_argument(
-        "--observation-id",
-        action="append",
-        default=[],
-        metavar="OBSERVATION_ID",
-        help=(
-            "Filter reports by Observation ID (repeatable; same as the web Observations filter)"
-        ),
-    )
+    for command in (list_command, brief_command):
+        command.add_argument(
+            "--node-id",
+            action="append",
+            default=[],
+            metavar="NODE_ID",
+            help=(
+                "Filter reports by Node ID (repeatable; same as the web Observations "
+                "filter). A single value is also sent to the hub API."
+            ),
+        )
+        command.add_argument(
+            "--observation-id",
+            action="append",
+            default=[],
+            metavar="OBSERVATION_ID",
+            help=(
+                "Filter reports by Observation ID (repeatable; same as the web "
+                "Observations filter)"
+            ),
+        )
     list_command.add_argument(
         "--json",
         action="store_true",
@@ -2306,6 +3292,7 @@ def main() -> int:
             return 1
 
     watching = args.command == "watch"
+    briefing = args.command == "brief"
     intervals = [
         ("event gap", args.event_gap_seconds),
         ("max association distance", args.max_association_distance_m),
@@ -2340,7 +3327,7 @@ def main() -> int:
         else:
             list_node_ids = {item for item in args.node_id if item}
             list_observation_ids = {
-                item for item in args.observation_id if item
+                item for item in getattr(args, "observation_id", []) if item
             }
             fetch_node_id = (
                 next(iter(list_node_ids)) if len(list_node_ids) == 1 else None
@@ -2350,17 +3337,20 @@ def main() -> int:
                 if len(list_observation_ids) == 1
                 else None
             )
-            try:
-                page = parse_positive_int(args.page, label="page")
-                page_size = parse_positive_int(args.page_size, label="page-size")
-            except ValueError as exc:
-                parser.error(str(exc))
-            if page_size > MAX_OBSERVATION_PAGE_SIZE:
-                parser.error(
-                    f"page-size must be <= {MAX_OBSERVATION_PAGE_SIZE}"
-                )
-            order = args.order
-            single_page_json = bool(getattr(args, "json", False))
+            if args.command == "list":
+                try:
+                    page = parse_positive_int(args.page, label="page")
+                    page_size = parse_positive_int(
+                        args.page_size, label="page-size"
+                    )
+                except ValueError as exc:
+                    parser.error(str(exc))
+                if page_size > MAX_OBSERVATION_PAGE_SIZE:
+                    parser.error(
+                        f"page-size must be <= {MAX_OBSERVATION_PAGE_SIZE}"
+                    )
+                order = args.order
+                single_page_json = bool(getattr(args, "json", False))
 
         filter_status: list[str] = []
         if single_page_json:
@@ -2448,13 +3438,17 @@ def main() -> int:
             if observation_time(item) is not None
         ]
         weather_at = max(reference_times) if reference_times else None
-        weather = fetch_environmental_context(
-            base_url,
-            args.ca,
-            admin_token,
-            at=weather_at,
-            ensure=True,
-        )
+        # Brief omits site/weather/geometry dump; still fetch weather only for list/watch.
+        weather = None
+        if not briefing:
+            weather = fetch_environmental_context(
+                base_url,
+                args.ca,
+                admin_token,
+                at=weather_at,
+                ensure=True,
+            )
+        presentation: PresentationLevel = "brief" if briefing else "list"
         analysis_config = AnalysisConfig(
             event_gap_seconds=args.event_gap_seconds,
             max_association_distance_m=args.max_association_distance_m,
@@ -2463,13 +3457,26 @@ def main() -> int:
             min_ears_for_event=args.min_ears_for_event,
             min_promote_score=args.min_promote_score,
             include_cross_ear_correlation=not args.no_cross_ear_correlation,
-            include_cross_ear_geometry=not args.no_cross_ear_geometry,
-            cross_ear_geometry_detail=args.cross_ear_geometry_detail,
-            include_site_context=True,
-            include_observation_details=args.details,
-            include_temporal_localization=(
-                getattr(args, "temporal_localization", False)
+            include_cross_ear_geometry=(
+                False
+                if briefing
+                else not getattr(args, "no_cross_ear_geometry", False)
             ),
+            cross_ear_geometry_detail=(
+                False
+                if briefing
+                else bool(getattr(args, "cross_ear_geometry_detail", False))
+            ),
+            include_site_context=not briefing,
+            include_observation_details=(
+                False if briefing else bool(getattr(args, "details", False))
+            ),
+            include_temporal_localization=(
+                False
+                if briefing
+                else bool(getattr(args, "temporal_localization", False))
+            ),
+            presentation=presentation,
         )
         snapshot = AnalysisSnapshot(
             reports=observations,
