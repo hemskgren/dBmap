@@ -1547,7 +1547,7 @@ def _summarize_association_evidence(
 
     for note in expanded_notes:
         lower = note.lower()
-        if lower.startswith("created from") or lower.startswith("joined "):
+        if lower.startswith(("created from", "joined ")):
             if lower.startswith("created from"):
                 membership_bits.append("seeded from a compatible Ear pair")
             elif "post-promotion" in lower:

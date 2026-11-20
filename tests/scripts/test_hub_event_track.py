@@ -2508,15 +2508,15 @@ def test_brief_and_list_share_analysis_and_counts() -> None:
         ),
     ]
     lifecycle = hub_event_track.summarize_observation_lifecycles(reports)
-    shared_kwargs = dict(
-        event_gap_seconds=30.0,
-        max_association_distance_m=5000.0,
-        allow_long_range_sim_ears=True,
-        association_temporal_gap_seconds=20.0,
-        min_ears_for_event=3,
-        min_promote_score=4,
-        include_cross_ear_correlation=True,
-    )
+    shared_kwargs = {
+        "event_gap_seconds": 30.0,
+        "max_association_distance_m": 5000.0,
+        "allow_long_range_sim_ears": True,
+        "association_temporal_gap_seconds": 20.0,
+        "min_ears_for_event": 3,
+        "min_promote_score": 4,
+        "include_cross_ear_correlation": True,
+    }
     list_snapshot = hub_event_track.AnalysisSnapshot(
         reports=reports,
         nodes=TRIANGLE_NODES,
