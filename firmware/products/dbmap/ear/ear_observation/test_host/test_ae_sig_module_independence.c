@@ -49,24 +49,24 @@ static void fill_base(ae_signature_t *s, uint32_t seq, ae_quality_t q)
     s->flags = AE_FLAG_PAIR_MISSING;
 }
 
-/** AS-001 heli_peak-like (signatures.csv seq 17), adjustable seq. */
+/** AS-001 BBC / device-bench heli shape, adjustable seq. */
 static void fill_heli(ae_signature_t *s, uint32_t seq)
 {
     fill_base(s, seq, AE_QUALITY_OK);
-    s->rms_dbfs = -9.4500f;
-    s->peak_dbfs = -2.1124f;
-    s->crest_db = 7.3376f;
-    s->band_dbfs[0] = -17.6648f;
-    s->band_dbfs[1] = -16.8075f;
-    s->band_dbfs[2] = -26.0515f;
-    s->band_dbfs[3] = -48.4829f;
-    s->hl_db = -11.8221f;
+    s->rms_dbfs = -38.0f;
+    s->peak_dbfs = -26.0f;
+    s->crest_db = 12.0f;
+    s->band_dbfs[0] = -38.0f - 4.2094f;
+    s->band_dbfs[1] = -38.0f - 3.5240f;
+    s->band_dbfs[2] = -38.0f - 13.0958f;
+    s->band_dbfs[3] = -38.0f - 32.7691f;
+    s->hl_db = -12.0f;
     s->hl_valid = true;
     s->spectral_valid = true;
-    s->centroid_hz = 1053.7648f;
-    s->bandwidth_hz = 1244.6664f;
-    s->dominant_hz = 500.0000f;
-    s->flatness = 0.246292f;
+    s->centroid_hz = 800.0f;
+    s->bandwidth_hz = 920.0f;
+    s->dominant_hz = 230.0f;
+    s->flatness = 0.1410f;
 }
 
 /** Quiet broadband-ish window (below typical RMS ENTER −45 dBFS). */
@@ -134,7 +134,7 @@ static void test_sig_path_without_rms_start(void)
     EXPECT(ce_candidate_count(&ce) >= 1u); /* CE create floor −80 dBFS */
 
     /*
-     * Fresh AE/CE for AS-001: quiet fingerprints must not steal heli identity.
+     * Fresh AE/CE for AS-001: seed relative background, then heli.
      * Still no activity_detector — proves classification without RMS START.
      */
     ce_stop(&ce);
@@ -142,14 +142,30 @@ static void test_sig_path_without_rms_start(void)
     EXPECT(ce_start(&ce, &ccfg));
     EXPECT(ce_bind_audio_engine(&ce, &ae));
 
+    for (uint32_t seq = 1u; seq <= 4u; seq++) {
+        ae_signature_t bg;
+        fill_quiet_bg(&bg, seq);
+        EXPECT(ae_publish_signature(&ae, &bg));
+    }
+
     ae_signature_t heli;
-    fill_heli(&heli, 1u);
+    fill_heli(&heli, 5u);
     EXPECT(ae_publish_signature(&ae, &heli));
 
+    /* Bg windows may occupy slot 0; locate the heli-associated candidate. */
     ae_candidate_t c;
-    EXPECT(ce_get_candidate(&ce, 0u, &c));
-    EXPECT(c.last_window_seq == 1u);
-    EXPECT(c.last_update_mono_us == 1000000);
+    bool found = false;
+    for (uint8_t i = 0u; i < CE_MAX_CANDIDATES; i++) {
+        if (!ce_get_candidate(&ce, i, &c)) {
+            continue;
+        }
+        if (c.last_window_seq == 5u) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT(found);
+    EXPECT(c.last_update_mono_us == 5000000);
     ce_classification_t cls;
     EXPECT(ce_get_classification(&ce, c.candidate_id, &cls));
     EXPECT(cls.matched);

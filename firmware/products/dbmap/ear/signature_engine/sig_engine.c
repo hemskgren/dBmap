@@ -60,6 +60,8 @@ typedef struct {
     uint8_t temporal_used;
     /** Live working detector — never exposed to production consumers. */
     ear_siren_se_public_t as002_live;
+    /** AS-001 relative-background EMA (level eligibility). */
+    as_profile_bg_state_t as001_bg;
     /* Working area for next window (not visible until publish). */
     sig_published_t work;
     /* Atomically published view. */
@@ -97,16 +99,16 @@ bool sig_engine_start(void)
     }
     memset(&s_eng, 0, sizeof(s_eng));
 
-    /* Core library: AS-001 distance, AS-002 gates+temporal. */
+    /* Core library: AS-001 distance+rel-bg, AS-002 gates+temporal. */
     static const sig_def_t k_as001 = {
         .id = AS_PROFILE_ID_AS001,
         .name = "AS-001",
         .category = SIG_CAT_CORE,
         .enabled = 1u,
         .match_mode = SIG_MATCH_DISTANCE,
-        .rms_mode = SIG_RMS_ABSOLUTE,
+        .rms_mode = SIG_RMS_RELATIVE_BG,
         .needs_streak = 0u,
-        .needs_bg_ema = 0u,
+        .needs_bg_ema = 1u,
         .distance_profile = NULL, /* filled below after as_profile_as001() */
     };
     /* distance_profile set via non-const setup — use runtime table. */
@@ -147,6 +149,7 @@ bool sig_engine_start(void)
     s_eng.work.def_count = s_eng.lib_count;
     s_eng.temporal_used = temporal;
     ear_siren_se_public_init(&s_eng.as002_live);
+    as_profile_bg_init(&s_eng.as001_bg);
     s_eng.published = s_eng.work;
     s_eng.started = true;
     return true;
@@ -211,7 +214,14 @@ static void eval_distance_def(
         return;
     }
     as_profile_match_result_t r;
-    if (as_profile_match(d->distance_profile, sig, &r) && r.matched) {
+    const as_profile_t *p = d->distance_profile;
+    bool matched;
+    if (p->uses_rms_rel_bg) {
+        matched = as_profile_match_with_bg(p, sig, &s_eng.as001_bg, &r);
+    } else {
+        matched = as_profile_match(p, sig, &r);
+    }
+    if (matched && r.matched) {
         a->matched = 1u;
         a->score = r.distance;
     } else {
@@ -459,31 +469,38 @@ bool sig_engine_copy_as002_snapshot(sig_as002_snapshot_t *out)
 
 bool sig_engine_copy_as002_last_window(ear_siren_last_window_t *out)
 {
-    if (out == NULL) {
+    if (out == NULL || !s_eng.started) {
         return false;
     }
-    sig_as002_snapshot_t snap;
-    if (!sig_engine_copy_as002_snapshot(&snap)) {
+    /* Targeted published fields only — one lock, no full snapshot temp. */
+    SIG_PUB_LOCK();
+    if (!s_eng.published.as002.valid) {
+        SIG_PUB_UNLOCK();
         return false;
     }
-    *out = snap.last_window;
+    *out = s_eng.published.as002.last_window;
+    SIG_PUB_UNLOCK();
     return true;
 }
 
 bool sig_engine_copy_as002_evidence(ear_cls_evidence_t *out)
 {
-    if (out == NULL) {
+    if (out == NULL || !s_eng.started) {
         return false;
     }
-    sig_as002_snapshot_t snap;
-    if (!sig_engine_copy_as002_snapshot(&snap)) {
+    /* Targeted published fields only — one lock, no full snapshot temp. */
+    SIG_PUB_LOCK();
+    if (!s_eng.published.as002.valid) {
+        SIG_PUB_UNLOCK();
         return false;
     }
-    if (!snap.evidence_ok) {
+    if (!s_eng.published.as002.evidence_ok) {
+        SIG_PUB_UNLOCK();
         memset(out, 0, sizeof(*out));
         return false;
     }
-    *out = snap.evidence;
+    *out = s_eng.published.as002.evidence;
+    SIG_PUB_UNLOCK();
     return true;
 }
 
@@ -506,8 +523,18 @@ bool sig_engine_host_start_as001_clones(uint8_t n)
     memset(&s_eng, 0, sizeof(s_eng));
 
     static sig_def_t clones[SIG_ENGINE_MAX_DEFS];
+    static as_profile_t profiles[SIG_ENGINE_MAX_DEFS];
     const as_profile_t *p = as_profile_as001();
     for (uint8_t i = 0u; i < n; i++) {
+        /*
+         * Host multi-hit harness: absolute RMS distance, no relative-bg
+         * (production AS-001 uses rel-bg; these clones only test hit vectors).
+         */
+        profiles[i] = *p;
+        profiles[i].uses_rms_rel_bg = false;
+        profiles[i].uses_rms = true;
+        profiles[i].rms_min_dbfs = -60.0f;
+        profiles[i].rms_center_dbfs = -10.0f;
         clones[i].id = (uint16_t)(100u + i);
         clones[i].name = "AS001-clone";
         clones[i].category = SIG_CAT_CORE;
@@ -516,7 +543,7 @@ bool sig_engine_host_start_as001_clones(uint8_t n)
         clones[i].rms_mode = SIG_RMS_ABSOLUTE;
         clones[i].needs_streak = 0u;
         clones[i].needs_bg_ema = 0u;
-        clones[i].distance_profile = p;
+        clones[i].distance_profile = &profiles[i];
         s_eng.library[i] = &clones[i];
         s_eng.work.defs[i].id = clones[i].id;
         s_eng.work.defs[i].enabled = 1u;
@@ -524,6 +551,7 @@ bool sig_engine_host_start_as001_clones(uint8_t n)
     }
     s_eng.lib_count = n;
     s_eng.work.def_count = n;
+    as_profile_bg_init(&s_eng.as001_bg);
     s_eng.published = s_eng.work;
     s_eng.started = true;
     return true;
@@ -541,8 +569,11 @@ bool sig_engine_host_start_as001_distance_ladder(uint8_t n)
     const as_profile_t *base = as_profile_as001();
     for (uint8_t i = 0u; i < n; i++) {
         profiles[i] = *base;
+        profiles[i].uses_rms_rel_bg = false;
+        profiles[i].uses_rms = true;
+        profiles[i].rms_min_dbfs = -60.0f;
         /*
-         * Ladder rms_center: highest index closest to heli_peak (−10).
+         * Ladder rms_center: highest index closest to heli peak (−10).
          * For sig rms=−10, clone n-1 has uniquely lowest distance.
          */
         profiles[i].rms_center_dbfs =
@@ -563,6 +594,7 @@ bool sig_engine_host_start_as001_distance_ladder(uint8_t n)
     }
     s_eng.lib_count = n;
     s_eng.work.def_count = n;
+    as_profile_bg_init(&s_eng.as001_bg);
     s_eng.published = s_eng.work;
     s_eng.started = true;
     return true;

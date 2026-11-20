@@ -11,6 +11,42 @@
 #define AS_W_CENT 0.01f
 #define AS_W_PAIR 0.25f
 
+/** Same smoothing as AS-002 non-tonal background EMA. */
+#define AS_BG_EMA_ALPHA 0.85f
+
+void as_profile_bg_init(as_profile_bg_state_t *st)
+{
+    if (st == NULL) {
+        return;
+    }
+    memset(st, 0, sizeof(*st));
+    st->initialized = true;
+    st->bg_rms_ema = -60.0f;
+    st->bg_valid = false;
+}
+
+void as_profile_bg_reset(as_profile_bg_state_t *st)
+{
+    as_profile_bg_init(st);
+}
+
+static void bg_note_non_match(as_profile_bg_state_t *bg, float rms_dbfs)
+{
+    if (bg == NULL || !isfinite(rms_dbfs)) {
+        return;
+    }
+    if (!bg->initialized) {
+        as_profile_bg_init(bg);
+    }
+    if (!bg->bg_valid) {
+        bg->bg_rms_ema = rms_dbfs;
+        bg->bg_valid = true;
+        return;
+    }
+    bg->bg_rms_ema =
+        AS_BG_EMA_ALPHA * bg->bg_rms_ema + (1.0f - AS_BG_EMA_ALPHA) * rms_dbfs;
+}
+
 static bool spectral_gate_ok(const as_profile_t *p, const ae_signature_t *sig)
 {
     if (p->dominant_hz_max >= p->dominant_hz_min) {
@@ -27,9 +63,31 @@ static bool spectral_gate_ok(const as_profile_t *p, const ae_signature_t *sig)
     return true;
 }
 
-bool as_profile_match(
+static bool level_eligible(
     const as_profile_t *profile,
     const ae_signature_t *sig,
+    const as_profile_bg_state_t *bg
+)
+{
+    if (profile->uses_rms_rel_bg) {
+        if (bg == NULL || !bg->initialized || !bg->bg_valid) {
+            return false;
+        }
+        if (!isfinite(sig->rms_dbfs)) {
+            return false;
+        }
+        return sig->rms_dbfs >= (bg->bg_rms_ema + profile->rms_bg_margin_db);
+    }
+    if (profile->uses_rms) {
+        return sig->rms_dbfs >= profile->rms_min_dbfs;
+    }
+    return true;
+}
+
+static bool match_core(
+    const as_profile_t *profile,
+    const ae_signature_t *sig,
+    const as_profile_bg_state_t *bg,
     as_profile_match_result_t *out
 )
 {
@@ -58,7 +116,20 @@ bool as_profile_match(
     local.profile_id = profile->id;
     local.acoustic_class = profile->acoustic_class;
 
-    if (profile->uses_rms && sig->rms_dbfs < profile->rms_min_dbfs) {
+    /*
+     * Relative-bg profiles must not be scored through the stateless path:
+     * without a baseline, quiet office windows could be distance-matched
+     * on spectral shape alone once gates are widened for real heli.
+     */
+    if (profile->uses_rms_rel_bg && bg == NULL) {
+        local.rejected_eligibility = 1u;
+        if (out != NULL) {
+            *out = local;
+        }
+        return false;
+    }
+
+    if (!level_eligible(profile, sig, bg)) {
         local.rejected_eligibility = 1u;
         if (out != NULL) {
             *out = local;
@@ -86,7 +157,8 @@ bool as_profile_match(
 
     float dist = 0.0f;
 
-    if (profile->uses_rms) {
+    /* Absolute RMS distance only when not using relative-bg eligibility. */
+    if (profile->uses_rms && !profile->uses_rms_rel_bg) {
         dist += AS_W_RMS * fabsf(profile->rms_center_dbfs - sig->rms_dbfs);
     }
 
@@ -132,6 +204,36 @@ bool as_profile_match(
     return local.matched;
 }
 
+bool as_profile_match(
+    const as_profile_t *profile,
+    const ae_signature_t *sig,
+    as_profile_match_result_t *out
+)
+{
+    return match_core(profile, sig, NULL, out);
+}
+
+bool as_profile_match_with_bg(
+    const as_profile_t *profile,
+    const ae_signature_t *sig,
+    as_profile_bg_state_t *bg,
+    as_profile_match_result_t *out
+)
+{
+    as_profile_match_result_t local;
+    const bool matched = match_core(profile, sig, bg, &local);
+    if (out != NULL) {
+        *out = local;
+    }
+    if (profile != NULL && profile->uses_rms_rel_bg && sig != NULL && !matched) {
+        /* Build / refresh baseline from non-matching usable windows only. */
+        if (sig->quality == AE_QUALITY_OK || sig->quality == AE_QUALITY_DEGRADED) {
+            bg_note_non_match(bg, sig->rms_dbfs);
+        }
+    }
+    return matched;
+}
+
 bool as_profile_match_best(
     const ae_signature_t *sig,
     as_profile_match_result_t *out
@@ -159,6 +261,59 @@ bool as_profile_match_best(
             best = r;
             have = true;
         }
+    }
+
+    if (out != NULL) {
+        *out = best;
+    }
+    return have;
+}
+
+bool as_profile_match_best_with_bg(
+    const ae_signature_t *sig,
+    as_profile_bg_state_t *bg,
+    as_profile_match_result_t *out
+)
+{
+    if (out != NULL) {
+        memset(out, 0, sizeof(*out));
+    }
+    if (sig == NULL) {
+        return false;
+    }
+
+    as_profile_match_result_t best;
+    memset(&best, 0, sizeof(best));
+    bool have = false;
+    bool any_rel = false;
+
+    const size_t n = as_profile_count();
+    for (size_t i = 0; i < n; i++) {
+        const as_profile_t *p = as_profile_get_by_index(i);
+        as_profile_match_result_t r;
+        bool matched;
+        if (p != NULL && p->uses_rms_rel_bg) {
+            any_rel = true;
+            /*
+             * Evaluate without updating bg yet — update once after the
+             * whole pass if nothing matched (shared baseline).
+             */
+            matched = match_core(p, sig, bg, &r);
+        } else {
+            matched = as_profile_match(p, sig, &r);
+        }
+        if (!matched || !r.matched) {
+            continue;
+        }
+        if (!have || r.distance < best.distance) {
+            best = r;
+            have = true;
+        }
+    }
+
+    if (!have && any_rel && sig != NULL
+        && (sig->quality == AE_QUALITY_OK || sig->quality == AE_QUALITY_DEGRADED)) {
+        bg_note_non_match(bg, sig->rms_dbfs);
     }
 
     if (out != NULL) {
