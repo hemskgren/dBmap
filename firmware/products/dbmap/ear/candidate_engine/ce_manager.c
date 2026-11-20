@@ -4,6 +4,7 @@
 #include "ce_log.h"
 
 #include <math.h>
+#include <stddef.h>
 #include <string.h>
 
 _Static_assert((int)AE_CAND_NASCENT == 0, "state_hist index");
@@ -137,8 +138,38 @@ static ae_candidate_t *slot_alloc(ce_engine_t *eng)
     return weak;
 }
 
-static void slot_clear(ae_candidate_t *c)
+static void clear_last_evidence(ce_engine_t *eng, const ae_candidate_t *c)
 {
+    if (eng == NULL || c == NULL) {
+        return;
+    }
+    const ptrdiff_t off = c - eng->slots;
+    if (off < 0 || (size_t)off >= (size_t)CE_MAX_CANDIDATES) {
+        return;
+    }
+    eng->last_evidence_sig_valid[(size_t)off] = false;
+}
+
+static void remember_last_evidence(
+    ce_engine_t *eng,
+    const ae_candidate_t *c,
+    const ae_signature_t *sig
+)
+{
+    if (eng == NULL || c == NULL || sig == NULL) {
+        return;
+    }
+    const ptrdiff_t off = c - eng->slots;
+    if (off < 0 || (size_t)off >= (size_t)CE_MAX_CANDIDATES) {
+        return;
+    }
+    eng->last_evidence_sig[(size_t)off] = *sig;
+    eng->last_evidence_sig_valid[(size_t)off] = true;
+}
+
+static void slot_clear(ce_engine_t *eng, ae_candidate_t *c)
+{
+    clear_last_evidence(eng, c);
     memset(c, 0, sizeof(*c));
 }
 
@@ -161,6 +192,7 @@ static void expire_slot(ce_engine_t *eng, ae_candidate_t *c)
      * PROMOTED → COASTING before coast expiry, so state==PROMOTED would miss EXIT.
      */
     emit_exit(eng, c);
+    clear_last_evidence(eng, c);
     c->state = AE_CAND_EXPIRED;
     c->in_use = false;
     eng->diag.expired++;
@@ -270,6 +302,7 @@ static void update_matched(ce_engine_t *eng, ae_candidate_t *c, const ae_signatu
         conf *= 0.85f;
     }
     c->confidence = conf;
+    remember_last_evidence(eng, c, sig);
 }
 
 static ce_ingest_t create_nascent(ce_engine_t *eng, const ae_signature_t *sig)
@@ -292,7 +325,7 @@ static ce_ingest_t create_nascent(ce_engine_t *eng, const ae_signature_t *sig)
         r.action = CE_INGEST_DROPPED;
         return r;
     }
-    slot_clear(c);
+    slot_clear(eng, c);
     c->in_use = true;
     c->candidate_id = eng->next_id++;
     c->state = AE_CAND_NASCENT;
@@ -476,6 +509,7 @@ bool ce_manager_reject(ce_engine_t *eng, uint64_t candidate_id)
         return false;
     }
     emit_exit(eng, c);
+    clear_last_evidence(eng, c);
     c->state = AE_CAND_REJECTED;
     c->promotion_entered = false;
     c->in_use = false;
@@ -499,7 +533,7 @@ void ce_manager_release_for_stop(ce_engine_t *eng)
          * Observation open/close is not owned here — only association teardown.
          */
         emit_exit(eng, c);
-        slot_clear(c);
+        slot_clear(eng, c);
         eng->diag.stop_cleared++;
     }
 }

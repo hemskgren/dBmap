@@ -25,7 +25,8 @@ Value classes: [schema.md](../../schema.md).
 | Pending queue capacity | 2 | `configured` | `EAR_OBS_MGR_PENDING_CAP` | Max pending promotions | compile-time |
 | Admission: held + pending | ≤ 2 | `configured` | `ear_obs_manager_reserve` uses `held + pending >= EAR_OBS_MGR_PENDING_CAP` → full (`ear_obs_manager.c`) | Joint reservation budget | compile-time policy |
 | Pending timeout default | 30000 ms | `configured` | `EAR_OBS_PENDING_TIMEOUT_MS_DEFAULT` in `ear_obs_manager.h`; applied in manager init / `ear_observation.c` | Expire pending promote wait | compile-time default |
-| Promote signature snapshot | ≤ 3 | `configured` | `EAR_OBS_PROMOTE_SIG_CAP` (default 3) in `ear_obs_manager.h` | Max AE signatures copied into promote snapshot | compile-time |
+| Promote / live evidence signature ring | ≤ 3 | `configured` | `EAR_OBS_PROMOTE_SIG_CAP` (default 3) in `ear_obs_manager.h` | ENTER seeds from AE history; post-promote live updates append candidate-associated by-value copies; newest at `[0]`, FIFO drop oldest when full | compile-time |
+| Detached Obs END watchdog | 60000 ms | `configured` | `EAR_OBS_DETACHED_END_TIMEOUT_MS_DEFAULT` / `CONFIG_DBMAP_EAR_OBS_DETACHED_END_TIMEOUT_MS` | After matching CE EXIT on a non-AS002 open binding, OM ends that binding if still open && !ce_live when hold elapses; PERIODIC does not reset; AS002 excluded | kconfig / init-default |
 
 **Note:** Manager binding cap and Platform `SP_OBS_EPISODE_SLOTS` are both 2 and
 are checked together on promote/open paths, but they are **different symbols**.

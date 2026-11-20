@@ -24,6 +24,15 @@
 extern "C" {
 #endif
 
+/**
+ * Bounded owned signature evidence per Observation binding / promote snapshot.
+ *
+ * ENTER may seed up to this many by-value copies from AE history (unchanged).
+ * Post-promotion live updates append candidate-associated signatures into the
+ * same ring. Semantics: newest at ``sigs[0]`` (FIFO toward higher indices);
+ * when full, the oldest entry is dropped on insert. Cap is compile-time and
+ * must stay aligned with Firmware Map capacities (CE Stage 2).
+ */
 #ifndef EAR_OBS_PROMOTE_SIG_CAP
 #define EAR_OBS_PROMOTE_SIG_CAP 3u
 #endif
@@ -118,6 +127,19 @@ typedef enum {
 #define EAR_OBS_AS002_SIGNATURE_ABSENCE_HOLD_MS_DEFAULT 60000u
 #endif
 
+/**
+ * Default OM detached-Observation watchdog (ms). Stage 3: after a matching CE
+ * EXIT clears ce_live on a normal (non-AS002) binding, if the Observation is
+ * still open when this monotonic hold elapses, OM ends that binding alone with
+ * EAR_OBS_END_EXPLICIT. Chosen to match the AS002 absence-hold scale (60 s) and
+ * sit above pending_timeout (30 s) / max_invalid_hold (30 s) so brief re-promote
+ * windows are not cut short. Overridden by
+ * ear_obs_manager_config_t.detached_end_timeout_ms / Kconfig.
+ */
+#ifndef EAR_OBS_DETACHED_END_TIMEOUT_MS_DEFAULT
+#define EAR_OBS_DETACHED_END_TIMEOUT_MS_DEFAULT 60000u
+#endif
+
 typedef struct {
     uint64_t candidate_id;
     sp_ep_handle_t ep;
@@ -181,6 +203,14 @@ typedef struct {
      * signature END. 0 → EAR_OBS_AS002_SIGNATURE_ABSENCE_HOLD_MS_DEFAULT.
      */
     uint32_t as002_signature_absence_hold_ms;
+    /**
+     * Stage 3 detached-Obs watchdog. After matching CE EXIT on a non-AS002
+     * open binding, end that binding if still open && !ce_live when this many
+     * ms of monotonic time elapse. 0 → EAR_OBS_DETACHED_END_TIMEOUT_MS_DEFAULT.
+     * AS002 is excluded (signature-absence END remains authoritative).
+     * PERIODIC hints must not reset the timer.
+     */
+    uint32_t detached_end_timeout_ms;
 } ear_obs_manager_config_t;
 
 typedef struct {
@@ -214,6 +244,12 @@ typedef struct {
     uint32_t end_done;
     uint32_t evidence_accepted;
     uint32_t evidence_dropped;
+    /**
+     * Signature copy offered but not admitted (GAP/INVALID, duplicate or
+     * out-of-order window_seq, or provenance mismatch vs candidate update).
+     * EMA fields from cand_copy may still have been applied.
+     */
+    uint32_t evidence_sig_rejected;
     uint32_t periodic_hint;
     /** Promotion callback arrived while EAR_OBS_MGR_EVENT_Q was full. */
     uint32_t evq_dropped;
@@ -227,6 +263,14 @@ typedef struct {
     uint32_t as002_sig_absent_pause;
     /** Ambient activity END skipped an AS002 binding. */
     uint32_t activity_end_as002_skipped;
+    /** Detached watchdog armed on matching EXIT (non-AS002). */
+    uint32_t detached_watchdog_armed;
+    /** Detached watchdog cancelled (ce_live restored / re-attach). */
+    uint32_t detached_watchdog_cancelled;
+    /** Observation ENDs emitted by detached watchdog expiry. */
+    uint32_t detached_watchdog_end;
+    /** ENTER re-attached ce_live on an open detached binding (same candidate). */
+    uint32_t enter_reattach;
 } ear_obs_manager_diag_t;
 
 typedef struct ear_obs_manager ear_obs_manager_t;
@@ -276,12 +320,34 @@ void ear_obs_manager_on_promotion(
     void *ctx
 );
 
+/**
+ * Refresh a ce_live binding from CE state and optional signature evidence.
+ *
+ * ``cand_copy`` updates EMA / seq / gap fields when present.
+ * ``sig_copy`` is admitted only when:
+ *   - quality is OK or DEGRADED (never INVALID or GAP),
+ *   - window_seq > last owned signature seq for this binding,
+ *   - when cand_copy is also provided, sig.window_seq == cand.last_window_seq
+ *     (exact association with that candidate update — not AE "latest"),
+ *   - promotion_gen matches the live binding when both sides are non-zero.
+ *
+ * Owned copies only: the signature is memcpy'd into the binding ring; AE
+ * history overwrite cannot mutate admitted evidence. Ring: newest at [0],
+ * capacity EAR_OBS_PROMOTE_SIG_CAP, drop oldest when full.
+ */
 void ear_obs_manager_on_candidate_evidence(
     ear_obs_manager_t *om,
     uint64_t candidate_id,
     const ae_signature_t *sig_copy,
     const ae_candidate_t *cand_copy
 );
+
+/**
+ * For each open ce_live binding, feed CE candidate EMA plus the last
+ * candidate-associated signature (``ce_get_last_evidence_signature``).
+ * Does not call AE history APIs — preserves multi-candidate provenance.
+ */
+void ear_obs_manager_feed_from_ce(ear_obs_manager_t *om, ce_engine_t *ce);
 
 /**
  * RMS activity END hint.
@@ -375,7 +441,11 @@ void ear_obs_manager_force_end_all(
     int64_t now_mono_us
 );
 
-/** Drain ENTER/EXIT, pending timeouts, FIFO drain, PERIODIC ticks. */
+/**
+ * Drain ENTER/EXIT, pending timeouts, detached-Obs watchdog expiry, FIFO
+ * drain, and optional PERIODIC ticks. ``now_mono_us`` must be monotonic
+ * (device: esp_timer; host tests: synthetic advancing clock).
+ */
 void ear_obs_manager_poll(ear_obs_manager_t *om, int64_t now_mono_us);
 
 /**
@@ -477,6 +547,16 @@ struct ear_obs_manager {
         float end_hint_level_dbfs;
         ear_obs_promote_snapshot_t snap;
         uint32_t evidence_updates;
+        /**
+         * Highest window_seq among owned signature copies in snap.sigs[].
+         * Used to reject duplicate / out-of-order live signature inserts.
+         */
+        uint32_t last_owned_sig_window_seq;
+        /**
+         * Stage 3: monotonic us when matching CE EXIT cleared ce_live (0 = not
+         * armed). Cleared on re-attach / new bind / END. Not touched by PERIODIC.
+         */
+        int64_t detached_since_mono_us;
         /** Progressive ALARM taxonomy state (refinement; not a promote gate). */
         ear_cls_state_t cls;
         ear_cls_assessment_wire_t cls_wire;

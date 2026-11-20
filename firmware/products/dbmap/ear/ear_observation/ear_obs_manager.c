@@ -38,6 +38,14 @@ static uint32_t as002_absence_hold_ms(const ear_obs_manager_t *om)
     return om->cfg.as002_signature_absence_hold_ms;
 }
 
+static uint32_t detached_end_timeout_ms(const ear_obs_manager_t *om)
+{
+    if (om == NULL || om->cfg.detached_end_timeout_ms == 0u) {
+        return EAR_OBS_DETACHED_END_TIMEOUT_MS_DEFAULT;
+    }
+    return om->cfg.detached_end_timeout_ms;
+}
+
 static bool binding_is_as002(const ear_obs_manager_t *om, uint8_t bi)
 {
     if (om == NULL || bi >= EAR_OBS_MGR_BINDING_CAP || !om->bind[bi].in_use) {
@@ -45,6 +53,42 @@ static bool binding_is_as002(const ear_obs_manager_t *om, uint8_t bi)
     }
     return om->bind[bi].snap.product_relevance_approved
         && om->bind[bi].snap.relevance_profile_id == AS_PROFILE_ID_AS002;
+}
+
+static void clear_detached_watchdog(ear_obs_manager_t *om, uint8_t bi, bool count_cancel)
+{
+    if (om == NULL || bi >= EAR_OBS_MGR_BINDING_CAP) {
+        return;
+    }
+    if (om->bind[bi].detached_since_mono_us != 0) {
+        om->bind[bi].detached_since_mono_us = 0;
+        if (count_cancel) {
+            om->diag.detached_watchdog_cancelled++;
+        }
+    }
+}
+
+/**
+ * Arm Stage 3 watchdog when ce_live transitions true→false on a non-AS002
+ * binding. Idempotent arm uses the transition edge only (caller checks).
+ */
+static void arm_detached_watchdog(
+    ear_obs_manager_t *om,
+    uint8_t bi,
+    int64_t now_mono_us
+)
+{
+    if (om == NULL || bi >= EAR_OBS_MGR_BINDING_CAP || !om->bind[bi].in_use) {
+        return;
+    }
+    if (binding_is_as002(om, bi)) {
+        return;
+    }
+    if (now_mono_us <= 0) {
+        now_mono_us = 1;
+    }
+    om->bind[bi].detached_since_mono_us = now_mono_us;
+    om->diag.detached_watchdog_armed++;
 }
 
 #define EAR_OBS_RSV_MAGIC 0xE0B50001u
@@ -149,6 +193,9 @@ void ear_obs_manager_init(ear_obs_manager_t *om, const ear_obs_manager_config_t 
     if (om->cfg.as002_signature_absence_hold_ms == 0u) {
         om->cfg.as002_signature_absence_hold_ms =
             EAR_OBS_AS002_SIGNATURE_ABSENCE_HOLD_MS_DEFAULT;
+    }
+    if (om->cfg.detached_end_timeout_ms == 0u) {
+        om->cfg.detached_end_timeout_ms = EAR_OBS_DETACHED_END_TIMEOUT_MS_DEFAULT;
     }
 }
 
@@ -431,6 +478,8 @@ static bool allocate_and_bind(
     om->bind[free_bi].ce_live = true;
     om->bind[free_bi].candidate_id = candidate_id;
     om->bind[free_bi].ce_promotion_gen = snap->promotion_gen;
+    /* Fresh binding must not inherit a prior slot's detached timestamp. */
+    om->bind[free_bi].detached_since_mono_us = 0;
     om->bind[free_bi].ep = ep;
     memcpy(
         om->bind[free_bi].observation_id,
@@ -440,6 +489,11 @@ static bool allocate_and_bind(
     om->bind[free_bi].start_mono_us = now_mono_us;
     om->bind[free_bi].last_emit_mono_us = now_mono_us;
     om->bind[free_bi].snap = *snap;
+    om->bind[free_bi].last_owned_sig_window_seq = 0u;
+    if (snap->sig_count > 0u) {
+        /* ENTER seeds newest-first (ae_history_copy_newest → sigs[0]). */
+        om->bind[free_bi].last_owned_sig_window_seq = snap->sigs[0].window_seq;
+    }
     ear_cls_state_init(&om->bind[free_bi].cls);
     memset(&om->bind[free_bi].cls_wire, 0, sizeof(om->bind[free_bi].cls_wire));
     om->bind[free_bi].as002_sig_track =
@@ -899,7 +953,33 @@ static bool cancel_pending_for_candidate(
 
 static void handle_enter(ear_obs_manager_t *om, uint64_t candidate_id, const ae_candidate_t *c)
 {
-    if (find_binding(om, candidate_id) >= 0 || find_pending(om, candidate_id) >= 0) {
+    const int existing_bi = find_binding(om, candidate_id);
+    if (existing_bi >= 0) {
+        /*
+         * Same candidate already has an open Observation. If EXIT detached it
+         * (e.g. unadmit then re-promote), re-attach ce_live and cancel the
+         * Stage 3 watchdog — do not open a second episode.
+         */
+        if (!om->bind[existing_bi].ce_live) {
+            om->bind[existing_bi].ce_live = true;
+            if (c != NULL && c->promotion_gen != 0u) {
+                om->bind[existing_bi].ce_promotion_gen = c->promotion_gen;
+                om->bind[existing_bi].snap.promotion_gen = c->promotion_gen;
+            }
+            clear_detached_watchdog(om, (uint8_t)existing_bi, true);
+            /* Drop any HELD reservation for this re-promote (no second Obs). */
+            const int held_ri = find_held_for_candidate(om, candidate_id);
+            if (held_ri >= 0) {
+                clear_rsv_slot(om, (uint8_t)held_ri);
+                om->diag.reserve_released++;
+            }
+            om->diag.enter_reattach++;
+            return;
+        }
+        om->diag.enter_dup++;
+        return;
+    }
+    if (find_pending(om, candidate_id) >= 0) {
         om->diag.enter_dup++;
         return;
     }
@@ -1013,6 +1093,8 @@ static void handle_exit(
         if (om->bind[bi].ce_live) {
             om->bind[bi].ce_live = false;
             om->diag.exit_detach++;
+            /* Stage 3: arm detached watchdog (non-AS002 only). */
+            arm_detached_watchdog(om, (uint8_t)bi, now_mono_us);
         }
     }
 
@@ -1089,6 +1171,21 @@ static void process_event_queue(ear_obs_manager_t *om, int64_t now_mono_us)
     }
 }
 
+static bool sig_admissible_for_obs_evidence(const ae_signature_t *sig)
+{
+    if (sig == NULL) {
+        return false;
+    }
+    if (sig->window_seq == 0u || sig->window_end_mono_us <= 0) {
+        return false;
+    }
+    /* Observation evidence is continuous usable windows only — not GAP/INVALID. */
+    if (sig->quality != AE_QUALITY_OK && sig->quality != AE_QUALITY_DEGRADED) {
+        return false;
+    }
+    return true;
+}
+
 void ear_obs_manager_on_candidate_evidence(
     ear_obs_manager_t *om,
     uint64_t candidate_id,
@@ -1101,6 +1198,18 @@ void ear_obs_manager_on_candidate_evidence(
     }
     const int bi = find_binding(om, candidate_id);
     if (bi < 0 || !om->bind[bi].ce_live) {
+        om->diag.evidence_dropped++;
+        return;
+    }
+
+    /*
+     * Stale promotion_gen must not refresh a detached/rebound Observation.
+     * Zero on either side is treated as unset (legacy / synthetic callers).
+     */
+    if (cand_copy != NULL
+        && om->bind[bi].ce_promotion_gen != 0u
+        && cand_copy->promotion_gen != 0u
+        && cand_copy->promotion_gen != om->bind[bi].ce_promotion_gen) {
         om->diag.evidence_dropped++;
         return;
     }
@@ -1118,18 +1227,60 @@ void ear_obs_manager_on_candidate_evidence(
         om->bind[bi].snap.quality_summary = cand_copy->quality_summary;
         om->bind[bi].snap.gap_events = cand_copy->gap_events;
     }
+
     if (sig_copy != NULL) {
-        /* Shift ring of owned signatures; newest at [0]. */
-        for (uint8_t i = EAR_OBS_PROMOTE_SIG_CAP - 1u; i > 0u; i--) {
-            om->bind[bi].snap.sigs[i] = om->bind[bi].snap.sigs[i - 1u];
+        bool admit = sig_admissible_for_obs_evidence(sig_copy);
+        if (admit && cand_copy != NULL
+            && sig_copy->window_seq != cand_copy->last_window_seq) {
+            /* Must be the signature that updated this candidate — not AE latest. */
+            admit = false;
         }
-        om->bind[bi].snap.sigs[0] = *sig_copy;
-        if (om->bind[bi].snap.sig_count < EAR_OBS_PROMOTE_SIG_CAP) {
-            om->bind[bi].snap.sig_count++;
+        if (admit
+            && sig_copy->window_seq <= om->bind[bi].last_owned_sig_window_seq) {
+            /* Duplicate or out-of-order relative to owned evidence. */
+            admit = false;
+        }
+        if (!admit) {
+            om->diag.evidence_sig_rejected++;
+        } else {
+            /* Shift ring of owned signatures; newest at [0]; drop oldest if full. */
+            for (uint8_t i = EAR_OBS_PROMOTE_SIG_CAP - 1u; i > 0u; i--) {
+                om->bind[bi].snap.sigs[i] = om->bind[bi].snap.sigs[i - 1u];
+            }
+            om->bind[bi].snap.sigs[0] = *sig_copy;
+            if (om->bind[bi].snap.sig_count < EAR_OBS_PROMOTE_SIG_CAP) {
+                om->bind[bi].snap.sig_count++;
+            }
+            om->bind[bi].last_owned_sig_window_seq = sig_copy->window_seq;
         }
     }
+
     om->bind[bi].evidence_updates++;
     om->diag.evidence_accepted++;
+}
+
+void ear_obs_manager_feed_from_ce(ear_obs_manager_t *om, ce_engine_t *ce)
+{
+    if (om == NULL || ce == NULL || !ce->started) {
+        return;
+    }
+    for (uint8_t i = 0u; i < EAR_OBS_MGR_BINDING_CAP; i++) {
+        if (!om->bind[i].in_use || !om->bind[i].ce_live) {
+            continue;
+        }
+        ae_candidate_t live;
+        if (!ce_find_candidate(ce, om->bind[i].candidate_id, &live)) {
+            continue;
+        }
+        ae_signature_t sig;
+        const ae_signature_t *sigp = NULL;
+        if (ce_get_last_evidence_signature(ce, live.candidate_id, &sig)) {
+            sigp = &sig;
+        }
+        ear_obs_manager_on_candidate_evidence(
+            om, live.candidate_id, sigp, &live
+        );
+    }
 }
 
 void ear_obs_manager_on_activity_end_hint(
@@ -1383,6 +1534,7 @@ void ear_obs_manager_on_engine_stop(ear_obs_manager_t *om, int64_t now_mono_us)
         if (om->bind[bi].in_use && om->bind[bi].ce_live) {
             om->bind[bi].ce_live = false;
             om->diag.exit_detach++;
+            arm_detached_watchdog(om, bi, now_mono_us);
         }
     }
     om->cls_arm_valid = false;
@@ -1431,6 +1583,62 @@ void ear_obs_manager_poll(ear_obs_manager_t *om, int64_t now_mono_us)
             continue;
         }
         i++;
+    }
+
+    /*
+     * Stage 3 detached-Obs watchdog: end only the expired binding.
+     * Snapshot observation_ids so END cannot disturb iteration.
+     */
+    {
+        const uint32_t timeout_ms = detached_end_timeout_ms(om);
+        const int64_t timeout_us = (int64_t)timeout_ms * 1000LL;
+        char obs_ids[EAR_OBS_MGR_BINDING_CAP][SP_OBS_EPISODE_ID_LEN];
+        uint8_t n_ids = 0u;
+        for (uint8_t bi = 0u; bi < EAR_OBS_MGR_BINDING_CAP; bi++) {
+            if (!om->bind[bi].in_use || om->bind[bi].ce_live) {
+                continue;
+            }
+            if (om->bind[bi].detached_since_mono_us <= 0) {
+                continue;
+            }
+            if (binding_is_as002(om, bi)) {
+                continue;
+            }
+            if (now_mono_us < om->bind[bi].detached_since_mono_us) {
+                /* Non-monotonic clock: do not expire yet. */
+                continue;
+            }
+            if ((now_mono_us - om->bind[bi].detached_since_mono_us) < timeout_us) {
+                continue;
+            }
+            memcpy(
+                obs_ids[n_ids],
+                om->bind[bi].observation_id,
+                SP_OBS_EPISODE_ID_LEN
+            );
+            n_ids++;
+        }
+        for (uint8_t j = 0u; j < n_ids; j++) {
+            const int bi = find_binding_by_observation_id(om, obs_ids[j]);
+            if (bi < 0 || om->bind[bi].ce_live || binding_is_as002(om, (uint8_t)bi)) {
+                continue;
+            }
+            const int64_t detached_since = om->bind[bi].detached_since_mono_us;
+            if (detached_since <= 0) {
+                continue;
+            }
+            om->diag.detached_watchdog_end++;
+            end_binding(
+                om,
+                (uint8_t)bi,
+                EAR_OBS_END_EXPLICIT,
+                detached_since,
+                now_mono_us,
+                false,
+                0.0f,
+                false
+            );
+        }
     }
 
     drain_pending_to_open(om, now_mono_us);

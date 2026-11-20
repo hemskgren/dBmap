@@ -91,6 +91,22 @@ menu "dBmap Ear Observation"
             short-pulse gaps (~14 s) do not premature-END. Global siren votes
             are not source-specific identity.
 
+    config DBMAP_EAR_OBS_DETACHED_END_TIMEOUT_MS
+        int "Detached Observation END watchdog after CE EXIT (ms)"
+        range 1000 600000
+        default 60000
+        depends on DBMAP_EAR_AUDIO_ENGINE
+        help
+            Stage 3: after a matching CE EXIT clears ce_live on a normal
+            (non-AS002) Observation Manager binding, if the Observation is
+            still open when this monotonic hold elapses, Observation Manager
+            ends that binding alone (EAR_OBS_END_EXPLICIT → MQTT natural).
+            Default 60000 ms matches the AS002 absence-hold scale and sits
+            above pending_timeout (30 s) / max_invalid_hold (30 s). AS002 is
+            excluded — signature-absence END remains authoritative. PERIODIC
+            hints do not reset the timer. Re-attach (ce_live restored) cancels
+            it.
+
     config DBMAP_EAR_OBS_RELATIVE_END
         bool "Relative END: freeze pre-event RMS baseline for exit"
         default y
