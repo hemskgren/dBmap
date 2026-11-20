@@ -8,8 +8,27 @@
 #include "ae_engine.h"
 #include "as_profile.h"
 #include "ce_engine.h"
+#include "ear_cls_as001.h"
 
 #include <string.h>
+
+#if defined(ESP_PLATFORM)
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "sdkconfig.h"
+#endif
+
+/*
+ * Event-level START-anchor diagnostics only (no behavior change).
+ * Enabled with the existing opt-in UART serial-diag Kconfig used on lab images.
+ */
+#if defined(ESP_PLATFORM) && defined(CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG) \
+    && CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+#define EAR_OBS_MGR_START_ANCHOR_DIAG 1
+static const char *TAG = "ear_obs";
+#else
+#define EAR_OBS_MGR_START_ANCHOR_DIAG 0
+#endif
 
 static uint32_t as002_absence_hold_ms(const ear_obs_manager_t *om)
 {
@@ -331,6 +350,29 @@ static void fill_binding_view(
     out->assessment = om->bind[bi].cls_wire;
 }
 
+/** Deepen AS-001 AIRCRAFT → Helicopter before PERIODIC/END emit (not START). */
+static void as001_maybe_deepen(
+    ear_obs_manager_t *om,
+    uint8_t bi,
+    ear_cls_phase_t phase
+)
+{
+    if (om == NULL || bi >= EAR_OBS_MGR_BINDING_CAP || !om->bind[bi].in_use) {
+        return;
+    }
+    if (om->bind[bi].snap.relevance_profile_id != AS_PROFILE_ID_AS001) {
+        return;
+    }
+    if (phase == EAR_CLS_PHASE_START) {
+        return;
+    }
+    (void)ear_cls_as001_apply(
+        &om->bind[bi].cls_wire,
+        om->bind[bi].snap.relevance_match_distance,
+        phase
+    );
+}
+
 static bool allocate_and_bind(
     ear_obs_manager_t *om,
     uint64_t candidate_id,
@@ -404,7 +446,23 @@ static bool allocate_and_bind(
         (snap->product_relevance_approved
          && snap->relevance_profile_id == AS_PROFILE_ID_AS002);
     om->bind[free_bi].as002_absent_ms = 0u;
-    if (om->cls_arm_valid) {
+    /*
+     * Assessment stamp at START (ear_hyp_v2 via cls_wire):
+     *   - AS-001: parent-only AIRCRAFT (leaf Helicopter on first PERIODIC/END).
+     *   - AS-002: progressive path from armed siren evidence when present.
+     * Never apply siren evidence onto an AS-001 binding.
+     */
+    if (snap->relevance_profile_id == AS_PROFILE_ID_AS001) {
+        (void)ear_cls_as001_apply(
+            &om->bind[free_bi].cls_wire,
+            snap->relevance_match_distance,
+            EAR_CLS_PHASE_START
+        );
+        if (om->cls_arm_valid) {
+            om->cls_arm_valid = false;
+            ear_cls_evidence_clear(&om->cls_arm);
+        }
+    } else if (om->cls_arm_valid) {
         (void)ear_cls_apply(
             &om->bind[free_bi].cls,
             &om->cls_arm,
@@ -750,6 +808,9 @@ static void end_binding(
         }
     }
 
+    /* Deepen AS-001 leaf before END if START was parent-only. */
+    as001_maybe_deepen(om, bi, EAR_CLS_PHASE_END);
+
     ear_obs_binding_view_t view;
     fill_binding_view(om, bi, &view);
     const sp_ep_handle_t ep = om->bind[bi].ep;
@@ -856,9 +917,11 @@ static void handle_enter(ear_obs_manager_t *om, uint64_t candidate_id, const ae_
     };
 
     ear_obs_promote_snapshot_t snap;
+    const bool sel_from_evidence =
+        (c != NULL && c->last_evidence_mono_us != 0);
     const int64_t now_us =
-        (c != NULL && c->last_evidence_mono_us != 0) ? c->last_evidence_mono_us
-                                                    : om->rsv[ri].held_mono_us;
+        sel_from_evidence ? c->last_evidence_mono_us
+                          : om->rsv[ri].held_mono_us;
     if (c != NULL) {
         ear_obs_manager_fill_snapshot_from_candidate(om, c, now_us, &snap);
     } else if (om->rsv[ri].has_snap) {
@@ -879,6 +942,38 @@ static void handle_enter(ear_obs_manager_t *om, uint64_t candidate_id, const ae_
         snap.product_relevance_approved = false;
         snap.relevance_ticket = 0u;
     }
+
+#if EAR_OBS_MGR_START_ANCHOR_DIAG
+    /*
+     * start_anchor enter: records what handle_enter selects as Observation
+     * START mono. esp_timer_get_time() is wall-mono at ENTER *handling*
+     * (OM event-queue drain). CE does not currently stamp a dedicated
+     * promotion callback wall time; snap.promote_mono_us is filled from
+     * the same selected now_us (last_evidence or held_mono), not a
+     * separate clock. held_mono_us is currently never assigned a real
+     * reserve time (stays 0 after reserve).
+     */
+    ESP_LOGI(
+        TAG,
+        "start_anchor enter cand=%llu promo_gen=%lu "
+        "clock_now_us=%lld sel_src=%s selected_start_mono_us=%lld "
+        "last_evidence_mono_us=%lld held_mono_us=%lld "
+        "snap_promote_mono_us=%lld last_window_seq=%lu evidence_count=%lu "
+        "ema_rms_dbfs=%.2f cand_state=%u",
+        (unsigned long long)candidate_id,
+        (unsigned long)(c != NULL ? c->promotion_gen : 0u),
+        (long long)esp_timer_get_time(),
+        sel_from_evidence ? "last_evidence" : "held_mono",
+        (long long)now_us,
+        (long long)(c != NULL ? c->last_evidence_mono_us : 0),
+        (long long)om->rsv[ri].held_mono_us,
+        (long long)snap.promote_mono_us,
+        (unsigned long)(c != NULL ? c->last_window_seq : snap.last_window_seq),
+        (unsigned long)(c != NULL ? c->evidence_count : snap.evidence_count),
+        (double)(c != NULL ? c->ema_rms_dbfs : snap.ema_rms_dbfs),
+        (unsigned)(c != NULL ? (unsigned)c->state : 0u)
+    );
+#endif
 
     (void)ear_obs_manager_commit_reservation(om, h, candidate_id, &snap);
 }
@@ -1196,6 +1291,7 @@ void ear_obs_manager_on_activity_periodic_hint(
         if (!om->bind[bi].in_use) {
             continue;
         }
+        as001_maybe_deepen(om, bi, EAR_CLS_PHASE_PERIODIC);
         ear_obs_binding_view_t view;
         fill_binding_view(om, bi, &view);
         if (om->cfg.emit_periodic(
@@ -1351,6 +1447,7 @@ void ear_obs_manager_poll(ear_obs_manager_t *om, int64_t now_mono_us)
                 continue;
             }
             const int64_t iv_start = now_mono_us - interval_us;
+            as001_maybe_deepen(om, bi, EAR_CLS_PHASE_PERIODIC);
             ear_obs_binding_view_t view;
             fill_binding_view(om, bi, &view);
             if (om->cfg.emit_periodic(

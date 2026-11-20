@@ -10,6 +10,7 @@ idf_component_register(
         "ear_critical_path.c"
         "ear_obs_ota_cleanup.c"
         "ear_cls_progressive.c"
+        "ear_cls_as001.c"
         "ear_observation.c"
     INCLUDE_DIRS "include"
     REQUIRES

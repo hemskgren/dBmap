@@ -10,7 +10,8 @@
  * Does not own Observation create/promote. Refinement updates assessment on an
  * existing episode only. Sibling correction is END-only with strong evidence.
  *
- * AIRBORNE / AS-001 helicopter-like paths are intentionally untouched here.
+ * AS-001 helicopter assessment (AIRCRAFT > Helicopter) lives in ear_cls_as001
+ * and is stamped at Observation bind — not through this ALARM module.
  *
  * MQTT wire format (Hub-accepted ear_hyp_v2):
  *   acoustic.assessment.schema = "ear_hyp_v2"

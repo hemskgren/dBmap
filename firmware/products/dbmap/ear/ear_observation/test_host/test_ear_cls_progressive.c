@@ -451,25 +451,11 @@ static ae_candidate_t *plant(
     return NULL;
 }
 
-static void mark_as001(ce_engine_t *ce, uint64_t id)
-{
-    for (uint8_t i = 0; i < CE_MAX_CANDIDATES; i++) {
-        if (!ce->slots[i].in_use || ce->slots[i].candidate_id != id) {
-            continue;
-        }
-        ce_classification_t *cls = &ce->classifications[i];
-        memset(cls, 0, sizeof(*cls));
-        cls->candidate_id = id;
-        cls->valid = true;
-        cls->matched = true;
-        cls->profile_id = AS_PROFILE_ID_AS001;
-        cls->acoustic_class = AS_CLASS_HELICOPTER_LIKE;
-        cls->distance = 1.0f;
-        cls->gap_events_at_match = ce->slots[i].gap_events;
-        return;
-    }
-}
-
+/**
+ * Reserve+stamp+ENTER for progressive ALARM tests.
+ * Must use AS-002 relevance so START assessment comes from armed siren
+ * evidence (ear_cls_apply), not AS-001 AIRCRAFT > Helicopter.
+ */
 static bool promote_with_reserve(
     ear_obs_manager_t *om,
     ce_engine_t *ce,
@@ -477,7 +463,6 @@ static bool promote_with_reserve(
     int64_t now_us
 )
 {
-    mark_as001(ce, cid);
     ear_obs_rsv_handle_t h;
     if (ear_obs_manager_reserve(om, &h) != EAR_OBS_RSV_OK) {
         return false;
@@ -487,7 +472,7 @@ static bool promote_with_reserve(
         return false;
     }
     if (!ear_obs_manager_stamp_reservation_relevance(
-            om, h, cid, AS_PROFILE_ID_AS001, 1.0f
+            om, h, cid, AS_PROFILE_ID_AS002, 1.0f
         )) {
         ear_obs_manager_release_reservation(om, h);
         return false;

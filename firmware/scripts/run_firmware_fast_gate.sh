@@ -327,6 +327,7 @@ run_host_tests() {
         "${ce_srcs[@]}" \
         "${PLAT_OBS}/episode_registry.c" \
         "${EAR_OBS}/ear_cls_progressive.c" \
+        "${EAR_OBS}/ear_cls_as001.c" \
         "${EAR_OBS}/ear_obs_manager.c" \
         "${EAR_OBS}/ear_promotion_policy.c" \
         "${EAR_OBS}/test_host/test_ear_obs_manager.c" || host_fail=1
@@ -335,6 +336,7 @@ run_host_tests() {
         "${ce_srcs[@]}" \
         "${PLAT_OBS}/episode_registry.c" \
         "${EAR_OBS}/ear_cls_progressive.c" \
+        "${EAR_OBS}/ear_cls_as001.c" \
         "${EAR_OBS}/ear_obs_manager.c" \
         "${EAR_OBS}/ear_promotion_policy.c" \
         "${EAR_OBS}/test_host/test_ear_cls_progressive.c" || host_fail=1
@@ -343,9 +345,23 @@ run_host_tests() {
         "${ce_srcs[@]}" \
         "${PLAT_OBS}/episode_registry.c" \
         "${EAR_OBS}/ear_cls_progressive.c" \
+        "${EAR_OBS}/ear_cls_as001.c" \
         "${EAR_OBS}/ear_obs_manager.c" \
         "${EAR_OBS}/ear_promotion_policy.c" \
         "${EAR_OBS}/test_host/test_ear_siren_se_public.c" || host_fail=1
+      # AS-001 assessment fill + Observation JSON (requires IDF cJSON).
+      if [[ -n "${IDF_PATH:-}" && -f "${IDF_PATH}/components/json/cJSON/cJSON.c" ]]; then
+        local EAR_ACOU_INC="${FIRMWARE_ROOT}/products/dbmap/ear/ear_acoustic/include"
+        run_host_one ear_cls_as001 \
+          ${ae_inc} "-I${EAR_OBS}/include" "-I${EAR_ACOU_INC}" \
+          "-I${IDF_PATH}/components/json/cJSON" \
+          "${EAR_OBS}/ear_cls_as001.c" \
+          "${EAR_OBS}/observation_payload.c" \
+          "${IDF_PATH}/components/json/cJSON/cJSON.c" \
+          "${EAR_OBS}/test_host/test_ear_cls_as001.c" || host_fail=1
+      else
+        record_skip "host/ear_cls_as001 (IDF_PATH/cJSON unavailable)"
+      fi
       run_host_one ae_sig_module_independence \
         ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
         "${ce_srcs[@]}" \
