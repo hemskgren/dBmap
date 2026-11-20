@@ -1671,18 +1671,8 @@ static void mgr_feed_evidence(int64_t now_mono_us)
     if (!s_obs_mgr_ready) {
         return;
     }
-    for (uint8_t i = 0u; i < EAR_OBS_MGR_BINDING_CAP; i++) {
-        if (!s_obs_mgr.bind[i].in_use || !s_obs_mgr.bind[i].ce_live) {
-            continue;
-        }
-        ae_candidate_t live;
-        if (!ce_find_candidate(&s_ce, s_obs_mgr.bind[i].candidate_id, &live)) {
-            continue;
-        }
-        ear_obs_manager_on_candidate_evidence(
-            &s_obs_mgr, live.candidate_id, NULL, &live
-        );
-    }
+    /* Candidate-associated signatures only — never AE history "latest". */
+    ear_obs_manager_feed_from_ce(&s_obs_mgr, &s_ce);
 }
 
 /**
@@ -3280,6 +3270,12 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg)
 #else
         mcfg.as002_signature_absence_hold_ms =
             EAR_OBS_AS002_SIGNATURE_ABSENCE_HOLD_MS_DEFAULT;
+#endif
+#if defined(CONFIG_DBMAP_EAR_OBS_DETACHED_END_TIMEOUT_MS)
+        mcfg.detached_end_timeout_ms =
+            (uint32_t)CONFIG_DBMAP_EAR_OBS_DETACHED_END_TIMEOUT_MS;
+#else
+        mcfg.detached_end_timeout_ms = EAR_OBS_DETACHED_END_TIMEOUT_MS_DEFAULT;
 #endif
         ear_obs_manager_init(&s_obs_mgr, &mcfg);
         ear_promotion_policy_init(&s_promo_pol, &s_ce, &s_obs_mgr);

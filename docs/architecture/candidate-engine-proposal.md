@@ -1,14 +1,17 @@
 # Candidate Engine — Technical Assessment and Proposal
 
-**Status:** Design proposal (no implementation in this document)  
-**Branch:** `docs/candidate-engine-proposal`  
-**Baseline:** `main` after PR #55 (R0 ESP32-S3 measurement baseline)  
+**Status:** Stages 1–3 implemented on host (firmware + host tests); hardware /
+Map verification still outstanding  
+**Branch (implementation):** `architecture/candidate-engine-contracts-review`  
+**Baseline:** `main` after PR #59 (AS-001 BBC relative-bg assessment)  
 **Depends on:** [ADR 0002](../adr/0002-audio-and-candidate-engine.md),
 [AE/CE architecture](./audio-and-candidate-engine.md),
 [ADR 0003](../adr/0003-critical-observation-path-and-shared-evidence.md) (Critical ≠ CE)
 
-**Scope:** Analysis and design only. Do not treat this file as authorization to
-change firmware until the proposal is reviewed and accepted.
+**Scope history:** This document began as analysis-only. The staged plan below
+is retained. Implementation status is recorded in [Implementation status
+(Stages 0–5)](#implementation-status-stages-0-5) — do not treat unimplemented
+stages (4–5) as done.
 
 ---
 
@@ -435,12 +438,12 @@ underuses the richest AE fields already computed.
 
 ### Stage 1 — Identity quality (CE Manager + AE distance usage)
 
-**Status (source):** Implemented on `docs/candidate-engine-proposal` — CE-local
-identity distance (relative band shape; spectral/pair when both sides valid;
-RMS weight reduced); hysteresis + ambiguity counters; coast unchanged;
-`min_rms_dbfs` remains create-energy only. Host: `test_ce_identity.c` + updated
-lifecycle/architecture. Does **not** change `ae_signature_distance` (Critical
-Path). Device/Map multi-candidate verification still outstanding.
+**Status (source):** Implemented — CE-local identity distance (relative band
+shape; spectral/pair when both sides valid; RMS weight reduced); hysteresis +
+ambiguity counters; coast unchanged; `min_rms_dbfs` remains create-energy only.
+Host: `test_ce_identity.c` + lifecycle/architecture. Does **not** change
+`ae_signature_distance` (Critical Path). Device/Map multi-candidate verification
+still outstanding.
 
 **Change first:** association vector so CE match uses spectral/pair when valid;
 add hysteresis / ambiguity counters; keep coast semantics.
@@ -465,6 +468,11 @@ available.
 **Tests:** host Manager — after ENTER, evidence_updates include sig ring;
 history overwrite does not clear binding snap.
 
+**Implemented:** CE owns per-slot `last_evidence_sig`; OM
+`feed_from_ce` / `on_candidate_evidence` appends candidate-associated by-value
+copies into the promote snap ring (≤3); stale `promotion_gen` / detached /
+unassociated AE-latest rejected. Host: `test_s2_*` in `test_ear_obs_manager.c`.
+
 ### Stage 3 — Promotion / END decoupling from legacy RMS edges
 
 **Change:** Observation END policy that does not wait forever on CE EXIT while
@@ -476,6 +484,12 @@ timeout while detached — without making CE own MQTT END.
 
 **Tests:** promoted Candidate expires → EXIT detach → Obs eventually ENDs
 without requiring −55 EXIT; dual Obs mixed `ce_live`.
+
+**Implemented:** OM per-binding `detached_since_mono_us` watchdog (default
+60000 ms, Kconfig `DBMAP_EAR_OBS_DETACHED_END_TIMEOUT_MS`); arm on matching
+EXIT / engine_stop; cancel on ENTER re-attach; AS002 excluded; PERIODIC does
+not reset; expiry → `EAR_OBS_END_EXPLICIT` → MQTT `natural`. Host: `test_s3_*`.
+Hardware soak still required.
 
 ### Stage 4 — Workflow promote/reject (optional product policy)
 
@@ -517,23 +531,42 @@ Lab / Firmware Map records (not claimed until measured):
 
 ---
 
+## Implementation status (Stages 0–5)
+
+| Stage | Intent | Host status | Hardware / Map |
+| --- | --- | --- | --- |
+| 0 | Docs/contracts freeze | Done (this doc + capacities) | — |
+| 1 | Candidate identity (spectral/pair + hysteresis) | **Implemented** + `ce_identity` / lifecycle host tests | Outstanding |
+| 2 | Candidate-associated live evidence on promote path | **Implemented** + OM `test_s2_*` | Outstanding |
+| 3 | Detached Observation END watchdog | **Implemented** + OM `test_s3_*` | Outstanding |
+| 4 | Optional workflow PROMOTE | Not started (Policy remains sole promoter) | — |
+| 5 | Multi-candidate device verification | Host capacity tests only | **Outstanding** |
+
+AS-001 / AS-002 matchers and MQTT payload schema are unchanged by Stages 1–3.
+
+---
+
 ## Deliverables summary
 
 ### 1. Current state
 
 AE/CE M1–M6 are in tree. CE tracks up to 8 Candidates from AE signatures with
-coast/promote/reject. Device Observation create is **promotion-gated** via
-Observation Manager + Promotion Policy. Legacy RMS −45/−55 still runs for
+coast/promote/reject and Stage 1 identity matching. Device Observation create is
+**promotion-gated** via Observation Manager + Promotion Policy. Stage 2 feeds
+candidate-associated signature copies into the OM promote ring after ENTER.
+Stage 3 closes detached non-AS002 Observations via an OM-owned monotonic
+watchdog after matching CE EXIT. Legacy RMS −45/−55 still runs for
 PERIODIC/END hints and detector state; it does **not** open Observations when
-the Manager is ready. Default workflow only KEEPs.
+the Manager is ready. Default workflow only KEEPs. **Hardware verification of
+the full AE→CE→OM→MQTT path remains outstanding.**
 
 ### 2. Gap analysis
 
-- Identity matching underuses AE spectral/pair data.
-- Workflow Decision does not drive promote/reject.
-- Observation END is OM-authoritative on activity END (P1); CE EXIT detach-only.
-- Post-promote signature evidence ring incompletely fed.
-- No Hub `track_id`; multi-candidate demos not Firmware-Map verified.
+- Workflow Decision does not drive promote/reject (Stage 4 optional).
+- Observation END: activity END remains immediate for non-AS002; CE EXIT stays
+  detach-only; Stage 3 detached watchdog covers the indefinite-open hole on
+  host — **device soak not yet recorded**.
+- No Hub `track_id`; multi-candidate demos not Firmware-Map verified (Stage 5).
 - Perfect source identity impossible with current features — needs honest policy.
 
 ### 3. Proposed architecture
@@ -555,21 +588,36 @@ absence coasts; promotion_entered preserves EXIT; Obs END is Manager-owned.
 
 ### 6. Test and verification plan
 
-Host: lifecycle, dual-fingerprint identity, promote snapshot, dual Obs, EXIT
-detach-only. Device/Map: concurrent Candidates + correct promotion capacity.
+Host (done for Stages 1–3): lifecycle, dual-fingerprint identity, promote
+snapshot + live evidence ring, dual Obs, EXIT detach-only, detached watchdog
+(PERIODIC no-reset, engine_stop → timeout END, AS002 exclusion, stale gen).
+Device/Map (outstanding): concurrent Candidates + correct promotion capacity;
+promote → PERIODIC → RMS END; promote → EXIT → detach timeout → MQTT END;
+OTA close single END.
 
 ### 7. Prioritized stages
 
 0 Docs/contracts → 1 Identity quality → 2 Evidence completeness → 3 END
 decoupling → 4 Optional workflow promote → 5 Device verification.
 
+Stages **1–3 are implemented on host**. Next priority: **Stage 5** hardware /
+Firmware Map verification. Stage 4 remains optional and deferred.
+
 ---
 
-## Review asks (before any code)
+## Review asks (historical — answered for Stages 1–3)
+
+These asks gated the original proposal. They are retained for history; Stages
+1–3 proceeded under the answers below.
 
 1. Accept Stage 1 identity direction (use spectral/pair in CE match + hysteresis)?
+   → **Accepted; implemented.**
 2. Keep Promotion Policy as sole promoter for the next implementation slice?
+   → **Yes; still sole promoter (Stage 4 not started).**
 3. Prioritize Stage 3 (Obs END without indefinite CE/RMS veto) vs Stage 1?
+   → **Both delivered (Stage 1 then 2 then 3 on this branch).**
 4. Any change to CE create floor (−80) vs leaving it as non-identity energy gate?
+   → **Unchanged (−80 create floor).**
 
-**No firmware changes until these are agreed.**
+Further firmware beyond Stages 1–3 still requires explicit task approval
+(especially Stage 4 workflow promote and any matcher changes).

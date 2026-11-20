@@ -238,20 +238,30 @@ Ear. Scenario simulator observations may carry
 `simulate_observation.py --include-l0` attaches deterministic L0 scene fixtures;
 the baseline simulator still sends required empty L0 measurements.
 
-`scripts/hub_event_track.py` is a read-only exploratory report. It fetches node
-installation metadata, prints each observation independently, and reports
-pairwise Ear site distances as context (annotated `≤500m` / `>500m`;
+`scripts/hub_event_track.py` is a read-only exploratory report with three
+presentation levels over the same Hub snapshot and analysis objects:
+
+- `summary` — operational overview (retained reports, unique/completed/open
+  Observations, durations, per-device activity)
+- `brief` — analytical findings (activity episodes, Event association,
+  localization status, data quality, key findings)
+- `list` — full diagnostics (installation distances, geometry, membership
+  traces, per-report detail with `--details`)
+
+`list`/`watch` fetch node installation metadata and report pairwise Ear site
+distances as context (annotated `≤500m` / `>500m`;
 `--allow-long-range-sim-ears` marks far `SIM-EAR-*` pairs `SIM eligible`
-without changing the 500 m threshold or creating associations). It also prints
+without changing the 500 m threshold or creating associations). They also print
 one Hub regional weather block from
 `GET /api/v1/hub/environmental-context` (Open-Meteo; informational only).
-Per-Ear inactivity episodes default to a 30 s silence window. It deliberately
-does not read `classification.hints.simulated_source_id` for grouping or
-correlation.
+Per-Ear inactivity episodes default to a 30 s silence window. The tool
+deliberately does not read `classification.hints.simulated_source_id` for
+grouping or correlation.
 Per-Ear inactivity episodes are time summaries only, not Events or claims that
-the observations share a source. The tracker does not yet produce predicted
-cross-Ear associations or Tracks. Watch mode re-fetches observations and node
-metadata and recalculates the report when new observations arrive.
+the observations share a source. Cross-EAR Candidates/Events from this script
+are experimental and script-local (not Hub-persisted). Watch mode re-fetches
+observations and node metadata and recalculates the list-level report when new
+observations arrive.
 
 The scenario simulator keeps ground-truth source movement in the scenario
 definition and may attach the scenario's ID to observations as test-only

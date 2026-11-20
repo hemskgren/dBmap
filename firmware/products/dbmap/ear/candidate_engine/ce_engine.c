@@ -325,6 +325,28 @@ bool ce_find_candidate(const ce_engine_t *eng, uint64_t id, ae_candidate_t *out)
     return false;
 }
 
+bool ce_get_last_evidence_signature(
+    const ce_engine_t *eng,
+    uint64_t candidate_id,
+    ae_signature_t *out
+)
+{
+    if (eng == NULL || !eng->started || out == NULL || candidate_id == 0u) {
+        return false;
+    }
+    for (uint8_t i = 0; i < CE_MAX_CANDIDATES; i++) {
+        if (!eng->slots[i].in_use || eng->slots[i].candidate_id != candidate_id) {
+            continue;
+        }
+        if (!eng->last_evidence_sig_valid[i]) {
+            return false;
+        }
+        *out = eng->last_evidence_sig[i];
+        return true;
+    }
+    return false;
+}
+
 bool ce_promote(ce_engine_t *eng, uint64_t candidate_id)
 {
     return ce_manager_promote(eng, candidate_id);

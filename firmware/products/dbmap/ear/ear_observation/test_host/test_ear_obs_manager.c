@@ -1194,6 +1194,796 @@ static void test_end_without_exit_unsticks_bindings(void)
     fixture_fini(&f);
 }
 
+static int find_bind_idx(const fixture_t *f, uint64_t cid)
+{
+    for (uint8_t i = 0; i < EAR_OBS_MGR_BINDING_CAP; i++) {
+        if (f->om.bind[i].in_use && f->om.bind[i].candidate_id == cid) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static void fill_l0_shape(
+    dbmap_l0_window_t *l0,
+    float rms,
+    const float band_rel[AE_BAND_COUNT],
+    int64_t t_us
+)
+{
+    memset(l0, 0, sizeof(*l0));
+    l0->valid = true;
+    l0->window_end_mono_us = t_us;
+    l0->window_ms = 1000;
+    l0->sample_count = 16000;
+    l0->rms_dbfs = rms;
+    l0->peak_dbfs = rms + 6.0f;
+    l0->crest_db = 6.0f;
+    for (uint32_t i = 0; i < AE_BAND_COUNT; i++) {
+        l0->band_dbfs[i] = rms + band_rel[i];
+    }
+    l0->hl_valid = true;
+    l0->hl_db = 1.0f;
+}
+
+static void fill_l1(
+    dbmap_l1_window_t *l1,
+    float dominant_hz,
+    float flatness,
+    float centroid_hz,
+    int64_t t_us
+)
+{
+    memset(l1, 0, sizeof(*l1));
+    l1->valid = true;
+    l1->window_end_mono_us = t_us;
+    l1->window_ms = 1000;
+    l1->dominant_hz = dominant_hz;
+    l1->flatness = flatness;
+    l1->centroid_hz = centroid_hz;
+    l1->bandwidth_hz = 100.0f;
+}
+
+/** Publish a shaped signature through AE→CE (n_enter=1 → ACTIVE on first). */
+static void publish_shaped(
+    fixture_t *f,
+    uint32_t seq,
+    float rms,
+    const float band_rel[AE_BAND_COUNT],
+    float dominant_hz
+)
+{
+    dbmap_l0_window_t l0;
+    dbmap_l1_window_t l1;
+    const int64_t t = (int64_t)seq * 1000000;
+    fill_l0_shape(&l0, rms, band_rel, t);
+    fill_l1(&l1, dominant_hz, 0.2f, dominant_hz + 10.0f, t);
+    ae_signature_t sig;
+    EXPECT(ae_signature_build(seq, &l0, &l1, NULL, NULL, false, &sig));
+    EXPECT(ae_publish_signature(&f->ae, &sig));
+}
+
+static const float k_band_a[AE_BAND_COUNT] = { -1.0f, 2.0f, 0.0f, -3.0f };
+static const float k_band_b[AE_BAND_COUNT] = { 4.0f, -2.0f, -4.0f, 3.0f };
+
+/* --- CE Stage 2: post-promotion signature evidence --- */
+
+/** 1. Post-promote feed adds candidate-associated signature copies. */
+static void test_s2_post_promote_adds_sig_copies(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+
+    publish_shaped(&f, 1u, -40.0f, k_band_a, 120.0f);
+    ae_candidate_t c;
+    EXPECT(ce_get_candidate(&f.ce, 0u, &c));
+    const uint64_t cid = c.candidate_id;
+    EXPECT(promote_with_reserve(&f, cid, 1000));
+    const int bi = find_bind_idx(&f, cid);
+    EXPECT(bi >= 0);
+    const uint8_t enter_n = f.om.bind[bi].snap.sig_count;
+    EXPECT(enter_n >= 1u);
+    const uint32_t enter_top = f.om.bind[bi].snap.sigs[0].window_seq;
+
+    publish_shaped(&f, 2u, -39.0f, k_band_a, 121.0f);
+    ae_signature_t last;
+    EXPECT(ce_get_last_evidence_signature(&f.ce, cid, &last));
+    EXPECT(last.window_seq == 2u);
+
+    ear_obs_manager_feed_from_ce(&f.om, &f.ce);
+    EXPECT(f.om.bind[bi].snap.sigs[0].window_seq == 2u);
+    EXPECT(f.om.bind[bi].snap.sigs[0].rms_dbfs == last.rms_dbfs);
+    EXPECT(f.om.bind[bi].last_owned_sig_window_seq == 2u);
+    if (enter_n < EAR_OBS_PROMOTE_SIG_CAP) {
+        EXPECT(f.om.bind[bi].snap.sig_count == enter_n + 1u);
+    } else {
+        EXPECT(f.om.bind[bi].snap.sig_count == EAR_OBS_PROMOTE_SIG_CAP);
+        EXPECT(enter_top != 2u || f.om.bind[bi].snap.sigs[0].window_seq == 2u);
+    }
+    fixture_fini(&f);
+}
+
+/** 2. Two candidates cannot cross-contaminate Observation evidence rings. */
+static void test_s2_two_candidates_no_cross_contaminate(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+
+    publish_shaped(&f, 1u, -40.0f, k_band_a, 100.0f);
+    publish_shaped(&f, 2u, -40.0f, k_band_b, 400.0f);
+    EXPECT(ce_candidate_count(&f.ce) == 2u);
+
+    ae_candidate_t ca;
+    ae_candidate_t cb;
+    EXPECT(ce_get_candidate(&f.ce, 0u, &ca));
+    EXPECT(ce_get_candidate(&f.ce, 1u, &cb));
+    EXPECT(ca.candidate_id != cb.candidate_id);
+    EXPECT(promote_with_reserve(&f, ca.candidate_id, 3000));
+    EXPECT(promote_with_reserve(&f, cb.candidate_id, 4000));
+    EXPECT(ear_obs_manager_n_open(&f.om) == 2u);
+
+    publish_shaped(&f, 3u, -38.0f, k_band_a, 105.0f);
+    publish_shaped(&f, 4u, -38.0f, k_band_b, 410.0f);
+    ear_obs_manager_feed_from_ce(&f.om, &f.ce);
+
+    const int ia = find_bind_idx(&f, ca.candidate_id);
+    const int ib = find_bind_idx(&f, cb.candidate_id);
+    EXPECT(ia >= 0 && ib >= 0);
+    EXPECT(f.om.bind[ia].snap.sigs[0].window_seq == 3u);
+    EXPECT(f.om.bind[ib].snap.sigs[0].window_seq == 4u);
+    EXPECT(f.om.bind[ia].snap.sigs[0].window_seq
+           != f.om.bind[ib].snap.sigs[0].window_seq);
+    fixture_fini(&f);
+}
+
+/** 3. AE history overwrite does not mutate already-owned Observation evidence. */
+static void test_s2_ae_history_overwrite_safe(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+
+    publish_shaped(&f, 1u, -40.0f, k_band_a, 120.0f);
+    ae_candidate_t c;
+    EXPECT(ce_get_candidate(&f.ce, 0u, &c));
+    const uint64_t cid = c.candidate_id;
+    EXPECT(promote_with_reserve(&f, cid, 1000));
+
+    publish_shaped(&f, 2u, -37.0f, k_band_a, 122.0f);
+    ear_obs_manager_feed_from_ce(&f.om, &f.ce);
+    const int bi = find_bind_idx(&f, cid);
+    EXPECT(bi >= 0);
+    const float owned_rms = f.om.bind[bi].snap.sigs[0].rms_dbfs;
+    const uint32_t owned_seq = f.om.bind[bi].snap.sigs[0].window_seq;
+    EXPECT(owned_seq == 2u);
+
+    /* Flood AE history with unrelated windows (overwrite ring). */
+    for (uint32_t s = 3u; s < 40u; s++) {
+        publish_tone(&f.ae, s, -90.0f);
+    }
+
+    EXPECT(f.om.bind[bi].snap.sigs[0].window_seq == owned_seq);
+    EXPECT(f.om.bind[bi].snap.sigs[0].rms_dbfs == owned_rms);
+    fixture_fini(&f);
+}
+
+/** 4. INVALID and GAP must not add signature copies. */
+static void test_s2_gap_invalid_rejected(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+
+    publish_shaped(&f, 1u, -40.0f, k_band_a, 120.0f);
+    ae_candidate_t c;
+    EXPECT(ce_get_candidate(&f.ce, 0u, &c));
+    const uint64_t cid = c.candidate_id;
+    EXPECT(promote_with_reserve(&f, cid, 1000));
+    const int bi = find_bind_idx(&f, cid);
+    EXPECT(bi >= 0);
+    const uint8_t n0 = f.om.bind[bi].snap.sig_count;
+    const uint32_t top0 = f.om.bind[bi].last_owned_sig_window_seq;
+
+    ear_obs_manager_diag_t d0;
+    ear_obs_manager_get_diag(&f.om, &d0);
+
+    /* Direct GAP offer with matching cand fields (bypass CE GAP coast). */
+    ae_signature_t gap;
+    memset(&gap, 0, sizeof(gap));
+    gap.schema_version = AE_SIGNATURE_SCHEMA_VERSION;
+    gap.window_seq = top0 + 1u;
+    gap.window_end_mono_us = (int64_t)gap.window_seq * 1000000;
+    gap.window_ms = 1000;
+    gap.quality = AE_QUALITY_GAP;
+    gap.rms_dbfs = -40.0f;
+    ae_candidate_t live;
+    EXPECT(ce_find_candidate(&f.ce, cid, &live));
+    live.last_window_seq = gap.window_seq;
+    live.promotion_gen = f.om.bind[bi].ce_promotion_gen;
+    ear_obs_manager_on_candidate_evidence(&f.om, cid, &gap, &live);
+
+    ae_signature_t inv = gap;
+    inv.window_seq = top0 + 2u;
+    inv.window_end_mono_us = (int64_t)inv.window_seq * 1000000;
+    inv.quality = AE_QUALITY_INVALID;
+    live.last_window_seq = inv.window_seq;
+    ear_obs_manager_on_candidate_evidence(&f.om, cid, &inv, &live);
+
+    EXPECT(f.om.bind[bi].snap.sig_count == n0);
+    EXPECT(f.om.bind[bi].last_owned_sig_window_seq == top0);
+    ear_obs_manager_diag_t d1;
+    ear_obs_manager_get_diag(&f.om, &d1);
+    EXPECT(d1.evidence_sig_rejected >= d0.evidence_sig_rejected + 2u);
+    fixture_fini(&f);
+}
+
+/** 5. Duplicate and out-of-order window_seq rejected for signature ring. */
+static void test_s2_dup_and_out_of_order_seq(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+
+    publish_shaped(&f, 1u, -40.0f, k_band_a, 120.0f);
+    ae_candidate_t c;
+    EXPECT(ce_get_candidate(&f.ce, 0u, &c));
+    const uint64_t cid = c.candidate_id;
+    EXPECT(promote_with_reserve(&f, cid, 1000));
+
+    publish_shaped(&f, 2u, -39.0f, k_band_a, 121.0f);
+    ear_obs_manager_feed_from_ce(&f.om, &f.ce);
+    const int bi = find_bind_idx(&f, cid);
+    EXPECT(bi >= 0);
+    const uint8_t n1 = f.om.bind[bi].snap.sig_count;
+
+    ear_obs_manager_diag_t d0;
+    ear_obs_manager_get_diag(&f.om, &d0);
+    /* Duplicate: feed again without new CE association. */
+    ear_obs_manager_feed_from_ce(&f.om, &f.ce);
+    EXPECT(f.om.bind[bi].snap.sig_count == n1);
+    ear_obs_manager_diag_t d1;
+    ear_obs_manager_get_diag(&f.om, &d1);
+    EXPECT(d1.evidence_sig_rejected > d0.evidence_sig_rejected);
+
+    /* Out-of-order: offer seq 1 while last owned is 2. */
+    ae_signature_t old;
+    EXPECT(ce_get_last_evidence_signature(&f.ce, cid, &old));
+    old.window_seq = 1u;
+    old.window_end_mono_us = 1000000;
+    ae_candidate_t live;
+    EXPECT(ce_find_candidate(&f.ce, cid, &live));
+    live.last_window_seq = 1u;
+    live.promotion_gen = f.om.bind[bi].ce_promotion_gen;
+    ear_obs_manager_on_candidate_evidence(&f.om, cid, &old, &live);
+    EXPECT(f.om.bind[bi].snap.sigs[0].window_seq == 2u);
+    fixture_fini(&f);
+}
+
+/** 6. Stale promotion_gen cannot update a detached or rebound Observation. */
+static void test_s2_stale_promotion_gen_dropped(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+
+    publish_shaped(&f, 1u, -40.0f, k_band_a, 120.0f);
+    ae_candidate_t c;
+    EXPECT(ce_get_candidate(&f.ce, 0u, &c));
+    const uint64_t cid = c.candidate_id;
+    EXPECT(promote_with_reserve(&f, cid, 1000));
+    const int bi = find_bind_idx(&f, cid);
+    EXPECT(bi >= 0);
+    const uint32_t gen1 = f.om.bind[bi].ce_promotion_gen;
+    EXPECT(gen1 != 0u);
+    const uint8_t n0 = f.om.bind[bi].snap.sig_count;
+
+    /* Detached (!ce_live): evidence dropped entirely. */
+    EXPECT(ce_find_candidate(&f.ce, cid, &c));
+    ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
+    ear_obs_manager_poll(&f.om, 2000);
+    EXPECT(!f.om.bind[bi].ce_live);
+
+    ear_obs_manager_diag_t d0;
+    ear_obs_manager_get_diag(&f.om, &d0);
+    ae_signature_t sig;
+    memset(&sig, 0, sizeof(sig));
+    sig.schema_version = AE_SIGNATURE_SCHEMA_VERSION;
+    sig.window_seq = 50u;
+    sig.window_end_mono_us = 50000000;
+    sig.window_ms = 1000;
+    sig.quality = AE_QUALITY_OK;
+    sig.rms_dbfs = -35.0f;
+    c.last_window_seq = 50u;
+    c.promotion_gen = gen1;
+    ear_obs_manager_on_candidate_evidence(&f.om, cid, &sig, &c);
+    ear_obs_manager_diag_t d1;
+    ear_obs_manager_get_diag(&f.om, &d1);
+    EXPECT(d1.evidence_dropped == d0.evidence_dropped + 1u);
+
+    /* Rebound association: restore ce_live with a newer gen; stale gen1 dropped. */
+    f.om.bind[bi].ce_live = true;
+    f.om.bind[bi].ce_promotion_gen = gen1 + 7u;
+    ear_obs_manager_diag_t d2;
+    ear_obs_manager_get_diag(&f.om, &d2);
+    c.promotion_gen = gen1; /* stale */
+    c.last_window_seq = 51u;
+    sig.window_seq = 51u;
+    sig.window_end_mono_us = 51000000;
+    ear_obs_manager_on_candidate_evidence(&f.om, cid, &sig, &c);
+    ear_obs_manager_diag_t d3;
+    ear_obs_manager_get_diag(&f.om, &d3);
+    EXPECT(d3.evidence_dropped == d2.evidence_dropped + 1u);
+    EXPECT(f.om.bind[bi].snap.sig_count == n0);
+    fixture_fini(&f);
+}
+
+/** 7. ENTER snapshot seeding from AE history remains unchanged. */
+static void test_s2_enter_snapshot_unchanged(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+
+    publish_shaped(&f, 1u, -40.0f, k_band_a, 120.0f);
+    publish_shaped(&f, 2u, -39.0f, k_band_a, 121.0f);
+    publish_shaped(&f, 3u, -38.0f, k_band_a, 122.0f);
+    ae_candidate_t c;
+    EXPECT(ce_get_candidate(&f.ce, 0u, &c));
+    const uint64_t cid = c.candidate_id;
+
+    ae_signature_t hist[EAR_OBS_PROMOTE_SIG_CAP];
+    const uint32_t hn = ae_history_copy(&f.ae, hist, EAR_OBS_PROMOTE_SIG_CAP);
+    EXPECT(hn >= 1u);
+
+    EXPECT(promote_with_reserve(&f, cid, 5000));
+    const int bi = find_bind_idx(&f, cid);
+    EXPECT(bi >= 0);
+    EXPECT(f.om.bind[bi].snap.sig_count == (uint8_t)hn);
+    for (uint32_t i = 0; i < hn; i++) {
+        EXPECT(f.om.bind[bi].snap.sigs[i].window_seq == hist[i].window_seq);
+        EXPECT(f.om.bind[bi].snap.sigs[i].rms_dbfs == hist[i].rms_dbfs);
+    }
+    EXPECT(f.om.bind[bi].last_owned_sig_window_seq == hist[0].window_seq);
+    fixture_fini(&f);
+}
+
+/** Provenance: AE latest must not attach when it is not the candidate update. */
+static void test_s2_rejects_unassociated_ae_latest(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+
+    publish_shaped(&f, 1u, -40.0f, k_band_a, 120.0f);
+    ae_candidate_t c;
+    EXPECT(ce_get_candidate(&f.ce, 0u, &c));
+    const uint64_t cid = c.candidate_id;
+    EXPECT(promote_with_reserve(&f, cid, 1000));
+    const int bi = find_bind_idx(&f, cid);
+    EXPECT(bi >= 0);
+    const uint32_t top0 = f.om.bind[bi].last_owned_sig_window_seq;
+
+    /* Unrelated AE publish that does not rematch this candidate (other shape). */
+    publish_shaped(&f, 2u, -40.0f, k_band_b, 400.0f);
+    ae_signature_t ae_latest;
+    EXPECT(ae_get_latest_signature(&f.ae, &ae_latest));
+    EXPECT(ae_latest.window_seq == 2u);
+
+    EXPECT(ce_find_candidate(&f.ce, cid, &c));
+    /* Candidate A still at seq 1; forcing AE latest onto it must fail provenance. */
+    c.promotion_gen = f.om.bind[bi].ce_promotion_gen;
+    ear_obs_manager_diag_t d0;
+    ear_obs_manager_get_diag(&f.om, &d0);
+    ear_obs_manager_on_candidate_evidence(&f.om, cid, &ae_latest, &c);
+    ear_obs_manager_diag_t d1;
+    ear_obs_manager_get_diag(&f.om, &d1);
+    EXPECT(d1.evidence_sig_rejected > d0.evidence_sig_rejected);
+    EXPECT(f.om.bind[bi].last_owned_sig_window_seq == top0);
+    fixture_fini(&f);
+}
+
+/* --- Stage 3: detached-Observation END watchdog --- */
+
+static bool promote_as002_with_reserve(fixture_t *f, uint64_t cid, int64_t now_us)
+{
+    ear_obs_rsv_handle_t h;
+    if (ear_obs_manager_reserve(&f->om, &h) != EAR_OBS_RSV_OK) {
+        return false;
+    }
+    if (!ear_obs_manager_bind_reservation_candidate(&f->om, h, cid)) {
+        ear_obs_manager_release_reservation(&f->om, h);
+        return false;
+    }
+    if (!ear_obs_manager_stamp_reservation_relevance(
+            &f->om, h, cid, AS_PROFILE_ID_AS002, 1.0f
+        )) {
+        ear_obs_manager_release_reservation(&f->om, h);
+        return false;
+    }
+    if (!ce_promote(&f->ce, cid)) {
+        ear_obs_manager_release_reservation(&f->om, h);
+        return false;
+    }
+    ear_obs_manager_poll(&f->om, now_us);
+    return true;
+}
+
+/** Matching EXIT arms watchdog; expiry ENDs without RMS hint. */
+static void test_s3_detached_ends_after_timeout(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    f.om.cfg.detached_end_timeout_ms = 1000u;
+
+    plant(&f.ce, 900u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_with_reserve(&f, 900u, 1000));
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
+    EXPECT(g_emit.ends == 0u);
+
+    ae_candidate_t c;
+    EXPECT(ce_find_candidate(&f.ce, 900u, &c));
+    ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
+    ear_obs_manager_poll(&f.om, 1500);
+    const int bi = find_bind_idx(&f, 900u);
+    EXPECT(bi >= 0);
+    EXPECT(!f.om.bind[bi].ce_live);
+    EXPECT(f.om.bind[bi].detached_since_mono_us == 1500);
+    EXPECT(g_emit.ends == 0u);
+
+    /* timeout_ms=1000 → 1_000_000 us; expire at since + timeout. */
+    ear_obs_manager_poll(&f.om, 1500 + 999999);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
+    EXPECT(g_emit.ends == 0u);
+
+    ear_obs_manager_poll(&f.om, 1500 + 1000000);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
+    EXPECT(g_emit.ends == 1u);
+    EXPECT(g_emit.last_end_reason == EAR_OBS_END_EXPLICIT);
+    ear_obs_manager_diag_t d;
+    ear_obs_manager_get_diag(&f.om, &d);
+    EXPECT(d.detached_watchdog_end == 1u);
+    fixture_fini(&f);
+}
+
+/**
+ * Promotion-gated Obs without any RMS END hint (detector IDLE analogue)
+ * still closes via detached watchdog after EXIT.
+ */
+static void test_s3_idle_rms_path_ends_after_detach_timeout(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    f.om.cfg.detached_end_timeout_ms = 500u;
+
+    plant(&f.ce, 901u, AE_CAND_ACTIVE, 3u, -70.0f); /* below RMS ENTER, above CE floor */
+    EXPECT(promote_with_reserve(&f, 901u, 1000));
+    ae_candidate_t c;
+    EXPECT(ce_find_candidate(&f.ce, 901u, &c));
+    ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
+    ear_obs_manager_poll(&f.om, 1000);
+    /* No activity_end_hint — only watchdog. timeout_ms=500 → 500_000 us. */
+    ear_obs_manager_poll(&f.om, 1000 + 499999);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
+    ear_obs_manager_poll(&f.om, 1000 + 500000);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
+    EXPECT(g_emit.last_end_reason == EAR_OBS_END_EXPLICIT);
+    fixture_fini(&f);
+}
+
+/** Re-promote / ENTER re-attach cancels the detached timer. */
+static void test_s3_reattach_cancels_timer(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    f.om.cfg.detached_end_timeout_ms = 1000u;
+
+    plant(&f.ce, 902u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_with_reserve(&f, 902u, 1000));
+    ae_candidate_t c;
+    EXPECT(ce_find_candidate(&f.ce, 902u, &c));
+    const uint32_t gen1 = c.promotion_gen;
+    ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
+    ear_obs_manager_poll(&f.om, 1100);
+    const int bi = find_bind_idx(&f, 902u);
+    EXPECT(bi >= 0);
+    EXPECT(f.om.bind[bi].detached_since_mono_us == 1100);
+
+    /* Unadmit-style: restore ACTIVE, clear promotion_entered, re-promote. */
+    for (uint8_t i = 0; i < CE_MAX_CANDIDATES; i++) {
+        if (f.ce.slots[i].candidate_id == 902u) {
+            f.ce.slots[i].state = AE_CAND_ACTIVE;
+            f.ce.slots[i].promotion_entered = false;
+            f.ce.slots[i].promotion_gen = 0u;
+            break;
+        }
+    }
+    EXPECT(promote_with_reserve(&f, 902u, 1200));
+    EXPECT(f.om.bind[bi].ce_live);
+    EXPECT(f.om.bind[bi].detached_since_mono_us == 0);
+    EXPECT(f.om.bind[bi].ce_promotion_gen != gen1);
+    ear_obs_manager_diag_t d;
+    ear_obs_manager_get_diag(&f.om, &d);
+    EXPECT(d.enter_reattach >= 1u);
+    EXPECT(d.detached_watchdog_cancelled >= 1u);
+
+    /* Past original since+timeout: cancelled timer must not END. */
+    ear_obs_manager_poll(&f.om, 1100 + 1000000);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
+    EXPECT(g_emit.ends == 0u);
+    fixture_fini(&f);
+}
+
+/** Two Obs: only the detached binding ends on watchdog. */
+static void test_s3_two_obs_only_detached_ends(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    f.om.cfg.detached_end_timeout_ms = 1000u;
+
+    plant(&f.ce, 910u, AE_CAND_ACTIVE, 5u, -30.0f);
+    plant(&f.ce, 911u, AE_CAND_ACTIVE, 5u, -31.0f);
+    EXPECT(promote_with_reserve(&f, 910u, 1000));
+    EXPECT(promote_with_reserve(&f, 911u, 2000));
+    EXPECT(ear_obs_manager_n_open(&f.om) == 2u);
+
+    ae_candidate_t c;
+    EXPECT(ce_find_candidate(&f.ce, 910u, &c));
+    ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
+    ear_obs_manager_poll(&f.om, 2100);
+    EXPECT(!ear_obs_manager_binding_ce_live(&f.om, 910u));
+    EXPECT(ear_obs_manager_binding_ce_live(&f.om, 911u));
+
+    /* timeout_ms=1000 → expire detached 910 only at 2100 + 1_000_000. */
+    ear_obs_manager_poll(&f.om, 2100 + 1000000);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
+    EXPECT(find_bind_idx(&f, 911u) >= 0);
+    EXPECT(find_bind_idx(&f, 910u) < 0);
+    EXPECT(g_emit.ends == 1u);
+    EXPECT(g_emit.last_end_cand == 910u);
+    fixture_fini(&f);
+}
+
+/** RMS ambient END still ends non-AS002 immediately (regression). */
+static void test_s3_ambient_end_still_immediate(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    f.om.cfg.detached_end_timeout_ms = 60000u;
+
+    plant(&f.ce, 920u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_with_reserve(&f, 920u, 1000));
+    ear_obs_manager_on_activity_end_hint(
+        &f.om, EAR_OBS_ACT_END_AMBIENT, 1500, 2000, true, -50.0f
+    );
+    EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
+    EXPECT(g_emit.ends == 1u);
+    EXPECT(g_emit.last_end_reason == EAR_OBS_END_HINT_ACTIVITY);
+    fixture_fini(&f);
+}
+
+/** CE EXIT alone does not immediately END. */
+static void test_s3_exit_alone_no_immediate_end(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    f.om.cfg.detached_end_timeout_ms = 60000u;
+
+    plant(&f.ce, 921u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_with_reserve(&f, 921u, 1000));
+    ae_candidate_t c;
+    EXPECT(ce_find_candidate(&f.ce, 921u, &c));
+    ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
+    ear_obs_manager_poll(&f.om, 1000);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
+    EXPECT(!ear_obs_manager_binding_ce_live(&f.om, 921u));
+    EXPECT(g_emit.ends == 0u);
+    fixture_fini(&f);
+}
+
+/** AS002: EXIT does not arm watchdog; signature-absence END unchanged. */
+static void test_s3_as002_excluded_from_watchdog(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    f.om.cfg.detached_end_timeout_ms = 500u;
+    f.om.cfg.as002_signature_absence_hold_ms = 2000u;
+
+    plant(&f.ce, 930u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_as002_with_reserve(&f, 930u, 1000));
+    const int bi = find_bind_idx(&f, 930u);
+    EXPECT(bi >= 0);
+    EXPECT(f.om.bind[bi].as002_sig_track);
+
+    ae_candidate_t c;
+    EXPECT(ce_find_candidate(&f.ce, 930u, &c));
+    ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
+    ear_obs_manager_poll(&f.om, 1100);
+    EXPECT(!f.om.bind[bi].ce_live);
+    EXPECT(f.om.bind[bi].detached_since_mono_us == 0);
+
+    ear_obs_manager_poll(&f.om, 5000);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
+    EXPECT(g_emit.ends == 0u);
+
+    /* Signature-absence still ends AS002. */
+    ear_obs_manager_on_as002_siren_window(
+        &f.om, true, false, 1000u, 6000, true, -40.0f
+    );
+    ear_obs_manager_on_as002_siren_window(
+        &f.om, true, false, 1000u, 7000, true, -40.0f
+    );
+    EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
+    EXPECT(g_emit.last_end_reason == EAR_OBS_END_SIGNATURE);
+    fixture_fini(&f);
+}
+
+/** Stale promotion_gen EXIT must not arm the watchdog. */
+static void test_s3_stale_gen_no_timer(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    f.om.cfg.detached_end_timeout_ms = 500u;
+
+    plant(&f.ce, 940u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_with_reserve(&f, 940u, 1000));
+    const int bi = find_bind_idx(&f, 940u);
+    EXPECT(bi >= 0);
+    const uint32_t live_gen = f.om.bind[bi].ce_promotion_gen;
+
+    ae_candidate_t stale;
+    EXPECT(ce_find_candidate(&f.ce, 940u, &stale));
+    stale.promotion_gen = live_gen + 99u;
+    ear_obs_manager_on_promotion(&stale, CE_PROMOTION_EXIT, &f.om);
+    ear_obs_manager_poll(&f.om, 1100);
+    EXPECT(f.om.bind[bi].ce_live);
+    EXPECT(f.om.bind[bi].detached_since_mono_us == 0);
+    ear_obs_manager_diag_t d;
+    ear_obs_manager_get_diag(&f.om, &d);
+    EXPECT(d.exit_stale >= 1u);
+    EXPECT(d.detached_watchdog_armed == 0u);
+
+    ear_obs_manager_poll(&f.om, 10000);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
+    fixture_fini(&f);
+}
+
+/** Reused binding slot does not inherit an earlier detached timestamp. */
+static void test_s3_reused_binding_no_inherited_detach(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    f.om.cfg.detached_end_timeout_ms = 1000u;
+
+    plant(&f.ce, 950u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_with_reserve(&f, 950u, 1000));
+    ae_candidate_t c;
+    EXPECT(ce_find_candidate(&f.ce, 950u, &c));
+    ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
+    ear_obs_manager_poll(&f.om, 1100);
+    const int bi0 = find_bind_idx(&f, 950u);
+    EXPECT(bi0 >= 0);
+    EXPECT(f.om.bind[bi0].detached_since_mono_us == 1100);
+
+    ear_obs_manager_force_end_all(&f.om, EAR_OBS_END_EXPLICIT, 1200);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
+
+    plant(&f.ce, 951u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_with_reserve(&f, 951u, 2000));
+    const int bi1 = find_bind_idx(&f, 951u);
+    EXPECT(bi1 >= 0);
+    EXPECT(f.om.bind[bi1].ce_live);
+    EXPECT(f.om.bind[bi1].detached_since_mono_us == 0);
+
+    /* Even if same slot index as before, no inherited timer. */
+    ear_obs_manager_poll(&f.om, 5000);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
+    fixture_fini(&f);
+}
+
+/** Timeout boundary: expire exactly at since+timeout; reject clock rewind. */
+static void test_s3_timeout_boundary_monotonic(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    f.om.cfg.detached_end_timeout_ms = 1000u;
+
+    plant(&f.ce, 960u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_with_reserve(&f, 960u, 1000));
+    ae_candidate_t c;
+    EXPECT(ce_find_candidate(&f.ce, 960u, &c));
+    ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
+    ear_obs_manager_poll(&f.om, 2000000); /* detach at 2_000_000 us */
+    const int bi = find_bind_idx(&f, 960u);
+    EXPECT(bi >= 0);
+    EXPECT(f.om.bind[bi].detached_since_mono_us == 2000000);
+
+    ear_obs_manager_poll(&f.om, 2999999);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
+
+    /* Non-monotonic (rewind): must not END. */
+    ear_obs_manager_poll(&f.om, 1000000);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
+
+    ear_obs_manager_poll(&f.om, 3000000); /* exactly +1000 ms */
+    EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
+    EXPECT(g_emit.last_end_reason == EAR_OBS_END_EXPLICIT);
+    fixture_fini(&f);
+}
+
+/** PERIODIC hints must not refresh or clear detached_since_mono_us. */
+static void test_s3_periodic_does_not_touch_detached_timer(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    f.om.cfg.detached_end_timeout_ms = 1000u;
+    f.om.cfg.enable_poll_periodic = false;
+
+    plant(&f.ce, 970u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_with_reserve(&f, 970u, 1000));
+    ae_candidate_t c;
+    EXPECT(ce_find_candidate(&f.ce, 970u, &c));
+    ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
+    ear_obs_manager_poll(&f.om, 2000000);
+    const int bi = find_bind_idx(&f, 970u);
+    EXPECT(bi >= 0);
+    EXPECT(f.om.bind[bi].detached_since_mono_us == 2000000);
+    const int64_t since = f.om.bind[bi].detached_since_mono_us;
+
+    ear_obs_manager_on_activity_periodic_hint(
+        &f.om, 2000000, 2500000, true, -40.0f
+    );
+    EXPECT(g_emit.periodics == 1u);
+    EXPECT(f.om.bind[bi].detached_since_mono_us == since);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
+    EXPECT(g_emit.ends == 0u);
+
+    /* Still expires from original since, not from PERIODIC time. */
+    ear_obs_manager_poll(&f.om, since + 999999);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
+    ear_obs_manager_poll(&f.om, since + 1000000);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
+    EXPECT(g_emit.ends == 1u);
+    EXPECT(g_emit.last_end_reason == EAR_OBS_END_EXPLICIT);
+    fixture_fini(&f);
+}
+
+/**
+ * engine_stop detaches without END; subsequent poll past detached timeout
+ * emits exactly one EAR_OBS_END_EXPLICIT.
+ */
+static void test_s3_engine_stop_then_watchdog_end(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    f.om.cfg.detached_end_timeout_ms = 1000u;
+
+    plant(&f.ce, 980u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_with_reserve(&f, 980u, 1000));
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
+    EXPECT(g_emit.ends == 0u);
+
+    ce_stop(&f.ce);
+    ear_obs_manager_poll(&f.om, 2000000); /* drain EXIT from stop */
+    ear_obs_manager_on_engine_stop(&f.om, 2000000);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
+    EXPECT(g_emit.ends == 0u);
+    const int bi = find_bind_idx(&f, 980u);
+    EXPECT(bi >= 0);
+    EXPECT(!f.om.bind[bi].ce_live);
+    EXPECT(f.om.bind[bi].detached_since_mono_us == 2000000);
+
+    ear_obs_manager_poll(&f.om, 2000000 + 999999);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
+    EXPECT(g_emit.ends == 0u);
+
+    ear_obs_manager_poll(&f.om, 2000000 + 1000000);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
+    EXPECT(g_emit.ends == 1u);
+    EXPECT(g_emit.last_end_reason == EAR_OBS_END_EXPLICIT);
+    ear_obs_manager_diag_t d;
+    ear_obs_manager_get_diag(&f.om, &d);
+    EXPECT(d.detached_watchdog_end == 1u);
+
+    /* Further polls must not emit a second END. */
+    ear_obs_manager_poll(&f.om, 2000000 + 2000000);
+    EXPECT(g_emit.ends == 1u);
+    fixture_fini(&f);
+}
+
 /* 24–25. Evidence owned after CE clear; no dangling CE pointers in snap */
 static void test_evidence_owned(void)
 {
@@ -2088,6 +2878,26 @@ int main(void)
     test_capacity_recovery_after_end();
     test_end_without_exit_unsticks_bindings();
     test_evidence_owned();
+    test_s2_post_promote_adds_sig_copies();
+    test_s2_two_candidates_no_cross_contaminate();
+    test_s2_ae_history_overwrite_safe();
+    test_s2_gap_invalid_rejected();
+    test_s2_dup_and_out_of_order_seq();
+    test_s2_stale_promotion_gen_dropped();
+    test_s2_enter_snapshot_unchanged();
+    test_s2_rejects_unassociated_ae_latest();
+    test_s3_detached_ends_after_timeout();
+    test_s3_idle_rms_path_ends_after_detach_timeout();
+    test_s3_reattach_cancels_timer();
+    test_s3_two_obs_only_detached_ends();
+    test_s3_ambient_end_still_immediate();
+    test_s3_exit_alone_no_immediate_end();
+    test_s3_as002_excluded_from_watchdog();
+    test_s3_stale_gen_no_timer();
+    test_s3_reused_binding_no_inherited_detach();
+    test_s3_timeout_boundary_monotonic();
+    test_s3_periodic_does_not_touch_detached_timer();
+    test_s3_engine_stop_then_watchdog_end();
     test_policy_reserve_gates();
     test_orphan_enter();
     test_ce_exit_payload_gen_propagates_stale_safe();

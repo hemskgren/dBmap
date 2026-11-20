@@ -163,7 +163,9 @@ uv run python scripts/map_demo_helicopter.py upload  # Temporary Helicopter map 
 uv run python scripts/map_demo_helicopter.py clear   # Remove map-demo scratch objects
 uv run python scripts/hub_map_analysis.py analyze  # Complete Hub snapshot → analyze() (see docs/hub-map-analysis.md)
 uv run python scripts/hub_map_analysis.py publish --dataset live-site-a  # Analysis-only map overlay (scratch; ephemeral)
-uv run python scripts/hub_event_track.py list      # Read-only observation/site report (not a tracker)
+uv run python scripts/hub_event_track.py summary   # Operational overview (per-device activity)
+uv run python scripts/hub_event_track.py brief     # Analytical findings (default investigation view)
+uv run python scripts/hub_event_track.py list      # Full diagnostic observation/site report (not a tracker)
 uv run python scripts/ear_audio_compare.py list    # Ear mic levels (dBFS)
 uv run python scripts/ear_test_runner.py list      # Physical EAR period-test jobs (see docs/ear-test-runner.md)
 uv run scripts/homeassistant.py ping               # HA API reachability (see docs/homeassistant-audio.md)

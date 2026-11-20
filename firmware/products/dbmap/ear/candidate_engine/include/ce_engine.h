@@ -130,6 +130,14 @@ typedef struct {
     bool listener_bound;
     ce_decision_t last_decision;
     bool have_decision;
+    /**
+     * Last signature that UPDATE/CREATE-associated into slots[i].
+     * By-value provenance for Observation evidence feeds — not AE "latest".
+     * Valid only while slots[i].in_use and last_evidence_sig_valid[i].
+     * GAP/coast-only paths do not overwrite this.
+     */
+    ae_signature_t last_evidence_sig[CE_MAX_CANDIDATES];
+    bool last_evidence_sig_valid[CE_MAX_CANDIDATES];
 } ce_engine_t;
 
 void ce_config_set_defaults(ce_config_t *cfg);
@@ -159,6 +167,18 @@ void ce_engine_on_signature(ce_engine_t *eng, const ae_signature_t *sig);
 uint8_t ce_candidate_count(const ce_engine_t *eng);
 bool ce_get_candidate(const ce_engine_t *eng, uint8_t index, ae_candidate_t *out);
 bool ce_find_candidate(const ce_engine_t *eng, uint64_t id, ae_candidate_t *out);
+
+/**
+ * Copy the last signature that CE associated into candidate_id (UPDATE/CREATE).
+ * False if the candidate is missing or has no remembered evidence signature.
+ * Does not read AE history — Observation Manager must use this for live
+ * post-promotion evidence provenance.
+ */
+bool ce_get_last_evidence_signature(
+    const ce_engine_t *eng,
+    uint64_t candidate_id,
+    ae_signature_t *out
+);
 
 /**
  * One-time promote ACTIVE/COASTING → PROMOTED and invoke ENTER callback.
