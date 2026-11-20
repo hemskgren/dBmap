@@ -9,6 +9,8 @@
 
 static ae_sig_capture_rec_t s_buf[AE_SIG_CAPTURE_CAPACITY];
 static ae_sig_capture_diag_t s_diag;
+/** Diagnostic AS-001 relative-bg state (mirrors Signature Engine eligibility). */
+static as_profile_bg_state_t s_as001_bg;
 
 bool ae_sig_capture_compiled(void)
 {
@@ -24,6 +26,7 @@ void ae_sig_capture_reset(uint32_t session_id)
 {
     memset(s_buf, 0, sizeof(s_buf));
     memset(&s_diag, 0, sizeof(s_diag));
+    as_profile_bg_init(&s_as001_bg);
     s_diag.session_id = session_id;
     s_diag.settle_remaining = AE_SIG_CAPTURE_SETTLE_N;
     s_diag.state = (AE_SIG_CAPTURE_SETTLE_N > 0u) ? AE_SIG_CAPTURE_SETTLING
@@ -119,12 +122,13 @@ static void fill_rec(const ae_signature_t *sig, ae_sig_capture_rec_t *rec)
     rec->flatness = sig->flatness;
 
     /*
-     * Pure diagnostic: as_profile_match has no CE/Obs/MQTT side effects.
-     * Always evaluate AS-001 specifically (not best-of-registry) for stable columns.
+     * Pure diagnostic: AS-001 match with relative-bg (no CE/Obs/MQTT side
+     * effects). Uses a capture-local EMA so CSV columns track the same
+     * eligibility principle as the Signature Engine.
      */
     as_profile_match_result_t mr;
     const as_profile_t *p = as_profile_as001();
-    const bool matched = as_profile_match(p, sig, &mr);
+    const bool matched = as_profile_match_with_bg(p, sig, &s_as001_bg, &mr);
     rec->as001_matched = matched ? 1u : 0u;
     rec->as001_rej_elig = mr.rejected_eligibility;
     rec->as001_skip_spec = mr.skipped_spectral;
@@ -152,7 +156,18 @@ void ae_sig_capture_on_signature(const ae_signature_t *sig)
         if (s_diag.settle_remaining == 0u) {
             s_diag.state = AE_SIG_CAPTURE_ACTIVE;
         }
-        /* Settle windows themselves are not stored. */
+        /*
+         * Settle windows are not stored, but must still advance the
+         * capture-local relative-bg EMA. Otherwise the first stored rows
+         * seed baseline from mid-event levels and diverge from the
+         * Signature Engine (which processes every published window).
+         */
+        {
+            as_profile_match_result_t mr;
+            (void)as_profile_match_with_bg(
+                as_profile_as001(), sig, &s_as001_bg, &mr
+            );
+        }
         return;
     }
     if (s_diag.stored >= AE_SIG_CAPTURE_CAPACITY) {
