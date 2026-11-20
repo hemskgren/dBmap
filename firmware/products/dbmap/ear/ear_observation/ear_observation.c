@@ -145,10 +145,22 @@ static int64_t s_diag_last_counters_us;
 /* Lifetime-min free stack (bytes) sampled at phase checkpoints — not instant usage. */
 static uint32_t s_stack_hwm_bytes_pre_analyze;
 static uint32_t s_stack_hwm_bytes_post_analyze;
-static uint32_t s_stack_hwm_bytes_post_publish;
+static uint32_t s_stack_hwm_bytes_pre_promo;
+static uint32_t s_stack_hwm_bytes_post_promo;
+static uint32_t s_stack_hwm_bytes_pre_om_publish;
+static uint32_t s_stack_hwm_bytes_post_om_publish;
+static uint32_t s_stack_hwm_bytes_pre_ae_diag;
+static uint32_t s_stack_hwm_bytes_post_ae_diag;
+static uint32_t s_stack_hwm_bytes_post_publish; /* legacy RMS handle_emission only */
 static uint32_t s_stack_hwm_bytes_post_diag;
 static bool s_stack_hwm_have_pre_analyze;
 static bool s_stack_hwm_have_post_analyze;
+static bool s_stack_hwm_have_pre_promo;
+static bool s_stack_hwm_have_post_promo;
+static bool s_stack_hwm_have_pre_om_publish;
+static bool s_stack_hwm_have_post_om_publish;
+static bool s_stack_hwm_have_pre_ae_diag;
+static bool s_stack_hwm_have_post_ae_diag;
 static bool s_stack_hwm_have_post_publish;
 static bool s_stack_hwm_have_post_diag;
 /** Running lifetime minimum observed by ear_obs checkpoints (bytes). */
@@ -214,7 +226,29 @@ static void ear_obs_stack_hwm_checkpoint(
         );
     }
 }
-#endif
+
+#if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
+/** OM mgr_emit_* path only — before (after=false) or after (after=true) build/publish. */
+static void ear_obs_stack_hwm_om_publish(const char *emit_kind, bool after)
+{
+    if (after) {
+        ear_obs_stack_hwm_checkpoint(
+            "post_om_publish",
+            emit_kind,
+            &s_stack_hwm_bytes_post_om_publish,
+            &s_stack_hwm_have_post_om_publish
+        );
+    } else {
+        ear_obs_stack_hwm_checkpoint(
+            "pre_om_publish",
+            emit_kind,
+            &s_stack_hwm_bytes_pre_om_publish,
+            &s_stack_hwm_have_pre_om_publish
+        );
+    }
+}
+#endif /* AUDIO_ENGINE */
+#endif /* SERIAL_DIAG */
 #if CONFIG_DBMAP_EAR_OBS_L0
 typedef struct {
     dbmap_l0_window_t window;
@@ -1330,6 +1364,9 @@ static bool mgr_emit_start(
         sp_diag_note_obs_skipped_disconnected();
         return false;
     }
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    ear_obs_stack_hwm_om_publish("start", false);
+#endif
     const int64_t interval_us =
         (int64_t)CONFIG_DBMAP_EAR_OBS_INTERVAL_MS * 1000LL;
     int64_t iv_start = now_mono_us - interval_us;
@@ -1354,6 +1391,71 @@ static bool mgr_emit_start(
 #endif
     const ear_cls_assessment_wire_t *assess =
         (binding->assessment.present) ? &binding->assessment : NULL;
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    {
+        /*
+         * start_anchor emit: START report construction inputs. now_mono_us is
+         * the OM-selected START mono from handle_enter (typically
+         * last_evidence_mono_us), not esp_timer at publish. Correlate with
+         * "start_anchor enter" via cand= / obs=.
+         */
+        const char *lvl_src = "snap_ema";
+#if CONFIG_DBMAP_EAR_OBS_L0
+        if (local_iv.has_rms_stats) {
+            lvl_src = "l0_mean";
+        }
+#endif
+#if CONFIG_DBMAP_EAR_OBS_RMS_ACTIVITY
+        const dbmap_activity_state_t act_st =
+            dbmap_activity_detector_state(&s_detector);
+        const char *act_name = "unknown";
+        switch (act_st) {
+        case DBMAP_ACTIVITY_IDLE:
+            act_name = "IDLE";
+            break;
+        case DBMAP_ACTIVITY_PENDING_ENTER:
+            act_name = "PENDING_ENTER";
+            break;
+        case DBMAP_ACTIVITY_ACTIVE:
+            act_name = "ACTIVE";
+            break;
+        case DBMAP_ACTIVITY_PENDING_EXIT:
+            act_name = "PENDING_EXIT";
+            break;
+        default:
+            break;
+        }
+        const int64_t act_last_emit_us = s_detector.last_emit_us;
+#else
+        const char *act_name = "n/a";
+        const int64_t act_last_emit_us = 0;
+#endif
+        ESP_LOGI(
+            TAG,
+            "start_anchor emit cand=%llu obs=%s "
+            "clock_now_us=%lld selected_start_mono_us=%lld "
+            "binding_start_mono_us=%lld iv_start_mono_us=%lld "
+            "snap_promote_mono_us=%lld last_evidence_mono_us=%lld "
+            "last_window_seq=%lu ema_rms_dbfs=%.2f "
+            "selected_level_dbfs=%.2f lvl_src=%s "
+            "act_state=%s act_last_emit_us=%lld",
+            (unsigned long long)binding->candidate_id,
+            binding->observation_id,
+            (long long)esp_timer_get_time(),
+            (long long)now_mono_us,
+            (long long)binding->start_mono_us,
+            (long long)iv_start,
+            (long long)snap->promote_mono_us,
+            (long long)snap->last_evidence_mono_us,
+            (unsigned long)snap->last_window_seq,
+            (double)snap->ema_rms_dbfs,
+            lvl,
+            lvl_src,
+            act_name,
+            (long long)act_last_emit_us
+        );
+    }
+#endif
     esp_err_t err = dbmap_ear_observation_publish_ex(
         s_cfg,
         binding->observation_id,
@@ -1371,6 +1473,9 @@ static bool mgr_emit_start(
         NULL,
         assess
     );
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    ear_obs_stack_hwm_om_publish("start", true);
+#endif
     if (err != ESP_OK) {
         note_reject_for_kind("start");
         return false;
@@ -1401,6 +1506,9 @@ static bool mgr_emit_periodic(
         sp_diag_note_obs_skipped_disconnected();
         return false;
     }
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    ear_obs_stack_hwm_om_publish("periodic", false);
+#endif
     const double interval_ms =
         (double)(interval_end_mono_us - interval_start_mono_us) / 1000.0;
     const double ep_ms =
@@ -1422,6 +1530,9 @@ static bool mgr_emit_periodic(
     );
 #if CONFIG_DBMAP_EAR_OBS_L0
     if (local_iv.history_overflow || local_iv.window_count == 0) {
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+        ear_obs_stack_hwm_om_publish("periodic", true);
+#endif
         ESP_LOGW(TAG, "obs_mgr PERIODIC skipped: invalid L0 (episode stays OPEN)");
         return false;
     }
@@ -1453,6 +1564,9 @@ static bool mgr_emit_periodic(
         NULL,
         assess
     );
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    ear_obs_stack_hwm_om_publish("periodic", true);
+#endif
     if (err != ESP_OK) {
         note_reject_for_kind("periodic");
         return false;
@@ -1478,6 +1592,9 @@ static bool mgr_emit_end(
         sp_diag_note_obs_skipped_disconnected();
         return false;
     }
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    ear_obs_stack_hwm_om_publish("end", false);
+#endif
     const char *term = "natural";
     if (reason == EAR_OBS_END_OTA) {
         term = "ota_reboot";
@@ -1528,6 +1645,9 @@ static bool mgr_emit_end(
         NULL,
         assess
     );
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    ear_obs_stack_hwm_om_publish("end", true);
+#endif
     if (err != ESP_OK) {
         note_reject_for_kind("end");
         return false;
@@ -2251,12 +2371,15 @@ static void activity_serial_diag(const sp_mic_levels_t *levels, bool levels_ok)
                     (unsigned long)s_r0_publish_us_max
                 );
             }
-            /* Phase checkpoints remain Ear-owned (task-phase attribution). */
+            /* Phase checkpoints remain Ear-owned (task-phase attribution).
+             * Values are FreeRTOS lifetime-min free bytes at the checkpoint;
+             * seen=0 means that checkpoint was never reached. */
             ESP_LOGI(
                 TAG,
                 "stack_hwm_phase_bytes pre_analyze=%lu seen=%d "
-                "post_analyze=%lu seen=%d post_publish=%lu seen=%d "
-                "post_diag=%lu seen=%d (lifetime-min at checkpoint)",
+                "post_analyze=%lu seen=%d pre_promo=%lu seen=%d "
+                "post_promo=%lu seen=%d pre_om_publish=%lu seen=%d "
+                "post_om_publish=%lu seen=%d (lifetime-min at checkpoint)",
                 s_stack_hwm_have_pre_analyze
                     ? (unsigned long)s_stack_hwm_bytes_pre_analyze
                     : 0ul,
@@ -2265,6 +2388,37 @@ static void activity_serial_diag(const sp_mic_levels_t *levels, bool levels_ok)
                     ? (unsigned long)s_stack_hwm_bytes_post_analyze
                     : 0ul,
                 s_stack_hwm_have_post_analyze ? 1 : 0,
+                s_stack_hwm_have_pre_promo
+                    ? (unsigned long)s_stack_hwm_bytes_pre_promo
+                    : 0ul,
+                s_stack_hwm_have_pre_promo ? 1 : 0,
+                s_stack_hwm_have_post_promo
+                    ? (unsigned long)s_stack_hwm_bytes_post_promo
+                    : 0ul,
+                s_stack_hwm_have_post_promo ? 1 : 0,
+                s_stack_hwm_have_pre_om_publish
+                    ? (unsigned long)s_stack_hwm_bytes_pre_om_publish
+                    : 0ul,
+                s_stack_hwm_have_pre_om_publish ? 1 : 0,
+                s_stack_hwm_have_post_om_publish
+                    ? (unsigned long)s_stack_hwm_bytes_post_om_publish
+                    : 0ul,
+                s_stack_hwm_have_post_om_publish ? 1 : 0
+            );
+            ESP_LOGI(
+                TAG,
+                "stack_hwm_phase_bytes pre_ae_diag=%lu seen=%d "
+                "post_ae_diag=%lu seen=%d post_publish=%lu seen=%d "
+                "post_diag=%lu seen=%d "
+                "(lifetime-min; post_publish=legacy RMS path only)",
+                s_stack_hwm_have_pre_ae_diag
+                    ? (unsigned long)s_stack_hwm_bytes_pre_ae_diag
+                    : 0ul,
+                s_stack_hwm_have_pre_ae_diag ? 1 : 0,
+                s_stack_hwm_have_post_ae_diag
+                    ? (unsigned long)s_stack_hwm_bytes_post_ae_diag
+                    : 0ul,
+                s_stack_hwm_have_post_ae_diag ? 1 : 0,
                 s_stack_hwm_have_post_publish
                     ? (unsigned long)s_stack_hwm_bytes_post_publish
                     : 0ul,
@@ -2470,6 +2624,14 @@ static void activity_task(void *arg)
 #if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
         /* Promotion policy + Observation Manager outside lifecycle lock. */
         if (s_obs_mgr_ready) {
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+            ear_obs_stack_hwm_checkpoint(
+                "pre_promo",
+                "none",
+                &s_stack_hwm_bytes_pre_promo,
+                &s_stack_hwm_have_pre_promo
+            );
+#endif
             const int64_t now_us = esp_timer_get_time();
             const int64_t t_pm0 = now_us;
             /* Siren evidence was updated in AE listeners during ae_device_poll. */
@@ -2489,6 +2651,14 @@ static void activity_task(void *arg)
                     s_r0_promo_mgr_us_max = dt;
                 }
             }
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+            ear_obs_stack_hwm_checkpoint(
+                "post_promo",
+                "none",
+                &s_stack_hwm_bytes_post_promo,
+                &s_stack_hwm_have_post_promo
+            );
+#endif
         }
 #if defined(CONFIG_DBMAP_EAR_OBS_CRITICAL_PATH) && CONFIG_DBMAP_EAR_OBS_CRITICAL_PATH
         if (s_critical_ready) {
@@ -2507,6 +2677,14 @@ static void activity_task(void *arg)
                 && (ad.sig_published % every) == 0u
                 && ad.sig_published != s_obs_mgr_uart_diag_last_sig) {
                 s_obs_mgr_uart_diag_last_sig = ad.sig_published;
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+                ear_obs_stack_hwm_checkpoint(
+                    "pre_ae_diag",
+                    "none",
+                    &s_stack_hwm_bytes_pre_ae_diag,
+                    &s_stack_hwm_have_pre_ae_diag
+                );
+#endif
                 ear_obs_manager_diag_t d;
                 ear_obs_manager_get_diag(&s_obs_mgr, &d);
                 ear_promotion_policy_diag_t pd;
@@ -2601,6 +2779,14 @@ static void activity_task(void *arg)
                     (unsigned long)cd.decision_count[CE_DECISION_REJECT],
                     (unsigned long)cd.decision_count[CE_DECISION_ERROR]
                 );
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+                ear_obs_stack_hwm_checkpoint(
+                    "post_ae_diag",
+                    "none",
+                    &s_stack_hwm_bytes_post_ae_diag,
+                    &s_stack_hwm_have_post_ae_diag
+                );
+#endif
             }
         }
 #endif /* AE_DIAG */
@@ -3221,9 +3407,12 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg)
 #endif
 #endif
 #endif
-    /* Extra stack for L0 interval diag formatting when SERIAL_DIAG is on. */
+    /*
+     * Stack depth is bytes on ESP-IDF 5.4.4 / Xtensa (StackType_t = uint8_t).
+     * 8192 = prior 6144 + 2048 for AE/OM/diag margin under active acoustic load.
+     */
     TaskHandle_t obs_task = NULL;
-    BaseType_t ok = xTaskCreate(activity_task, "ear_obs", 6144, NULL, 4, &obs_task);
+    BaseType_t ok = xTaskCreate(activity_task, "ear_obs", 8192, NULL, 4, &obs_task);
     if (ok == pdPASS && obs_task != NULL) {
         sp_diag_register_task("ear_obs", obs_task);
     }

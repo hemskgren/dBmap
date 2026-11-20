@@ -2,7 +2,7 @@
  * Comparative host tests: AS-001 (as.profile) vs AS-002 (siren detector).
  *
  * Feeds identical ae_signature_t windows into production:
- *   - as_profile_match(as_profile_as001(), …)
+ *   - as_profile_match_with_bg(as_profile_as001(), …)
  *   - ear_siren_se_public_on_signature(…)
  *
  * Does not redesign either algorithm. Documents RMS / lifecycle differences.
@@ -39,24 +39,23 @@ static void fill_base(ae_signature_t *s, uint32_t seq, ae_quality_t q)
     s->flags = AE_FLAG_PAIR_MISSING;
 }
 
-/** heli_peak-like spectral+band shape (AS-001 template center). */
+/** BBC / device-bench heli spectral+band shape (AS-001 template center). */
 static void fill_heli_shape(ae_signature_t *s, uint32_t seq, float rms_dbfs)
 {
     fill_base(s, seq, AE_QUALITY_OK);
     s->rms_dbfs = rms_dbfs;
     s->peak_dbfs = rms_dbfs + 7.3f;
     s->crest_db = 7.3f;
-    /* Relative bands preserved vs AS-001 band_rel_center. */
-    s->band_dbfs[0] = rms_dbfs - 8.21f;
-    s->band_dbfs[1] = rms_dbfs - 7.42f;
-    s->band_dbfs[2] = rms_dbfs - 16.95f;
-    s->band_dbfs[3] = rms_dbfs - 38.84f;
+    s->band_dbfs[0] = rms_dbfs - 4.21f;
+    s->band_dbfs[1] = rms_dbfs - 3.52f;
+    s->band_dbfs[2] = rms_dbfs - 13.10f;
+    s->band_dbfs[3] = rms_dbfs - 32.77f;
     s->hl_valid = true;
     s->spectral_valid = true;
-    s->dominant_hz = 500.0f;
-    s->flatness = 0.25f;
-    s->centroid_hz = 1060.0f;
-    s->bandwidth_hz = 1200.0f;
+    s->dominant_hz = 230.0f;
+    s->flatness = 0.141f;
+    s->centroid_hz = 800.0f;
+    s->bandwidth_hz = 920.0f;
 }
 
 /** Siren-like spectral shape (AS-002 tonal gates). */
@@ -96,9 +95,27 @@ static void fill_broadband(ae_signature_t *s, uint32_t seq, float rms_dbfs)
     s->bandwidth_hz = 2500.0f;
 }
 
+static as_profile_bg_state_t s_as001_bg;
+
+static void as001_reset_bg(void)
+{
+    as_profile_bg_init(&s_as001_bg);
+}
+
 static bool as001_match(const ae_signature_t *sig, as_profile_match_result_t *r)
 {
-    return as_profile_match(as_profile_as001(), sig, r);
+    return as_profile_match_with_bg(as_profile_as001(), sig, &s_as001_bg, r);
+}
+
+static void as001_seed_quiet_bg(float rms_dbfs)
+{
+    as001_reset_bg();
+    ae_signature_t sig;
+    as_profile_match_result_t r;
+    for (uint32_t seq = 1u; seq <= 4u; seq++) {
+        fill_broadband(&sig, seq, rms_dbfs);
+        (void)as001_match(&sig, &r);
+    }
 }
 
 static void feed_siren(ear_siren_se_public_t *d, const ae_signature_t *sig)
@@ -111,30 +128,32 @@ static void feed_siren(ear_siren_se_public_t *d, const ae_signature_t *sig)
 static void test_amplitude_invariance(void)
 {
     const as_profile_t *p = as_profile_as001();
-    EXPECT(p->uses_rms);
-    EXPECT(p->rms_min_dbfs == -22.0f);
+    EXPECT(p->uses_rms_rel_bg);
+    EXPECT(!p->uses_rms);
+    EXPECT(p->rms_bg_margin_db == 3.5f);
 
     as_profile_match_result_t r;
     ae_signature_t sig;
 
-    /* Nominal heli amplitude near template center. */
-    fill_heli_shape(&sig, 1u, -10.0f);
+    /* Seed office background, then heli at two absolute levels above margin. */
+    as001_seed_quiet_bg(-55.0f);
+    fill_heli_shape(&sig, 10u, -40.0f);
     EXPECT(as001_match(&sig, &r));
     EXPECT(r.matched);
+    const float dist_loud = r.distance;
 
-    /*
-     * Same relative bands + spectral, quieter by 5 dB: still above rms_min,
-     * distance grows by AS_W_RMS*5 ≈ 1.0 — should still match.
-     */
-    fill_heli_shape(&sig, 2u, -15.0f);
+    fill_heli_shape(&sig, 11u, -45.0f); /* quieter absolute, still +10 dB vs bg */
     EXPECT(as001_match(&sig, &r));
     EXPECT(r.matched);
+    /* Distance is shape-only (no absolute RMS term) → same score. */
+    EXPECT(fabsf(r.distance - dist_loud) < 1e-4f);
 
     /*
-     * Same spectral/shape but below hard rms_min (−22): AS-001 rejects even
-     * though spectral gates would pass. Proves absolute RMS eligibility gate.
+     * Same spectral/shape but within bg margin (+2 dB < 3.5): reject.
+     * Proves relative baseline gate (not a lowered absolute floor).
      */
-    fill_heli_shape(&sig, 3u, -25.0f);
+    as001_seed_quiet_bg(-55.0f);
+    fill_heli_shape(&sig, 12u, -53.0f);
     EXPECT(!as001_match(&sig, &r));
     EXPECT(r.rejected_eligibility == 1u);
     EXPECT(!r.matched);
@@ -179,7 +198,8 @@ static void test_spectral_discrimination(void)
     ear_siren_se_public_t siren;
 
     /* Target-like for each model. */
-    fill_heli_shape(&sig, 1u, -10.0f);
+    as001_seed_quiet_bg(-55.0f);
+    fill_heli_shape(&sig, 10u, -40.0f);
     EXPECT(as001_match(&sig, &r));
     EXPECT(r.matched);
 
@@ -193,7 +213,8 @@ static void test_spectral_discrimination(void)
     EXPECT(ear_siren_se_public_consecutive(&siren) == 1u);
 
     /* Same loud RMS as heli, but broadband spectral → AS-001 reject. */
-    fill_broadband(&sig, 10u, -10.0f);
+    as001_seed_quiet_bg(-55.0f);
+    fill_broadband(&sig, 10u, -40.0f);
     EXPECT(!as001_match(&sig, &r));
     EXPECT(r.rejected_eligibility == 1u); /* flatness/dominant out of gate */
 
@@ -208,19 +229,21 @@ static void test_spectral_discrimination(void)
     EXPECT(ear_siren_se_public_consecutive(&siren) == 0u);
 
     /*
-     * Similar dominant to AS-001 (~500) but flatness too high → reject.
+     * Similar dominant to AS-001 (~230) but flatness too high → reject.
      * Proves spectral shape (not only dominant) matters for AS-001.
      */
-    fill_heli_shape(&sig, 20u, -10.0f);
+    as001_seed_quiet_bg(-55.0f);
+    fill_heli_shape(&sig, 20u, -40.0f);
     sig.flatness = 0.60f;
     EXPECT(!as001_match(&sig, &r));
     EXPECT(r.rejected_eligibility == 1u);
 
     /*
-     * Siren-like dominant/flatness but heli-like absolute RMS: AS-001 fails
-     * spectral gates (dom 344 outside 420–620); AS-002 can vote vs bg.
+     * Siren-like dominant/flatness: AS-001 fails spectral gates (dom 344
+     * outside 100–450 BBC heli band); AS-002 can vote vs bg.
      */
-    fill_siren_shape(&sig, 30u, -10.0f);
+    as001_seed_quiet_bg(-55.0f);
+    fill_siren_shape(&sig, 30u, -40.0f);
     EXPECT(!as001_match(&sig, &r));
 
     ear_siren_se_public_init(&siren);
@@ -228,15 +251,14 @@ static void test_spectral_discrimination(void)
         fill_broadband(&sig, seq, -55.0f);
         feed_siren(&siren, &sig);
     }
-    fill_siren_shape(&sig, 4u, -10.0f);
+    fill_siren_shape(&sig, 4u, -40.0f);
     feed_siren(&siren, &sig);
     EXPECT(ear_siren_se_public_consecutive(&siren) == 1u);
 
-    /* Cross: heli shape is not a siren tonal vote (dom 500 in band, flat ok —
-     * actually 500 is in 300–750 and flat 0.25 in 0.12–0.42 — WOULD vote!).
-     * Crest/bg still apply. Document real behavior: heli spectral CAN vote
-     * siren gates if level clears bg margin — models are not mutually exclusive
-     * on every axis. */
+    /*
+     * Cross: BBC heli dom ~230 is below AS-002's 300 Hz floor → no siren
+     * tonal vote even when level clears bg margin.
+     */
     ear_siren_se_public_init(&siren);
     for (uint32_t seq = 1u; seq <= 3u; seq++) {
         fill_broadband(&sig, seq, -55.0f);
@@ -244,11 +266,10 @@ static void test_spectral_discrimination(void)
     }
     fill_heli_shape(&sig, 4u, -31.0f);
     feed_siren(&siren, &sig);
-    /* heli flatness 0.25 + dom 500 within siren gates → vote true. */
-    EXPECT(ear_siren_se_public_consecutive(&siren) == 1u);
+    EXPECT(ear_siren_se_public_consecutive(&siren) == 0u);
 }
 
-/* ---- C. Background behavior (AS-002 primary; AS-001 has no bg EMA) ---- */
+/* ---- C. Background behavior (both use relative baseline; different gates) ---- */
 
 static void test_background_behavior(void)
 {
@@ -256,7 +277,8 @@ static void test_background_behavior(void)
     as_profile_match_result_t r;
     ear_siren_se_public_t siren;
 
-    /* AS-001: no background model — quiet heli shape fails rms_min only. */
+    /* AS-001: without established bg, relative eligibility rejects. */
+    as001_reset_bg();
     fill_heli_shape(&sig, 1u, -40.0f);
     EXPECT(!as001_match(&sig, &r));
     EXPECT(r.rejected_eligibility == 1u);
@@ -308,17 +330,18 @@ static void test_temporal_gap_invalid(void)
     ear_siren_se_public_t siren;
 
     /* AS-001 is per-window: no streak; GAP/INVALID never match. */
-    fill_heli_shape(&sig, 1u, -10.0f);
+    as001_seed_quiet_bg(-55.0f);
+    fill_heli_shape(&sig, 10u, -40.0f);
     EXPECT(as001_match(&sig, &r));
-    fill_heli_shape(&sig, 2u, -10.0f);
+    fill_heli_shape(&sig, 11u, -40.0f);
     sig.quality = AE_QUALITY_GAP;
     EXPECT(!as001_match(&sig, &r));
     EXPECT(r.rejected_eligibility == 1u);
-    fill_heli_shape(&sig, 3u, -10.0f);
+    fill_heli_shape(&sig, 12u, -40.0f);
     sig.quality = AE_QUALITY_INVALID;
     EXPECT(!as001_match(&sig, &r));
     /* Recovery: next OK window matches again independently. */
-    fill_heli_shape(&sig, 4u, -10.0f);
+    fill_heli_shape(&sig, 13u, -40.0f);
     EXPECT(as001_match(&sig, &r));
     EXPECT(r.matched);
 
@@ -394,12 +417,14 @@ static void test_below_activity_enter(void)
     as_profile_match_result_t r;
     ear_siren_se_public_t siren;
 
-    fill_heli_shape(&sig, 1u, -50.0f); /* below ENTER and below AS-001 rms_min */
+    as001_seed_quiet_bg(-60.0f);
+    fill_heli_shape(&sig, 1u, -58.0f); /* below ENTER and within bg margin */
     EXPECT(!as001_match(&sig, &r));
     EXPECT(r.rejected_eligibility == 1u);
 
-    /* AS-001 at −20 (above rms_min −22, still above ENTER −45): matches. */
-    fill_heli_shape(&sig, 2u, -20.0f);
+    /* AS-001 at −48 (above ENTER −45, clears bg+3.5 vs −60): matches. */
+    as001_seed_quiet_bg(-60.0f);
+    fill_heli_shape(&sig, 2u, -48.0f);
     EXPECT(as001_match(&sig, &r));
     EXPECT(r.matched);
 
@@ -420,7 +445,8 @@ static void test_model_contract_differences(void)
 {
     const as_profile_t *p = as_profile_as001();
     EXPECT(p->id == AS_PROFILE_ID_AS001);
-    EXPECT(p->uses_rms);
+    EXPECT(!p->uses_rms);
+    EXPECT(p->uses_rms_rel_bg);
     EXPECT(p->uses_bands);
     EXPECT(p->uses_spectral);
     EXPECT(!p->uses_pair);

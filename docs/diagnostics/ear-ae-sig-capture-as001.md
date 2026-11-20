@@ -36,12 +36,17 @@ Flash/OTA as usual. Confirm health JSON shows
 ## Runtime behavior
 
 1. On AE start: capture session arms after `AE_SIG_CAPTURE_SETTLE_N` (2) published
-   signatures.
+   signatures. Settle windows are **not** stored, but they **do** advance the
+   capture-local AS-001 relative-bg EMA (same `as_profile_match_with_bg` path
+   as stored rows) so CSV eligibility tracks the Signature Engine more closely.
 2. Next signatures are stored in a fixed RAM buffer (`AE_SIG_CAPTURE_CAPACITY` = 48).
 3. UART prints `AE_SIG_CSV_BEGIN` (includes CSV header), then lines
    `AE_SIG_CSV <row>`, then `AE_SIG_CSV_END` with `stored` / `drained` / `overflow`.
-4. Hot path only copies feature fields (+ pure `as_profile_match` for AS-001
-   columns). Formatting/logging is drained a few lines per AE poll.
+4. Hot path only copies feature fields (+ `as_profile_match_with_bg` for AS-001
+   columns, capture-local relative-bg EMA). Formatting/logging is drained a
+   few lines per AE poll. Note: the engine may still have processed windows
+   before the capture session began; quiet pre-roll before stimulus remains
+   required for live tests.
 5. When the buffer is full, further signatures increment `overflow` and are not
    stored. Capture stops accepting new rows.
 
@@ -59,8 +64,11 @@ uv run python scripts/ae_sig_capture_extract.py dbmap-usb-console.txt -o /tmp/ea
    `sdkconfig.defaults.ae_sig_capture`).
 2. Attach USB console; reboot EAR-001.
 3. Confirm `ae_sig_capture enabled` and `AE_SIG_CAPTURE: true`.
-4. Within ~50 s of AE start, play `AS001_heli_bg_mono16k.wav` (or the 48 kHz
-   original) near the left mic (AE uses channel 0 / L0).
+4. Within ~50 s of AE start, play the BBC AS-001 fixture
+   (`local-media/AS-001/bbc_helicopter_nhu0509724.mp3` / Sonos, or
+   `AS001_bbc_heli_mono16k.wav`) near the left mic (AE uses channel 0 / L0).
+   Allow a few seconds of quiet office background first so relative-bg EMA
+   can establish before the helicopter energy rises.
 5. Wait for `AE_SIG_CSV_END` (overflow should be 0).
 6. Save the console log; run the extract script.
 7. Compare host `signatures.csv` vs EAR CSV (`rms_dbfs`, bands, `dominant_hz`,

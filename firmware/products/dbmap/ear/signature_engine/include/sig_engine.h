@@ -30,7 +30,7 @@ extern "C" {
  * Do not bump for unrelated firmware (connectivity, mic transport, etc.).
  * Independent of CONFIG_DBMAP_FIRMWARE_VERSION.
  */
-#define EAR_CLASSIFIER_VERSION "1.0"
+#define EAR_CLASSIFIER_VERSION "1.1"
 
 typedef enum {
     SIG_CAT_CORE = 0,
@@ -162,16 +162,18 @@ typedef struct {
 bool sig_engine_copy_as002_snapshot(sig_as002_snapshot_t *out);
 
 /**
- * Copy published AS-002 last-window fields (same window as other published state).
+ * Copy published AS-002 last-window fields under one SIG_PUB_LOCK (no full
+ * snapshot temporary). Same publication as other published AS-002 state.
  * Returns false if engine not started or no window has been published yet.
- * For multi-field decisions prefer sig_engine_copy_as002_snapshot().
+ * For multi-field promote decisions prefer sig_engine_copy_as002_snapshot().
  */
 bool sig_engine_copy_as002_last_window(ear_siren_last_window_t *out);
 
 /**
- * Copy published AS-002 progressive-classification evidence for the last
- * published window. Returns false if evidence was not armed (streak below ALARM).
- * For multi-field decisions prefer sig_engine_copy_as002_snapshot().
+ * Copy published AS-002 progressive-classification evidence under one
+ * SIG_PUB_LOCK (no full snapshot temporary). Returns false if evidence was
+ * not armed (streak below ALARM) or no AS-002 window has been published.
+ * For multi-field promote decisions prefer sig_engine_copy_as002_snapshot().
  */
 bool sig_engine_copy_as002_evidence(ear_cls_evidence_t *out);
 

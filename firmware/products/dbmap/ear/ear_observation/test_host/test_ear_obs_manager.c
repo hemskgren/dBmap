@@ -18,6 +18,7 @@
 #include "ae_signature.h"
 #include "as_profile.h"
 #include "ce_engine.h"
+#include "ear_cls_as001.h"
 #include "ear_obs_manager.h"
 #include "ear_promotion_policy.h"
 #include "sp_episode_registry.h"
@@ -55,12 +56,44 @@ typedef struct {
     bool last_end_has_lvl;
     float last_end_lvl;
     ear_obs_end_reason_t last_end_reason;
+    /** Joined assessment.path ids at last START / PERIODIC. */
+    char last_start_assessment_path[96];
+    bool last_start_assessment_present;
+    char last_periodic_assessment_path[96];
+    bool last_periodic_assessment_present;
     /** When true, emit_end returns false (publication failure seam). */
     bool fail_end;
     /** When true, emit_end re-enters activity END once. */
     bool reenter_end;
     ear_obs_manager_t *reenter_om;
 } emit_counts_t;
+
+static void path_join_assessment(
+    const ear_cls_assessment_wire_t *w,
+    char *out,
+    size_t out_len
+)
+{
+    if (out == NULL || out_len == 0u) {
+        return;
+    }
+    out[0] = '\0';
+    if (w == NULL || !w->present || w->n_nodes == 0u) {
+        return;
+    }
+    size_t n = 0u;
+    for (uint8_t i = 0u; i < w->n_nodes && i < EAR_CLS_PATH_MAX_NODES; i++) {
+        if (i > 0u && n + 1u < out_len) {
+            out[n++] = '/';
+            out[n] = '\0';
+        }
+        const char *id = w->nodes[i].id;
+        while (*id != '\0' && n + 1u < out_len) {
+            out[n++] = *id++;
+            out[n] = '\0';
+        }
+    }
+}
 
 static emit_counts_t g_emit;
 
@@ -77,6 +110,12 @@ static bool emit_start(
     g_emit.starts++;
     g_emit.last_start_cand = binding->candidate_id;
     memcpy(g_emit.last_obs_id, binding->observation_id, sizeof(g_emit.last_obs_id));
+    g_emit.last_start_assessment_present = binding->assessment.present;
+    path_join_assessment(
+        &binding->assessment,
+        g_emit.last_start_assessment_path,
+        sizeof(g_emit.last_start_assessment_path)
+    );
     return true;
 }
 
@@ -90,12 +129,19 @@ static bool emit_periodic(
 )
 {
     (void)ctx;
-    (void)binding;
     g_emit.periodics++;
     g_emit.last_periodic_start = interval_start_mono_us;
     g_emit.last_periodic_end = interval_end_mono_us;
     g_emit.last_periodic_has_lvl = has_signal_level_dbfs;
     g_emit.last_periodic_lvl = signal_level_dbfs;
+    if (binding != NULL) {
+        g_emit.last_periodic_assessment_present = binding->assessment.present;
+        path_join_assessment(
+            &binding->assessment,
+            g_emit.last_periodic_assessment_path,
+            sizeof(g_emit.last_periodic_assessment_path)
+        );
+    }
     return true;
 }
 
@@ -1563,8 +1609,28 @@ static void test_p2_as001_can_promote(void)
         if (f.om.bind[i].in_use && f.om.bind[i].candidate_id == 710u) {
             EXPECT(f.om.bind[i].snap.product_relevance_approved);
             EXPECT(f.om.bind[i].snap.relevance_profile_id == AS_PROFILE_ID_AS001);
+            EXPECT(f.om.bind[i].cls_wire.present);
+            EXPECT(f.om.bind[i].cls_wire.n_nodes == 1u);
+            EXPECT(strcmp(f.om.bind[i].cls_wire.nodes[0].id, EAR_CLS_AS001_NODE_AIRCRAFT)
+                   == 0);
         }
     }
+    EXPECT(g_emit.last_start_assessment_present);
+    EXPECT(strcmp(g_emit.last_start_assessment_path, "AIRCRAFT") == 0);
+
+    /* First PERIODIC deepens to AIRCRAFT > Helicopter. */
+    ear_obs_manager_on_activity_periodic_hint(&f.om, 1000, 6000, true, -30.0f);
+    EXPECT(g_emit.periodics == 1u);
+    EXPECT(g_emit.last_periodic_assessment_present);
+    EXPECT(strcmp(g_emit.last_periodic_assessment_path, "AIRCRAFT/Helicopter") == 0);
+    for (uint8_t i = 0; i < EAR_OBS_MGR_BINDING_CAP; i++) {
+        if (f.om.bind[i].in_use && f.om.bind[i].candidate_id == 710u) {
+            EXPECT(f.om.bind[i].cls_wire.n_nodes == 2u);
+            EXPECT(strcmp(f.om.bind[i].cls_wire.nodes[1].id, EAR_CLS_AS001_NODE_HELICOPTER)
+                   == 0);
+        }
+    }
+
     ear_promotion_policy_diag_t pd;
     ear_promotion_policy_get_diag(&f.pol, &pd);
     EXPECT(pd.promote_ok >= 1u);

@@ -46,18 +46,18 @@ static void fill_heli_like(ae_signature_t *s, uint32_t seq, float rms)
     s->rms_dbfs = rms;
     s->peak_dbfs = rms + 7.0f;
     s->crest_db = 7.0f;
-    /* Approximate heli_peak relative bands. */
-    s->band_dbfs[0] = rms - 8.2f;
-    s->band_dbfs[1] = rms - 7.4f;
-    s->band_dbfs[2] = rms - 16.9f;
-    s->band_dbfs[3] = rms - 38.8f;
+    /* BBC / device-bench AS-001 relative bands. */
+    s->band_dbfs[0] = rms - 4.21f;
+    s->band_dbfs[1] = rms - 3.52f;
+    s->band_dbfs[2] = rms - 13.10f;
+    s->band_dbfs[3] = rms - 32.77f;
     s->hl_valid = true;
     s->hl_db = -12.0f;
     s->spectral_valid = true;
-    s->centroid_hz = 1068.0f;
-    s->bandwidth_hz = 1280.0f;
-    s->dominant_hz = 500.0f;
-    s->flatness = 0.25f;
+    s->centroid_hz = 800.0f;
+    s->bandwidth_hz = 920.0f;
+    s->dominant_hz = 230.0f;
+    s->flatness = 0.141f;
     s->dynamics_valid = true;
 }
 
@@ -80,14 +80,17 @@ static void test_settle_then_capture(void)
     EXPECT(d.session_id == 42u);
 
     ae_signature_t sig;
+    /* Settle with quiet broadband so relative-bg EMA is valid before heli. */
     for (uint32_t i = 0; i < AE_SIG_CAPTURE_SETTLE_N; i++) {
-        fill_heli_like(&sig, i + 1u, -30.0f);
+        fill_heli_like(&sig, i + 1u, -52.0f);
+        sig.flatness = 0.75f;
+        sig.dominant_hz = 125.0f;
         ae_sig_capture_on_signature(&sig);
     }
     ae_sig_capture_get_diag(&d);
     EXPECT(d.stored == 0u);
 
-    fill_heli_like(&sig, 100u, -10.0f);
+    fill_heli_like(&sig, 100u, -38.0f);
     ae_sig_capture_on_signature(&sig);
     ae_sig_capture_get_diag(&d);
     EXPECT(d.stored == 1u);
@@ -101,9 +104,49 @@ static void test_settle_then_capture(void)
     /* channel column is 0 after sample_rate_hz=16000 */
     EXPECT(strstr(line, ",16000,0,") != NULL);
 
-    as_profile_match_result_t mr;
-    EXPECT(as_profile_match(as_profile_as001(), &sig, &mr));
-    EXPECT(mr.matched);
+    /*
+     * Settle quiet windows must have seeded relative-bg EMA so the first
+     * elevated heli-like row is eligible and matches (as001_matched=1,
+     * as001_rej_elig=0). Trailing CSV fields: ...,flatness,matched,rej,skip,pid,dist
+     */
+    EXPECT(strstr(line, ",1,0,0,1,") != NULL);
+}
+
+/** Settle must update bg even though rows are discarded (engine parity). */
+static void test_settle_seeds_relative_bg(void)
+{
+    ae_signature_t sig;
+    char line[512];
+
+    /* Session A: quiet settle then heli → must match. */
+    ae_sig_capture_reset(99u);
+    for (uint32_t i = 0; i < AE_SIG_CAPTURE_SETTLE_N; i++) {
+        fill_heli_like(&sig, i + 1u, -52.0f);
+        sig.flatness = 0.75f;
+        sig.dominant_hz = 125.0f;
+        ae_sig_capture_on_signature(&sig);
+    }
+    fill_heli_like(&sig, 50u, -38.0f);
+    ae_sig_capture_on_signature(&sig);
+    EXPECT(ae_sig_capture_drain_one(line, sizeof(line)));
+    EXPECT(strstr(line, ",1,0,0,1,") != NULL);
+
+    /*
+     * Session B: loud settle contaminates EMA; a modest rise (−28 → −25,
+     * margin 3.0 < 3.5) must reject eligibility — mirrors live vol 0.40.
+     */
+    ae_sig_capture_reset(100u);
+    for (uint32_t i = 0; i < AE_SIG_CAPTURE_SETTLE_N; i++) {
+        fill_heli_like(&sig, i + 1u, -28.0f);
+        sig.flatness = 0.75f;
+        sig.dominant_hz = 125.0f;
+        ae_sig_capture_on_signature(&sig);
+    }
+    fill_heli_like(&sig, 50u, -25.0f);
+    ae_sig_capture_on_signature(&sig);
+    EXPECT(ae_sig_capture_drain_one(line, sizeof(line)));
+    /* matched=0, rej_elig=1 */
+    EXPECT(strstr(line, ",0,1,") != NULL);
 }
 
 static void test_overflow_reported(void)
@@ -165,6 +208,7 @@ int main(void)
 {
     test_compiled_and_header();
     test_settle_then_capture();
+    test_settle_seeds_relative_bg();
     test_overflow_reported();
     test_format_csv_fields();
     if (g_failures != 0) {

@@ -28,7 +28,8 @@ Device bench CSVs: `artifacts/device_ear001_vol{35,55,75}.csv`
 | Provenance URL | `https://www.mcf.se/contentassets/ffc078def2284745ae47c8282f83839f/02-faran-over-.mp3` |
 | Also referenced by | `tests/audio/faran-over.json` (HA playback test recipe) |
 
-AS-001 helicopter WAVs remain under `local-media/AS-001/` (found and left in place).
+AS-001 helicopter media lives under `local-media/AS-001/` (BBC NHU0509724;
+synthetic `AS001_heli_bg_*` retired).
 
 ### Timing of the MCF recording (authoritative for this profile)
 

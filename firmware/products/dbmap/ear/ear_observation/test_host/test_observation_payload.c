@@ -14,6 +14,7 @@
  * If IDF cJSON is unavailable, link against system libcjson.
  */
 #include "dbmap_observation_payload.h"
+#include "ear_cls_as001.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -452,6 +453,35 @@ static void test_assessment_ear_hyp_v2_path(void)
     }
 }
 
+static void test_assessment_as001_aircraft_helicopter(void)
+{
+    dbmap_l0_interval_t iv = sample_interval();
+    dbmap_observation_fields_t fields = base_fields(&iv);
+    ear_cls_assessment_wire_t assess;
+    /* START: parent only. */
+    EXPECT(ear_cls_as001_apply(&assess, 1.5f, EAR_CLS_PHASE_START));
+    fields.assessment = &assess;
+    char *json = dbmap_observation_build_json(&fields);
+    EXPECT(json != NULL);
+    if (json) {
+        EXPECT(strstr(json, "\"id\":\"AIRCRAFT\"") != NULL);
+        EXPECT(strstr(json, "\"id\":\"Helicopter\"") == NULL);
+        free(json);
+    }
+    /* PERIODIC: full path. */
+    EXPECT(ear_cls_as001_apply(&assess, 1.5f, EAR_CLS_PHASE_PERIODIC));
+    json = dbmap_observation_build_json(&fields);
+    EXPECT(json != NULL);
+    if (json) {
+        EXPECT(strstr(json, "\"assessment\":null") == NULL);
+        EXPECT(strstr(json, "\"schema\":\"ear_hyp_v2\"") != NULL);
+        EXPECT(strstr(json, "\"id\":\"AIRCRAFT\"") != NULL);
+        EXPECT(strstr(json, "\"id\":\"Helicopter\"") != NULL);
+        EXPECT(strstr(json, "\"id\":\"ALARM\"") == NULL);
+        free(json);
+    }
+}
+
 int main(void)
 {
     test_hierarchical_start();
@@ -464,6 +494,7 @@ int main(void)
     test_dynamics_schema_and_version();
     test_origin_critical_path();
     test_assessment_ear_hyp_v2_path();
+    test_assessment_as001_aircraft_helicopter();
     if (g_failures) {
         fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;

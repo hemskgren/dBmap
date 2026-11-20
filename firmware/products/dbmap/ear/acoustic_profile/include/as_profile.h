@@ -45,6 +45,13 @@ typedef struct {
     bool uses_bands;
     bool uses_spectral;
     bool uses_pair;
+    /**
+     * When true, level eligibility is rms >= bg_ema + rms_bg_margin_db
+     * (AS-002-style relative baseline). Absolute rms_min_dbfs is not used
+     * for eligibility in this mode. requires as_profile_match_with_bg /
+     * engine-owned bg state.
+     */
+    bool uses_rms_rel_bg;
 
     float rms_center_dbfs;
     float band_rel_center[AE_BAND_COUNT];
@@ -53,8 +60,10 @@ typedef struct {
     float centroid_hz_center;
     float delta_rms_db_center;
 
-    /** Soft eligibility: RMS must be >= this when uses_rms (rejects quiet bg). */
+    /** Soft eligibility: RMS must be >= this when uses_rms && !uses_rms_rel_bg. */
     float rms_min_dbfs;
+    /** Relative-bg eligibility margin (dB) when uses_rms_rel_bg. */
+    float rms_bg_margin_db;
     /**
      * Soft spectral eligibility when uses_spectral and sig.spectral_valid.
      * If max < min the gate is disabled for that metric.
@@ -78,7 +87,21 @@ typedef struct {
     uint8_t rejected_eligibility;
 } as_profile_match_result_t;
 
-/** Built-in AS-001 (heli_peak-centered, mono / no pair). */
+/**
+ * Background EMA for relative-level eligibility (uses_rms_rel_bg profiles).
+ * Updated on non-matching usable windows — same principle as AS-002's
+ * non-tonal background, without sharing AS-002 siren gates.
+ */
+typedef struct {
+    bool initialized;
+    bool bg_valid;
+    float bg_rms_ema;
+} as_profile_bg_state_t;
+
+void as_profile_bg_init(as_profile_bg_state_t *st);
+void as_profile_bg_reset(as_profile_bg_state_t *st);
+
+/** Built-in AS-001 (BBC heli / device-bench centered, mono / no pair). */
 const as_profile_t *as_profile_as001(void);
 
 /** Registry: null-terminated table of compiled-in profiles. */
@@ -87,8 +110,9 @@ const as_profile_t *as_profile_get_by_index(size_t index);
 const as_profile_t *as_profile_get_by_id(uint16_t id);
 
 /**
- * Score sig against one profile. Respects feature validity and profile
- * uses_* flags. Never invents pair/spectral zeros when unavailable.
+ * Score sig against one profile (stateless).
+ * Profiles with uses_rms_rel_bg reject eligibility here — use
+ * as_profile_match_with_bg so a baseline can be established.
  */
 bool as_profile_match(
     const as_profile_t *profile,
@@ -96,9 +120,32 @@ bool as_profile_match(
     as_profile_match_result_t *out
 );
 
+/**
+ * Score with relative-bg state. When profile->uses_rms_rel_bg:
+ *   - eligibility requires bg_valid and rms >= bg + margin
+ *   - non-match windows update the EMA (alpha 0.85)
+ * bg may be NULL only for profiles that do not use relative bg.
+ */
+bool as_profile_match_with_bg(
+    const as_profile_t *profile,
+    const ae_signature_t *sig,
+    as_profile_bg_state_t *bg,
+    as_profile_match_result_t *out
+);
+
 /** Best match among registered profiles (lowest distance that matches). */
 bool as_profile_match_best(
     const ae_signature_t *sig,
+    as_profile_match_result_t *out
+);
+
+/**
+ * Best match with a shared bg state applied to every uses_rms_rel_bg
+ * profile (call once per AE window). Non-rel profiles ignore bg.
+ */
+bool as_profile_match_best_with_bg(
+    const ae_signature_t *sig,
+    as_profile_bg_state_t *bg,
     as_profile_match_result_t *out
 );
 

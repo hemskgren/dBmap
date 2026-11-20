@@ -42,16 +42,17 @@ static void fill_heli(ae_signature_t *s, uint32_t seq, float rms_dbfs)
     s->rms_dbfs = rms_dbfs;
     s->peak_dbfs = rms_dbfs + 7.3f;
     s->crest_db = 7.3f;
-    s->band_dbfs[0] = rms_dbfs - 8.21f;
-    s->band_dbfs[1] = rms_dbfs - 7.42f;
-    s->band_dbfs[2] = rms_dbfs - 16.95f;
-    s->band_dbfs[3] = rms_dbfs - 38.84f;
+    /* BBC / device-bench AS-001 relative band + spectral centers. */
+    s->band_dbfs[0] = rms_dbfs - 4.21f;
+    s->band_dbfs[1] = rms_dbfs - 3.52f;
+    s->band_dbfs[2] = rms_dbfs - 13.10f;
+    s->band_dbfs[3] = rms_dbfs - 32.77f;
     s->hl_valid = true;
     s->spectral_valid = true;
-    s->dominant_hz = 500.0f;
-    s->flatness = 0.25f;
-    s->centroid_hz = 1060.0f;
-    s->bandwidth_hz = 1200.0f;
+    s->dominant_hz = 230.0f;
+    s->flatness = 0.141f;
+    s->centroid_hz = 800.0f;
+    s->bandwidth_hz = 920.0f;
 }
 
 static void fill_siren(ae_signature_t *s, uint32_t seq, float rms_dbfs)
@@ -92,12 +93,12 @@ static void fill_broadband(ae_signature_t *s, uint32_t seq, float rms_dbfs)
 
 static void test_classifier_version(void)
 {
-    EXPECT(strcmp(EAR_CLASSIFIER_VERSION, "1.0") == 0);
-    EXPECT(strcmp(sig_engine_classifier_version(), "1.0") == 0);
+    EXPECT(strcmp(EAR_CLASSIFIER_VERSION, "1.1") == 0);
+    EXPECT(strcmp(sig_engine_classifier_version(), "1.1") == 0);
     char buf[32];
     memset(buf, 'x', sizeof(buf));
     sig_engine_apply_classifier_version(buf, sizeof(buf));
-    EXPECT(strcmp(buf, "1.0") == 0);
+    EXPECT(strcmp(buf, "1.1") == 0);
 }
 
 static void test_as001_parity(void)
@@ -105,11 +106,20 @@ static void test_as001_parity(void)
     EXPECT(sig_engine_start());
     ae_signature_t sig;
     as_profile_match_result_t direct;
+    as_profile_bg_state_t bg;
+    as_profile_bg_init(&bg);
     sig_def_query_t q;
     sig_primary_distance_t prim;
 
-    fill_heli(&sig, 1u, -10.0f);
-    EXPECT(as_profile_match(as_profile_as001(), &sig, &direct));
+    /* Establish relative background (office-quiet broadband). */
+    for (uint32_t seq = 1u; seq <= 4u; seq++) {
+        fill_broadband(&sig, seq, -55.0f);
+        EXPECT(!as_profile_match_with_bg(as_profile_as001(), &sig, &bg, &direct));
+        sig_engine_on_signature(&sig);
+    }
+
+    fill_heli(&sig, 5u, -40.0f); /* ~15 dB above bg */
+    EXPECT(as_profile_match_with_bg(as_profile_as001(), &sig, &bg, &direct));
     EXPECT(direct.matched);
     sig_engine_on_signature(&sig);
     EXPECT(sig_engine_query(AS_PROFILE_ID_AS001, &q));
@@ -117,10 +127,14 @@ static void test_as001_parity(void)
     EXPECT(fabsf(q.score - direct.distance) < 1e-5f);
     EXPECT(sig_engine_get_primary_distance_match(&prim));
     EXPECT(prim.profile_id == AS_PROFILE_ID_AS001);
-    EXPECT(prim.window_seq == 1u);
+    EXPECT(prim.window_seq == 5u);
 
-    fill_heli(&sig, 2u, -25.0f); /* below rms_min */
+    /* Stateless path must reject uses_rms_rel_bg without bg context. */
     EXPECT(!as_profile_match(as_profile_as001(), &sig, &direct));
+    EXPECT(direct.rejected_eligibility == 1u);
+
+    fill_heli(&sig, 6u, -53.0f); /* within margin of bg → no match */
+    EXPECT(!as_profile_match_with_bg(as_profile_as001(), &sig, &bg, &direct));
     sig_engine_on_signature(&sig);
     EXPECT(sig_engine_query(AS_PROFILE_ID_AS001, &q));
     EXPECT(!q.matched);
@@ -280,14 +294,20 @@ static void test_copy_consistency(void)
 {
     EXPECT(sig_engine_start());
     ae_signature_t sig;
-    fill_heli(&sig, 7u, -10.0f);
+    for (uint32_t seq = 1u; seq <= 4u; seq++) {
+        fill_broadband(&sig, seq, -55.0f);
+        sig_engine_on_signature(&sig);
+    }
+    fill_heli(&sig, 7u, -40.0f);
     sig_engine_on_signature(&sig);
     sig_engine_result_t a, b;
     sig_primary_distance_t p;
     sig_def_query_t q;
     EXPECT(sig_engine_copy_result(&a));
     EXPECT(sig_engine_get_primary_distance_match(&p));
+    EXPECT(p.valid);
     EXPECT(sig_engine_query(AS_PROFILE_ID_AS001, &q));
+    EXPECT(q.matched);
     EXPECT(sig_engine_copy_result(&b));
     EXPECT(a.window_seq == b.window_seq);
     EXPECT(a.window_seq == p.window_seq);
@@ -374,7 +394,58 @@ static void test_as002_published_copy_apis(void)
 }
 
 /**
- * A1/A2: one coherent AS-002 snapshot survives an interposed N+1 publish.
+ * Stage A: thin last_window / evidence APIs match full-snapshot fields for
+ * the same publication (all production-consumed fields).
+ */
+static void test_as002_wrapper_matches_snapshot(void)
+{
+    EXPECT(sig_engine_start());
+    ae_signature_t sig;
+    for (uint32_t seq = 1u; seq <= 3u; seq++) {
+        fill_broadband(&sig, seq, -55.0f);
+        sig_engine_on_signature(&sig);
+    }
+    for (uint32_t seq = 4u; seq <= 6u; seq++) {
+        fill_siren(&sig, seq, -31.0f);
+        sig_engine_on_signature(&sig);
+    }
+
+    sig_as002_snapshot_t snap;
+    EXPECT(sig_engine_copy_as002_snapshot(&snap));
+    EXPECT(snap.valid);
+    EXPECT(snap.evidence_ok != 0u);
+
+    ear_siren_last_window_t lw;
+    EXPECT(sig_engine_copy_as002_last_window(&lw));
+    EXPECT(lw.kind == snap.last_window.kind);
+    EXPECT(lw.tonal_vote == snap.last_window.tonal_vote);
+    EXPECT(lw.window_ms == snap.last_window.window_ms);
+    EXPECT(lw.window_end_mono_us == snap.last_window.window_end_mono_us);
+    EXPECT(lw.has_rms_dbfs == snap.last_window.has_rms_dbfs);
+    EXPECT(lw.rms_dbfs == snap.last_window.rms_dbfs);
+
+    ear_cls_evidence_t ev;
+    EXPECT(sig_engine_copy_as002_evidence(&ev));
+    EXPECT(memcmp(&ev, &snap.evidence, sizeof(ev)) == 0);
+
+    /* GAP: evidence disarmed — wrapper must fail and clear out. */
+    fill_siren(&sig, 7u, -31.0f);
+    sig.quality = AE_QUALITY_GAP;
+    sig_engine_on_signature(&sig);
+
+    memset(&ev, 0xA5, sizeof(ev)); /* poison: must not remain as valid evidence */
+    EXPECT(!sig_engine_copy_as002_evidence(&ev));
+    {
+        ear_cls_evidence_t zeros;
+        memset(&zeros, 0, sizeof(zeros));
+        EXPECT(memcmp(&ev, &zeros, sizeof(ev)) == 0);
+    }
+
+    sig_engine_stop();
+}
+
+/**
+ * A1/A2 + Stage A: coherent full snapshot and thin wrappers survive N+1.
  *
  * Host note: SIG_PUB_LOCK is a no-op on host. This test proves the
  * coherent-copy API design and deterministic interleaving of publish vs
@@ -395,7 +466,7 @@ static void test_as002_snapshot_coherent_n_nplus1(void)
         sig_engine_on_signature(&sig);
     }
 
-    /* 1–2: publish N recognizable, then copy one coherent snapshot. */
+    /* Publish N: hold full snapshot + thin last_window + evidence. */
     sig_as002_snapshot_t snap_n;
     EXPECT(sig_engine_copy_as002_snapshot(&snap_n));
     EXPECT(snap_n.valid);
@@ -409,15 +480,28 @@ static void test_as002_snapshot_coherent_n_nplus1(void)
     EXPECT(snap_n.last_window.kind == EAR_SIREN_LAST_USABLE);
     EXPECT(snap_n.last_window.window_end_mono_us == 6000000LL);
 
+    ear_siren_last_window_t lw_n;
+    EXPECT(sig_engine_copy_as002_last_window(&lw_n));
+    EXPECT(lw_n.kind == snap_n.last_window.kind);
+    EXPECT(lw_n.tonal_vote == snap_n.last_window.tonal_vote);
+    EXPECT(lw_n.window_ms == snap_n.last_window.window_ms);
+    EXPECT(lw_n.window_end_mono_us == snap_n.last_window.window_end_mono_us);
+    EXPECT(lw_n.has_rms_dbfs == snap_n.last_window.has_rms_dbfs);
+    EXPECT(lw_n.rms_dbfs == snap_n.last_window.rms_dbfs);
+
+    ear_cls_evidence_t ev_n;
+    EXPECT(sig_engine_copy_as002_evidence(&ev_n));
+    EXPECT(memcmp(&ev_n, &snap_n.evidence, sizeof(ev_n)) == 0);
+
     /*
-     * 3: publish N+1 with deliberately different fields (GAP clears streak,
+     * Publish N+1 with deliberately different fields (GAP clears streak,
      * forbids promote, drops evidence, marks last_window unusable).
      */
     fill_siren(&sig, 7u, -31.0f);
     sig.quality = AE_QUALITY_GAP;
     sig_engine_on_signature(&sig);
 
-    /* Live engine now shows N+1 — separate reads would mix with snap_n. */
+    /* Live / fresh API reads show N+1. */
     EXPECT(!sig_engine_allows_promote(AS_PROFILE_ID_AS002));
     EXPECT(sig_engine_as002_consecutive() == 0u);
     {
@@ -429,15 +513,25 @@ static void test_as002_snapshot_coherent_n_nplus1(void)
         EXPECT(live.allows_promote == 0u);
         EXPECT(live.evidence_ok == 0u);
         EXPECT(live.last_window.kind == EAR_SIREN_LAST_UNUSABLE);
+
+        ear_siren_last_window_t lw_live;
+        EXPECT(sig_engine_copy_as002_last_window(&lw_live));
+        EXPECT(lw_live.kind == EAR_SIREN_LAST_UNUSABLE);
+        EXPECT(lw_live.window_end_mono_us == live.last_window.window_end_mono_us);
+
+        ear_cls_evidence_t ev_live;
+        memset(&ev_live, 0xA5, sizeof(ev_live));
+        EXPECT(!sig_engine_copy_as002_evidence(&ev_live));
+        {
+            ear_cls_evidence_t zeros;
+            memset(&zeros, 0, sizeof(zeros));
+            EXPECT(memcmp(&ev_live, &zeros, sizeof(ev_live)) == 0);
+        }
     }
 
     /*
-     * 4–5: decide from the previously copied snapshot only (no lock held).
-     * Every field used by the decision must still belong to N.
-     * Why separate reads are unsafe: if a consumer called allows_promote()
-     * then as002_consecutive() across the N→N+1 publish, it could see
-     * allows=true (N) with consecutive=0 (N+1), or the reverse — a torn
-     * decision. The coherent copy prevents that mix.
+     * Held N copies unchanged. Promote decision uses snap_n only
+     * (allows_promote + consecutive) — mirrors as002_promote_ok.
      */
     const bool promote_ok =
         (snap_n.valid != 0u) && (snap_n.allows_promote != 0u);
@@ -454,7 +548,32 @@ static void test_as002_snapshot_coherent_n_nplus1(void)
     EXPECT(snap_n.last_window.kind == EAR_SIREN_LAST_USABLE);
     EXPECT(snap_n.last_window.window_end_mono_us == snap_n.window_end_mono_us);
 
+    EXPECT(lw_n.kind == EAR_SIREN_LAST_USABLE);
+    EXPECT(lw_n.window_end_mono_us == 6000000LL);
+    EXPECT(lw_n.tonal_vote == snap_n.last_window.tonal_vote);
+    EXPECT(memcmp(&ev_n, &snap_n.evidence, sizeof(ev_n)) == 0);
+
     sig_engine_stop();
+}
+
+/**
+ * Production access audit (source contract documented in-test):
+ * - Promotion (`as002_promote_ok`) uses sig_engine_copy_as002_snapshot only.
+ * - OM AS-002 window path uses sig_engine_copy_as002_last_window.
+ * - CLS evidence path uses sig_engine_copy_as002_evidence.
+ * Live ear_siren_se_public_* on as002_live is engine-internal publish only.
+ * This host test does not link ear_observation.c; gate + source review confirm.
+ */
+static void test_as002_production_copy_api_contract(void)
+{
+    /* Sanity: published copy APIs exist and reject when engine stopped. */
+    sig_engine_stop();
+    ear_siren_last_window_t lw;
+    ear_cls_evidence_t ev;
+    sig_as002_snapshot_t snap;
+    EXPECT(!sig_engine_copy_as002_snapshot(&snap));
+    EXPECT(!sig_engine_copy_as002_last_window(&lw));
+    EXPECT(!sig_engine_copy_as002_evidence(&ev));
 }
 
 int main(void)
@@ -463,7 +582,9 @@ int main(void)
     test_as001_parity();
     test_as002_parity_gap_invalid();
     test_as002_published_copy_apis();
+    test_as002_wrapper_matches_snapshot();
     test_as002_snapshot_coherent_n_nplus1();
+    test_as002_production_copy_api_contract();
     test_multi_hit_and_overflow();
     test_primary_best_outside_hit_vector();
     test_scale_counts();

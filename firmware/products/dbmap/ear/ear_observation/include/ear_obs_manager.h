@@ -125,9 +125,9 @@ typedef struct {
     bool ce_live;
     int64_t start_mono_us;
     /**
-     * Progressive ALARM taxonomy assessment for this open episode.
-     * present=false when no classification evidence yet. Never implies a
-     * new Observation — same observation_id for the episode.
+     * ear_hyp_v2 assessment for this open episode (AS-002 progressive ALARM
+     * and/or AS-001 AIRCRAFT > Helicopter). present=false when none yet.
+     * Never implies a new Observation — same observation_id for the episode.
      */
     ear_cls_assessment_wire_t assessment;
 } ear_obs_binding_view_t;
