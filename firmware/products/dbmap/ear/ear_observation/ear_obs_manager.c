@@ -503,8 +503,9 @@ static bool allocate_and_bind(
     /*
      * Assessment stamp at START (ear_hyp_v2 via cls_wire):
      *   - AS-001: parent-only AIRCRAFT (leaf Helicopter on first PERIODIC/END).
+     *     Armed siren evidence is discarded, not applied.
      *   - AS-002: progressive path from armed siren evidence when present.
-     * Never apply siren evidence onto an AS-001 binding.
+     * Armed progressive evidence is consumed only by an approved AS-002 binding.
      */
     if (snap->relevance_profile_id == AS_PROFILE_ID_AS001) {
         (void)ear_cls_as001_apply(
@@ -516,7 +517,7 @@ static bool allocate_and_bind(
             om->cls_arm_valid = false;
             ear_cls_evidence_clear(&om->cls_arm);
         }
-    } else if (om->cls_arm_valid) {
+    } else if (binding_is_as002(om, (uint8_t)free_bi) && om->cls_arm_valid) {
         (void)ear_cls_apply(
             &om->bind[free_bi].cls,
             &om->cls_arm,
@@ -1706,6 +1707,10 @@ bool ear_obs_manager_feed_cls_evidence(
     }
     const int bi = find_binding(om, candidate_id);
     if (bi < 0) {
+        return false;
+    }
+    /* Approved AS-002 bindings own progressive siren assessment writes. */
+    if (!binding_is_as002(om, (uint8_t)bi)) {
         return false;
     }
     return ear_cls_apply(

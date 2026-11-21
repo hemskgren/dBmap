@@ -4,6 +4,8 @@
  * Test 4 — Critical with both normal Observation slots occupied.
  * Test 5 — OTA product-binding cleanup while Critical is active (+ boot boundary).
  * Package 3A — AE listener triad (SE → CE → Critical) + Critical coexistence.
+ * Package 4 — AS-001/AS-002 coexistence through the production SE listener
+ * and ear_sig_product_poll (Critical stays a separate listener/poll).
  *
  * Uses production ear_obs_manager, episode registry, ear_critical_path, and
  * ear_obs_ota_release_product_bindings (same helper as ear_observation_close_for_ota).
@@ -44,6 +46,7 @@
  *     firmware/products/dbmap/ear/ear_observation/ear_cls_as001.c \
  *     firmware/products/dbmap/ear/ear_observation/ear_obs_manager.c \
  *     firmware/products/dbmap/ear/ear_observation/ear_promotion_policy.c \
+ *     firmware/products/dbmap/ear/ear_observation/ear_sig_product.c \
  *     firmware/products/dbmap/ear/ear_observation/ear_critical_path.c \
  *     firmware/products/dbmap/ear/ear_observation/ear_obs_ota_cleanup.c \
  *     firmware/products/dbmap/ear/ear_observation/test_host/test_ear_critical_integration.c \
@@ -59,6 +62,7 @@
 #include "ear_obs_manager.h"
 #include "ear_obs_ota_cleanup.h"
 #include "ear_promotion_policy.h"
+#include "ear_sig_product.h"
 #include "sig_engine.h"
 #include "sp_episode_registry.h"
 
@@ -97,6 +101,97 @@ typedef struct {
 
 static normal_emit_t g_norm;
 
+/* Package 4 emit capture. Inactive unless the coexistence test turns it on. */
+#define P4_EMIT_CAP 8u
+
+typedef struct {
+    char id[SP_OBS_EPISODE_ID_LEN];
+    char path[96];
+    bool start;
+    bool periodic;
+} p4_emit_rec_t;
+
+static bool g_p4_capture;
+static p4_emit_rec_t g_p4_emits[P4_EMIT_CAP];
+static uint32_t g_p4_emit_n;
+static ear_obs_end_reason_t g_p4_last_end_reason;
+static char g_p4_last_end_id[SP_OBS_EPISODE_ID_LEN];
+static int64_t g_p4_last_end_capture_mono_us;
+
+static void p4_assess_path(
+    const ear_cls_assessment_wire_t *w,
+    char *out,
+    size_t cap
+)
+{
+    if (out == NULL || cap == 0u) {
+        return;
+    }
+    out[0] = '\0';
+    if (w == NULL || !w->present || w->n_nodes == 0u) {
+        return;
+    }
+    size_t used = 0u;
+    const uint8_t n =
+        w->n_nodes < EAR_CLS_PATH_MAX_NODES ? w->n_nodes : EAR_CLS_PATH_MAX_NODES;
+    for (uint8_t i = 0u; i < n; i++) {
+        const char *id = w->nodes[i].id;
+        const size_t idn = strlen(id);
+        const size_t slash = used > 0u ? 1u : 0u;
+        if (used + slash + idn + 1u > cap) {
+            out[0] = '\0';
+            return;
+        }
+        if (slash != 0u) {
+            out[used++] = '/';
+        }
+        memcpy(out + used, id, idn);
+        used += idn;
+        out[used] = '\0';
+    }
+}
+
+static bool p4_path_is(const ear_cls_assessment_wire_t *w, const char *expect)
+{
+    char got[96];
+    p4_assess_path(w, got, sizeof(got));
+    return expect != NULL && strcmp(got, expect) == 0;
+}
+
+static void p4_note_emit(
+    const ear_obs_binding_view_t *binding,
+    bool start,
+    bool periodic
+)
+{
+    if (!g_p4_capture || binding == NULL || g_p4_emit_n >= P4_EMIT_CAP) {
+        return;
+    }
+    p4_emit_rec_t *rec = &g_p4_emits[g_p4_emit_n++];
+    memset(rec, 0, sizeof(*rec));
+    snprintf(rec->id, sizeof(rec->id), "%s", binding->observation_id);
+    p4_assess_path(&binding->assessment, rec->path, sizeof(rec->path));
+    rec->start = start;
+    rec->periodic = periodic;
+}
+
+static bool p4_emit_path_is(const char *obs_id, bool start, const char *path)
+{
+    if (obs_id == NULL || path == NULL) {
+        return false;
+    }
+    for (uint32_t i = 0u; i < g_p4_emit_n; i++) {
+        const p4_emit_rec_t *rec = &g_p4_emits[i];
+        if (rec->start != start || rec->periodic == start) {
+            continue;
+        }
+        if (strcmp(rec->id, obs_id) == 0 && strcmp(rec->path, path) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void p3a_copy_id(char *dst, size_t dst_len, const char *src)
 {
     if (dst == NULL || dst_len == 0u) {
@@ -126,6 +221,7 @@ static bool norm_emit_start(
     }
     g_norm.start_generation = binding->ep.generation;
     g_norm.have_start_gen = true;
+    p4_note_emit(binding, true, false);
     if (g_norm.n_ids < SP_OBS_EPISODE_SLOTS) {
         p3a_copy_id(
             g_norm.ids[g_norm.n_ids],
@@ -153,6 +249,7 @@ static bool norm_emit_periodic(
     (void)has_lvl;
     (void)lvl;
     g_norm.periodics++;
+    p4_note_emit(binding, false, true);
     return true;
 }
 
@@ -160,19 +257,30 @@ static bool norm_emit_end(
     void *ctx,
     const ear_obs_binding_view_t *binding,
     ear_obs_end_reason_t reason,
-    int64_t a,
-    int64_t b,
+    int64_t interval_start_mono_us,
+    int64_t interval_end_mono_us,
     bool has_lvl,
     float lvl
 )
 {
     (void)ctx;
-    (void)reason;
-    (void)a;
+    (void)interval_start_mono_us;
     (void)has_lvl;
     (void)lvl;
     g_norm.ends++;
-    g_norm.last_end_mono_us = b;
+    if (g_p4_capture) {
+        g_p4_last_end_reason = reason;
+        g_p4_last_end_capture_mono_us = interval_end_mono_us;
+        if (binding != NULL) {
+            snprintf(
+                g_p4_last_end_id,
+                sizeof(g_p4_last_end_id),
+                "%s",
+                binding->observation_id
+            );
+        }
+    }
+    g_norm.last_end_mono_us = interval_end_mono_us;
     g_norm.have_end_ts = true;
     if (binding == NULL) {
         return true;
@@ -1282,11 +1390,446 @@ p3a_cleanup:
 }
 #undef P3A_REQUIRE
 
+/* ========== Package 4 ========== */
+
+/**
+ * AS-001 and AS-002 through the production listener and ear_sig_product_poll.
+ * No planted slots, classifications, reservations, or bindings.
+ * Critical is a separate listener and is polled after the product poll.
+ */
+#define P4_REQUIRE(cond)                                                       \
+    do {                                                                       \
+        if (!(cond)) {                                                         \
+            fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);     \
+            g_failures++;                                                      \
+            goto p4_cleanup;                                                   \
+        }                                                                      \
+    } while (0)
+
+static void p4_fill_broadband(ae_signature_t *s, uint32_t seq, float rms)
+{
+    memset(s, 0, sizeof(*s));
+    s->schema_version = AE_SIGNATURE_SCHEMA_VERSION;
+    s->window_seq = seq;
+    s->window_end_mono_us = (int64_t)seq * 1000000LL;
+    s->window_ms = 1000u;
+    s->mic_mask = 0x1u;
+    s->quality = AE_QUALITY_OK;
+    s->flags = AE_FLAG_PAIR_MISSING;
+    s->rms_dbfs = rms;
+    s->peak_dbfs = rms + 8.0f;
+    s->crest_db = 8.0f;
+    s->band_dbfs[0] = rms - 2.0f;
+    s->band_dbfs[1] = rms - 1.0f;
+    s->band_dbfs[2] = rms - 1.5f;
+    s->band_dbfs[3] = rms - 3.0f;
+    s->hl_valid = true;
+    s->spectral_valid = true;
+    s->dominant_hz = 1800.0f;
+    s->flatness = 0.70f;
+    s->centroid_hz = 2200.0f;
+    s->bandwidth_hz = 2500.0f;
+}
+
+static void p4_fill_heli(ae_signature_t *s, uint32_t seq, float rms)
+{
+    p4_fill_broadband(s, seq, rms);
+    s->peak_dbfs = rms + 7.3f;
+    s->crest_db = 7.3f;
+    s->band_dbfs[0] = rms - 4.21f;
+    s->band_dbfs[1] = rms - 3.52f;
+    s->band_dbfs[2] = rms - 13.10f;
+    s->band_dbfs[3] = rms - 32.77f;
+    s->dominant_hz = 230.0f;
+    s->flatness = 0.141f;
+    s->centroid_hz = 800.0f;
+    s->bandwidth_hz = 920.0f;
+}
+
+static void p4_fill_siren(ae_signature_t *s, uint32_t seq, float rms)
+{
+    p4_fill_broadband(s, seq, rms);
+    s->peak_dbfs = rms + 7.0f;
+    s->crest_db = 7.0f;
+    s->band_dbfs[0] = rms - 3.0f;
+    s->band_dbfs[1] = rms;
+    s->band_dbfs[2] = rms - 6.0f;
+    s->band_dbfs[3] = rms - 12.0f;
+    s->dominant_hz = 344.0f;
+    s->flatness = 0.28f;
+    s->centroid_hz = 400.0f;
+    s->bandwidth_hz = 80.0f;
+}
+
+static bool p4_find_as001_candidate(const ce_engine_t *ce, uint64_t *out_id)
+{
+    if (ce == NULL || out_id == NULL) {
+        return false;
+    }
+    for (uint8_t i = 0u; i < CE_MAX_CANDIDATES; i++) {
+        ae_candidate_t c;
+        ce_classification_t cls;
+        if (!ce_get_candidate(ce, i, &c)) {
+            continue;
+        }
+        if (!ce_get_classification(ce, c.candidate_id, &cls)) {
+            continue;
+        }
+        if (cls.valid && cls.matched && cls.profile_id == AS_PROFILE_ID_AS001) {
+            *out_id = c.candidate_id;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool p4_as002_absent_ms(const ear_obs_manager_t *om, uint32_t *out_ms)
+{
+    if (om == NULL || out_ms == NULL) {
+        return false;
+    }
+    bool found = false;
+    for (uint8_t i = 0u; i < EAR_OBS_MGR_BINDING_CAP; i++) {
+        if (!om->bind[i].in_use || !om->bind[i].as002_sig_track) {
+            continue;
+        }
+        if (found) {
+            return false;
+        }
+        *out_ms = om->bind[i].as002_absent_ms;
+        found = true;
+    }
+    return found;
+}
+
+static bool p4_publish(
+    integ_t *f,
+    ear_sig_product_t *prod,
+    const ae_signature_t *sig
+)
+{
+    if (!ae_publish_signature(&f->ae, sig)) {
+        return false;
+    }
+    ear_sig_product_poll(prod, sig->window_end_mono_us);
+    ear_critical_poll(&f->crit, sig->window_end_mono_us);
+    return true;
+}
+
+static void test_p4_as001_as002_production_coexist(void)
+{
+    printf("test_p4_as001_as002_production_coexist\n");
+
+    integ_t f;
+    ear_promotion_policy_t pol;
+    ear_sig_product_t prod;
+    memset(&f, 0, sizeof(f));
+    memset(&pol, 0, sizeof(pol));
+    memset(&prod, 0, sizeof(prod));
+    memset(&g_norm, 0, sizeof(g_norm));
+    memset(&g_crit, 0, sizeof(g_crit));
+    memset(g_p4_emits, 0, sizeof(g_p4_emits));
+    g_p4_emit_n = 0u;
+    g_p4_last_end_reason = EAR_OBS_END_EXPLICIT;
+    g_p4_last_end_id[0] = '\0';
+    g_p4_last_end_capture_mono_us = -1;
+    g_p4_capture = true;
+    g_uuid_n = 1u;
+
+    bool se_bound = false;
+    bool crit_bound = false;
+    bool ce_started = false;
+    bool sig_started = false;
+    bool om_ready = false;
+    uint64_t as001_cand = 0u;
+    uint64_t as002_cand = 0u;
+    char as001_obs[SP_OBS_EPISODE_ID_LEN];
+    char as002_obs[SP_OBS_EPISODE_ID_LEN];
+    memset(as001_obs, 0, sizeof(as001_obs));
+    memset(as002_obs, 0, sizeof(as002_obs));
+
+    ae_config_t acfg;
+    ae_config_set_defaults(&acfg);
+    P4_REQUIRE(ae_start(&f.ae, &acfg));
+    P4_REQUIRE(sig_engine_start());
+    sig_started = true;
+
+    ce_config_t ccfg;
+    ce_config_set_defaults(&ccfg);
+    ccfg.n_enter = 1u;
+    /* Stay live across the siren and absence windows. Not a planted slot. */
+    ccfg.t_coast = 64u;
+    P4_REQUIRE(ce_start(&f.ce, &ccfg));
+    ce_started = true;
+
+    sp_episode_registry_init(&f.reg);
+    ear_obs_manager_config_t mcfg;
+    memset(&mcfg, 0, sizeof(mcfg));
+    mcfg.registry = &f.reg;
+    mcfg.ce = &f.ce;
+    mcfg.ae = &f.ae;
+    mcfg.uuid_fn = fake_uuid;
+    mcfg.observation_interval_ms = 5000u;
+    mcfg.pending_timeout_ms = 30000u;
+    mcfg.detached_end_timeout_ms = 60000u;
+    mcfg.as002_signature_absence_hold_ms = 3000u;
+    mcfg.producer_tag = 2u;
+    mcfg.emit_start = norm_emit_start;
+    mcfg.emit_periodic = norm_emit_periodic;
+    mcfg.emit_end = norm_emit_end;
+    mcfg.enable_poll_periodic = false;
+    ear_obs_manager_init(&f.om, &mcfg);
+    om_ready = true;
+    ce_set_promotion_cb(&f.ce, ear_obs_manager_on_promotion, &f.om);
+    ear_promotion_policy_init(&pol, &f.ce, &f.om);
+    ear_promotion_policy_use_sig_engine_as002(&pol, true);
+
+    prod.om = &f.om;
+    prod.policy = &pol;
+    prod.ce = &f.ce;
+    prod.ready = true;
+    /* Production order: Signature Engine product listener before CE. */
+    P4_REQUIRE(ae_add_signature_listener(
+        &f.ae, ear_sig_product_on_ae_signature, &prod
+    ));
+    se_bound = true;
+    P4_REQUIRE(ce_bind_audio_engine(&f.ce, &f.ae));
+    P4_REQUIRE(ae_listener_count(&f.ae) == 2u);
+
+    ear_critical_config_t ccrit;
+    ear_critical_config_set_defaults(&ccrit);
+    ccrit.auto_detect_enabled = false;
+    ccrit.lab_impulse_enabled = false;
+    ccrit.publish = crit_publish;
+    ccrit.uuid_fn = crit_uuid;
+    ccrit.periodic_ms = 5000u;
+    ccrit.idle_timeout_ms = 15000u;
+    ccrit.max_active_ms = 30000u;
+    P4_REQUIRE(ear_critical_init(&f.crit, &ccrit));
+    P4_REQUIRE(ae_add_signature_listener(&f.ae, critical_ae_listener, &f.crit));
+    crit_bound = true;
+    P4_REQUIRE(ae_listener_count(&f.ae) == 3u);
+
+    ae_signature_t sig;
+    for (uint32_t seq = 1u; seq <= 4u; seq++) {
+        p4_fill_broadband(&sig, seq, -55.0f);
+        P4_REQUIRE(p4_publish(&f, &prod, &sig));
+    }
+    P4_REQUIRE(g_norm.starts == 0u);
+    P4_REQUIRE(!ear_critical_is_active(&f.crit));
+
+    p4_fill_heli(&sig, 5u, -40.0f);
+    P4_REQUIRE(p4_publish(&f, &prod, &sig));
+    P4_REQUIRE(g_norm.starts == 1u);
+    P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
+    P4_REQUIRE(p4_find_as001_candidate(&f.ce, &as001_cand));
+    P4_REQUIRE(as001_cand != 0u);
+    {
+        const int bi = find_open_bind_idx(&f.om, as001_cand);
+        P4_REQUIRE(bi >= 0);
+        snprintf(
+            as001_obs,
+            sizeof(as001_obs),
+            "%s",
+            f.om.bind[bi].observation_id
+        );
+    }
+    P4_REQUIRE(p4_emit_path_is(as001_obs, true, "AIRCRAFT"));
+    {
+        ear_cls_assessment_wire_t stored;
+        P4_REQUIRE(ear_obs_manager_get_cls_assessment(&f.om, as001_cand, &stored));
+        P4_REQUIRE(p4_path_is(&stored, "AIRCRAFT"));
+    }
+
+    /* Two tonal windows stay under the three-window ALARM gate. */
+    for (uint32_t seq = 6u; seq <= 7u; seq++) {
+        p4_fill_siren(&sig, seq, -31.0f);
+        P4_REQUIRE(p4_publish(&f, &prod, &sig));
+        P4_REQUIRE(g_norm.starts == 1u);
+        P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
+        P4_REQUIRE(sig_engine_as002_consecutive() == (seq - 5u));
+        P4_REQUIRE(!sig_engine_allows_promote(AS_PROFILE_ID_AS002));
+    }
+
+    p4_fill_siren(&sig, 8u, -31.0f);
+    P4_REQUIRE(p4_publish(&f, &prod, &sig));
+    P4_REQUIRE(sig_engine_allows_promote(AS_PROFILE_ID_AS002));
+    P4_REQUIRE(g_norm.starts == 2u);
+    P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 2u);
+    P4_REQUIRE(strcmp(g_norm.ids[0], g_norm.ids[1]) != 0);
+    snprintf(as002_obs, sizeof(as002_obs), "%s", g_norm.ids[1]);
+    P4_REQUIRE(strcmp(as001_obs, as002_obs) != 0);
+    P4_REQUIRE(p4_emit_path_is(as002_obs, true, "ALARM"));
+    {
+        bool found_other = false;
+        for (uint8_t i = 0u; i < EAR_OBS_MGR_BINDING_CAP; i++) {
+            if (!f.om.bind[i].in_use) {
+                continue;
+            }
+            if (f.om.bind[i].candidate_id == as001_cand) {
+                continue;
+            }
+            as002_cand = f.om.bind[i].candidate_id;
+            found_other = true;
+        }
+        P4_REQUIRE(found_other && as002_cand != 0u && as002_cand != as001_cand);
+    }
+    /*
+     * Stored AS-001 assessment, read before any AS-001 PERIODIC/END emit
+     * can deepen or rewrite the wire.
+     */
+    {
+        ear_cls_assessment_wire_t stored;
+        P4_REQUIRE(ear_obs_manager_get_cls_assessment(&f.om, as001_cand, &stored));
+        P4_REQUIRE(p4_path_is(&stored, "AIRCRAFT"));
+    }
+
+    p4_fill_siren(&sig, 9u, -31.0f);
+    P4_REQUIRE(p4_publish(&f, &prod, &sig));
+    p4_fill_siren(&sig, 10u, -31.0f);
+    P4_REQUIRE(p4_publish(&f, &prod, &sig));
+    P4_REQUIRE(sig_engine_as002_consecutive() == EAR_SIREN_SE_MIN_STREAK);
+    {
+        ear_cls_assessment_wire_t as001_stored;
+        ear_cls_assessment_wire_t as002_stored;
+        P4_REQUIRE(ear_obs_manager_get_cls_assessment(
+            &f.om, as001_cand, &as001_stored
+        ));
+        P4_REQUIRE(p4_path_is(&as001_stored, "AIRCRAFT"));
+        P4_REQUIRE(ear_obs_manager_get_cls_assessment(
+            &f.om, as002_cand, &as002_stored
+        ));
+        P4_REQUIRE(p4_path_is(&as002_stored, "ALARM/SE_PUBLIC_ALERT"));
+    }
+
+    ear_obs_manager_on_activity_periodic_hint(&f.om, 5000000, 10000000, true, -31.0f);
+    P4_REQUIRE(p4_emit_path_is(as001_obs, false, "AIRCRAFT/Helicopter"));
+    P4_REQUIRE(p4_emit_path_is(as002_obs, false, "ALARM/SE_PUBLIC_ALERT"));
+    P4_REQUIRE(g_norm.periodics == 2u);
+    P4_REQUIRE(g_norm.ends == 0u);
+
+    /* Absence is advanced only by the product listener's window forward. */
+    {
+        ear_obs_manager_diag_t d0;
+        ear_obs_manager_get_diag(&f.om, &d0);
+        const uint32_t adv0 = d0.as002_sig_absent_advance;
+        const uint32_t pause0 = d0.as002_sig_absent_pause;
+        const uint32_t reset0 = d0.as002_sig_support_reset;
+        const uint32_t ends0 = g_norm.ends;
+
+        p4_fill_broadband(&sig, 11u, -55.0f);
+        P4_REQUIRE(p4_publish(&f, &prod, &sig));
+        ear_obs_manager_diag_t d;
+        ear_obs_manager_get_diag(&f.om, &d);
+        P4_REQUIRE(d.as002_sig_absent_advance == adv0 + 1u);
+        P4_REQUIRE(g_norm.ends == ends0);
+        P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 2u);
+        uint32_t absent_ms = 0u;
+        P4_REQUIRE(p4_as002_absent_ms(&f.om, &absent_ms));
+        P4_REQUIRE(absent_ms != 0u);
+        const uint32_t accumulated_ms = absent_ms;
+
+        p4_fill_broadband(&sig, 12u, -55.0f);
+        sig.quality = AE_QUALITY_GAP;
+        P4_REQUIRE(p4_publish(&f, &prod, &sig));
+        ear_obs_manager_get_diag(&f.om, &d);
+        P4_REQUIRE(d.as002_sig_absent_pause == pause0 + 1u);
+        P4_REQUIRE(d.as002_sig_absent_advance == adv0 + 1u);
+        P4_REQUIRE(p4_as002_absent_ms(&f.om, &absent_ms));
+        P4_REQUIRE(absent_ms == accumulated_ms);
+        P4_REQUIRE(g_norm.ends == ends0);
+
+        p4_fill_broadband(&sig, 13u, -55.0f);
+        sig.quality = AE_QUALITY_INVALID;
+        P4_REQUIRE(p4_publish(&f, &prod, &sig));
+        ear_obs_manager_get_diag(&f.om, &d);
+        P4_REQUIRE(d.as002_sig_absent_pause == pause0 + 2u);
+        P4_REQUIRE(d.as002_sig_absent_advance == adv0 + 1u);
+        P4_REQUIRE(p4_as002_absent_ms(&f.om, &absent_ms));
+        P4_REQUIRE(absent_ms == accumulated_ms);
+        P4_REQUIRE(g_norm.ends == ends0);
+
+        p4_fill_siren(&sig, 14u, -31.0f);
+        P4_REQUIRE(p4_publish(&f, &prod, &sig));
+        ear_obs_manager_get_diag(&f.om, &d);
+        P4_REQUIRE(d.as002_sig_support_reset == reset0 + 1u);
+        P4_REQUIRE(p4_as002_absent_ms(&f.om, &absent_ms));
+        P4_REQUIRE(absent_ms == 0u);
+        P4_REQUIRE(g_norm.ends == ends0);
+        P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 2u);
+
+        p4_fill_broadband(&sig, 15u, -55.0f);
+        P4_REQUIRE(p4_publish(&f, &prod, &sig));
+        P4_REQUIRE(p4_as002_absent_ms(&f.om, &absent_ms));
+        P4_REQUIRE(absent_ms == accumulated_ms);
+        p4_fill_broadband(&sig, 16u, -55.0f);
+        P4_REQUIRE(p4_publish(&f, &prod, &sig));
+        P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 2u);
+        P4_REQUIRE(g_norm.ends == ends0);
+
+        p4_fill_broadband(&sig, 17u, -55.0f);
+        const int64_t cross_capture_mono_us = sig.window_end_mono_us;
+        P4_REQUIRE(p4_publish(&f, &prod, &sig));
+        P4_REQUIRE(g_norm.ends == ends0 + 1u);
+        P4_REQUIRE(g_p4_last_end_reason == EAR_OBS_END_SIGNATURE);
+        P4_REQUIRE(strcmp(g_p4_last_end_id, as002_obs) == 0);
+        P4_REQUIRE(g_p4_last_end_capture_mono_us == cross_capture_mono_us);
+        P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
+        P4_REQUIRE(ear_obs_manager_has_signature_observation(
+            &f.om, AS_PROFILE_ID_AS001
+        ));
+        P4_REQUIRE(!ear_obs_manager_has_signature_observation(
+            &f.om, AS_PROFILE_ID_AS002
+        ));
+        P4_REQUIRE(find_open_bind_idx(&f.om, as001_cand) >= 0);
+    }
+
+    P4_REQUIRE(!ear_critical_is_active(&f.crit));
+    P4_REQUIRE(g_crit.starts == 0u);
+    {
+        ear_critical_diag_t cd;
+        ear_critical_get_diag(&f.crit, &cd);
+        P4_REQUIRE(cd.auto_start_blocked >= 1u);
+        P4_REQUIRE(cd.start == 0u);
+    }
+
+p4_cleanup:
+    g_p4_capture = false;
+    if (om_ready && (ear_obs_manager_n_open(&f.om) > 0u
+                     || ear_obs_manager_n_pending(&f.om) > 0u)) {
+        ear_obs_manager_force_end_all(&f.om, EAR_OBS_END_EXPLICIT, 20000000);
+        ear_obs_manager_poll(&f.om, 21000000);
+    }
+    if (ear_critical_is_active(&f.crit)) {
+        ear_critical_force_end(&f.crit, 22000000, EAR_CRITICAL_END_EXPLICIT);
+    }
+    if (crit_bound) {
+        (void)ae_remove_signature_listener(&f.ae, critical_ae_listener, &f.crit);
+    }
+    if (ce_started) {
+        ce_set_promotion_cb(&f.ce, NULL, NULL);
+        ce_stop(&f.ce);
+        if (om_ready) {
+            ear_obs_manager_poll(&f.om, 23000000);
+        }
+    }
+    if (se_bound) {
+        (void)ae_remove_signature_listener(
+            &f.ae, ear_sig_product_on_ae_signature, &prod
+        );
+    }
+    if (sig_started) {
+        sig_engine_stop();
+    }
+}
+#undef P4_REQUIRE
+
 int main(void)
 {
     test4_critical_with_both_normal_slots_occupied();
     test5_ota_cleanup_while_critical_active();
     test_p3a_ae_listener_triad_critical_coexist();
+    test_p4_as001_as002_production_coexist();
     if (g_failures != 0) {
         fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;
