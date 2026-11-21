@@ -21,6 +21,7 @@
 #include "ear_cls_as001.h"
 #include "ear_obs_manager.h"
 #include "ear_promotion_policy.h"
+#include "sig_engine.h"
 #include "sp_episode_registry.h"
 
 #include <stdio.h>
@@ -2847,6 +2848,389 @@ static void test_p2_unadmit_gen_protects_newer(void)
     fixture_fini(&f);
 }
 
+/**
+ * Package 2 — CE → OM end-to-end AS-001 lifecycle (real SE/CE/Policy/OM).
+ *
+ * Synthetic heli/broadband signatures match test_sig_engine_ce_primary.
+ * No planted CE slots, no manual relevance stamps, no fabricated ENTER/EXIT.
+ * Production order: SE listener before CE; Policy poll before OM poll; then
+ * candidate-associated evidence feed.
+ *
+ * E2E_REQUIRE records failure and jumps to cleanup — never index bind[-1] or
+ * continue after a missing Observation / binding prerequisite.
+ */
+#define E2E_REQUIRE(cond)                                                      \
+    do {                                                                       \
+        if (!(cond)) {                                                         \
+            fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);     \
+            g_failures++;                                                      \
+            goto e2e_cleanup;                                                  \
+        }                                                                      \
+    } while (0)
+
+static void fill_heli_sig(ae_signature_t *s, uint32_t seq, float rms_dbfs)
+{
+    memset(s, 0, sizeof(*s));
+    s->schema_version = AE_SIGNATURE_SCHEMA_VERSION;
+    s->window_seq = seq;
+    s->window_end_mono_us = (int64_t)seq * 1000000LL;
+    s->window_ms = 1000u;
+    s->mic_mask = 0x1u;
+    s->quality = AE_QUALITY_OK;
+    s->flags = AE_FLAG_PAIR_MISSING;
+    s->rms_dbfs = rms_dbfs;
+    s->peak_dbfs = rms_dbfs + 7.3f;
+    s->crest_db = 7.3f;
+    s->band_dbfs[0] = rms_dbfs - 4.21f;
+    s->band_dbfs[1] = rms_dbfs - 3.52f;
+    s->band_dbfs[2] = rms_dbfs - 13.10f;
+    s->band_dbfs[3] = rms_dbfs - 32.77f;
+    s->hl_valid = true;
+    s->spectral_valid = true;
+    s->dominant_hz = 230.0f;
+    s->flatness = 0.141f;
+    s->centroid_hz = 800.0f;
+    s->bandwidth_hz = 920.0f;
+}
+
+static void fill_broadband_sig(ae_signature_t *s, uint32_t seq, float rms_dbfs)
+{
+    memset(s, 0, sizeof(*s));
+    s->schema_version = AE_SIGNATURE_SCHEMA_VERSION;
+    s->window_seq = seq;
+    s->window_end_mono_us = (int64_t)seq * 1000000LL;
+    s->window_ms = 1000u;
+    s->mic_mask = 0x1u;
+    s->quality = AE_QUALITY_OK;
+    s->flags = AE_FLAG_PAIR_MISSING;
+    s->rms_dbfs = rms_dbfs;
+    s->peak_dbfs = rms_dbfs + 8.0f;
+    s->crest_db = 8.0f;
+    s->band_dbfs[0] = rms_dbfs - 2.0f;
+    s->band_dbfs[1] = rms_dbfs - 1.0f;
+    s->band_dbfs[2] = rms_dbfs - 1.5f;
+    s->band_dbfs[3] = rms_dbfs - 3.0f;
+    s->hl_valid = true;
+    s->spectral_valid = true;
+    s->dominant_hz = 1800.0f;
+    s->flatness = 0.70f;
+    s->centroid_hz = 2200.0f;
+    s->bandwidth_hz = 2500.0f;
+}
+
+static void fill_gap_sig(ae_signature_t *s, uint32_t seq, float rms_dbfs)
+{
+    fill_heli_sig(s, seq, rms_dbfs);
+    s->quality = AE_QUALITY_GAP;
+}
+
+static bool binding_owned_has_gap(const ear_obs_manager_t *om, uint8_t bi)
+{
+    if (om == NULL || bi >= EAR_OBS_MGR_BINDING_CAP || !om->bind[bi].in_use) {
+        return false;
+    }
+    for (uint8_t i = 0u; i < om->bind[bi].snap.sig_count
+         && i < EAR_OBS_PROMOTE_SIG_CAP;
+         i++) {
+        if (om->bind[bi].snap.sigs[i].quality == AE_QUALITY_GAP) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool e2e_drive(
+    fixture_t *f,
+    const ae_signature_t *sig,
+    int64_t now_mono_us
+)
+{
+    if (f == NULL || sig == NULL) {
+        return false;
+    }
+    if (!ae_publish_signature(&f->ae, sig)) {
+        return false;
+    }
+    ear_promotion_policy_poll(&f->pol, now_mono_us);
+    ear_obs_manager_poll(&f->om, now_mono_us);
+    /* Observable CE → OM live-evidence path (must not be a no-op for rematch). */
+    ear_obs_manager_feed_from_ce(&f->om, &f->ce);
+    return true;
+}
+
+static void test_p2_as001_ce_om_lifecycle_e2e(void)
+{
+    printf("test_p2_as001_ce_om_lifecycle_e2e\n");
+    fixture_t f;
+    memset(&f, 0, sizeof(f));
+    memset(&g_emit, 0, sizeof(g_emit));
+    g_uuid_n = 1;
+
+    bool se_listener_bound = false;
+    char obs_id[SP_OBS_EPISODE_ID_LEN];
+    memset(obs_id, 0, sizeof(obs_id));
+    uint64_t cand_id = 0u;
+    uint32_t promo_gen = 0u;
+    uint32_t pre_gap_owned_seq = 0u;
+    float pre_gap_owned_rms = 0.0f;
+    uint8_t pre_gap_sig_count = 0u;
+    uint32_t pre_gap_evidence_updates = 0u;
+    uint32_t post_gap_evidence_updates = 0u;
+    const float heli_rms = -40.0f;
+    const float rematch_rms = -38.5f;
+    const uint32_t heli_seq = 17u;
+    const uint32_t gap_seq = 18u;
+    const uint32_t rematch_seq = 19u;
+
+    ae_config_t acfg;
+    ae_config_set_defaults(&acfg);
+    E2E_REQUIRE(ae_start(&f.ae, &acfg));
+
+    E2E_REQUIRE(sig_engine_start());
+    E2E_REQUIRE(sig_engine_is_started());
+    /* Production order: Signature Engine before CE on the AE listener list. */
+    E2E_REQUIRE(ae_add_signature_listener(&f.ae, sig_engine_ae_listener, NULL));
+    se_listener_bound = true;
+
+    ce_config_t ccfg;
+    ce_config_set_defaults(&ccfg);
+    ccfg.n_enter = 1u;
+    ccfg.t_coast = 3u;
+    E2E_REQUIRE(ce_start(&f.ce, &ccfg));
+    E2E_REQUIRE(ce_bind_audio_engine(&f.ce, &f.ae));
+
+    sp_episode_registry_init(&f.reg);
+
+    ear_obs_manager_config_t mcfg;
+    memset(&mcfg, 0, sizeof(mcfg));
+    mcfg.registry = &f.reg;
+    mcfg.ce = &f.ce;
+    mcfg.ae = &f.ae;
+    mcfg.uuid_fn = fake_uuid;
+    mcfg.observation_interval_ms = 1000u;
+    mcfg.pending_timeout_ms = 30000u;
+    mcfg.detached_end_timeout_ms = 1000u;
+    mcfg.producer_tag = 2u;
+    mcfg.emit_start = emit_start;
+    mcfg.emit_periodic = emit_periodic;
+    mcfg.emit_end = emit_end;
+    mcfg.enable_poll_periodic = false;
+    ear_obs_manager_init(&f.om, &mcfg);
+    ce_set_promotion_cb(&f.ce, ear_obs_manager_on_promotion, &f.om);
+    ear_promotion_policy_init(&f.pol, &f.ce, &f.om);
+
+    ae_signature_t sig;
+
+    /* Unmatched broadband must not open an Observation. */
+    for (uint32_t seq = 1u; seq <= 4u; seq++) {
+        fill_broadband_sig(&sig, seq, -55.0f);
+        E2E_REQUIRE(e2e_drive(&f, &sig, sig.window_end_mono_us));
+    }
+    E2E_REQUIRE(g_emit.starts == 0u);
+    E2E_REQUIRE(g_emit.ends == 0u);
+    E2E_REQUIRE(ear_obs_manager_n_open(&f.om) == 0u);
+    E2E_REQUIRE(ear_obs_manager_n_pending(&f.om) == 0u);
+    E2E_REQUIRE(sp_episode_registry_in_use_count(&f.reg) == 0u);
+
+    /* Fresh AS-001 heli match → exactly one Observation via Policy. */
+    fill_heli_sig(&sig, heli_seq, heli_rms);
+    E2E_REQUIRE(e2e_drive(&f, &sig, sig.window_end_mono_us));
+
+    sig_primary_distance_t prim;
+    memset(&prim, 0, sizeof(prim));
+    E2E_REQUIRE(sig_engine_get_primary_distance_match(&prim));
+    E2E_REQUIRE(prim.valid);
+    E2E_REQUIRE(prim.window_seq == heli_seq);
+    E2E_REQUIRE(prim.profile_id == AS_PROFILE_ID_AS001);
+
+    E2E_REQUIRE(g_emit.starts == 1u);
+    E2E_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
+    E2E_REQUIRE(sp_episode_registry_in_use_count(&f.reg) == 1u);
+    E2E_REQUIRE(g_emit.last_obs_id[0] != '\0');
+    E2E_REQUIRE(g_emit.last_start_cand != 0u);
+    memcpy(obs_id, g_emit.last_obs_id, sizeof(obs_id));
+    cand_id = g_emit.last_start_cand;
+
+    ae_candidate_t cand;
+    memset(&cand, 0, sizeof(cand));
+    E2E_REQUIRE(ce_find_candidate(&f.ce, cand_id, &cand));
+    E2E_REQUIRE(cand.state == AE_CAND_PROMOTED);
+    E2E_REQUIRE(cand.promotion_entered);
+    E2E_REQUIRE(cand.promotion_gen != 0u);
+    promo_gen = cand.promotion_gen;
+
+    ce_classification_t cls;
+    memset(&cls, 0, sizeof(cls));
+    E2E_REQUIRE(ce_get_classification(&f.ce, cand_id, &cls));
+    E2E_REQUIRE(cls.valid && cls.matched);
+    E2E_REQUIRE(cls.profile_id == AS_PROFILE_ID_AS001);
+    E2E_REQUIRE(cls.distance == prim.distance);
+
+    {
+        const int bi = find_bind_idx(&f, cand_id);
+        E2E_REQUIRE(bi >= 0);
+        E2E_REQUIRE((uint8_t)bi < EAR_OBS_MGR_BINDING_CAP);
+        E2E_REQUIRE(f.om.bind[bi].in_use);
+        E2E_REQUIRE(f.om.bind[bi].ce_live);
+        E2E_REQUIRE(f.om.bind[bi].ce_promotion_gen == promo_gen);
+        E2E_REQUIRE(strcmp(f.om.bind[bi].observation_id, obs_id) == 0);
+        E2E_REQUIRE(f.om.bind[bi].snap.product_relevance_approved);
+        E2E_REQUIRE(f.om.bind[bi].snap.relevance_profile_id == AS_PROFILE_ID_AS001);
+
+        /*
+         * OM must own usable heli evidence on the Observation binding.
+         * evidence_updates >= 1 proves feed_from_ce ran (ENTER alone leaves 0).
+         * Owned top seq/rms pin the heli window itself.
+         */
+        E2E_REQUIRE(f.om.bind[bi].evidence_updates >= 1u);
+        E2E_REQUIRE(f.om.bind[bi].snap.sig_count >= 1u);
+        E2E_REQUIRE(f.om.bind[bi].last_owned_sig_window_seq == heli_seq);
+        E2E_REQUIRE(f.om.bind[bi].snap.sigs[0].window_seq == heli_seq);
+        E2E_REQUIRE(f.om.bind[bi].snap.sigs[0].quality == AE_QUALITY_OK);
+        E2E_REQUIRE(f.om.bind[bi].snap.sigs[0].rms_dbfs == heli_rms);
+        E2E_REQUIRE(!binding_owned_has_gap(&f.om, (uint8_t)bi));
+
+        pre_gap_owned_seq = f.om.bind[bi].last_owned_sig_window_seq;
+        pre_gap_owned_rms = f.om.bind[bi].snap.sigs[0].rms_dbfs;
+        pre_gap_sig_count = f.om.bind[bi].snap.sig_count;
+        pre_gap_evidence_updates = f.om.bind[bi].evidence_updates;
+    }
+
+    ear_promotion_policy_diag_t pd;
+    ear_promotion_policy_get_diag(&f.pol, &pd);
+    E2E_REQUIRE(pd.promote_ok >= 1u);
+    E2E_REQUIRE(pd.last_decision == EAR_PROMO_DECISION_PROMOTE);
+
+    /* Short GAP: previously owned evidence must not be overwritten by GAP. */
+    fill_gap_sig(&sig, gap_seq, heli_rms);
+    E2E_REQUIRE(e2e_drive(&f, &sig, sig.window_end_mono_us));
+
+    E2E_REQUIRE(g_emit.starts == 1u);
+    E2E_REQUIRE(g_emit.ends == 0u);
+    E2E_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
+    memset(&cand, 0, sizeof(cand));
+    E2E_REQUIRE(ce_find_candidate(&f.ce, cand_id, &cand));
+    E2E_REQUIRE(cand.state == AE_CAND_COASTING);
+    E2E_REQUIRE(cand.promotion_entered);
+    E2E_REQUIRE(cand.promotion_gen == promo_gen);
+
+    {
+        const int bi = find_bind_idx(&f, cand_id);
+        E2E_REQUIRE(bi >= 0);
+        E2E_REQUIRE((uint8_t)bi < EAR_OBS_MGR_BINDING_CAP);
+        E2E_REQUIRE(f.om.bind[bi].in_use);
+        E2E_REQUIRE(f.om.bind[bi].ce_live);
+        E2E_REQUIRE(strcmp(f.om.bind[bi].observation_id, obs_id) == 0);
+        E2E_REQUIRE(f.om.bind[bi].ce_promotion_gen == promo_gen);
+        E2E_REQUIRE(!binding_owned_has_gap(&f.om, (uint8_t)bi));
+        E2E_REQUIRE(f.om.bind[bi].last_owned_sig_window_seq == pre_gap_owned_seq);
+        E2E_REQUIRE(f.om.bind[bi].last_owned_sig_window_seq != gap_seq);
+        E2E_REQUIRE(f.om.bind[bi].snap.sigs[0].window_seq == pre_gap_owned_seq);
+        E2E_REQUIRE(f.om.bind[bi].snap.sigs[0].window_seq != gap_seq);
+        E2E_REQUIRE(f.om.bind[bi].snap.sigs[0].rms_dbfs == pre_gap_owned_rms);
+        E2E_REQUIRE(f.om.bind[bi].snap.sigs[0].quality == AE_QUALITY_OK);
+        E2E_REQUIRE(f.om.bind[bi].snap.sig_count == pre_gap_sig_count);
+        post_gap_evidence_updates = f.om.bind[bi].evidence_updates;
+        E2E_REQUIRE(post_gap_evidence_updates >= pre_gap_evidence_updates);
+    }
+
+    /* Rematch: feed must install window-19 owned evidence on the same binding. */
+    fill_heli_sig(&sig, rematch_seq, rematch_rms);
+    E2E_REQUIRE(e2e_drive(&f, &sig, sig.window_end_mono_us));
+
+    E2E_REQUIRE(g_emit.starts == 1u);
+    E2E_REQUIRE(g_emit.ends == 0u);
+    E2E_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
+    memset(&cand, 0, sizeof(cand));
+    E2E_REQUIRE(ce_find_candidate(&f.ce, cand_id, &cand));
+    E2E_REQUIRE(cand.state == AE_CAND_PROMOTED);
+    E2E_REQUIRE(cand.promotion_entered);
+    E2E_REQUIRE(cand.promotion_gen == promo_gen);
+    E2E_REQUIRE(cand.last_window_seq == rematch_seq);
+
+    {
+        const int bi = find_bind_idx(&f, cand_id);
+        E2E_REQUIRE(bi >= 0);
+        E2E_REQUIRE((uint8_t)bi < EAR_OBS_MGR_BINDING_CAP);
+        E2E_REQUIRE(f.om.bind[bi].in_use);
+        E2E_REQUIRE(f.om.bind[bi].ce_live);
+        E2E_REQUIRE(f.om.bind[bi].ce_promotion_gen == promo_gen);
+        E2E_REQUIRE(strcmp(f.om.bind[bi].observation_id, obs_id) == 0);
+        E2E_REQUIRE(!binding_owned_has_gap(&f.om, (uint8_t)bi));
+        /*
+         * These OM-owned fields change only via feed_from_ce after rematch.
+         * Disabling the feed leaves last_owned at heli_seq / heli_rms.
+         */
+        E2E_REQUIRE(f.om.bind[bi].evidence_updates > post_gap_evidence_updates);
+        E2E_REQUIRE(f.om.bind[bi].last_owned_sig_window_seq == rematch_seq);
+        E2E_REQUIRE(f.om.bind[bi].snap.sigs[0].window_seq == rematch_seq);
+        E2E_REQUIRE(f.om.bind[bi].snap.sigs[0].rms_dbfs == rematch_rms);
+        E2E_REQUIRE(f.om.bind[bi].snap.sigs[0].quality == AE_QUALITY_OK);
+        E2E_REQUIRE(f.om.bind[bi].snap.sigs[0].window_seq != gap_seq);
+        E2E_REQUIRE(f.om.bind[bi].last_owned_sig_window_seq != gap_seq);
+    }
+
+    /* Coast past t_coast → natural CE EXIT detaches without END. */
+    for (uint32_t seq = 20u; seq <= 23u; seq++) {
+        fill_gap_sig(&sig, seq, heli_rms);
+        E2E_REQUIRE(e2e_drive(&f, &sig, sig.window_end_mono_us));
+    }
+
+    E2E_REQUIRE(!ce_find_candidate(&f.ce, cand_id, &cand));
+    E2E_REQUIRE(g_emit.starts == 1u);
+    E2E_REQUIRE(g_emit.ends == 0u);
+    E2E_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
+
+    const int64_t detach_now = 23LL * 1000000LL;
+    {
+        const int bi = find_bind_idx(&f, cand_id);
+        E2E_REQUIRE(bi >= 0);
+        E2E_REQUIRE((uint8_t)bi < EAR_OBS_MGR_BINDING_CAP);
+        E2E_REQUIRE(f.om.bind[bi].in_use);
+        E2E_REQUIRE(!f.om.bind[bi].ce_live);
+        E2E_REQUIRE(f.om.bind[bi].ce_promotion_gen == promo_gen);
+        E2E_REQUIRE(strcmp(f.om.bind[bi].observation_id, obs_id) == 0);
+        E2E_REQUIRE(f.om.bind[bi].detached_since_mono_us == detach_now);
+    }
+    ear_obs_manager_diag_t d0;
+    ear_obs_manager_get_diag(&f.om, &d0);
+    E2E_REQUIRE(d0.exit_detach >= 1u);
+    E2E_REQUIRE(d0.detached_watchdog_armed >= 1u);
+    E2E_REQUIRE(d0.detached_watchdog_end == 0u);
+
+    /* Detached watchdog deadline → exactly one END; no duplicate. */
+    ear_obs_manager_poll(&f.om, detach_now + 999999LL);
+    E2E_REQUIRE(g_emit.ends == 0u);
+    E2E_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
+
+    ear_obs_manager_poll(&f.om, detach_now + 1000000LL);
+    E2E_REQUIRE(g_emit.ends == 1u);
+    E2E_REQUIRE(ear_obs_manager_n_open(&f.om) == 0u);
+    E2E_REQUIRE(sp_episode_registry_in_use_count(&f.reg) == 0u);
+    E2E_REQUIRE(strcmp(g_emit.last_end_obs_id, obs_id) == 0);
+    E2E_REQUIRE(g_emit.last_end_reason == EAR_OBS_END_EXPLICIT);
+    E2E_REQUIRE(g_emit.starts == 1u);
+
+    ear_obs_manager_diag_t d1;
+    ear_obs_manager_get_diag(&f.om, &d1);
+    E2E_REQUIRE(d1.detached_watchdog_end == 1u);
+    E2E_REQUIRE(d1.end_done == 1u);
+
+    ear_obs_manager_poll(&f.om, detach_now + 2000000LL);
+    ear_obs_manager_poll(&f.om, detach_now + 3000000LL);
+    E2E_REQUIRE(g_emit.ends == 1u);
+    E2E_REQUIRE(g_emit.starts == 1u);
+    E2E_REQUIRE(ear_obs_manager_n_open(&f.om) == 0u);
+
+e2e_cleanup:
+    if (se_listener_bound) {
+        (void)ae_remove_signature_listener(&f.ae, sig_engine_ae_listener, NULL);
+    }
+    ce_stop(&f.ce);
+    sig_engine_stop();
+}
+#undef E2E_REQUIRE
+
 int main(void)
 {
     test_no_promote_no_obs();
@@ -2919,6 +3303,7 @@ int main(void)
     test_p2_promote_with_reserve_bypasses_policy();
     test_p2_enter_queue_full_recovers();
     test_p2_unadmit_gen_protects_newer();
+    test_p2_as001_ce_om_lifecycle_e2e();
 
     if (g_failures != 0) {
         fprintf(stderr, "%d failure(s)\n", g_failures);
