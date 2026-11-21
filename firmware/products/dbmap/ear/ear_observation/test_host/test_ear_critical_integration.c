@@ -83,13 +83,31 @@ typedef struct {
     uint32_t ends;
     char ids[SP_OBS_EPISODE_SLOTS][SP_OBS_EPISODE_ID_LEN];
     uint32_t n_ids;
+    char last_end_id[SP_OBS_EPISODE_ID_LEN];
     int64_t last_start_mono_us;
     int64_t last_end_mono_us;
+    uint16_t start_generation;
+    uint16_t end_generation;
     bool have_start_ts;
     bool have_end_ts;
+    bool have_end_id;
+    bool have_start_gen;
+    bool have_end_gen;
 } normal_emit_t;
 
 static normal_emit_t g_norm;
+
+static void p3a_copy_id(char *dst, size_t dst_len, const char *src)
+{
+    if (dst == NULL || dst_len == 0u) {
+        return;
+    }
+    if (src == NULL) {
+        dst[0] = '\0';
+        return;
+    }
+    snprintf(dst, dst_len, "%s", src);
+}
 
 static bool norm_emit_start(
     void *ctx,
@@ -103,11 +121,16 @@ static bool norm_emit_start(
     g_norm.starts++;
     g_norm.last_start_mono_us = now_mono_us;
     g_norm.have_start_ts = true;
+    if (binding == NULL) {
+        return true;
+    }
+    g_norm.start_generation = binding->ep.generation;
+    g_norm.have_start_gen = true;
     if (g_norm.n_ids < SP_OBS_EPISODE_SLOTS) {
-        memcpy(
+        p3a_copy_id(
             g_norm.ids[g_norm.n_ids],
-            binding->observation_id,
-            SP_OBS_EPISODE_ID_LEN
+            sizeof(g_norm.ids[g_norm.n_ids]),
+            binding->observation_id
         );
         g_norm.n_ids++;
     }
@@ -144,7 +167,6 @@ static bool norm_emit_end(
 )
 {
     (void)ctx;
-    (void)binding;
     (void)reason;
     (void)a;
     (void)has_lvl;
@@ -152,6 +174,13 @@ static bool norm_emit_end(
     g_norm.ends++;
     g_norm.last_end_mono_us = b;
     g_norm.have_end_ts = true;
+    if (binding == NULL) {
+        return true;
+    }
+    p3a_copy_id(g_norm.last_end_id, sizeof(g_norm.last_end_id), binding->observation_id);
+    g_norm.have_end_id = true;
+    g_norm.end_generation = binding->ep.generation;
+    g_norm.have_end_gen = true;
     return true;
 }
 
@@ -162,6 +191,9 @@ typedef struct {
     uint32_t periodics;
     uint32_t ends;
     char last_oid[EAR_CRITICAL_OBS_ID_LEN];
+    char start_oid[EAR_CRITICAL_OBS_ID_LEN];
+    char end_oid[EAR_CRITICAL_OBS_ID_LEN];
+    char periodic_oid[EAR_CRITICAL_OBS_ID_LEN];
     char last_kind[16];
     char last_term[16];
     char last_origin[32];
@@ -169,6 +201,9 @@ typedef struct {
     int64_t last_end_capture_mono_us;
     bool have_start_ts;
     bool have_end_ts;
+    bool have_start_oid;
+    bool have_end_oid;
+    bool have_periodic_oid;
 } crit_pub_t;
 
 static crit_pub_t g_crit;
@@ -191,18 +226,24 @@ static bool crit_publish(
     (void)interval_duration_ms;
     (void)episode_duration_ms;
     (void)evidence_or_null;
-    if (strcmp(emission_kind, "start") == 0) {
+    if (emission_kind != NULL && strcmp(emission_kind, "start") == 0) {
         g_crit.starts++;
         g_crit.last_start_capture_mono_us = capture_mono_us;
         g_crit.have_start_ts = true;
-    } else if (strcmp(emission_kind, "periodic") == 0) {
+        p3a_copy_id(g_crit.start_oid, sizeof(g_crit.start_oid), observation_id);
+        g_crit.have_start_oid = true;
+    } else if (emission_kind != NULL && strcmp(emission_kind, "periodic") == 0) {
         g_crit.periodics++;
-    } else if (strcmp(emission_kind, "end") == 0) {
+        p3a_copy_id(g_crit.periodic_oid, sizeof(g_crit.periodic_oid), observation_id);
+        g_crit.have_periodic_oid = true;
+    } else if (emission_kind != NULL && strcmp(emission_kind, "end") == 0) {
         g_crit.ends++;
         g_crit.last_end_capture_mono_us = capture_mono_us;
         g_crit.have_end_ts = true;
+        p3a_copy_id(g_crit.end_oid, sizeof(g_crit.end_oid), observation_id);
+        g_crit.have_end_oid = true;
     }
-    snprintf(g_crit.last_oid, sizeof(g_crit.last_oid), "%s", observation_id ? observation_id : "");
+    p3a_copy_id(g_crit.last_oid, sizeof(g_crit.last_oid), observation_id);
     snprintf(g_crit.last_kind, sizeof(g_crit.last_kind), "%s", emission_kind ? emission_kind : "");
     snprintf(
         g_crit.last_term,
@@ -738,7 +779,8 @@ static void test5_ota_cleanup_while_critical_active(void)
  *   - Critical force_start: distinct id, origin critical_path, registry unchanged
  *   - AE publish with auto-detect off does not Critical-START
  *   - one monotonic fixture clock across AE/Policy/OM/Critical/cleanup
- *   - normal END timestamp >= START; Critical capture times nondecreasing
+ *   - normal END id and episode generation match START; END time >= START
+ *   - Critical END id matches published START id; capture times nondecreasing
  *   - cleanup ends Observations, drains EXIT, listeners → 0, registry → 0
  *
  * Short smoke only — not Package 2's full AS-001 lifecycle.
@@ -969,6 +1011,9 @@ static void test_p3a_ae_listener_triad_critical_coexist(void)
 
     char crit_oid[EAR_CRITICAL_OBS_ID_LEN];
     P3A_REQUIRE(ear_critical_active_observation_id(&f.crit, crit_oid));
+    P3A_REQUIRE(g_crit.have_start_oid);
+    P3A_REQUIRE(g_crit.start_oid[0] != '\0');
+    P3A_REQUIRE(strcmp(g_crit.start_oid, crit_oid) == 0);
     P3A_REQUIRE(strcmp(crit_oid, g_norm.ids[0]) != 0);
     P3A_REQUIRE(sp_episode_registry_in_use_count(&f.reg) == reg_after_normal);
     P3A_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
@@ -985,6 +1030,8 @@ static void test_p3a_ae_listener_triad_critical_coexist(void)
     P3A_REQUIRE(g_crit.starts == crit_starts_before);
     P3A_REQUIRE(ear_critical_is_active(&f.crit));
     P3A_REQUIRE(g_crit.periodics >= 1u);
+    P3A_REQUIRE(g_crit.have_periodic_oid);
+    P3A_REQUIRE(strcmp(g_crit.periodic_oid, g_crit.start_oid) == 0);
     P3A_REQUIRE(strcmp(g_crit.last_origin, EAR_CRITICAL_ORIGIN) == 0);
     P3A_REQUIRE(sp_episode_registry_in_use_count(&f.reg) == reg_after_normal);
     P3A_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
@@ -1074,15 +1121,32 @@ p3a_cleanup:
         );
         g_failures++;
     }
-    /* Opened normal Observation must END at/after its START (fixture clock). */
-    if (g_norm.starts >= 1u) {
-        if (g_norm.ends != 1u) {
+    /* Opened normal Observation must END once, for the same id, at/after START. */
+    if (g_norm.starts != 0u || g_norm.ends != 0u) {
+        if (g_norm.starts != 1u || g_norm.ends != 1u) {
             fprintf(
                 stderr,
-                "FAIL %s:%d: expected exactly 1 normal END after START, got %u\n",
+                "FAIL %s:%d: expected exactly 1 normal START and 1 END, got start=%u end=%u\n",
                 __FILE__,
                 __LINE__,
+                (unsigned)g_norm.starts,
                 (unsigned)g_norm.ends
+            );
+            g_failures++;
+        }
+        if (!g_norm.have_end_id || g_norm.n_ids != 1u
+            || g_norm.ids[0][0] == '\0'
+            || strcmp(g_norm.last_end_id, g_norm.ids[0]) != 0) {
+            fprintf(
+                stderr,
+                "FAIL %s:%d: normal END observation_id does not match START "
+                "(start='%s' end='%s' have_end_id=%d n_ids=%u)\n",
+                __FILE__,
+                __LINE__,
+                g_norm.n_ids >= 1u ? g_norm.ids[0] : "",
+                g_norm.have_end_id ? g_norm.last_end_id : "",
+                (int)g_norm.have_end_id,
+                (unsigned)g_norm.n_ids
             );
             g_failures++;
         }
@@ -1109,15 +1173,32 @@ p3a_cleanup:
             );
             g_failures++;
         }
-    }
-    if (g_crit.starts >= 1u) {
-        if (g_crit.ends < 1u || !g_crit.have_start_ts || !g_crit.have_end_ts) {
+        if (!g_norm.have_start_gen || !g_norm.have_end_gen
+            || g_norm.end_generation != g_norm.start_generation) {
             fprintf(
                 stderr,
-                "FAIL %s:%d: Critical START without valid END timestamps "
-                "(ends=%u have_start=%d have_end=%d)\n",
+                "FAIL %s:%d: normal END episode generation does not match START "
+                "(start_gen=%u end_gen=%u have_start=%d have_end=%d)\n",
                 __FILE__,
                 __LINE__,
+                (unsigned)g_norm.start_generation,
+                (unsigned)g_norm.end_generation,
+                (int)g_norm.have_start_gen,
+                (int)g_norm.have_end_gen
+            );
+            g_failures++;
+        }
+    }
+    if (g_crit.starts != 0u || g_crit.ends != 0u) {
+        if (g_crit.starts != 1u || g_crit.ends != 1u
+            || !g_crit.have_start_ts || !g_crit.have_end_ts) {
+            fprintf(
+                stderr,
+                "FAIL %s:%d: Critical START/END incomplete "
+                "(starts=%u ends=%u have_start=%d have_end=%d)\n",
+                __FILE__,
+                __LINE__,
+                (unsigned)g_crit.starts,
                 (unsigned)g_crit.ends,
                 (int)g_crit.have_start_ts,
                 (int)g_crit.have_end_ts
@@ -1133,6 +1214,20 @@ p3a_cleanup:
                 __LINE__,
                 (long long)g_crit.last_start_capture_mono_us,
                 (long long)g_crit.last_end_capture_mono_us
+            );
+            g_failures++;
+        }
+        if (!g_crit.have_start_oid || !g_crit.have_end_oid
+            || g_crit.start_oid[0] == '\0'
+            || strcmp(g_crit.end_oid, g_crit.start_oid) != 0) {
+            fprintf(
+                stderr,
+                "FAIL %s:%d: Critical END observation_id does not match START "
+                "(start='%s' end='%s')\n",
+                __FILE__,
+                __LINE__,
+                g_crit.have_start_oid ? g_crit.start_oid : "",
+                g_crit.have_end_oid ? g_crit.end_oid : ""
             );
             g_failures++;
         }
