@@ -116,6 +116,7 @@ static p4_emit_rec_t g_p4_emits[P4_EMIT_CAP];
 static uint32_t g_p4_emit_n;
 static ear_obs_end_reason_t g_p4_last_end_reason;
 static char g_p4_last_end_id[SP_OBS_EPISODE_ID_LEN];
+static int64_t g_p4_last_end_capture_mono_us;
 
 static void p4_assess_path(
     const ear_cls_assessment_wire_t *w,
@@ -256,19 +257,20 @@ static bool norm_emit_end(
     void *ctx,
     const ear_obs_binding_view_t *binding,
     ear_obs_end_reason_t reason,
-    int64_t a,
-    int64_t b,
+    int64_t interval_start_mono_us,
+    int64_t interval_end_mono_us,
     bool has_lvl,
     float lvl
 )
 {
     (void)ctx;
-    (void)a;
+    (void)interval_start_mono_us;
     (void)has_lvl;
     (void)lvl;
     g_norm.ends++;
     if (g_p4_capture) {
         g_p4_last_end_reason = reason;
+        g_p4_last_end_capture_mono_us = interval_end_mono_us;
         if (binding != NULL) {
             snprintf(
                 g_p4_last_end_id,
@@ -278,7 +280,7 @@ static bool norm_emit_end(
             );
         }
     }
-    g_norm.last_end_mono_us = b;
+    g_norm.last_end_mono_us = interval_end_mono_us;
     g_norm.have_end_ts = true;
     if (binding == NULL) {
         return true;
@@ -1481,6 +1483,25 @@ static bool p4_find_as001_candidate(const ce_engine_t *ce, uint64_t *out_id)
     return false;
 }
 
+static bool p4_as002_absent_ms(const ear_obs_manager_t *om, uint32_t *out_ms)
+{
+    if (om == NULL || out_ms == NULL) {
+        return false;
+    }
+    bool found = false;
+    for (uint8_t i = 0u; i < EAR_OBS_MGR_BINDING_CAP; i++) {
+        if (!om->bind[i].in_use || !om->bind[i].as002_sig_track) {
+            continue;
+        }
+        if (found) {
+            return false;
+        }
+        *out_ms = om->bind[i].as002_absent_ms;
+        found = true;
+    }
+    return found;
+}
+
 static bool p4_publish(
     integ_t *f,
     ear_sig_product_t *prod,
@@ -1511,6 +1532,7 @@ static void test_p4_as001_as002_production_coexist(void)
     g_p4_emit_n = 0u;
     g_p4_last_end_reason = EAR_OBS_END_EXPLICIT;
     g_p4_last_end_id[0] = '\0';
+    g_p4_last_end_capture_mono_us = -1;
     g_p4_capture = true;
     g_uuid_n = 1u;
 
@@ -1702,6 +1724,10 @@ static void test_p4_as001_as002_production_coexist(void)
         P4_REQUIRE(d.as002_sig_absent_advance == adv0 + 1u);
         P4_REQUIRE(g_norm.ends == ends0);
         P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 2u);
+        uint32_t absent_ms = 0u;
+        P4_REQUIRE(p4_as002_absent_ms(&f.om, &absent_ms));
+        P4_REQUIRE(absent_ms != 0u);
+        const uint32_t accumulated_ms = absent_ms;
 
         p4_fill_broadband(&sig, 12u, -55.0f);
         sig.quality = AE_QUALITY_GAP;
@@ -1709,6 +1735,8 @@ static void test_p4_as001_as002_production_coexist(void)
         ear_obs_manager_get_diag(&f.om, &d);
         P4_REQUIRE(d.as002_sig_absent_pause == pause0 + 1u);
         P4_REQUIRE(d.as002_sig_absent_advance == adv0 + 1u);
+        P4_REQUIRE(p4_as002_absent_ms(&f.om, &absent_ms));
+        P4_REQUIRE(absent_ms == accumulated_ms);
         P4_REQUIRE(g_norm.ends == ends0);
 
         p4_fill_broadband(&sig, 13u, -55.0f);
@@ -1717,27 +1745,35 @@ static void test_p4_as001_as002_production_coexist(void)
         ear_obs_manager_get_diag(&f.om, &d);
         P4_REQUIRE(d.as002_sig_absent_pause == pause0 + 2u);
         P4_REQUIRE(d.as002_sig_absent_advance == adv0 + 1u);
+        P4_REQUIRE(p4_as002_absent_ms(&f.om, &absent_ms));
+        P4_REQUIRE(absent_ms == accumulated_ms);
         P4_REQUIRE(g_norm.ends == ends0);
 
         p4_fill_siren(&sig, 14u, -31.0f);
         P4_REQUIRE(p4_publish(&f, &prod, &sig));
         ear_obs_manager_get_diag(&f.om, &d);
         P4_REQUIRE(d.as002_sig_support_reset == reset0 + 1u);
+        P4_REQUIRE(p4_as002_absent_ms(&f.om, &absent_ms));
+        P4_REQUIRE(absent_ms == 0u);
         P4_REQUIRE(g_norm.ends == ends0);
         P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 2u);
 
         p4_fill_broadband(&sig, 15u, -55.0f);
         P4_REQUIRE(p4_publish(&f, &prod, &sig));
+        P4_REQUIRE(p4_as002_absent_ms(&f.om, &absent_ms));
+        P4_REQUIRE(absent_ms == accumulated_ms);
         p4_fill_broadband(&sig, 16u, -55.0f);
         P4_REQUIRE(p4_publish(&f, &prod, &sig));
         P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 2u);
         P4_REQUIRE(g_norm.ends == ends0);
 
         p4_fill_broadband(&sig, 17u, -55.0f);
+        const int64_t cross_capture_mono_us = sig.window_end_mono_us;
         P4_REQUIRE(p4_publish(&f, &prod, &sig));
         P4_REQUIRE(g_norm.ends == ends0 + 1u);
         P4_REQUIRE(g_p4_last_end_reason == EAR_OBS_END_SIGNATURE);
         P4_REQUIRE(strcmp(g_p4_last_end_id, as002_obs) == 0);
+        P4_REQUIRE(g_p4_last_end_capture_mono_us == cross_capture_mono_us);
         P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
         P4_REQUIRE(ear_obs_manager_has_signature_observation(
             &f.om, AS_PROFILE_ID_AS001
