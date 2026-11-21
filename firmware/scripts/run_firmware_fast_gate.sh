@@ -56,6 +56,8 @@ GATE_START="$(date +%s)"
 PASS=0
 FAIL=0
 SKIP=0
+# Unique per-invocation host-binary dir (avoids PID collisions under concurrent gates).
+HOST_GATE_TMP=""
 
 log() { printf '%s\n' "$*"; }
 section() { printf '\n== %s ==\n' "$*"; }
@@ -64,6 +66,15 @@ record_pass() { PASS=$((PASS + 1)); log "PASS  $1"; }
 record_fail() { FAIL=$((FAIL + 1)); log "FAIL  $1"; }
 record_skip() { SKIP=$((SKIP + 1)); log "SKIP  $1"; }
 
+cleanup_host_gate_tmp() {
+  if [[ -n "${HOST_GATE_TMP:-}" && -d "${HOST_GATE_TMP}" ]]; then
+    rm -rf "${HOST_GATE_TMP}"
+  fi
+  HOST_GATE_TMP=""
+}
+
+trap cleanup_host_gate_tmp EXIT
+
 have_idf() {
   command -v idf.py >/dev/null 2>&1
 }
@@ -71,7 +82,12 @@ have_idf() {
 run_host_one() {
   local name="$1"
   shift
-  local out="/tmp/dbmap-fw-gate-${name}-$$"
+  if [[ -z "${HOST_GATE_TMP:-}" || ! -d "${HOST_GATE_TMP}" ]]; then
+    log "FAIL  host/${name} (host gate temp dir missing)"
+    record_fail "host/${name}"
+    return 1
+  fi
+  local out="${HOST_GATE_TMP}/${name}"
   # shellcheck disable=SC2068
   if "${CC_BIN}" -std=c11 -Wall -Wextra -O2 $@ -lm -o "${out}"; then
     if "${out}"; then
@@ -86,6 +102,9 @@ run_host_one() {
 }
 
 run_host_tests() {
+  cleanup_host_gate_tmp
+  HOST_GATE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/dbmap-fw-gate.XXXXXX")"
+
   section "Host Platform acoustic DSP tests"
   local host_fail=0
   local sp_inc="-I${SP_AUDIO}/include"
@@ -366,56 +385,63 @@ run_host_tests() {
         ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
         "${ce_srcs[@]}" \
         "${EAR_OBS}/test_host/test_ae_sig_module_independence.c" || host_fail=1
-      # CE module/workflow contract suite (Option A package 1).
-      # Failures here must fail the gate (run_host_one → host_fail).
-      if [[ -f "${EAR_CE}/test_host/test_ce_architecture.c" \
-        && -f "${EAR_OBS}/ce_promotion_bridge.c" ]]; then
-        run_host_one ce_architecture \
-          ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
-          "${ce_srcs[@]}" \
-          "${PLAT_OBS}/episode_registry.c" \
-          "${EAR_OBS}/ce_promotion_bridge.c" \
-          "${EAR_CE}/test_host/test_ce_architecture.c" || host_fail=1
-      else
-        record_skip "host/ce_architecture (sources/tests not in tree)"
-      fi
-      # Critical Path independence from CE (ADR 0003) — gated host contracts.
-      # Keep test_ce_promotion_bridge / test_observation_payload outside this expansion.
-      if [[ -f "${EAR_OBS}/test_host/test_ear_critical_path.c" \
-        && -f "${EAR_OBS}/ear_critical_path.c" ]]; then
-        run_host_one ear_critical_path \
-          ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
-          "${EAR_AE}/ae_signature.c" \
-          "${EAR_OBS}/ear_critical_path.c" \
-          "${PLAT_OBS}/episode_registry.c" \
-          "${EAR_OBS}/test_host/test_ear_critical_path.c" || host_fail=1
-      else
-        record_skip "host/ear_critical_path (sources/tests not in tree)"
-      fi
-      if [[ -f "${EAR_OBS}/test_host/test_ear_critical_integration.c" \
-        && -f "${EAR_OBS}/ear_critical_path.c" \
-        && -f "${EAR_OBS}/ear_obs_ota_cleanup.c" ]]; then
-        run_host_one ear_critical_integration \
-          ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
-          "${ce_srcs[@]}" \
-          "${PLAT_OBS}/episode_registry.c" \
-          "${EAR_OBS}/ear_cls_progressive.c" \
-          "${EAR_OBS}/ear_cls_as001.c" \
-          "${EAR_OBS}/ear_obs_manager.c" \
-          "${EAR_OBS}/ear_promotion_policy.c" \
-          "${EAR_OBS}/ear_critical_path.c" \
-          "${EAR_OBS}/ear_obs_ota_cleanup.c" \
-          "${EAR_OBS}/test_host/test_ear_critical_integration.c" || host_fail=1
-      else
-        record_skip "host/ear_critical_integration (sources/tests not in tree)"
-      fi
     else
       record_skip "host/ear_obs_manager (OM sources/tests not in tree)"
       record_skip "host/ear_cls_progressive (OM sources/tests not in tree)"
       record_skip "host/ear_siren_se_public (OM sources/tests not in tree)"
-      record_skip "host/ce_architecture (OM sources/tests not in tree)"
-      record_skip "host/ear_critical_path (OM sources/tests not in tree)"
-      record_skip "host/ear_critical_integration (OM sources/tests not in tree)"
+      record_skip "host/ear_cls_as001 (OM sources/tests not in tree)"
+      record_skip "host/ae_sig_module_independence (OM sources/tests not in tree)"
+    fi
+
+    # Option A package 1 suites: independent of test_ear_obs_manager.c.
+    # Each entry has its own source/dependency check; a missing unrelated OM
+    # test file must not skip these. Failures fail the gate (host_fail).
+    # Keep test_ce_promotion_bridge / test_observation_payload ungated.
+    if [[ -f "${EAR_CE}/test_host/test_ce_architecture.c" \
+      && -f "${EAR_OBS}/ce_promotion_bridge.c" \
+      && -f "${PLAT_OBS}/episode_registry.c" ]]; then
+      run_host_one ce_architecture \
+        ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
+        "${ce_srcs[@]}" \
+        "${PLAT_OBS}/episode_registry.c" \
+        "${EAR_OBS}/ce_promotion_bridge.c" \
+        "${EAR_CE}/test_host/test_ce_architecture.c" || host_fail=1
+    else
+      record_skip "host/ce_architecture (sources/tests not in tree)"
+    fi
+    if [[ -f "${EAR_OBS}/test_host/test_ear_critical_path.c" \
+      && -f "${EAR_OBS}/ear_critical_path.c" \
+      && -f "${PLAT_OBS}/episode_registry.c" ]]; then
+      run_host_one ear_critical_path \
+        ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
+        "${EAR_AE}/ae_signature.c" \
+        "${EAR_OBS}/ear_critical_path.c" \
+        "${PLAT_OBS}/episode_registry.c" \
+        "${EAR_OBS}/test_host/test_ear_critical_path.c" || host_fail=1
+    else
+      record_skip "host/ear_critical_path (sources/tests not in tree)"
+    fi
+    if [[ -f "${EAR_OBS}/test_host/test_ear_critical_integration.c" \
+      && -f "${EAR_OBS}/ear_critical_path.c" \
+      && -f "${EAR_OBS}/ear_obs_ota_cleanup.c" \
+      && -f "${EAR_OBS}/ear_obs_manager.c" \
+      && -f "${EAR_OBS}/ear_promotion_policy.c" \
+      && -f "${EAR_OBS}/ear_cls_progressive.c" \
+      && -f "${EAR_OBS}/ear_cls_as001.c" \
+      && -f "${PLAT_OBS}/episode_registry.c" ]]; then
+      run_host_one ear_critical_integration \
+        ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
+        "${ce_srcs[@]}" \
+        "${PLAT_OBS}/episode_registry.c" \
+        "${EAR_OBS}/ear_cls_progressive.c" \
+        "${EAR_OBS}/ear_cls_as001.c" \
+        "${EAR_OBS}/ear_obs_manager.c" \
+        "${EAR_OBS}/ear_promotion_policy.c" \
+        "${EAR_OBS}/ear_critical_path.c" \
+        "${EAR_OBS}/ear_obs_ota_cleanup.c" \
+        "${EAR_OBS}/test_host/test_ear_critical_integration.c" || host_fail=1
+    else
+      record_skip "host/ear_critical_integration (sources/tests not in tree)"
     fi
   else
     record_skip "host/ae_m4_lifecycle_gap (CE/profile sources not in tree)"
@@ -428,6 +454,7 @@ run_host_tests() {
     record_skip "host/ear_critical_integration (CE/profile sources not in tree)"
   fi
 
+  cleanup_host_gate_tmp
   return "${host_fail}"
 }
 

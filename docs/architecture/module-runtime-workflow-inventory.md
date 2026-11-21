@@ -131,7 +131,7 @@ flowchart LR
 
 **Planned / deferred for CE:** soft-association / split-merge; optional Stage 4 workflow-driven PROMOTE; **Full Module Runtime product** and **General Workflow Engine** left alone until later (`candidate-engine-proposal.md`).
 
-**Tests:** `ce_lifecycle`, `ce_identity` **gated**; `test_ce_architecture` **ungated but passes** when compiled with gate include paths **[exec]**.
+**Tests:** `ce_lifecycle`, `ce_identity` gated. Pre-PR baseline: `test_ce_architecture` was ungated but passed manually **[exec]**. Post–Package 1: `ce_architecture` is gated (independent of `test_ear_obs_manager.c`).
 
 ---
 
@@ -158,7 +158,7 @@ CE EXIT detaches only. The manager owns terminal publication. Its detached watch
 | **Owns** | Capacity-1 Critical binding; frozen evidence; START/PERIODIC/END with `origin=critical_path` |
 | **Independence from CE** | Header + ADR: no CE create/promote/EXIT required; must START while both normal slots busy; must not consume registry slots **[impl]+[docs]** |
 | **Auto-detect** | Production acoustic START is disabled. A separately configured laboratory impulse trigger exists alongside force-start and evidence injection **[impl]** (`lab_impulse_should_start`, `ear_critical_on_signature`). |
-| **Tests** | `test_ear_critical_path`, `test_ear_critical_integration` — **not in fast gate**; both **PASS** in this investigation **[exec]** |
+| **Tests** | Pre-PR baseline: `test_ear_critical_path` / `test_ear_critical_integration` ungated, both **PASS** manually **[exec]**. Post–Package 1: both gated with independent dependency checks. |
 
 ---
 
@@ -191,7 +191,7 @@ CE EXIT detaches only. The manager owns terminal publication. Its detached watch
    CE owns candidate lifecycle, OM owns normal Observation lifecycle, Critical owns its independent Observation lifecycle, and SE owns match state. Normal and Critical publishers share emission concepts and some infrastructure, with distinct admission, binding, and termination rules. AE listener dispatch and CE module dispatch serve different inputs. The source exposes no demonstrated need for common lifecycle or scheduling machinery.
 
 4. **Could clearer contracts + stronger tests suffice?**  
-   Yes. That is Option A. The richest module/workflow suite (`test_ce_architecture`) and Critical Path suites already exist but are outside CI.
+   Yes. That is Option A. At investigation time the richest module/workflow suite (`test_ce_architecture`) and Critical Path suites already existed but were outside CI; Package 1 gates them.
 
 5. **How should Critical Path remain independent of Candidate Engine?**  
    Keep Critical as an AE listener peer that never calls `ce_promote` / CE ingest for its own START. Preserve capacity-1 EAR-owned binding and registry-slot independence. Gate `test_ear_critical_*` so this cannot regress silently.
@@ -208,23 +208,32 @@ CE EXIT detaches only. The manager owns terminal publication. Its detached watch
 
 ## 3. Automated test inventory
 
-### 3.1 Execution results (this investigation) — **[exec]**
+### 3.1 Execution results — pre-PR baseline **[exec]**
+
+Historical investigation results **before** Option A Package 1 landed (suites still ungated at that time):
 
 | Command / suite | Result | Notes |
 | --- | --- | --- |
-| `./firmware/scripts/run_firmware_fast_gate.sh --host-only` | **PASS** | `pass=44 fail=0 skip=1 duration_s=32` |
+| `./firmware/scripts/run_firmware_fast_gate.sh --host-only` | **PASS** | `pass=44 fail=0 skip=1` (pre-expansion gate membership) |
 | Default environment skip | `host/ear_cls_as001` | Gate could not resolve cJSON without `IDF_PATH`. |
-| `IDF_PATH=/home/christer/esp/esp-idf ./firmware/scripts/run_firmware_fast_gate.sh --host-only` | **PASS** | `pass=45 fail=0 skip=0 duration_s=34`. Host compiler used the local ESP-IDF cJSON source. |
-| `test_ce_architecture` (manual `cc`, gate include paths) | **PASS** | File-header `cc` recipe is **stale** (missing platform/SE includes) |
-| `test_ear_critical_path` (manual) | **PASS** | Same: needs platform audio includes |
-| `test_ear_critical_integration` (manual) | **PASS** | |
-| `test_ce_promotion_bridge` (manual) | **PASS** | Legacy bridge; still useful regression |
-| `test_observation_payload` (manual cJSON host compile below) | **PASS** | Ungated standalone JSON suite. |
-| Full gate with IDF modularity | **Not executed** | No claim; `--host-only` only |
-| Hardware / device soak / Hub MQTT round-trip | **Not executed** | Explicitly out of scope for this investigation |
-| Firmware build / OTA | **Not performed** | Per constraints |
+| `IDF_PATH=… ./firmware/scripts/run_firmware_fast_gate.sh --host-only` | **PASS** | `pass=45 fail=0 skip=0` when `IDF_PATH` pointed at an ESP-IDF tree with cJSON. |
+| `test_ce_architecture` (manual `cc`) | **PASS** | Ungated; file-header recipe was stale |
+| `test_ear_critical_path` (manual) | **PASS** | Ungated |
+| `test_ear_critical_integration` (manual) | **PASS** | Ungated |
+| `test_ce_promotion_bridge` (manual) | **PASS** | Remains ungated by Package 1 design |
+| `test_observation_payload` (manual cJSON) | **PASS** | Remains ungated |
+| Full gate with IDF modularity / HW / OTA | **Not executed** | Out of investigation scope |
 
-**Important:** existence of a test file ≠ verification. Behaviors below marked **Verified** were either in the passing gated suite or in the manually executed ungated binaries above. Both host gate runs exited zero and emitted a compiler warning about potential `strncpy` truncation in `ear_mic_channel_api.c:65`. The five standalone suites compiled with `-Werror` and exited zero.
+### 3.1b Post–Package 1 gate status
+
+| Item | Status |
+| --- | --- |
+| Gated suites | `ce_architecture`, `ear_critical_path`, `ear_critical_integration` are members of `run_firmware_fast_gate.sh` with **independent** dependency checks (not nested under `test_ear_obs_manager.c`) |
+| Host-only without `IDF_PATH` | Expect PASS with the three new suites executed; `ear_cls_as001` may SKIP |
+| Host-only with `IDF_PATH` set to an ESP-IDF root containing `components/json/cJSON/cJSON.c` | Expect PASS including `ear_cls_as001` |
+| Temp binaries | Per-invocation `mktemp -d` under `${TMPDIR:-/tmp}/dbmap-fw-gate.XXXXXX` (not PID-suffixed shared paths) |
+
+**Important:** existence of a test file ≠ verification. Coverage rows below that describe “ungated” architecture/Critical suites reflect the **pre-PR baseline**; Package 1 gates those three suites. Remaining gaps (bridge, payload, Stage 5 HW) are unchanged.
 
 Run the following with Bash from the repository root to reproduce all five standalone runs.
 
@@ -265,7 +274,8 @@ run ear_critical_integration "${core[@]}" "$registry" \
     "$obs/test_host/test_ear_critical_integration.c"
 run ce_promotion_bridge "${core[@]}" "$registry" "$obs/ce_promotion_bridge.c" \
     "$obs/test_host/test_ce_promotion_bridge.c"
-json=/home/christer/esp/esp-idf/components/json/cJSON
+: "${IDF_PATH:?set IDF_PATH to an ESP-IDF root that contains components/json/cJSON}"
+json=$IDF_PATH/components/json/cJSON
 run observation_payload "-I$json" "$json/cJSON.c" "$obs"/{observation_payload,ear_cls_as001}.c \
     "$obs/test_host/test_observation_payload.c"
 ```
@@ -277,12 +287,12 @@ run observation_payload "-I$json" "$json/cJSON.c" "$obs"/{observation_payload,ea
 | Platform PCM windows / channels / seq | Gated mic + AE window/align/time/validity | Coherent window jobs; mono/pair; stale/newer reject; feature INVALID/GAP contracts | Live I2S DMA / wall-clock `WINDOW_MS`; physical L/R DIN | Keep gated; HW remains lab docs |
 | Audio Engine | Gated AE suite + m4 gap | History, listeners, gap/overwrite→GAP, usable-for-tracking | Dedicated AE task; HW timing | Keep gated |
 | Signature Engine AS-001/002 | Gated SE + profile + siren | Match/GAP/INVALID; primary vs CE; promote gates for AS-002 | Acoustic replay and thresholds on device; `ear_cls_as001` passed with local cJSON | Preserve; do not change AS matchers |
-| CE multi-candidate | Gated `ce_identity` / `ce_lifecycle`; ungated architecture | Two sources; hysteresis; coast; rematch; capacity paths (architecture) | Architecture suite not in CI; Stage 5 HW multi-candidate | **Gate `test_ce_architecture`** |
+| CE multi-candidate | Gated `ce_identity` / `ce_lifecycle`; Package 1 also gates `ce_architecture` | Two sources; hysteresis; coast; rematch; capacity paths (architecture) | Stage 5 HW multi-candidate still outstanding | Preserve gated architecture suite |
 | Promote → OM | Gated `ear_obs_manager` (+ ungated bridge) | Reserve/ENTER/EXIT; capacity; policy P2; end-once | Bridge ungated; HW dual-obs | Gate architecture; keep OM; leave bridge-only gating for a separate decision |
 | Live evidence / gens / GAP / seq | Gated OM S2 + AE/CE gap | Owned copies; stale gen drop; GAP/INVALID reject; OoO seq | Full AE→MQTT jitter | Preserve OM S2 |
 | START/PERIODIC/END + detached watchdog | Gated OM S3 | Detach-only EXIT; watchdog ends; AS-002 excluded; reattach cancel | Activity relative-end experiments ungated | Preserve S3; leave experiments out of gate |
-| Critical Path vs CE | Ungated critical + integration | Force start w/o registry; START/PERIODIC/END; both normal slots busy; OTA cleanup; production auto-detect stays off; lab impulse START is separately tested | **Not in CI** | **Gate both Critical suites** |
-| Module / workflow contracts | Mostly ungated `test_ce_architecture`; partial gated (`as_profile` no-promote, listener independence) | Runtime register/execute; workflow KEEP/SKIP/ERROR; fuse ignores score; promote only via explicit API | Default-track never-PROMOTE not CI-enforced | **Gate architecture suite** |
+| Critical Path vs CE | Pre-PR ungated; Package 1 gates `ear_critical_path` + `ear_critical_integration` | Force start w/o registry; START/PERIODIC/END; both normal slots busy; OTA cleanup; production auto-detect stays off; lab impulse START is separately tested | Device latency / auto-detect still deferred | Preserve gated Critical suites |
+| Module / workflow contracts | Pre-PR: mostly ungated `test_ce_architecture`. Post–Package 1: gated `ce_architecture` (+ `as_profile` no-promote, listener independence) | Runtime register/execute; workflow KEEP/SKIP/ERROR; fuse ignores score; promote only via explicit API | Stage 4 workflow PROMOTE still deferred | Preserve gated architecture suite |
 | Payload / MQTT JSON | Ungated `test_observation_payload`, conditionally gated `ear_cls_as001` | Both passed with local cJSON | Live MQTT delivery and Hub ingest are outside these tests | Preserve JSON coverage; consider gating the payload suite separately |
 
 ### 3.3 Host integration gaps
@@ -294,8 +304,8 @@ run observation_payload "-I$json" "$json/cJSON.c" "$obs"/{observation_payload,ea
 
 ### 3.4 Regression risks (if gate stays as-is)
 
-- **CE module/workflow contract drift** — richest assertions live only in ungated `test_ce_architecture`.
-- **Critical Path independence** — no CI signal if Critical starts requiring CE or consuming registry slots.
+- **CE module/workflow contract drift** — pre-PR risk (ungated `test_ce_architecture`); mitigated by Package 1 gate membership.
+- **Critical Path independence** — pre-PR risk (ungated Critical suites); mitigated by Package 1 gate membership.
 - **Stale header compile recipes** — operators following file-header `cc` lines fail; gate paths succeed.
 - **AS-001/AS-002 / OM** — currently well gated; risk rises if future work expands CE workflow into promote without updating OM tests.
 - **Hardware Stage 5** — multi-candidate device verification still outstanding per `candidate-engine-proposal.md`; host PASS ≠ device PASS.
