@@ -229,6 +229,7 @@ Historical investigation results **before** Option A Package 1 landed (suites st
 | Item | Status |
 | --- | --- |
 | Gated suites | `ce_architecture`, `ear_critical_path`, `ear_critical_integration` are members of `run_firmware_fast_gate.sh` with **independent** dependency checks (not nested under `test_ear_obs_manager.c`) |
+| Fail-closed contract | When the Ear product tree is present, missing mandatory test/production/link inputs for these three suites → **FAIL** (never a successful SKIP). Platform-DSP-only trees may still SKIP. Optional suites such as `ear_cls_as001` (no IDF cJSON) remain skippable. |
 | Host-only without `IDF_PATH` | Expect PASS with the three new suites executed; `ear_cls_as001` may SKIP |
 | Host-only with `IDF_PATH` set to an ESP-IDF root containing `components/json/cJSON/cJSON.c` | Expect PASS including `ear_cls_as001` |
 | Temp binaries | Per-invocation `mktemp -d` under `${TMPDIR:-/tmp}/dbmap-fw-gate.XXXXXX` (not PID-suffixed shared paths) |
