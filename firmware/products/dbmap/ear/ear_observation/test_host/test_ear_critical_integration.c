@@ -9,24 +9,38 @@
  *
  * Automatic acoustic detection remains disabled (force_start only).
  *
- * From repo root:
+ * Preferred: included in ./firmware/scripts/run_firmware_fast_gate.sh (--host-only).
+ *
+ * Standalone from repo root (keep includes aligned with the fast gate):
  *   cc -std=c11 -Wall -Wextra -Werror -O2 -g \
  *     -I firmware/products/dbmap/ear/audio_engine/include \
- *     -I firmware/products/dbmap/ear/candidate_engine/include \
+ *     -I firmware/platform/audio/include \
  *     -I firmware/products/dbmap/ear/ear_acoustic/include \
+ *     -I firmware/platform/mic/include \
+ *     -I firmware/platform/node_common/include \
+ *     -I firmware/products/dbmap/ear/candidate_engine/include \
+ *     -I firmware/products/dbmap/ear/acoustic_profile/include \
+ *     -I firmware/products/dbmap/ear/signature_engine/include \
  *     -I firmware/products/dbmap/ear/ear_observation/include \
  *     -I firmware/platform/observation/include \
- *     firmware/products/dbmap/ear/ear_acoustic/acoustic_l0.c \
  *     firmware/products/dbmap/ear/audio_engine/ae_signature.c \
  *     firmware/products/dbmap/ear/audio_engine/ae_history.c \
- *     firmware/products/dbmap/ear/audio_engine/ae_time.c \
  *     firmware/products/dbmap/ear/audio_engine/ae_engine.c \
+ *     firmware/products/dbmap/ear/audio_engine/ae_time.c \
+ *     firmware/products/dbmap/ear/acoustic_profile/as_profile_as001.c \
+ *     firmware/products/dbmap/ear/acoustic_profile/as_profile_registry.c \
+ *     firmware/products/dbmap/ear/acoustic_profile/as_profile_match.c \
+ *     firmware/products/dbmap/ear/signature_engine/sig_engine.c \
+ *     firmware/products/dbmap/ear/signature_engine/ear_siren_se_public.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_decision.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_module.c \
+ *     firmware/products/dbmap/ear/candidate_engine/ce_module_profile.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_workflow.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_manager.c \
  *     firmware/products/dbmap/ear/candidate_engine/ce_engine.c \
  *     firmware/platform/observation/episode_registry.c \
+ *     firmware/products/dbmap/ear/ear_observation/ear_cls_progressive.c \
+ *     firmware/products/dbmap/ear/ear_observation/ear_cls_as001.c \
  *     firmware/products/dbmap/ear/ear_observation/ear_obs_manager.c \
  *     firmware/products/dbmap/ear/ear_observation/ear_promotion_policy.c \
  *     firmware/products/dbmap/ear/ear_observation/ear_critical_path.c \

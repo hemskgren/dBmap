@@ -5,6 +5,7 @@
 #   ./firmware/scripts/run_firmware_fast_gate.sh
 #   ./firmware/scripts/run_firmware_fast_gate.sh --host-only
 #   ./firmware/scripts/run_firmware_fast_gate.sh --modularity-only
+#   ./firmware/scripts/run_firmware_fast_gate.sh --host-only --platform-dsp-only
 #
 # Exit 0 on success; non-zero on any mandatory failure.
 set -euo pipefail
@@ -21,16 +22,21 @@ GATE_ROOT="${FIRMWARE_GATE_ROOT:-${ESP_EAR}/.gate-builds}"
 MODE="fast" # fast | host-only | modularity-only
 CC_BIN="${CC:-cc}"
 KEEP_GATE_BUILDS=0
+# Explicit opt-out of Package 1 mandatory EAR host suites (default: required).
+PLATFORM_DSP_ONLY=0
 
 usage() {
   cat <<'EOF'
 run_firmware_fast_gate.sh — Ear firmware fast test gate
 
-  (default)           Host DSP/AE/mic tests + Platform acoustic modularity (idf.py)
-  --host-only         Host tests only (no ESP-IDF)
-  --modularity-only   Isolated idf configure/archive checks only
-  --keep-builds       Keep isolated gate build dirs under esp-ear/.gate-builds
-  -h, --help          Show this help
+  (default)             Host DSP/AE/mic tests + Platform acoustic modularity (idf.py)
+  --host-only           Host tests only (no ESP-IDF)
+  --modularity-only     Isolated idf configure/archive checks only
+  --platform-dsp-only   Skip Package 1 mandatory EAR suites
+                        (ce_architecture, ear_critical_path, ear_critical_integration).
+                        Default is false: those suites are required.
+  --keep-builds         Keep isolated gate build dirs under esp-ear/.gate-builds
+  -h, --help            Show this help
 
 Environment:
   FIRMWARE_GATE_ROOT  Override isolated build parent (default: esp-ear/.gate-builds)
@@ -42,6 +48,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --host-only) MODE="host-only"; shift ;;
     --modularity-only) MODE="modularity-only"; shift ;;
+    --platform-dsp-only) PLATFORM_DSP_ONLY=1; shift ;;
     --keep-builds) KEEP_GATE_BUILDS=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *)
@@ -56,6 +63,8 @@ GATE_START="$(date +%s)"
 PASS=0
 FAIL=0
 SKIP=0
+# Unique per-invocation host-binary dir (avoids PID collisions under concurrent gates).
+HOST_GATE_TMP=""
 
 log() { printf '%s\n' "$*"; }
 section() { printf '\n== %s ==\n' "$*"; }
@@ -64,6 +73,15 @@ record_pass() { PASS=$((PASS + 1)); log "PASS  $1"; }
 record_fail() { FAIL=$((FAIL + 1)); log "FAIL  $1"; }
 record_skip() { SKIP=$((SKIP + 1)); log "SKIP  $1"; }
 
+cleanup_host_gate_tmp() {
+  if [[ -n "${HOST_GATE_TMP:-}" && -d "${HOST_GATE_TMP}" ]]; then
+    rm -rf "${HOST_GATE_TMP}"
+  fi
+  HOST_GATE_TMP=""
+}
+
+trap cleanup_host_gate_tmp EXIT
+
 have_idf() {
   command -v idf.py >/dev/null 2>&1
 }
@@ -71,7 +89,12 @@ have_idf() {
 run_host_one() {
   local name="$1"
   shift
-  local out="/tmp/dbmap-fw-gate-${name}-$$"
+  if [[ -z "${HOST_GATE_TMP:-}" || ! -d "${HOST_GATE_TMP}" ]]; then
+    log "FAIL  host/${name} (host gate temp dir missing)"
+    record_fail "host/${name}"
+    return 1
+  fi
+  local out="${HOST_GATE_TMP}/${name}"
   # shellcheck disable=SC2068
   if "${CC_BIN}" -std=c11 -Wall -Wextra -O2 $@ -lm -o "${out}"; then
     if "${out}"; then
@@ -86,6 +109,9 @@ run_host_one() {
 }
 
 run_host_tests() {
+  cleanup_host_gate_tmp
+  HOST_GATE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/dbmap-fw-gate.XXXXXX")"
+
   section "Host Platform acoustic DSP tests"
   local host_fail=0
   local sp_inc="-I${SP_AUDIO}/include"
@@ -229,20 +255,32 @@ run_host_tests() {
     record_skip "host/sp_mic_error_report (test not in tree)"
   fi
   # M4 links CE module split (decision/module/workflow/manager/profile) plus
-  # acoustic_profile. Those sources are not on every branch yet — run when
-  # present, otherwise SKIP explicitly so CI on Platform-DSP-only trees stays
-  # green without hiding a real fail.
+  # acoustic_profile. Optional CE/SE/OM suites still SKIP when absent.
+  # Package 1 mandatory suites below are required unless --platform-dsp-only.
   local EAR_SE="${FIRMWARE_ROOT}/products/dbmap/ear/signature_engine"
-  local EAR_OBS_INC="${FIRMWARE_ROOT}/products/dbmap/ear/ear_observation/include"
+  local EAR_OBS="${FIRMWARE_ROOT}/products/dbmap/ear/ear_observation"
+  local EAR_OBS_INC="${EAR_OBS}/include"
+  local PLAT_OBS="${FIRMWARE_ROOT}/platform/observation"
+  # Fail-closed helper for Package 1 mandatory suites (default mode).
+  fail_required_host() {
+    local name="$1"
+    local why="$2"
+    record_fail "host/${name} (${why})"
+    host_fail=1
+  }
+
+  local ce_srcs_ready=0
+  local ce_srcs=()
   if [[ -f "${EAR_CE}/ce_decision.c" && -f "${EAR_CE}/ce_module.c" \
     && -f "${EAR_CE}/ce_workflow.c" && -f "${EAR_CE}/ce_manager.c" \
-    && -f "${EAR_CE}/ce_module_profile.c" \
+    && -f "${EAR_CE}/ce_module_profile.c" && -f "${EAR_CE}/ce_engine.c" \
     && -f "${EAR_AP}/as_profile_match.c" \
     && -f "${EAR_AP}/as_profile_registry.c" \
     && -f "${EAR_AP}/as_profile_as001.c" \
     && -f "${EAR_SE}/sig_engine.c" \
     && -f "${EAR_SE}/ear_siren_se_public.c" ]]; then
-    local ce_srcs=(
+    ce_srcs_ready=1
+    ce_srcs=(
       "${EAR_AE}/ae_signature.c" "${EAR_AE}/ae_history.c"
       "${EAR_AE}/ae_engine.c" "${EAR_AE}/ae_time.c"
       "${EAR_AP}/as_profile_as001.c" "${EAR_AP}/as_profile_registry.c"
@@ -315,8 +353,6 @@ run_host_tests() {
     else
       record_skip "host/ae_sig_capture (sources/tests not in tree)"
     fi
-    local EAR_OBS="${FIRMWARE_ROOT}/products/dbmap/ear/ear_observation"
-    local PLAT_OBS="${FIRMWARE_ROOT}/platform/observation"
     if [[ -f "${EAR_OBS}/test_host/test_ear_obs_manager.c" \
       && -f "${EAR_OBS}/ear_obs_manager.c" \
       && -f "${EAR_OBS}/ear_promotion_policy.c" \
@@ -370,6 +406,8 @@ run_host_tests() {
       record_skip "host/ear_obs_manager (OM sources/tests not in tree)"
       record_skip "host/ear_cls_progressive (OM sources/tests not in tree)"
       record_skip "host/ear_siren_se_public (OM sources/tests not in tree)"
+      record_skip "host/ear_cls_as001 (OM sources/tests not in tree)"
+      record_skip "host/ae_sig_module_independence (OM sources/tests not in tree)"
     fi
   else
     record_skip "host/ae_m4_lifecycle_gap (CE/profile sources not in tree)"
@@ -377,8 +415,105 @@ run_host_tests() {
     record_skip "host/ce_identity (CE/profile sources not in tree)"
     record_skip "host/as_profile_as001 (CE/profile sources not in tree)"
     record_skip "host/ear_obs_manager (CE/profile sources not in tree)"
+    record_skip "host/ear_cls_progressive (CE/profile sources not in tree)"
+    record_skip "host/ear_siren_se_public (CE/profile sources not in tree)"
+    record_skip "host/ear_cls_as001 (CE/profile sources not in tree)"
+    record_skip "host/ae_sig_module_independence (CE/profile sources not in tree)"
   fi
 
+  # ------------------------------------------------------------------
+  # Package 1 mandatory suites — required by default.
+  # Sole applicability skip: explicit --platform-dsp-only.
+  # Independent of test_ear_obs_manager.c. Missing sources / compiler
+  # inputs / link deps / compile / assert => FAIL (never successful SKIP
+  # unless --platform-dsp-only). Keep promotion_bridge / observation_payload
+  # ungated.
+  # ------------------------------------------------------------------
+  local req_inc="${ae_inc}"
+  if [[ "${ce_srcs_ready}" -eq 1 ]]; then
+    :
+  else
+    # Still need SE/OBS include dirs for Critical Path compiles.
+    req_inc="${ae_inc} -I${EAR_SE}/include -I${EAR_OBS_INC}"
+  fi
+
+  if [[ "${PLATFORM_DSP_ONLY}" -eq 1 ]]; then
+    log "Platform-DSP-only scope selected"
+    record_skip "host/ce_architecture (Platform-DSP-only scope selected)"
+    record_skip "host/ear_critical_path (Platform-DSP-only scope selected)"
+    record_skip "host/ear_critical_integration (Platform-DSP-only scope selected)"
+  else
+    # --- ce_architecture (requires complete CE/profile/SE link set) ---
+    if [[ "${ce_srcs_ready}" -ne 1 ]]; then
+      fail_required_host ce_architecture "required CE/profile/SE sources missing"
+    elif [[ ! -f "${EAR_CE}/test_host/test_ce_architecture.c" ]]; then
+      fail_required_host ce_architecture "required test source missing"
+    elif [[ ! -f "${EAR_OBS}/ce_promotion_bridge.c" ]]; then
+      fail_required_host ce_architecture "required production source missing: ce_promotion_bridge.c"
+    elif [[ ! -f "${PLAT_OBS}/episode_registry.c" ]]; then
+      fail_required_host ce_architecture "required production source missing: episode_registry.c"
+    else
+      run_host_one ce_architecture \
+        ${req_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
+        "${ce_srcs[@]}" \
+        "${PLAT_OBS}/episode_registry.c" \
+        "${EAR_OBS}/ce_promotion_bridge.c" \
+        "${EAR_CE}/test_host/test_ce_architecture.c" || host_fail=1
+    fi
+
+    # --- ear_critical_path (independent of CE link set / OM test file) ---
+    if [[ ! -f "${EAR_OBS}/test_host/test_ear_critical_path.c" ]]; then
+      fail_required_host ear_critical_path "required test source missing"
+    elif [[ ! -f "${EAR_OBS}/ear_critical_path.c" ]]; then
+      fail_required_host ear_critical_path "required production source missing: ear_critical_path.c"
+    elif [[ ! -f "${EAR_AE}/ae_signature.c" ]]; then
+      fail_required_host ear_critical_path "required production source missing: ae_signature.c"
+    elif [[ ! -f "${PLAT_OBS}/episode_registry.c" ]]; then
+      fail_required_host ear_critical_path "required production source missing: episode_registry.c"
+    else
+      run_host_one ear_critical_path \
+        ${req_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
+        "${EAR_AE}/ae_signature.c" \
+        "${EAR_OBS}/ear_critical_path.c" \
+        "${PLAT_OBS}/episode_registry.c" \
+        "${EAR_OBS}/test_host/test_ear_critical_path.c" || host_fail=1
+    fi
+
+    # --- ear_critical_integration (needs CE link set + OM production sources) ---
+    if [[ "${ce_srcs_ready}" -ne 1 ]]; then
+      fail_required_host ear_critical_integration "required CE/profile/SE sources missing"
+    elif [[ ! -f "${EAR_OBS}/test_host/test_ear_critical_integration.c" ]]; then
+      fail_required_host ear_critical_integration "required test source missing"
+    elif [[ ! -f "${EAR_OBS}/ear_critical_path.c" ]]; then
+      fail_required_host ear_critical_integration "required production source missing: ear_critical_path.c"
+    elif [[ ! -f "${EAR_OBS}/ear_obs_ota_cleanup.c" ]]; then
+      fail_required_host ear_critical_integration "required production source missing: ear_obs_ota_cleanup.c"
+    elif [[ ! -f "${EAR_OBS}/ear_obs_manager.c" ]]; then
+      fail_required_host ear_critical_integration "required production source missing: ear_obs_manager.c"
+    elif [[ ! -f "${EAR_OBS}/ear_promotion_policy.c" ]]; then
+      fail_required_host ear_critical_integration "required production source missing: ear_promotion_policy.c"
+    elif [[ ! -f "${EAR_OBS}/ear_cls_progressive.c" ]]; then
+      fail_required_host ear_critical_integration "required production source missing: ear_cls_progressive.c"
+    elif [[ ! -f "${EAR_OBS}/ear_cls_as001.c" ]]; then
+      fail_required_host ear_critical_integration "required production source missing: ear_cls_as001.c"
+    elif [[ ! -f "${PLAT_OBS}/episode_registry.c" ]]; then
+      fail_required_host ear_critical_integration "required production source missing: episode_registry.c"
+    else
+      run_host_one ear_critical_integration \
+        ${req_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
+        "${ce_srcs[@]}" \
+        "${PLAT_OBS}/episode_registry.c" \
+        "${EAR_OBS}/ear_cls_progressive.c" \
+        "${EAR_OBS}/ear_cls_as001.c" \
+        "${EAR_OBS}/ear_obs_manager.c" \
+        "${EAR_OBS}/ear_promotion_policy.c" \
+        "${EAR_OBS}/ear_critical_path.c" \
+        "${EAR_OBS}/ear_obs_ota_cleanup.c" \
+        "${EAR_OBS}/test_host/test_ear_critical_integration.c" || host_fail=1
+    fi
+  fi
+
+  cleanup_host_gate_tmp
   return "${host_fail}"
 }
 

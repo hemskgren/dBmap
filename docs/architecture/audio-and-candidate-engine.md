@@ -1,12 +1,12 @@
 # Audio Engine and Candidate Engine — architecture design
 
-**Status:** Proposed (design only — not implemented)  
-**Branch intent:** `firmware/audio-candidate-engine-design`  
+**Status:** AE/CE v1 M1–M6 implemented in tree (host-gated; device Stage 5 still outstanding). Platform-shared Module Runtime / Workflow Engine remain **deferred** (ADR 0002).  
 **ADR:** [0002](../adr/0002-audio-and-candidate-engine.md)  
-**Baseline:** `main` after PR #48 (multi-mic Platform acquisition)  
+**Inventory:** [module-runtime-workflow-inventory.md](./module-runtime-workflow-inventory.md)  
+**Baseline:** `main` (post multi-mic Platform acquisition and AE/CE landings)  
 **Reference IDF:** ESP-IDF 5.4.4 (no migration)
 
-This document is the reviewable architecture for the next Ear firmware layer and for how that layer must stay compatible with a reusable, multi-engine Sensor Platform. It is grounded in the **current** codebase. Capabilities are labelled by horizon: **Platform today**, **AE/CE v1 uses**, or **shared Platform later** (also **reuse** / **extend** / **new** where useful).
+This document is the architecture for the Ear audio/candidate layer and for how that layer must stay compatible with a reusable, multi-engine Sensor Platform. It is grounded in the **current** codebase. Capabilities are labelled by horizon: **Platform today**, **AE/CE v1 uses**, or **shared Platform later** (also **reuse** / **extend** / **new** where useful).
 
 ---
 
@@ -104,7 +104,9 @@ flowchart TB
 | Observation foundation | `platform/observation` | Episode/seq/gates — **Hub reporting**, not Engine contract transport |
 | FreeRTOS / ESP-IDF events | Wi-Fi uses `esp_event`; mic uses task + pull | No unified Platform data-plane bus yet |
 
-**Absent today:** general Engine registry, cross-contract multi-subscriber bus, named contract IDs beyond headers, Omnibus/sensor contract producers, Monitor Engine, Module Runtime, Engine Runtime, shared resource policy.
+**Absent today (Platform-shared foundation):** general Engine registry, cross-contract multi-subscriber bus, named contract IDs beyond headers, Omnibus/sensor contract producers, Monitor Engine, **Platform** Module Runtime / Workflow Engine product, Engine Runtime, shared resource policy.
+
+**Present today (CE-local, not the Platform product):** Candidate Engine ships a static module runtime (`ce_module` / `ce_runtime_*`) and a minimal workflow runner (`ce_workflow` / `ce.track`). Headers explicitly deny a dynamic loader and a general workflow product. That CE-local layer must not be confused with the deferred Platform Module Runtime / Workflow Engine in ADR 0002.
 
 ### 0.4 What AE/CE v1 will use (allowed without expanding Platform scope)
 
@@ -116,7 +118,7 @@ flowchart TB
 | Boot/start from product `app_main` / obs loop | Codify Ear-only init order as Platform Engine lifecycle |
 | Run AE poll inside `ear_obs` initially (§10) | Assume AE is the only consumer of Platform CPU after mic |
 
-**v1 scope rule:** do not implement contract catalog, multi-subscriber Platform bus, Engine registry, Module Runtime, or Monitor Engine in AE/CE v1. Do keep interfaces **migratable** (§0.6).
+**v1 scope rule:** do not implement contract catalog, multi-subscriber Platform bus, Engine registry, **Platform** Module Runtime, or Monitor Engine in AE/CE v1. The CE-local static module/workflow layer above is allowed and already present. Do keep interfaces **migratable** (§0.6).
 
 ### 0.5 Shared Platform capabilities — design later, develop progressively
 
@@ -807,13 +809,13 @@ These future pieces are **Platform or peer-Engine capabilities**. AE/CE v1 must 
 | M5 — Dual PCM Mic0+Mic1 + AE stereo foundation | **Done** — SP dual PCM retain; `ae_stereo`; `ae:` diag; HW audio-test verified on EAR-001 (Test A L/R still open) |
 | Platform USB provision wire ownership | **Done** — `SP_PROVISION_*` tokens (`sp.version` 0.2.0); web accepts legacy `DBMAP_PROVISION_*` |
 | AE time/data contract hardening | **Done** — `ae_time` publish validation; history since/expire by `window_end_mono_us`; `ae_contract.h` consumer guarantees |
-| M6 — Candidate Manager, static Module Runtime, minimal Workflow/Decision | **Done (host-tested; product still binds via `ce_on_signature` + promotion bridge; not hardware-verified)** — see below |
+| M6 — Candidate Manager, static Module Runtime, minimal Workflow/Decision | **Done (host-gated via `ce_architecture` + CE lifecycle/identity; product binds via `ce_on_signature` + Promotion Policy / Manager; not hardware Stage-5 verified)** — see below |
 
 **M2 association rule:** Platform publishes a coherent **window job** (`sp_mic_take_window_job`): PCM + channel snapshots for the same `window_seq` / `measured_at`, under one lock (and `s_latest` is updated before the job becomes takeable). AE must use the bundled channels — not a later `get_channel()` — and still validates seq/time before pair metrics. Missing channels stay unmasked (not zero).
 
 **M3 Promotion Bridge (implemented):** Ear-owned `ce_promotion_bridge` registers `ce_set_promotion_cb`, defers ENTER/EXIT off the AE publish stack, and associates at most one primary `ACTIVE` candidate with the sole open RMS Observation episode. Selection: higher `evidence_count`, then higher `ema_rms_dbfs` (tie-break only), then lower `candidate_id`. The RMS activity detector remains the only Observation open/close authority (D1). M3 does **not** emit `identity.track_id` (D3). This is not multi-source event identity. CE tracks `promotion_entered` so `CE_PROMOTION_EXIT` fires exactly once when a promoted candidate’s lifecycle ends, including `PROMOTED → COASTING → EXPIRED` (gap expiry always coasts before free). Rematch after a promoted COASTING restores `PROMOTED` (no second ENTER); primary selection also blocks while `promotion_entered` is set during COASTING. Bridge UART diag (`ear_obs: ce_bridge diag …`) logs association/queue counters at the AE diag cadence. Candidate lifecycle counters log on the same cadence as `ear_obs: ce diag …`.
 
-**M6 Candidate Manager / Module Runtime / Workflow (implemented):** Candidate slot mutations live in `ce_manager` (association policy is the existing fingerprint EMA: distance ≤ `match_distance_max`, default 8, alpha 0.35; `n_enter` / `t_coast` / `min_rms_dbfs` unchanged). `candidate_id` stays device-local and is not an Observation id. The bridge still reads `slots[]` and calls `ce_promote`; that path is unchanged. A static module runtime (`ce_module`, max 4, no loader) runs `ce.evidence` (quality flags only, score 0) plus any registered descriptors. The default workflow `ce.track` fuses to KEEP (OK or DEGRADED), SKIP (GAP, modules not invoked), or ERROR (missing/invalid/module failure). It never PROMOTE or REJECT. Explicit `CE_DECISION_PROMOTE` / `CE_DECISION_REJECT` steps, `ce_promote`, and `ce_reject` are the only lifecycle actuators. `ce_bind_audio_engine` / `ce_stop` own listener removal. **Safe `ce_stop`:** unbind AE → emit one `CE_PROMOTION_EXIT` per `promotion_entered` candidate → clear slots (counted as `stop_cleared`, not expire) → shut modules. Stop does not open/end Observations; Bridge must drain/poll to clear association. Decision meanings are in `ce_decision.h`. This is not the shared Platform Engine Runtime, and it does not add classification.
+**M6 Candidate Manager / Module Runtime / Workflow (implemented):** Candidate slot mutations live in `ce_manager` (association policy is the existing fingerprint EMA: distance ≤ `match_distance_max`, default 8, alpha 0.35; `n_enter` / `t_coast` / `min_rms_dbfs` unchanged). `candidate_id` stays device-local and is not an Observation id. Product promotion is deny-by-default via Observation Manager + Promotion Policy calling `ce_promote` (legacy `ce_promotion_bridge` remains for association tests). A **CE-local** static module runtime (`ce_module`, `CE_MAX_MODULES` default 6, no loader) runs `ce.evidence` (quality flags only, score 0) plus registered descriptors such as `as.profile`. The default workflow `ce.track` fuses to KEEP (OK or DEGRADED), SKIP (GAP, modules not invoked), or ERROR (missing/invalid/module failure). It never PROMOTE or REJECT. Explicit `CE_DECISION_PROMOTE` / `CE_DECISION_REJECT` steps, `ce_promote`, and `ce_reject` are the only lifecycle actuators. `ce_bind_audio_engine` / `ce_stop` own listener removal. **Safe `ce_stop`:** unbind AE → emit one `CE_PROMOTION_EXIT` per `promotion_entered` candidate → clear slots (counted as `stop_cleared`, not expire) → shut modules. Stop does not open/end Observations. Decision meanings are in `ce_decision.h`. **This is not** the deferred Platform Module Runtime / Workflow Engine / Engine Runtime (ADR 0002), and it does not add classification beyond registered CE modules.
 
 **Platform version:** `firmware/platform/VERSION` → builder `config.sp.version` (currently **0.2.0**, independent of product `firmware_version`). USB provision wire tokens are `SP_PROVISION_*` (web accepts legacy `DBMAP_PROVISION_*`).
 
