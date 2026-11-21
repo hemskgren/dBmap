@@ -301,8 +301,9 @@ and reset are unchanged. Counters are RAM-only and clear on reboot; they
 are not written to NVS. The Hub derives counter deltas from the last retained diag snapshot so
 a hello that omits `diag` does not re-count cumulative totals. The Hub
 derives `pending_configuration_change` by comparing reported state with
-desired state; the device does not report that flag. These messages are not
-wrapped in the version-1 observation envelope.
+desired state (empty Desired string fields = no requirement); the device does
+not report that flag. These messages are not wrapped in the version-1
+observation envelope.
 
 MQTT and Wi-Fi reconnect use independent exponential backoff in
 `node_common` (`dbmap_backoff`); see [Health and availability](./health-and-availability.md).
@@ -501,9 +502,13 @@ An administrator updates desired configuration/version fields with
 firmware for OTA uses `POST /api/v1/nodes/{node_id}/firmware-selection`, which
 sets both `firmware_id` and `firmware_version` from a catalog entry. Node APIs
 return both `desired` and `reported` state and calculate
-`pending_configuration_change` by comparing the version fields. Nodes currently
-report versions in their periodic messages. Desired configuration is stored by
-the hub but is not yet delivered over MQTT, and firmware does not yet apply or
+`pending_configuration_change` by comparing the version fields. Empty Desired
+string fields (UI "Not set", for example `classifier_version=""`) mean **no
+requirement** and do not create a pending mismatch; only explicit non-empty
+Desired values are compared. Integer revision counters such as `config_version`
+are always compared when present (including `0`). Nodes currently report
+versions in their periodic messages. Desired configuration is stored by the hub
+but is not yet delivered over MQTT, and firmware does not yet apply or
 acknowledge configuration revisions. That synchronization behavior must be
 defined before configuration delivery is treated as operational.
 

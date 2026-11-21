@@ -21,14 +21,38 @@ def allocate_node_id(node_type: str, sequence: int, simulated: bool = False) -> 
     return f"{prefix}-{sequence:03d}"
 
 
+def _desired_requirement_set(value: object) -> bool:
+    """Return True when Desired expresses an explicit requirement for a field.
+
+    Empty / missing Desired values mean "no requirement" (not a mismatch).
+    Non-empty strings and numeric revisions (including 0) are compared normally.
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip() != ""
+    return True
+
+
 def pending_configuration_change(reported: dict, desired: dict) -> bool:
+    """True when any explicit Desired version differs from Reported.
+
+    Empty Desired string fields (UI "Not set") are skipped. Firmware Desired
+    HTTPS polling and classifier delivery are unchanged by this Hub-only flag.
+    """
     keys = (
         "config_version",
         "firmware_version",
         "calibration_version",
         "classifier_version",
     )
-    return any(reported.get(k) != desired.get(k) for k in keys)
+    for key in keys:
+        desired_value = desired.get(key)
+        if not _desired_requirement_set(desired_value):
+            continue
+        if reported.get(key) != desired_value:
+            return True
+    return False
 
 
 def timing_safe_eq(a: str, b: str) -> bool:

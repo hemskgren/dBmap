@@ -5340,12 +5340,12 @@ components:
           type: integer
         observation_count:
           type: integer
-        observation_limit:
-          type: integer
+          description: Exact observation row count (not capped by a list page size).
         latest_observation_at:
           type: string
           format: date-time
           nullable: true
+          description: Newest observation received_time_utc, or null when empty.
     HubMonitoringComponent:
       type: object
       properties:

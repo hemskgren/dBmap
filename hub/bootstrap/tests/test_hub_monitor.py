@@ -581,17 +581,18 @@ def _sample(
     availability: str,
     health: str = "healthy",
     states: dict[str, str] | None = None,
+    sparse: bool = False,
 ) -> HubMonitorSample:
+    payload: dict = {"states": states or {"api": "ok", "mqtt": "ok", "web": "ok"}}
+    if sparse:
+        payload["sample_mode"] = hub_monitor.SAMPLE_MODE_SPARSE
     return HubMonitorSample(
         sample_id=str(uuid4()),
         hub_id=settings.hub_id,
         observed_at=observed_at,
         overall_availability=availability,
         overall_health=health,
-        components_json=json.dumps(
-            {"states": states or {"api": "ok", "mqtt": "ok", "web": "ok"}},
-            separators=(",", ":"),
-        ),
+        components_json=json.dumps(payload, separators=(",", ":")),
     )
 
 
@@ -920,3 +921,320 @@ def test_summary_exposes_independent_component_windows(monkeypatch) -> None:
         assert core_24h["percent"] < 100.0
     finally:
         db.close()
+
+
+def test_new_samples_omit_docker_but_legacy_docker_payloads_still_parse(
+    monkeypatch,
+) -> None:
+    _reset_db()
+    _patch_healthy(monkeypatch)
+    db = SessionLocal()
+    try:
+        now = datetime.now(UTC)
+        db.add(
+            HubMonitorSample(
+                sample_id=str(uuid4()),
+                hub_id=settings.hub_id,
+                observed_at=now - timedelta(minutes=2),
+                overall_availability="available",
+                overall_health="healthy",
+                components_json=json.dumps(
+                    {
+                        "states": {"api": "ok", "mqtt": "ok"},
+                        "docker": {"nginx": {"docker_state": "running"}},
+                    }
+                ),
+            )
+        )
+        db.commit()
+        legacy = hub_monitor._parse_sample_payload(
+            db.scalars(select(HubMonitorSample)).first()
+        )
+        assert legacy["docker"]["nginx"]["docker_state"] == "running"
+
+        summary = hub_monitor.run_check(db)
+        assert summary["health"]["state"] == "healthy"
+        sample = hub_monitor._latest_sample(db)
+        assert sample is not None
+        stored = json.loads(sample.components_json)
+        assert "docker" not in stored
+        assert "states" in stored
+        assert "last_success" in stored
+        assert "reasons" in stored
+        assert stored.get("sample_mode") == hub_monitor.SAMPLE_MODE_SPARSE
+    finally:
+        db.close()
+
+
+def test_build_monitoring_summary_parses_each_sample_json_once(monkeypatch) -> None:
+    """P0: component windows must not re-parse JSON per component × window."""
+    _reset_db()
+    _patch_healthy(monkeypatch)
+    db = SessionLocal()
+    try:
+        now = datetime.now(UTC)
+        sample_count = 40
+        for offset in range(sample_count, 0, -1):
+            db.add(
+                _sample(
+                    observed_at=now - timedelta(minutes=offset),
+                    availability="available",
+                    states={
+                        "api": "ok",
+                        "mqtt": "ok",
+                        "web": "ok",
+                        "nginx": "ok",
+                        "database": "ok",
+                        "opa": "ok",
+                    },
+                )
+            )
+        db.commit()
+
+        parse_calls = {"n": 0}
+        original = hub_monitor._parse_sample_payload
+
+        def counting_parse(sample: HubMonitorSample):
+            parse_calls["n"] += 1
+            return original(sample)
+
+        monkeypatch.setattr(hub_monitor, "_parse_sample_payload", counting_parse)
+        summary = hub_monitor.build_monitoring_summary(db)
+        assert summary["sample_count"] == sample_count
+        # One parse per history sample (plus at most one for latest-sample current view).
+        assert parse_calls["n"] <= sample_count + 1
+        # Without the cache, 3 component IDs × 3 windows would re-parse each sample.
+        assert parse_calls["n"] < sample_count * len(hub_monitor.COMPONENT_WINDOW_IDS)
+    finally:
+        db.close()
+
+
+def test_sparse_hold_covers_window_from_pre_window_sample() -> None:
+    """Stable sparse state covers a window even when no sample falls inside it."""
+    now = datetime.now(UTC)
+    window_start = now - timedelta(hours=24)
+    window_end = now
+    samples = [
+        _sample(
+            observed_at=window_start - timedelta(hours=2),
+            availability="available",
+            sparse=True,
+        )
+    ]
+    window = hub_monitor.compute_availability_window(
+        samples,
+        window_start=window_start,
+        window_end=window_end,
+        interval_s=60,
+    )
+    assert window["available_seconds"] == int(timedelta(hours=24).total_seconds())
+    assert window["unavailable_seconds"] == 0
+    assert window["unobserved_seconds"] == 0
+    assert window["sample_count"] == 0
+    assert window["percent"] == 100.0
+
+
+def test_sparse_unobserved_gap_excluded_and_not_held_as_available() -> None:
+    now = datetime.now(UTC)
+    gap_start = now - timedelta(hours=3)
+    gap_end = now - timedelta(hours=1)
+    samples = [
+        _sample(
+            observed_at=now - timedelta(hours=4),
+            availability="available",
+            sparse=True,
+        ),
+        _sample(
+            observed_at=gap_start + timedelta(seconds=1),
+            availability="unobserved",
+            sparse=True,
+        ),
+        _sample(
+            observed_at=gap_end,
+            availability="available",
+            sparse=True,
+        ),
+    ]
+    window = hub_monitor.compute_availability_window(
+        samples,
+        window_start=now - timedelta(hours=5),
+        window_end=now,
+        interval_s=60,
+    )
+    assert window["unobserved_seconds"] >= int(timedelta(hours=2).total_seconds()) - 2
+    assert window["not_running_seconds"] >= int(timedelta(hours=2).total_seconds()) - 2
+    eligible = window["available_seconds"] + window["unavailable_seconds"]
+    assert eligible == window["eligible_seconds"]
+    assert window["unobserved_seconds"] + eligible == int(
+        timedelta(hours=5).total_seconds()
+    )
+
+
+def test_legacy_dense_long_gap_stays_unobserved_without_rewrite() -> None:
+    """Historical dense rows without sample_mode keep interval gap semantics."""
+    now = datetime.now(UTC)
+    samples = [
+        _sample(
+            observed_at=now - timedelta(hours=3),
+            availability="available",
+            sparse=False,
+        ),
+        _sample(
+            observed_at=now - timedelta(minutes=1),
+            availability="available",
+            sparse=False,
+        ),
+    ]
+    window = hub_monitor.compute_availability_window(
+        samples,
+        window_start=now - timedelta(hours=3),
+        window_end=now,
+        interval_s=60,
+    )
+    assert window["available_seconds"] == 120  # one interval confirmed per sample span end
+    assert window["unobserved_seconds"] > 0
+    assert window["not_running_seconds"] > 0
+    assert any(gap.get("kind") == "not_running" for gap in window["gaps"])
+
+
+def test_mixed_dense_then_sparse_window_preserves_both_attribution_modes() -> None:
+    """A long window spanning legacy dense + sparse samples must not blur modes.
+
+    Near the model boundary: dense MQTT outage keeps interval unavailable
+    seconds; later sparse stable available holds for hours without rewriting
+    the dense history.
+    """
+    now = datetime.now(UTC)
+    window_start = now - timedelta(days=30)
+    samples: list[HubMonitorSample] = []
+    # Legacy dense minute ticks for one hour ending 10 days ago.
+    dense_end = now - timedelta(days=10)
+    for minute in range(60, 0, -1):
+        mqtt_down = 20 <= minute <= 29  # 10 minutes unavailable
+        samples.append(
+            _sample(
+                observed_at=dense_end - timedelta(minutes=minute),
+                availability="unavailable" if mqtt_down else "available",
+                health="degraded" if mqtt_down else "healthy",
+                states={
+                    "api": "ok",
+                    "mqtt": "offline" if mqtt_down else "ok",
+                    "web": "ok",
+                },
+                sparse=False,
+            )
+        )
+    # Model boundary: first sparse sample immediately after the dense block,
+    # then a long stable sparse hold with no further samples until now.
+    boundary = dense_end
+    samples.append(
+        _sample(
+            observed_at=boundary,
+            availability="available",
+            sparse=True,
+        )
+    )
+    window = hub_monitor.compute_availability_window(
+        samples,
+        window_start=window_start,
+        window_end=now,
+        interval_s=60,
+    )
+    # Dense block: ~10 minutes unavailable under interval attribution.
+    assert window["unavailable_seconds"] >= 9 * 60
+    assert window["unavailable_seconds"] <= 11 * 60
+    # Sparse hold from boundary to now (~10 days) must count as available,
+    # not collapse to a single interval or become unobserved.
+    assert window["available_seconds"] >= int(timedelta(days=9).total_seconds())
+    # Leading time before the dense block remains unobserved (not unavailable).
+    assert window["unobserved_seconds"] >= int(timedelta(days=19).total_seconds())
+    assert window["percent"] is not None
+    assert window["percent"] < 100.0
+
+
+def test_run_check_is_transition_sparse_and_records_unobserved_on_gap(
+    monkeypatch,
+) -> None:
+    _reset_db()
+    _patch_healthy(monkeypatch)
+    db = SessionLocal()
+    try:
+        hub_monitor.run_check(db)
+        hub_monitor.run_check(db)
+        samples = list(
+            db.scalars(
+                select(HubMonitorSample).order_by(HubMonitorSample.observed_at.asc())
+            )
+        )
+        assert len(samples) == 1
+
+        only = samples[0]
+        only.observed_at = datetime.now(UTC) - timedelta(hours=2)
+        db.commit()
+        hub_monitor.run_check(db, record_startup_gap=True)
+        samples = list(
+            db.scalars(
+                select(HubMonitorSample).order_by(HubMonitorSample.observed_at.asc())
+            )
+        )
+        assert len(samples) == 3
+        assert samples[1].overall_availability == "unobserved"
+        assert json.loads(samples[2].components_json)["sample_mode"] == "sparse"
+        resumed = [
+            event
+            for event in hub_monitor.list_recent_events(db, limit=15)["events"]
+            if event["event_type"] == "monitoring_resumed"
+            and event["certainty"] == "inferred"
+        ]
+        assert resumed
+        window = hub_monitor.compute_availability_window(
+            samples,
+            window_start=datetime.now(UTC) - timedelta(hours=3),
+            window_end=datetime.now(UTC),
+            interval_s=60,
+        )
+        assert window["unobserved_seconds"] > 0
+        assert window["not_running_seconds"] > 0
+    finally:
+        db.close()
+
+
+def test_hub_status_uses_observation_aggregates_not_capped_list(monkeypatch) -> None:
+    _reset_db()
+    _patch_healthy(monkeypatch)
+    from app import service
+
+    calls = {"list": 0, "count": 0, "latest": 0}
+    original_list = service.list_observations
+    original_count = service.count_observations
+    original_latest = service.latest_observation_received_at
+
+    def counting_list(*args, **kwargs):
+        calls["list"] += 1
+        return original_list(*args, **kwargs)
+
+    def counting_count(*args, **kwargs):
+        calls["count"] += 1
+        return original_count(*args, **kwargs)
+
+    def counting_latest(*args, **kwargs):
+        calls["latest"] += 1
+        return original_latest(*args, **kwargs)
+
+    monkeypatch.setattr(service, "list_observations", counting_list)
+    monkeypatch.setattr(service, "count_observations", counting_count)
+    monkeypatch.setattr(service, "latest_observation_received_at", counting_latest)
+
+    client = TestClient(create_app())
+    response = client.get(
+        "/api/v1/hub/status",
+        headers={"Authorization": f"Bearer {settings.admin_token}"},
+    )
+    assert response.status_code == 200, response.text
+    summary = response.json()["summary"]
+    assert "observation_count" in summary
+    assert "latest_observation_at" in summary
+    assert "observation_limit" not in summary
+    assert calls["list"] == 0
+    assert calls["count"] == 1
+    assert calls["latest"] == 1

@@ -27,10 +27,13 @@ Every `DBMAP_HUB_MONITOR_INTERVAL_S` seconds (default **60**), a background thre
 
 1. Probes API/database, Nginx, Web, MQTT, and OPA.
 2. Optionally reads Docker runtime diagnostics for monitored Compose services (not Firmware Builder).
-3. Stores one compact Hub sample in SQLite.
-4. Records events only on state transitions, monitoring gaps, and detected restarts.
-5. Samples **device** connectivity from `last_seen` (transition-sparse).
-6. Periodically deletes monitor rows older than retention (default **30** days for Hub samples, configurable **30–90**).
+3. Persists a compact Hub sample **only on state transitions** (and after monitoring gaps), marked with `sample_mode: sparse`. Payload stores `states`, `last_success`, and `reasons` only — Docker inspect is not persisted in new samples; restart detection uses in-memory signatures and events.
+4. On a monitoring gap (> 2× interval since the previous sample), records `monitoring_resumed` and inserts an explicit `unobserved` sample so hold attribution excludes Hub-down / PC-off time from availability percentages.
+5. Records events on state transitions, monitoring gaps, and detected restarts.
+6. Samples **device** connectivity from `last_seen` (transition-sparse).
+7. Periodically deletes monitor rows older than retention (default **30** days for Hub samples, configurable **30–90**).
+
+**Attribution compatibility:** sparse-era samples hold state until the next sample (including a pre-window carry-in sample so a stable state can cover a window with no interior samples). Legacy dense samples (no `sample_mode`) keep interval confirmation for long inter-sample gaps so historical Hub-down periods stay unobserved without rewriting rows. Older samples may still contain a `docker` blob in `components_json`; readers must tolerate its presence or absence.
 
 The monitor runs inside the existing `hub-bootstrap` container. It does not add containers, databases, or external services.
 

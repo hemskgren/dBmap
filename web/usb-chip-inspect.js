@@ -82,7 +82,7 @@ export async function resetEspIntoApp(port) {
 /**
  * Read chip family, ESPConnect-style chip variant, and MAC via ROM bootloader.
  * Hard-resets into app firmware before closing so a follow-up serial listen can
- * see DBMAP_DEVICE_ID instead of DOWNLOAD_BOOT.
+ * see node_id= (or legacy DBMAP_DEVICE_ID=) instead of DOWNLOAD_BOOT.
  *
  * @param {SerialPort} port
  * @param {{ timeoutMs?: number }} [options]
