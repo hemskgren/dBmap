@@ -492,6 +492,8 @@ run_host_tests() {
       fail_required_host ear_critical_integration "required production source missing: ear_obs_manager.c"
     elif [[ ! -f "${EAR_OBS}/ear_promotion_policy.c" ]]; then
       fail_required_host ear_critical_integration "required production source missing: ear_promotion_policy.c"
+    elif [[ ! -f "${EAR_OBS}/ear_sig_product.c" ]]; then
+      fail_required_host ear_critical_integration "required production source missing: ear_sig_product.c"
     elif [[ ! -f "${EAR_OBS}/ear_cls_progressive.c" ]]; then
       fail_required_host ear_critical_integration "required production source missing: ear_cls_progressive.c"
     elif [[ ! -f "${EAR_OBS}/ear_cls_as001.c" ]]; then
@@ -507,6 +509,7 @@ run_host_tests() {
         "${EAR_OBS}/ear_cls_as001.c" \
         "${EAR_OBS}/ear_obs_manager.c" \
         "${EAR_OBS}/ear_promotion_policy.c" \
+        "${EAR_OBS}/ear_sig_product.c" \
         "${EAR_OBS}/ear_critical_path.c" \
         "${EAR_OBS}/ear_obs_ota_cleanup.c" \
         "${EAR_OBS}/test_host/test_ear_critical_integration.c" || host_fail=1

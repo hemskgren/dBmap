@@ -413,10 +413,11 @@ void ear_obs_manager_arm_cls_evidence(
 );
 
 /**
- * Feed progressive ALARM-taxonomy evidence into an open Observation without
- * promoting again. Refinement updates assessment only; observation_id is
- * unchanged. phase selects START / PERIODIC / END correction rules.
- * Returns false if candidate has no open binding.
+ * Feed progressive ALARM-taxonomy evidence into an open AS-002 Observation
+ * without promoting again. Refinement updates assessment only; observation_id
+ * is unchanged. phase selects START / PERIODIC / END correction rules.
+ * Returns false if the candidate has no open binding or that binding is not
+ * an approved AS-002 Observation.
  */
 bool ear_obs_manager_feed_cls_evidence(
     ear_obs_manager_t *om,

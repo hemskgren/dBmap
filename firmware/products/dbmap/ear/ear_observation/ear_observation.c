@@ -14,7 +14,7 @@
 #include "ce_engine.h"
 #include "ear_obs_manager.h"
 #include "ear_promotion_policy.h"
-#include "ear_siren_se_public.h"
+#include "ear_sig_product.h"
 #include "sig_engine.h"
 #include "ear_critical_path.h"
 #include "ear_obs_ota_cleanup.h"
@@ -106,6 +106,7 @@ static ear_obs_manager_t s_obs_mgr;
 static ear_promotion_policy_t s_promo_pol;
 static bool s_obs_mgr_ready;
 static bool s_sig_engine_listener_bound;
+static ear_sig_product_t s_sig_product;
 #if defined(CONFIG_DBMAP_EAR_AE_DIAG) && CONFIG_DBMAP_EAR_AE_DIAG
 static uint32_t s_obs_mgr_uart_diag_last_sig;
 #endif
@@ -1665,77 +1666,6 @@ static bool mgr_emit_end(
     return true;
 }
 
-static void mgr_feed_evidence(int64_t now_mono_us)
-{
-    (void)now_mono_us;
-    if (!s_obs_mgr_ready) {
-        return;
-    }
-    /* Candidate-associated signatures only — never AE history "latest". */
-    ear_obs_manager_feed_from_ce(&s_obs_mgr, &s_ce);
-}
-
-/**
- * Signature Engine AE listener (registered before CE). Evaluates all defs,
- * then forwards AS-002 current-window evidence to OM when ready.
- */
-static void sig_engine_on_ae_signature(const ae_signature_t *sig, void *user)
-{
-    (void)user;
-    sig_engine_on_signature(sig);
-    if (!s_obs_mgr_ready) {
-        return;
-    }
-    /*
-     * AS002 signature-absence END uses current-window tonal_vote only
-     * (global siren timbre support — not source-specific identity).
-     * Reads published AS-002 snapshot (same window as engine publish).
-     */
-    ear_siren_last_window_t lw;
-    if (!sig_engine_copy_as002_last_window(&lw)) {
-        return;
-    }
-    if (lw.kind == EAR_SIREN_LAST_NONE) {
-        return;
-    }
-    const bool usable = (lw.kind == EAR_SIREN_LAST_USABLE);
-    ear_obs_manager_on_as002_siren_window(
-        &s_obs_mgr,
-        usable,
-        usable && lw.tonal_vote,
-        lw.window_ms,
-        lw.window_end_mono_us,
-        lw.has_rms_dbfs,
-        lw.rms_dbfs
-    );
-}
-
-/**
- * Arm progressive evidence for the next promote START, and refine open
- * Observations. Does not promote — policy_poll remains the gate.
- */
-static void siren_apply_cls_evidence(void)
-{
-    if (!s_obs_mgr_ready) {
-        return;
-    }
-    ear_cls_evidence_t ev;
-    if (!sig_engine_copy_as002_evidence(&ev)) {
-        return;
-    }
-    ear_obs_manager_arm_cls_evidence(&s_obs_mgr, &ev);
-    for (uint8_t i = 0u; i < EAR_OBS_MGR_BINDING_CAP; i++) {
-        if (!s_obs_mgr.bind[i].in_use) {
-            continue;
-        }
-        (void)ear_obs_manager_feed_cls_evidence(
-            &s_obs_mgr,
-            s_obs_mgr.bind[i].candidate_id,
-            &ev,
-            EAR_CLS_PHASE_PERIODIC
-        );
-    }
-}
 #endif /* AUDIO_ENGINE manager emit helpers */
 
 static void handle_emission(const dbmap_activity_emission_t *emission)
@@ -2625,12 +2555,7 @@ static void activity_task(void *arg)
             const int64_t now_us = esp_timer_get_time();
             const int64_t t_pm0 = now_us;
             /* Siren evidence was updated in AE listeners during ae_device_poll. */
-            siren_apply_cls_evidence();
-            ear_promotion_policy_poll(&s_promo_pol, now_us);
-            ear_obs_manager_poll(&s_obs_mgr, now_us);
-            /* Re-apply after ENTER so START-armed path can refine same cycle. */
-            siren_apply_cls_evidence();
-            mgr_feed_evidence(now_us);
+            ear_sig_product_poll(&s_sig_product, now_us);
             {
                 const uint32_t dt =
                     (uint32_t)(esp_timer_get_time() - t_pm0);
@@ -3117,9 +3042,16 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg)
             return ESP_FAIL;
         }
         ae_engine_t *ae = ae_device_engine();
+        memset(&s_sig_product, 0, sizeof(s_sig_product));
+        s_sig_product.om = &s_obs_mgr;
+        s_sig_product.policy = &s_promo_pol;
+        s_sig_product.ce = &s_ce;
+        s_sig_product.ready = false;
         s_sig_engine_listener_bound = false;
         if (ae == NULL
-            || !ae_add_signature_listener(ae, sig_engine_on_ae_signature, NULL)) {
+            || !ae_add_signature_listener(
+                ae, ear_sig_product_on_ae_signature, &s_sig_product
+            )) {
             ESP_LOGE(TAG, "Signature Engine AE listener registration failed");
             sig_engine_stop();
             ae_device_stop();
@@ -3130,9 +3062,12 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg)
         ce_config_t ccfg;
         ce_config_set_defaults(&ccfg);
         s_obs_mgr_ready = false;
+        s_sig_product.ready = false;
         if (!ce_start(&s_ce, &ccfg)) {
             ESP_LOGE(TAG, "Candidate Engine start failed");
-            (void)ae_remove_signature_listener(ae, sig_engine_on_ae_signature, NULL);
+            (void)ae_remove_signature_listener(
+                ae, ear_sig_product_on_ae_signature, &s_sig_product
+            );
             s_sig_engine_listener_bound = false;
             sig_engine_stop();
             ae_device_stop();
@@ -3141,7 +3076,9 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg)
         if (!ce_bind_audio_engine(&s_ce, ae)) {
             ESP_LOGE(TAG, "CE signature listener registration failed");
             ce_stop(&s_ce);
-            (void)ae_remove_signature_listener(ae, sig_engine_on_ae_signature, NULL);
+            (void)ae_remove_signature_listener(
+                ae, ear_sig_product_on_ae_signature, &s_sig_product
+            );
             s_sig_engine_listener_bound = false;
             sig_engine_stop();
             ae_device_stop();
@@ -3282,6 +3219,7 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg)
         ear_promotion_policy_use_sig_engine_as002(&s_promo_pol, true);
         ce_set_promotion_cb(&s_ce, ear_obs_manager_on_promotion, &s_obs_mgr);
         s_obs_mgr_ready = true;
+        s_sig_product.ready = true;
         ESP_LOGI(
             TAG,
             "EAR obs manager ready (promotion-gated; RMS not Obs authority; "
