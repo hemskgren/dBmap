@@ -226,22 +226,40 @@ static bool crit_publish(
     (void)interval_duration_ms;
     (void)episode_duration_ms;
     (void)evidence_or_null;
+    /*
+     * Count every START/PERIODIC/END. Keep the first id and capture time.
+     * A later event must not replace that record; the count still shows it.
+     */
     if (emission_kind != NULL && strcmp(emission_kind, "start") == 0) {
         g_crit.starts++;
-        g_crit.last_start_capture_mono_us = capture_mono_us;
-        g_crit.have_start_ts = true;
-        p3a_copy_id(g_crit.start_oid, sizeof(g_crit.start_oid), observation_id);
-        g_crit.have_start_oid = true;
+        if (!g_crit.have_start_ts) {
+            g_crit.last_start_capture_mono_us = capture_mono_us;
+            g_crit.have_start_ts = true;
+        }
+        if (!g_crit.have_start_oid) {
+            p3a_copy_id(g_crit.start_oid, sizeof(g_crit.start_oid), observation_id);
+            g_crit.have_start_oid = true;
+        }
     } else if (emission_kind != NULL && strcmp(emission_kind, "periodic") == 0) {
         g_crit.periodics++;
-        p3a_copy_id(g_crit.periodic_oid, sizeof(g_crit.periodic_oid), observation_id);
-        g_crit.have_periodic_oid = true;
+        if (!g_crit.have_periodic_oid) {
+            p3a_copy_id(
+                g_crit.periodic_oid,
+                sizeof(g_crit.periodic_oid),
+                observation_id
+            );
+            g_crit.have_periodic_oid = true;
+        }
     } else if (emission_kind != NULL && strcmp(emission_kind, "end") == 0) {
         g_crit.ends++;
-        g_crit.last_end_capture_mono_us = capture_mono_us;
-        g_crit.have_end_ts = true;
-        p3a_copy_id(g_crit.end_oid, sizeof(g_crit.end_oid), observation_id);
-        g_crit.have_end_oid = true;
+        if (!g_crit.have_end_ts) {
+            g_crit.last_end_capture_mono_us = capture_mono_us;
+            g_crit.have_end_ts = true;
+        }
+        if (!g_crit.have_end_oid) {
+            p3a_copy_id(g_crit.end_oid, sizeof(g_crit.end_oid), observation_id);
+            g_crit.have_end_oid = true;
+        }
     }
     p3a_copy_id(g_crit.last_oid, sizeof(g_crit.last_oid), observation_id);
     snprintf(g_crit.last_kind, sizeof(g_crit.last_kind), "%s", emission_kind ? emission_kind : "");
@@ -1029,7 +1047,7 @@ static void test_p3a_ae_listener_triad_critical_coexist(void)
     p3a_drive_poll(&pol, &f.om, &f.ce, &f.crit, now_us);
     P3A_REQUIRE(g_crit.starts == crit_starts_before);
     P3A_REQUIRE(ear_critical_is_active(&f.crit));
-    P3A_REQUIRE(g_crit.periodics >= 1u);
+    P3A_REQUIRE(g_crit.periodics == 1u);
     P3A_REQUIRE(g_crit.have_periodic_oid);
     P3A_REQUIRE(strcmp(g_crit.periodic_oid, g_crit.start_oid) == 0);
     P3A_REQUIRE(strcmp(g_crit.last_origin, EAR_CRITICAL_ORIGIN) == 0);
