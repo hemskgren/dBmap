@@ -407,7 +407,8 @@ static void critical_ae_listener(const ae_signature_t *sig, void *ctx)
 
 /**
  * Production-style product poll after AE publish (ear_observation.c activity
- * path). Host mirrors call order; FreeRTOS scheduling is not verified here.
+ * path). Order is observable: Policy must run before OM for same-cycle START.
+ * Host mirrors call order; FreeRTOS scheduling is not verified here.
  */
 static void p3a_drive_poll(
     ear_promotion_policy_t *pol,
@@ -434,6 +435,57 @@ static int find_open_bind_idx(const ear_obs_manager_t *om, uint64_t cand_id)
         }
     }
     return -1;
+}
+
+/* Package 2 synthetic signature fixtures (short smoke reuse; not full lifecycle). */
+static void p3a_fill_heli_sig(ae_signature_t *s, uint32_t seq, float rms_dbfs)
+{
+    memset(s, 0, sizeof(*s));
+    s->schema_version = AE_SIGNATURE_SCHEMA_VERSION;
+    s->window_seq = seq;
+    s->window_end_mono_us = (int64_t)seq * 1000000LL;
+    s->window_ms = 1000u;
+    s->mic_mask = 0x1u;
+    s->quality = AE_QUALITY_OK;
+    s->flags = AE_FLAG_PAIR_MISSING;
+    s->rms_dbfs = rms_dbfs;
+    s->peak_dbfs = rms_dbfs + 7.3f;
+    s->crest_db = 7.3f;
+    s->band_dbfs[0] = rms_dbfs - 4.21f;
+    s->band_dbfs[1] = rms_dbfs - 3.52f;
+    s->band_dbfs[2] = rms_dbfs - 13.10f;
+    s->band_dbfs[3] = rms_dbfs - 32.77f;
+    s->hl_valid = true;
+    s->spectral_valid = true;
+    s->dominant_hz = 230.0f;
+    s->flatness = 0.141f;
+    s->centroid_hz = 800.0f;
+    s->bandwidth_hz = 920.0f;
+}
+
+static void p3a_fill_broadband_sig(ae_signature_t *s, uint32_t seq, float rms_dbfs)
+{
+    memset(s, 0, sizeof(*s));
+    s->schema_version = AE_SIGNATURE_SCHEMA_VERSION;
+    s->window_seq = seq;
+    s->window_end_mono_us = (int64_t)seq * 1000000LL;
+    s->window_ms = 1000u;
+    s->mic_mask = 0x1u;
+    s->quality = AE_QUALITY_OK;
+    s->flags = AE_FLAG_PAIR_MISSING;
+    s->rms_dbfs = rms_dbfs;
+    s->peak_dbfs = rms_dbfs + 8.0f;
+    s->crest_db = 8.0f;
+    s->band_dbfs[0] = rms_dbfs - 2.0f;
+    s->band_dbfs[1] = rms_dbfs - 1.0f;
+    s->band_dbfs[2] = rms_dbfs - 1.5f;
+    s->band_dbfs[3] = rms_dbfs - 3.0f;
+    s->hl_valid = true;
+    s->spectral_valid = true;
+    s->dominant_hz = 1800.0f;
+    s->flatness = 0.70f;
+    s->centroid_hz = 2200.0f;
+    s->bandwidth_hz = 2500.0f;
 }
 
 /* ========== Test 4 ========== */
@@ -663,20 +715,18 @@ static void test5_ota_cleanup_while_critical_active(void)
  *
  * Mirrors production wiring in ear_observation.c:
  *   SE listener → CE bind → Critical AE listener (count 3)
- *   Policy → OM → feed_from_ce → critical_poll
+ *   Policy → OM → feed_from_ce → critical_poll  (via p3a_drive_poll)
  *
  * Observable evidence (not mere call order):
  *   - ae_listener_count == 3 after triad registration
- *   - Promotion Policy opens one normal Observation (promote_ok + START)
+ *   - Real AS-001 AE publish → SE primary + CE classification + Policy START
+ *     through p3a_drive_poll (Policy before OM required for same-cycle START)
+ *   - OM owns CE-associated heli evidence (window seq + rms), not just a counter
  *   - Critical force_start: distinct id, origin critical_path, registry unchanged
  *   - AE publish with auto-detect off does not Critical-START
- *   - feed_from_ce increments evidence_updates on the live normal binding
- *   - critical_poll at +periodic_ms emits Critical PERIODIC
- *   - cleanup returns ae_listener_count to 0
+ *   - cleanup ends Observations, drains EXIT, listeners → 0, registry → 0
  *
- * Host mirrors production poll order; it does not independently verify the
- * device activity_task / FreeRTOS schedule. Does not replay Package 2's full
- * AS-001 lifecycle (planted relevance + Policy promote only).
+ * Short smoke only — not Package 2's full AS-001 lifecycle.
  */
 #define P3A_REQUIRE(cond)                                                      \
     do {                                                                       \
@@ -704,6 +754,12 @@ static void test_p3a_ae_listener_triad_critical_coexist(void)
     bool crit_bound = false;
     bool ce_started = false;
     bool sig_started = false;
+    bool om_ready = false;
+    bool crit_force_started = false;
+    const uint32_t reg_initial = 0u;
+    const uint32_t heli_seq = 17u;
+    const float heli_rms = -40.0f;
+    int64_t cleanup_now_us = 20000000;
 
     ae_config_t acfg;
     ae_config_set_defaults(&acfg);
@@ -719,12 +775,14 @@ static void test_p3a_ae_listener_triad_critical_coexist(void)
     ce_config_t ccfg;
     ce_config_set_defaults(&ccfg);
     ccfg.n_enter = 1u;
+    ccfg.t_coast = 3u;
     P3A_REQUIRE(ce_start(&f.ce, &ccfg));
     ce_started = true;
     P3A_REQUIRE(ce_bind_audio_engine(&f.ce, &f.ae));
     P3A_REQUIRE(ae_listener_count(&f.ae) == 2u);
 
     sp_episode_registry_init(&f.reg);
+    P3A_REQUIRE(sp_episode_registry_in_use_count(&f.reg) == reg_initial);
 
     ear_obs_manager_config_t mcfg;
     memset(&mcfg, 0, sizeof(mcfg));
@@ -734,12 +792,14 @@ static void test_p3a_ae_listener_triad_critical_coexist(void)
     mcfg.uuid_fn = fake_uuid;
     mcfg.observation_interval_ms = 1000u;
     mcfg.pending_timeout_ms = 30000u;
+    mcfg.detached_end_timeout_ms = 1000u;
     mcfg.producer_tag = 2u;
     mcfg.emit_start = norm_emit_start;
     mcfg.emit_periodic = norm_emit_periodic;
     mcfg.emit_end = norm_emit_end;
     mcfg.enable_poll_periodic = false;
     ear_obs_manager_init(&f.om, &mcfg);
+    om_ready = true;
     ce_set_promotion_cb(&f.ce, ear_obs_manager_on_promotion, &f.om);
     ear_promotion_policy_init(&pol, &f.ce, &f.om);
 
@@ -758,19 +818,80 @@ static void test_p3a_ae_listener_triad_critical_coexist(void)
     crit_bound = true;
     P3A_REQUIRE(ae_listener_count(&f.ae) == 3u);
 
+    ae_signature_t sig;
+
+    /* Unmatched broadband: SE/CE run, Policy must not open an Observation. */
+    for (uint32_t seq = 1u; seq <= 4u; seq++) {
+        p3a_fill_broadband_sig(&sig, seq, -55.0f);
+        P3A_REQUIRE(ae_publish_signature(&f.ae, &sig));
+        p3a_drive_poll(&pol, &f.om, &f.ce, &f.crit, sig.window_end_mono_us);
+    }
+    P3A_REQUIRE(g_norm.starts == 0u);
+    P3A_REQUIRE(ear_obs_manager_n_open(&f.om) == 0u);
+    P3A_REQUIRE(sp_episode_registry_in_use_count(&f.reg) == reg_initial);
+
     /*
-     * One normal Observation via Promotion Policy (not promote_with_reserve).
-     * Policy before OM is observably required for same-cycle START: OM poll
-     * alone cannot drain an ENTER that Policy has not yet queued.
+     * Real AS-001 heli through AE listeners, then p3a_drive_poll for Policy START.
+     * Assert SE/CE dispatch from the publish itself (before poll), so suppressing
+     * either listener fails for that reason — not only a missing START.
      */
-    plant(&f.ce, 910u, AE_CAND_ACTIVE, 5u, -30.0f);
-    mark_as001_relevant(&f.ce, 910u);
-    ear_promotion_policy_poll(&pol, 1000000);
-    ear_obs_manager_poll(&f.om, 1000000);
+    p3a_fill_heli_sig(&sig, heli_seq, heli_rms);
+    P3A_REQUIRE(ae_publish_signature(&f.ae, &sig));
+
+    /* SE processed the current window (fails if SE AE dispatch is suppressed). */
+    sig_primary_distance_t prim;
+    memset(&prim, 0, sizeof(prim));
+    P3A_REQUIRE(sig_engine_get_primary_distance_match(&prim));
+    P3A_REQUIRE(prim.valid);
+    P3A_REQUIRE(prim.window_seq == heli_seq);
+    P3A_REQUIRE(prim.profile_id == AS_PROFILE_ID_AS001);
+
+    /*
+     * CE ingested the published heli (fails if CE AE dispatch is suppressed).
+     * With SE started, as.profile uses SE primary for this window.
+     */
+    uint64_t x_id = 0u;
+    {
+        bool found = false;
+        for (uint8_t i = 0u; i < CE_MAX_CANDIDATES; i++) {
+            ae_candidate_t c;
+            if (!ce_get_candidate(&f.ce, i, &c)) {
+                continue;
+            }
+            if (c.last_window_seq == heli_seq) {
+                x_id = c.candidate_id;
+                found = true;
+                break;
+            }
+        }
+        P3A_REQUIRE(found && x_id != 0u);
+    }
+    ae_candidate_t live;
+    memset(&live, 0, sizeof(live));
+    P3A_REQUIRE(ce_find_candidate(&f.ce, x_id, &live));
+    P3A_REQUIRE(live.last_window_seq == heli_seq);
+    ce_classification_t cls;
+    memset(&cls, 0, sizeof(cls));
+    P3A_REQUIRE(ce_get_classification(&f.ce, x_id, &cls));
+    P3A_REQUIRE(cls.valid && cls.matched);
+    P3A_REQUIRE(cls.profile_id == AS_PROFILE_ID_AS001);
+    P3A_REQUIRE(cls.distance == prim.distance);
+
+    /*
+     * Same-cycle START via p3a_drive_poll: Policy before OM is required.
+     * Reversing those two calls inside the helper leaves starts == 0.
+     */
+    p3a_drive_poll(&pol, &f.om, &f.ce, &f.crit, sig.window_end_mono_us);
     P3A_REQUIRE(g_norm.starts == 1u);
     P3A_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
     P3A_REQUIRE(sp_episode_registry_in_use_count(&f.reg) == 1u);
     P3A_REQUIRE(g_norm.ids[0][0] != '\0');
+    P3A_REQUIRE(g_norm.n_ids >= 1u);
+
+    P3A_REQUIRE(ce_find_candidate(&f.ce, x_id, &live));
+    P3A_REQUIRE(live.state == AE_CAND_PROMOTED);
+    P3A_REQUIRE(live.promotion_entered);
+
     {
         ear_promotion_policy_diag_t pd;
         ear_promotion_policy_get_diag(&pol, &pd);
@@ -780,15 +901,27 @@ static void test_p3a_ae_listener_triad_critical_coexist(void)
     }
 
     const uint32_t reg_after_normal = sp_episode_registry_in_use_count(&f.reg);
-    const int bi = find_open_bind_idx(&f.om, 910u);
+    const int bi = find_open_bind_idx(&f.om, x_id);
     P3A_REQUIRE(bi >= 0);
+    P3A_REQUIRE((uint8_t)bi < EAR_OBS_MGR_BINDING_CAP);
+    P3A_REQUIRE(f.om.bind[bi].in_use);
     P3A_REQUIRE(f.om.bind[bi].ce_live);
-    const uint32_t evidence_before = f.om.bind[bi].evidence_updates;
+    P3A_REQUIRE(strcmp(f.om.bind[bi].observation_id, g_norm.ids[0]) == 0);
+    /*
+     * CE-associated owned evidence from feed_from_ce in p3a_drive_poll.
+     * Sequence + rms pin the heli window (not evidence_updates alone).
+     */
+    P3A_REQUIRE(f.om.bind[bi].evidence_updates >= 1u);
+    P3A_REQUIRE(f.om.bind[bi].snap.sig_count >= 1u);
+    P3A_REQUIRE(f.om.bind[bi].last_owned_sig_window_seq == heli_seq);
+    P3A_REQUIRE(f.om.bind[bi].snap.sigs[0].window_seq == heli_seq);
+    P3A_REQUIRE(f.om.bind[bi].snap.sigs[0].quality == AE_QUALITY_OK);
+    P3A_REQUIRE(f.om.bind[bi].snap.sigs[0].rms_dbfs == heli_rms);
 
-    /* Idle Critical + AE publish must not auto-START (production auto_detect off). */
-    ae_signature_t idle_sig = make_impulse_sig(50);
-    P3A_REQUIRE(ae_publish_signature(&f.ae, &idle_sig));
-    p3a_drive_poll(&pol, &f.om, &f.ce, &f.crit, idle_sig.window_end_mono_us);
+    /*
+     * Heli AE publish already reached Critical while idle: production
+     * auto_detect/lab off → auto_start_blocked, no Critical START.
+     */
     {
         ear_critical_diag_t cd;
         ear_critical_get_diag(&f.crit, &cd);
@@ -796,13 +929,11 @@ static void test_p3a_ae_listener_triad_critical_coexist(void)
     }
     P3A_REQUIRE(g_crit.starts == 0u);
     P3A_REQUIRE(!ear_critical_is_active(&f.crit));
-
-    /* feed_from_ce must touch the live normal binding (evidence_updates). */
-    P3A_REQUIRE(f.om.bind[bi].in_use);
-    P3A_REQUIRE(f.om.bind[bi].evidence_updates > evidence_before);
+    P3A_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
 
     ae_signature_t crit_sig = make_impulse_sig(60);
     P3A_REQUIRE(ear_critical_force_start(&f.crit, &crit_sig, 6000000));
+    crit_force_started = true;
     P3A_REQUIRE(ear_critical_is_active(&f.crit));
     P3A_REQUIRE(g_crit.starts == 1u);
     P3A_REQUIRE(strcmp(g_crit.last_origin, EAR_CRITICAL_ORIGIN) == 0);
@@ -814,32 +945,56 @@ static void test_p3a_ae_listener_triad_critical_coexist(void)
     P3A_REQUIRE(sp_episode_registry_in_use_count(&f.reg) == reg_after_normal);
     P3A_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
 
-    /* Publish while Critical active: no additional Critical START. */
+    /* Publish while Critical active: no additional Critical START; PERIODIC via poll. */
     const uint32_t crit_starts_before = g_crit.starts;
-    const uint32_t evidence_mid = f.om.bind[bi].evidence_updates;
     ae_signature_t live_sig = make_impulse_sig(70);
     P3A_REQUIRE(ae_publish_signature(&f.ae, &live_sig));
-    /* +5s from force_start → Critical PERIODIC via critical_poll in drive. */
     p3a_drive_poll(&pol, &f.om, &f.ce, &f.crit, 11000000);
     P3A_REQUIRE(g_crit.starts == crit_starts_before);
     P3A_REQUIRE(ear_critical_is_active(&f.crit));
     P3A_REQUIRE(g_crit.periodics >= 1u);
     P3A_REQUIRE(strcmp(g_crit.last_origin, EAR_CRITICAL_ORIGIN) == 0);
-    P3A_REQUIRE(f.om.bind[bi].in_use);
-    P3A_REQUIRE(f.om.bind[bi].evidence_updates >= evidence_mid);
     P3A_REQUIRE(sp_episode_registry_in_use_count(&f.reg) == reg_after_normal);
-
-    ear_critical_force_end(&f.crit, 12000000, EAR_CRITICAL_END_EXPLICIT);
-    P3A_REQUIRE(!ear_critical_is_active(&f.crit));
+    P3A_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
+    cleanup_now_us = 12000000;
 
 p3a_cleanup:
+    /*
+     * Lifecycle cleanup before engine/listener teardown. Idempotent on early
+     * abort: force-end only when something is active/open.
+     */
+    if (crit_force_started || ear_critical_is_active(&f.crit)) {
+        ear_critical_force_end(&f.crit, cleanup_now_us, EAR_CRITICAL_END_EXPLICIT);
+        crit_force_started = false;
+    }
+    if (om_ready) {
+        if (ear_obs_manager_n_open(&f.om) > 0u
+            || ear_obs_manager_n_pending(&f.om) > 0u) {
+            ear_obs_manager_force_end_all(
+                &f.om, EAR_OBS_END_EXPLICIT, cleanup_now_us + 1000
+            );
+        }
+        /* Drain EXIT/pending transitions before ce_stop removes candidates. */
+        ear_obs_manager_poll(&f.om, cleanup_now_us + 2000);
+    }
     if (crit_bound) {
         (void)ae_remove_signature_listener(&f.ae, critical_ae_listener, &f.crit);
         crit_bound = false;
     }
     if (ce_started) {
+        ce_set_promotion_cb(&f.ce, NULL, NULL);
         ce_stop(&f.ce);
         ce_started = false;
+        if (om_ready) {
+            /* Drain any EXIT queued by ce_stop. */
+            ear_obs_manager_poll(&f.om, cleanup_now_us + 3000);
+            if (ear_obs_manager_n_open(&f.om) > 0u) {
+                ear_obs_manager_force_end_all(
+                    &f.om, EAR_OBS_END_EXPLICIT, cleanup_now_us + 4000
+                );
+                ear_obs_manager_poll(&f.om, cleanup_now_us + 5000);
+            }
+        }
     }
     if (se_bound) {
         (void)ae_remove_signature_listener(&f.ae, sig_engine_ae_listener, NULL);
@@ -849,11 +1004,33 @@ p3a_cleanup:
         sig_engine_stop();
         sig_started = false;
     }
-    /*
-     * Successful path must leave zero AE listeners. Failures that jump here
-     * before full bind still assert cleanup progressed to a known state when
-     * the triad was complete.
-     */
+
+    if (ear_critical_is_active(&f.crit)) {
+        fprintf(stderr, "FAIL %s:%d: Critical still active after cleanup\n",
+                __FILE__, __LINE__);
+        g_failures++;
+    }
+    if (om_ready && ear_obs_manager_n_open(&f.om) != 0u) {
+        fprintf(stderr, "FAIL %s:%d: normal OM still open after cleanup (n=%u)\n",
+                __FILE__, __LINE__, (unsigned)ear_obs_manager_n_open(&f.om));
+        g_failures++;
+    }
+    if (om_ready && ear_obs_manager_n_pending(&f.om) != 0u) {
+        fprintf(stderr, "FAIL %s:%d: normal OM still pending after cleanup\n",
+                __FILE__, __LINE__);
+        g_failures++;
+    }
+    if (sp_episode_registry_in_use_count(&f.reg) != reg_initial) {
+        fprintf(
+            stderr,
+            "FAIL %s:%d: registry occupancy after cleanup expected %u got %u\n",
+            __FILE__,
+            __LINE__,
+            (unsigned)reg_initial,
+            (unsigned)sp_episode_registry_in_use_count(&f.reg)
+        );
+        g_failures++;
+    }
     if (ae_listener_count(&f.ae) != 0u) {
         fprintf(
             stderr,
