@@ -366,10 +366,56 @@ run_host_tests() {
         ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
         "${ce_srcs[@]}" \
         "${EAR_OBS}/test_host/test_ae_sig_module_independence.c" || host_fail=1
+      # CE module/workflow contract suite (Option A package 1).
+      # Failures here must fail the gate (run_host_one → host_fail).
+      if [[ -f "${EAR_CE}/test_host/test_ce_architecture.c" \
+        && -f "${EAR_OBS}/ce_promotion_bridge.c" ]]; then
+        run_host_one ce_architecture \
+          ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
+          "${ce_srcs[@]}" \
+          "${PLAT_OBS}/episode_registry.c" \
+          "${EAR_OBS}/ce_promotion_bridge.c" \
+          "${EAR_CE}/test_host/test_ce_architecture.c" || host_fail=1
+      else
+        record_skip "host/ce_architecture (sources/tests not in tree)"
+      fi
+      # Critical Path independence from CE (ADR 0003) — gated host contracts.
+      # Keep test_ce_promotion_bridge / test_observation_payload outside this expansion.
+      if [[ -f "${EAR_OBS}/test_host/test_ear_critical_path.c" \
+        && -f "${EAR_OBS}/ear_critical_path.c" ]]; then
+        run_host_one ear_critical_path \
+          ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
+          "${EAR_AE}/ae_signature.c" \
+          "${EAR_OBS}/ear_critical_path.c" \
+          "${PLAT_OBS}/episode_registry.c" \
+          "${EAR_OBS}/test_host/test_ear_critical_path.c" || host_fail=1
+      else
+        record_skip "host/ear_critical_path (sources/tests not in tree)"
+      fi
+      if [[ -f "${EAR_OBS}/test_host/test_ear_critical_integration.c" \
+        && -f "${EAR_OBS}/ear_critical_path.c" \
+        && -f "${EAR_OBS}/ear_obs_ota_cleanup.c" ]]; then
+        run_host_one ear_critical_integration \
+          ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
+          "${ce_srcs[@]}" \
+          "${PLAT_OBS}/episode_registry.c" \
+          "${EAR_OBS}/ear_cls_progressive.c" \
+          "${EAR_OBS}/ear_cls_as001.c" \
+          "${EAR_OBS}/ear_obs_manager.c" \
+          "${EAR_OBS}/ear_promotion_policy.c" \
+          "${EAR_OBS}/ear_critical_path.c" \
+          "${EAR_OBS}/ear_obs_ota_cleanup.c" \
+          "${EAR_OBS}/test_host/test_ear_critical_integration.c" || host_fail=1
+      else
+        record_skip "host/ear_critical_integration (sources/tests not in tree)"
+      fi
     else
       record_skip "host/ear_obs_manager (OM sources/tests not in tree)"
       record_skip "host/ear_cls_progressive (OM sources/tests not in tree)"
       record_skip "host/ear_siren_se_public (OM sources/tests not in tree)"
+      record_skip "host/ce_architecture (OM sources/tests not in tree)"
+      record_skip "host/ear_critical_path (OM sources/tests not in tree)"
+      record_skip "host/ear_critical_integration (OM sources/tests not in tree)"
     fi
   else
     record_skip "host/ae_m4_lifecycle_gap (CE/profile sources not in tree)"
@@ -377,6 +423,9 @@ run_host_tests() {
     record_skip "host/ce_identity (CE/profile sources not in tree)"
     record_skip "host/as_profile_as001 (CE/profile sources not in tree)"
     record_skip "host/ear_obs_manager (CE/profile sources not in tree)"
+    record_skip "host/ce_architecture (CE/profile sources not in tree)"
+    record_skip "host/ear_critical_path (CE/profile sources not in tree)"
+    record_skip "host/ear_critical_integration (CE/profile sources not in tree)"
   fi
 
   return "${host_fail}"

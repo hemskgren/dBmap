@@ -1,10 +1,17 @@
 /**
  * Host tests: Critical Observation Path lifecycle (detection disabled).
  *
- * From repo root:
+ * Preferred: included in ./firmware/scripts/run_firmware_fast_gate.sh (--host-only).
+ *
+ * Standalone from repo root (keep includes aligned with the fast gate):
  *   cc -std=c11 -Wall -Wextra -Werror -O2 -g \
  *     -I firmware/products/dbmap/ear/audio_engine/include \
+ *     -I firmware/platform/audio/include \
  *     -I firmware/products/dbmap/ear/ear_acoustic/include \
+ *     -I firmware/platform/mic/include \
+ *     -I firmware/platform/node_common/include \
+ *     -I firmware/products/dbmap/ear/candidate_engine/include \
+ *     -I firmware/products/dbmap/ear/acoustic_profile/include \
  *     -I firmware/products/dbmap/ear/ear_observation/include \
  *     -I firmware/platform/observation/include \
  *     firmware/products/dbmap/ear/audio_engine/ae_signature.c \
