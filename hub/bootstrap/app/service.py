@@ -775,6 +775,24 @@ def count_observations(
     return int(db.scalar(statement) or 0)
 
 
+def latest_observation_received_at(
+    db: Session,
+    node_id: str | None = None,
+    *,
+    observation_id: str | None = None,
+) -> datetime | None:
+    """Newest observation receive timestamp without loading observation rows."""
+    statement = select(func.max(Observation.received_time_utc))
+    for clause in _observation_filter_clause(
+        node_id=node_id,
+        observation_id=observation_id,
+        snapshot_id=None,
+    ):
+        statement = statement.where(clause)
+    value = db.scalar(statement)
+    return value if isinstance(value, datetime) else None
+
+
 def count_unique_observations(
     db: Session,
     node_id: str | None = None,

@@ -53,6 +53,9 @@ RECENT_EVENT_LIMIT = 15
 CLEANUP_EVERY_CYCLES = 10
 # Avoid presenting a rounded 100% when any confirmed unavailable time exists.
 PERCENT_QUANTUM = 0.01
+# New Hub samples are transition-sparse and hold-attributed. Legacy dense rows
+# omit this marker and keep interval attribution for long inter-sample gaps.
+SAMPLE_MODE_SPARSE = "sparse"
 
 _thread: threading.Thread | None = None
 _stop = threading.Event()
@@ -456,6 +459,55 @@ def cleanup_history(db: Session, now: datetime | None = None) -> dict[str, int]:
     }
 
 
+def _add_unobserved_gap_sample(
+    db: Session, *, previous: HubMonitorSample, gap_start: datetime, gap_end: datetime
+) -> HubMonitorSample:
+    """Insert an explicit unobserved marker so hold attribution excludes Hub-down time."""
+    previous_at = _ensure_aware(previous.observed_at)
+    unobserved_at = max(gap_start, previous_at + timedelta(microseconds=1))
+    if unobserved_at >= gap_end:
+        unobserved_at = gap_end - timedelta(microseconds=1)
+    sample = HubMonitorSample(
+        sample_id=str(uuid4()),
+        hub_id=settings.hub_id,
+        observed_at=unobserved_at,
+        overall_availability="unobserved",
+        overall_health="unknown",
+        components_json=json.dumps(
+            {
+                "states": {},
+                "last_success": {},
+                "reasons": {"monitor": "unobserved monitoring gap"},
+                "sample_mode": SAMPLE_MODE_SPARSE,
+                "gap": True,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        source="local_monitor",
+    )
+    db.add(sample)
+    return sample
+
+
+def _should_persist_hub_sample(
+    previous: HubMonitorSample | None,
+    *,
+    components: dict[str, str],
+    health: str,
+    availability: str,
+    hub_gap: tuple[datetime, datetime] | None,
+) -> bool:
+    if previous is None or hub_gap is not None:
+        return True
+    if previous.overall_availability == "unobserved":
+        return True
+    if previous.overall_availability != availability or previous.overall_health != health:
+        return True
+    previous_states = _parse_sample_payload(previous)["states"]
+    return any(previous_states.get(name) != components.get(name) for name in COMPONENT_IDS)
+
+
 def run_check(db: Session, *, record_startup_gap: bool = True) -> dict[str, Any]:
     """Run one monitoring cycle and persist sample/events. Safe against probe failures."""
     global _cycles_since_cleanup
@@ -464,13 +516,25 @@ def run_check(db: Session, *, record_startup_gap: bool = True) -> dict[str, Any]
         observed_at: datetime = probe["observed_at"]
         components: dict[str, str] = probe["components"]
         health, availability = assess_states(components)
+        previous = _latest_sample(db)
         hub_gap: tuple[datetime, datetime] | None = None
         if record_startup_gap:
             hub_gap = _maybe_record_gap(db, observed_at)
-        previous = _latest_sample(db)
+        if (
+            hub_gap is not None
+            and previous is not None
+            and previous.overall_availability != "unobserved"
+        ):
+            _add_unobserved_gap_sample(
+                db,
+                previous=previous,
+                gap_start=_ensure_aware(hub_gap[0]),
+                gap_end=_ensure_aware(hub_gap[1]),
+            )
+        transition_previous = previous
         _emit_transitions(
             db,
-            previous,
+            transition_previous,
             components=components,
             health=health,
             availability=availability,
@@ -478,22 +542,38 @@ def run_check(db: Session, *, record_startup_gap: bool = True) -> dict[str, Any]
             observed_at=observed_at,
         )
         _detect_docker_restarts(db, probe["docker"], observed_at)
-        payload = {
-            "states": components,
-            "last_success": probe["last_success"],
-            "reasons": probe["reasons"],
-            "docker": probe["docker"],
-        }
-        sample = HubMonitorSample(
-            sample_id=str(uuid4()),
-            hub_id=settings.hub_id,
-            observed_at=observed_at,
-            overall_availability=availability,
-            overall_health=health,
-            components_json=json.dumps(payload, separators=(",", ":"), sort_keys=True),
-            source="local_monitor",
-        )
-        db.add(sample)
+        # Persist probe states only. Docker inspect stays in-memory for restart
+        # detection and the current health view; embedding it in every sample
+        # inflates SQLite without contributing to availability math. Historical
+        # rows that still contain "docker" remain readable via _parse_sample_payload.
+        sample: HubMonitorSample | None = None
+        if _should_persist_hub_sample(
+            previous,
+            components=components,
+            health=health,
+            availability=availability,
+            hub_gap=hub_gap,
+        ):
+            payload = {
+                "states": components,
+                "last_success": probe["last_success"],
+                "reasons": probe["reasons"],
+                "sample_mode": SAMPLE_MODE_SPARSE,
+            }
+            sample = HubMonitorSample(
+                sample_id=str(uuid4()),
+                hub_id=settings.hub_id,
+                observed_at=observed_at,
+                overall_availability=availability,
+                overall_health=health,
+                components_json=json.dumps(
+                    payload, separators=(",", ":"), sort_keys=True
+                ),
+                source="local_monitor",
+            )
+            db.add(sample)
+        else:
+            sample = previous
         # Device sampling shares the Hub cycle; failures must not lose the Hub sample.
         from app import device_monitor
 
@@ -519,16 +599,25 @@ def run_check(db: Session, *, record_startup_gap: bool = True) -> dict[str, Any]
                 except Exception as rollback_exc:  # noqa: BLE001
                     log.debug("rollback after cleanup failure: %s", rollback_exc)
             _cycles_since_cleanup = 0
-        return build_monitoring_summary(db, current_probe=probe, current_sample=sample)
+        return build_monitoring_summary(
+            db, current_probe=probe, current_sample=sample
+        )
 
 
 def _parse_sample_payload(sample: HubMonitorSample) -> dict[str, Any]:
+    empty = {
+        "states": {},
+        "last_success": {},
+        "reasons": {},
+        "docker": {},
+        "sample_mode": None,
+    }
     try:
         payload = json.loads(sample.components_json)
     except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
-        return {"states": {}, "last_success": {}, "reasons": {}, "docker": {}}
+        return empty
     if not isinstance(payload, dict):
-        return {"states": {}, "last_success": {}, "reasons": {}, "docker": {}}
+        return empty
     states = payload.get("states")
     if not isinstance(states, dict):
         # Back-compat if a test stored a flat map.
@@ -548,6 +637,9 @@ def _parse_sample_payload(sample: HubMonitorSample) -> dict[str, Any]:
         "docker": payload.get("docker")
         if isinstance(payload.get("docker"), dict)
         else {},
+        "sample_mode": payload.get("sample_mode")
+        if isinstance(payload.get("sample_mode"), str)
+        else None,
     }
 
 
@@ -558,6 +650,8 @@ def _attribute_interval(
 
     `degraded` counts as available for the core Hub percentage (e.g. OPA-only
     failure). MQTT failure is stored as `unavailable`, not `degraded`.
+    Legacy dense samples use this for long gaps so Hub-down time stays
+    unobserved rather than held as the last confirmed state.
     """
     total = max((end - start).total_seconds(), 0.0)
     if total <= 0:
@@ -574,6 +668,77 @@ def _attribute_interval(
     if state == "unavailable":
         return 0.0, confirmed, unobserved
     return 0.0, 0.0, confirmed + unobserved
+
+
+def _attribute_hold(
+    state: str, start: datetime, end: datetime
+) -> tuple[float, float, float]:
+    """Attribute the full interval to the sample state (transition-sparse model)."""
+    total = max((end - start).total_seconds(), 0.0)
+    if total <= 0:
+        return 0.0, 0.0, 0.0
+    if state in {"available", "degraded"}:
+        return total, 0.0, 0.0
+    if state == "unavailable":
+        return 0.0, total, 0.0
+    return 0.0, 0.0, total
+
+
+def _payload_sample_mode(payload: dict[str, Any]) -> str | None:
+    mode = payload.get("sample_mode")
+    return mode if isinstance(mode, str) else None
+
+
+def _sample_uses_sparse_hold(
+    sample: HubMonitorSample, payload: dict[str, Any] | None = None
+) -> bool:
+    """Sparse-era samples (and explicit unobserved markers) use hold attribution."""
+    if sample.overall_availability == "unobserved":
+        return True
+    parsed = payload if payload is not None else _parse_sample_payload(sample)
+    return _payload_sample_mode(parsed) == SAMPLE_MODE_SPARSE
+
+
+def _attribute_hub_span(
+    state: str,
+    start: datetime,
+    end: datetime,
+    interval: timedelta,
+    *,
+    sparse_hold: bool,
+) -> tuple[float, float, float]:
+    """Attribute one sample span with sparse/legacy compatibility.
+
+    Sparse-era samples hold state until the next sample (device-aligned).
+    Legacy dense samples keep interval attribution so long Hub-down gaps stay
+    unobserved without rewriting historical rows.
+    """
+    if sparse_hold:
+        return _attribute_hold(state, start, end)
+    return _attribute_interval(state, start, end, interval)
+
+
+def _select_samples_for_window(
+    samples: list[HubMonitorSample],
+    *,
+    window_start: datetime,
+    window_end: datetime,
+) -> list[HubMonitorSample]:
+    """Include the latest sample before the window so hold can cover it."""
+    ordered = sorted(samples, key=lambda item: _ensure_aware(item.observed_at))
+    before = [
+        sample
+        for sample in ordered
+        if _ensure_aware(sample.observed_at) < window_start
+    ]
+    inside = [
+        sample
+        for sample in ordered
+        if window_start <= _ensure_aware(sample.observed_at) <= window_end
+    ]
+    if before:
+        return [before[-1], *inside]
+    return inside
 
 
 def _format_percent(
@@ -655,20 +820,28 @@ def compute_availability_window(
     window_start: datetime,
     window_end: datetime,
     interval_s: float,
+    payloads_by_sample_id: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Core Hub availability from overall sample states.
 
     MQTT outages are recorded as overall_availability=unavailable and therefore
     reduce this percentage. OPA-only degraded intervals still count as available.
+
+    Sparse-era samples hold state (including across a window with no interior
+    sample when a pre-window carry-in exists). Legacy dense samples keep
+    interval attribution for long gaps so historical Hub-down time stays
+    unobserved without rewriting rows.
     """
     interval = timedelta(seconds=interval_s)
     window_seconds = max((window_end - window_start).total_seconds(), 0.0)
     basis = (
         "Core Hub availability % = confirmed available-or-OPA-degraded time / "
         "eligible observation time × 100. MQTT or reachability failure is "
-        "unavailable. Unobserved gaps are excluded. A percentage requires at "
-        "least 10 minutes of eligible observation. Multi-day windows are not "
-        "score_ready until eligible time covers at least half the window."
+        "unavailable. Unobserved gaps are excluded. Sparse-era samples hold "
+        "state; legacy dense samples use interval confirmation for long gaps. "
+        "A percentage requires at least 10 minutes of eligible observation. "
+        "Multi-day windows are not score_ready until eligible time covers at "
+        "least half the window."
     )
     if window_seconds <= 0:
         return _window_result(
@@ -681,7 +854,9 @@ def compute_availability_window(
             basis=basis,
         ) | {"insufficient_data": True, "reason": "invalid_window", "percent": None}
 
-    ordered = sorted(samples, key=lambda item: _ensure_aware(item.observed_at))
+    ordered = _select_samples_for_window(
+        samples, window_start=window_start, window_end=window_end
+    )
     available = 0.0
     unavailable = 0.0
     unobserved = 0.0
@@ -704,18 +879,31 @@ def compute_availability_window(
                 end = window_end
             if end <= start:
                 continue
-            avail, unavail, unobs = _attribute_interval(
-                sample.overall_availability, start, end, interval
+            payload = None
+            if payloads_by_sample_id is not None:
+                payload = payloads_by_sample_id.get(sample.sample_id)
+            sparse_hold = _sample_uses_sparse_hold(sample, payload)
+            avail, unavail, unobs = _attribute_hub_span(
+                sample.overall_availability,
+                start,
+                end,
+                interval,
+                sparse_hold=sparse_hold,
             )
             available += avail
             unavailable += unavail
             unobserved += unobs
             if unobs > 0:
-                confirmed_end = start + timedelta(seconds=avail + unavail)
-                if confirmed_end < end:
-                    # The monitor was not writing samples. A stopped Hub
-                    # container and a powered-off computer look the same here.
-                    gaps.append(_observation_gap(confirmed_end, end, "not_running"))
+                if sparse_hold and sample.overall_availability == "unobserved":
+                    gaps.append(_observation_gap(start, end, "not_running"))
+                else:
+                    confirmed_end = start + timedelta(seconds=avail + unavail)
+                    if confirmed_end < end:
+                        # The monitor was not writing samples. A stopped Hub
+                        # container and a powered-off computer look the same.
+                        gaps.append(
+                            _observation_gap(confirmed_end, end, "not_running")
+                        )
 
     not_running = sum(
         max(
@@ -728,20 +916,24 @@ def compute_availability_window(
         for gap in gaps
         if gap.get("kind") == "not_running"
     )
+    inside_count = sum(
+        1
+        for sample in ordered
+        if window_start <= _ensure_aware(sample.observed_at) <= window_end
+    )
     return _window_result(
         available=available,
         unavailable=unavailable,
         unobserved=unobserved,
         not_running=not_running,
         window_seconds=window_seconds,
-        sample_count=len(ordered),
+        sample_count=inside_count,
         gaps=gaps,
         basis=basis,
     )
 
 
-def _component_sample_state(sample: HubMonitorSample, component_id: str) -> str:
-    states = _parse_sample_payload(sample)["states"]
+def _component_state_from_states(states: dict[str, str], component_id: str) -> str:
     raw = states.get(component_id)
     if raw is None or raw == "unknown":
         return "unobserved"
@@ -752,6 +944,12 @@ def _component_sample_state(sample: HubMonitorSample, component_id: str) -> str:
     return "unobserved"
 
 
+def _component_sample_state(sample: HubMonitorSample, component_id: str) -> str:
+    return _component_state_from_states(
+        _parse_sample_payload(sample)["states"], component_id
+    )
+
+
 def compute_component_availability_window(
     samples: list[HubMonitorSample],
     *,
@@ -759,6 +957,7 @@ def compute_component_availability_window(
     window_start: datetime,
     window_end: datetime,
     interval_s: float,
+    payloads_by_sample_id: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Independent component availability from per-sample component states."""
     interval = timedelta(seconds=interval_s)
@@ -784,7 +983,9 @@ def compute_component_availability_window(
             "percent": None,
         }
 
-    ordered = sorted(samples, key=lambda item: _ensure_aware(item.observed_at))
+    ordered = _select_samples_for_window(
+        samples, window_start=window_start, window_end=window_end
+    )
     available = 0.0
     unavailable = 0.0
     unobserved = 0.0
@@ -810,28 +1011,56 @@ def compute_component_availability_window(
                 end = window_end
             if end <= start:
                 continue
-            state = _component_sample_state(sample, component_id)
-            avail, unavail, unobs = _attribute_interval(state, start, end, interval)
+            payload = (
+                payloads_by_sample_id.get(sample.sample_id)
+                if payloads_by_sample_id is not None
+                else None
+            )
+            if payload is not None:
+                states = payload.get("states") if isinstance(payload.get("states"), dict) else {}
+                state = _component_state_from_states(
+                    {str(k): str(v) for k, v in states.items()}, component_id
+                )
+            else:
+                state = _component_sample_state(sample, component_id)
+            sparse_hold = _sample_uses_sparse_hold(sample, payload)
+            avail, unavail, unobs = _attribute_hub_span(
+                state, start, end, interval, sparse_hold=sparse_hold
+            )
             available += avail
             unavailable += unavail
             unobserved += unobs
             if unobs > 0:
-                confirmed_end = start + timedelta(seconds=avail + unavail)
-                if confirmed_end < end:
+                if sparse_hold and state == "unobserved":
                     gaps.append(
                         {
-                            "start": confirmed_end.isoformat(),
+                            "start": start.isoformat(),
                             "end": end.isoformat(),
                             "certainty": "inferred",
                         }
                     )
+                else:
+                    confirmed_end = start + timedelta(seconds=avail + unavail)
+                    if confirmed_end < end:
+                        gaps.append(
+                            {
+                                "start": confirmed_end.isoformat(),
+                                "end": end.isoformat(),
+                                "certainty": "inferred",
+                            }
+                        )
 
+    inside_count = sum(
+        1
+        for sample in ordered
+        if window_start <= _ensure_aware(sample.observed_at) <= window_end
+    )
     result = _window_result(
         available=available,
         unavailable=unavailable,
         unobserved=unobserved,
         window_seconds=window_seconds,
-        sample_count=len(ordered),
+        sample_count=inside_count,
         gaps=gaps,
         basis=basis,
     )
@@ -930,20 +1159,22 @@ def build_monitoring_summary(
             .order_by(HubMonitorSample.observed_at.asc())
         )
     )
+    # Parse each sample payload once for all windows (P0). Pass the full
+    # retention history so hold can carry the latest pre-window sample in.
+    payloads_by_sample_id = {
+        sample.sample_id: _parse_sample_payload(sample) for sample in history
+    }
     windows: dict[str, Any] = {}
     # Report gaps once from the widest window so the UI does not repeat the same
     # unobserved interval under 24h/7d/30d.
     all_gaps: list[dict[str, str]] = []
     for name, delta in WINDOW_SPECS:
         window = compute_availability_window(
-            [
-                item
-                for item in history
-                if _ensure_aware(item.observed_at) >= now - delta
-            ],
+            history,
             window_start=now - delta,
             window_end=now,
             interval_s=settings.hub_monitor_interval_s,
+            payloads_by_sample_id=payloads_by_sample_id,
         )
         gaps = window.pop("gaps", [])
         windows[name] = window
@@ -1004,15 +1235,12 @@ def build_monitoring_summary(
         for name, delta in WINDOW_SPECS:
             component_windows[component_id][name] = (
                 compute_component_availability_window(
-                    [
-                        item
-                        for item in history
-                        if _ensure_aware(item.observed_at) >= now - delta
-                    ],
+                    history,
                     component_id=component_id,
                     window_start=now - delta,
                     window_end=now,
                     interval_s=settings.hub_monitor_interval_s,
+                    payloads_by_sample_id=payloads_by_sample_id,
                 )
             )
 

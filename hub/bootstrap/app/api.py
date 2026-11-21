@@ -905,7 +905,9 @@ def update_deployment_attempt(
 def get_hub_status(db: Session = Depends(get_db)) -> dict:
     db.execute(text("SELECT 1"))
     nodes = service.list_nodes(db)
-    observations = service.list_observations(db, None, 500)
+    # Exact totals — do not load observation rows just for count/latest.
+    observation_count = service.count_observations(db)
+    latest_observation = service.latest_observation_received_at(db)
     if not settings.mqtt_enabled:
         mqtt_status = "disabled"
     else:
@@ -947,11 +949,9 @@ def get_hub_status(db: Session = Depends(get_db)) -> dict:
             "online_device_count": sum(node.status == "online" for node in nodes),
             "installation_completed_count": installation_completed_count,
             "installation_incomplete_count": len(nodes) - installation_completed_count,
-            "observation_count": len(observations),
-            "observation_limit": 500,
-            "latest_observation_at": max(
-                (item.received_time_utc.isoformat() for item in observations),
-                default=None,
+            "observation_count": observation_count,
+            "latest_observation_at": (
+                latest_observation.isoformat() if latest_observation is not None else None
             ),
         },
         "monitoring": hub_monitor.monitoring_status(db),

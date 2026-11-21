@@ -782,12 +782,19 @@ EXTRA_SCHEMAS = {
             "online_device_count": {"type": "integer"},
             "installation_completed_count": {"type": "integer"},
             "installation_incomplete_count": {"type": "integer"},
-            "observation_count": {"type": "integer"},
-            "observation_limit": {"type": "integer"},
+            "observation_count": {
+                "type": "integer",
+                "description": (
+                    "Exact observation row count (not capped by a list page size)."
+                ),
+            },
             "latest_observation_at": {
                 "type": "string",
                 "format": "date-time",
                 "nullable": True,
+                "description": (
+                    "Newest observation received_time_utc, or null when empty."
+                ),
             },
         },
     },

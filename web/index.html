@@ -3587,7 +3587,18 @@
       let usbConsoleStickBottom = true;
       let usbConsoleLastAppendMs = 0;
       let usbConsoleLineCount = 0;
+      // Boot identity: current Sensor Platform (`node_id=` / `hub_id=`) plus legacy
+      // `DBMAP_DEVICE_ID=` / `DBMAP_HUB_ID=`. Web Serial cannot expose ttyACM*; VID:PID
+      // is the port diagnostic label.
+      const USB_CONSOLE_NODE_ID_RE =
+        /(?:DBMAP_DEVICE_ID=|(?:^|[^\w])node_id=)([A-Z0-9][A-Z0-9_-]{0,63})\b/;
+      const USB_CONSOLE_HUB_ID_RE =
+        /(?:DBMAP_HUB_ID=|(?:^|[^\w])hub_id=)([A-Za-z0-9][A-Za-z0-9._-]{0,63})\b/;
+      const USB_CONSOLE_IDENTIFY_TIMEOUT_MS = 20000;
+      let usbConsolePortLabel = '';
       let usbConsoleDeviceId = '';
+      let usbConsoleIdentityPending = false;
+      let usbConsoleIdentifyTimer = 0;
 
       function showUsbConsoleDialog() {
         if (!usbConsoleDialog.open) usbConsoleDialog.showModal();
@@ -3612,26 +3623,54 @@
         return 'USB serial';
       }
 
-      function resolveUsbConsoleDeviceId(port) {
+      function resolveUsbConsoleKnownNodeId(port) {
         if (port && port === inspectedSerialPort) {
           if (detectedNodeId && detectedNodeId !== 'UNPROVISIONED') return detectedNodeId;
           if (existingRegisteredNode?.node_id) return existingRegisteredNode.node_id;
-          if (inspectedChipInfo?.macAddress) return inspectedChipInfo.macAddress;
         }
-        return usbConsolePortUsbLabel(port);
+        return '';
+      }
+
+      function clearUsbConsoleIdentifyTimer() {
+        if (usbConsoleIdentifyTimer) {
+          window.clearTimeout(usbConsoleIdentifyTimer);
+          usbConsoleIdentifyTimer = 0;
+        }
       }
 
       function setUsbConsoleOpenStatus() {
-        const id = usbConsoleDeviceId || 'unknown';
-        setUsbConsoleStatus(`Console open · ${id}. Reset board if no logs.`);
+        const portLabel = usbConsolePortLabel || 'USB serial';
+        let identity = 'not found';
+        if (usbConsoleDeviceId) identity = usbConsoleDeviceId;
+        else if (usbConsoleIdentityPending) identity = 'identifying…';
+        setUsbConsoleStatus(
+          `Console open · ${portLabel} > ${identity}. Reset board if no logs.`,
+        );
+      }
+
+      function startUsbConsoleIdentityWatch() {
+        clearUsbConsoleIdentifyTimer();
+        if (usbConsoleDeviceId) {
+          usbConsoleIdentityPending = false;
+          return;
+        }
+        usbConsoleIdentityPending = true;
+        usbConsoleIdentifyTimer = window.setTimeout(() => {
+          usbConsoleIdentifyTimer = 0;
+          if (!usbConsolePort || usbConsoleDeviceId) return;
+          usbConsoleIdentityPending = false;
+          setUsbConsoleOpenStatus();
+        }, USB_CONSOLE_IDENTIFY_TIMEOUT_MS);
       }
 
       function noteUsbConsoleDeviceIdFromText(text) {
         if (!text || !usbConsolePort) return;
-        const match = text.match(/DBMAP_DEVICE_ID=([A-Z0-9][A-Z0-9_-]{0,63})/);
+        const match = text.match(USB_CONSOLE_NODE_ID_RE);
         if (!match) return;
         if (usbConsoleDeviceId === match[1]) return;
         usbConsoleDeviceId = match[1];
+        usbConsoleIdentityPending = false;
+        clearUsbConsoleIdentifyTimer();
         setUsbConsoleOpenStatus();
       }
 
@@ -3780,7 +3819,10 @@
         const port = usbConsolePort;
         usbConsoleReader = null;
         usbConsolePort = null;
+        usbConsolePortLabel = '';
         usbConsoleDeviceId = '';
+        usbConsoleIdentityPending = false;
+        clearUsbConsoleIdentifyTimer();
         if (reader) {
           try { await reader.cancel(); } catch (_) { /* ignore */ }
           try { reader.releaseLock(); } catch (_) { /* ignore */ }
@@ -3823,7 +3865,9 @@
           usbConsolePort = port;
           usbConsoleReader = port.readable.getReader();
           usbConsoleKeepReading = true;
-          usbConsoleDeviceId = resolveUsbConsoleDeviceId(port);
+          usbConsolePortLabel = usbConsolePortUsbLabel(port);
+          usbConsoleDeviceId = resolveUsbConsoleKnownNodeId(port);
+          startUsbConsoleIdentityWatch();
           setUsbConsoleOpenStatus();
           syncUsbConsoleControls(true);
           readUsbConsoleLoop();
@@ -4063,14 +4107,14 @@
               );
             }
             if (!deviceId) {
-              const match = output.match(/DBMAP_DEVICE_ID=([A-Z0-9][A-Z0-9_-]{0,63})(?:\r?\n|$)/);
+              const match = output.match(USB_CONSOLE_NODE_ID_RE);
               if (match) deviceId = match[1];
             }
             if (!hubId) {
-              const hubMatch = output.match(/DBMAP_HUB_ID=([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?:\r?\n|$)/);
+              const hubMatch = output.match(USB_CONSOLE_HUB_ID_RE);
               if (hubMatch) hubId = hubMatch[1];
             }
-            // DEVICE_ID and HUB_ID are consecutive boot lines; once both are seen, stop.
+            // node_id/hub_id (or legacy DBMAP_*) are consecutive boot lines; once both are seen, stop.
             if (deviceId && hubId) {
               return {
                 deviceId,
@@ -4157,12 +4201,12 @@
           addDetailField(usbInspectionDetails, 'Chip variant', inspectedChipInfo.chipVariant);
           addDetailField(usbInspectionDetails, 'Chip family', inspectedChipInfo.chipFamily);
           addDetailField(usbInspectionDetails, 'MAC address', inspectedChipInfo.macAddress);
-          usbInspectionStatus.textContent = 'Chip identified. Booting application firmware to read DBMAP_DEVICE_ID…';
+          usbInspectionStatus.textContent = 'Chip identified. Booting application firmware to read node_id…';
           detectedNodeId = '';
           detectedHubId = '';
           try {
             const identity = await readDeviceIdentity(port, () => {
-              usbInspectionStatus.textContent = 'Listening for DBMAP_DEVICE_ID from running firmware…';
+              usbInspectionStatus.textContent = 'Listening for node_id (or legacy DBMAP_DEVICE_ID) from running firmware…';
             }, 20000);
             detectedNodeId = identity.deviceId;
             detectedHubId = identity.hubId || '';
