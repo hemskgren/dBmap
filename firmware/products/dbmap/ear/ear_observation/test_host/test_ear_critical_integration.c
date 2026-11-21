@@ -198,8 +198,10 @@ typedef struct {
     char last_term[16];
     char last_origin[32];
     int64_t last_start_capture_mono_us;
+    int64_t periodic_capture_mono_us;
     int64_t last_end_capture_mono_us;
     bool have_start_ts;
+    bool have_periodic_ts;
     bool have_end_ts;
     bool have_start_oid;
     bool have_end_oid;
@@ -249,6 +251,10 @@ static bool crit_publish(
                 observation_id
             );
             g_crit.have_periodic_oid = true;
+        }
+        if (!g_crit.have_periodic_ts) {
+            g_crit.periodic_capture_mono_us = capture_mono_us;
+            g_crit.have_periodic_ts = true;
         }
     } else if (emission_kind != NULL && strcmp(emission_kind, "end") == 0) {
         g_crit.ends++;
@@ -1234,6 +1240,29 @@ p3a_cleanup:
                 (long long)g_crit.last_end_capture_mono_us
             );
             g_failures++;
+        }
+        if (g_crit.periodics != 0u) {
+            if (g_crit.periodics != 1u || !g_crit.have_periodic_ts
+                || !g_crit.have_periodic_oid
+                || !g_crit.have_start_ts || !g_crit.have_end_ts
+                || strcmp(g_crit.periodic_oid, g_crit.start_oid) != 0
+                || g_crit.periodic_capture_mono_us
+                       < g_crit.last_start_capture_mono_us
+                || g_crit.last_end_capture_mono_us
+                       < g_crit.periodic_capture_mono_us) {
+                fprintf(
+                    stderr,
+                    "FAIL %s:%d: Critical PERIODIC not between START and END "
+                    "(start=%lld periodic=%lld end=%lld periodics=%u)\n",
+                    __FILE__,
+                    __LINE__,
+                    (long long)g_crit.last_start_capture_mono_us,
+                    (long long)g_crit.periodic_capture_mono_us,
+                    (long long)g_crit.last_end_capture_mono_us,
+                    (unsigned)g_crit.periodics
+                );
+                g_failures++;
+            }
         }
         if (!g_crit.have_start_oid || !g_crit.have_end_oid
             || g_crit.start_oid[0] == '\0'
