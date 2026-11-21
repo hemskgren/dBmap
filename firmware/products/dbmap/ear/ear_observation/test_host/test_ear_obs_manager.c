@@ -98,6 +98,30 @@ static void path_join_assessment(
 
 static emit_counts_t g_emit;
 
+/* Optional recorder used only by the Package 3B fixture. */
+typedef struct {
+    uint32_t count;
+    struct {
+        bool start;
+        uint64_t candidate_id;
+        char id[SP_OBS_EPISODE_ID_LEN];
+    } entries[6];
+} p3b_events_t;
+
+static void p3b_record(void *ctx, const ear_obs_binding_view_t *binding, bool start)
+{
+    p3b_events_t *events = ctx;
+    if (events == NULL || binding == NULL) {
+        return;
+    }
+    const uint32_t i = events->count++;
+    if (i < sizeof(events->entries) / sizeof(events->entries[0])) {
+        events->entries[i].start = start;
+        events->entries[i].candidate_id = binding->candidate_id;
+        memcpy(events->entries[i].id, binding->observation_id, sizeof(events->entries[i].id));
+    }
+}
+
 static bool emit_start(
     void *ctx,
     const ear_obs_binding_view_t *binding,
@@ -105,7 +129,7 @@ static bool emit_start(
     int64_t now_mono_us
 )
 {
-    (void)ctx;
+    p3b_record(ctx, binding, true);
     (void)snap;
     (void)now_mono_us;
     g_emit.starts++;
@@ -156,7 +180,7 @@ static bool emit_end(
     float signal_level_dbfs
 )
 {
-    (void)ctx;
+    p3b_record(ctx, binding, false);
     g_emit.ends++;
     g_emit.last_end_cand = binding != NULL ? binding->candidate_id : 0u;
     if (binding != NULL) {
@@ -3229,6 +3253,212 @@ e2e_cleanup:
     ce_stop(&f.ce);
     sig_engine_stop();
 }
+
+static bool p3b_capacity_is(const fixture_t *f, uint8_t open, uint8_t pending)
+{
+    return ear_obs_manager_n_open(&f->om) == open
+        && sp_episode_registry_in_use_count(&f->reg) == open
+        && ear_obs_manager_n_pending(&f->om) == pending
+        && ear_obs_manager_n_held(&f->om) == 0u;
+}
+
+/* Drive X through Policy while controlled AS-002 admissions fill both slots. */
+static void test_p3b_fifo_handoff_rejects_old_generation(void)
+{
+    fixture_t f = {0};
+    p3b_events_t events = {0};
+    bool se_bound = false;
+    bool om_ready = false;
+    const uint64_t b = 101u;
+    const uint64_t c = 102u;
+    const int64_t detach_time = 17400000;
+    const int64_t deadline = detach_time + 1000000;
+    const int64_t replay_time = 18700000;
+    g_emit = (emit_counts_t){0};
+    g_captured_exit_n = 0u;
+    g_uuid_n = 1u;
+
+    ae_config_t acfg;
+    ae_config_set_defaults(&acfg);
+    E2E_REQUIRE(ae_start(&f.ae, &acfg));
+    E2E_REQUIRE(sig_engine_start());
+    E2E_REQUIRE(ae_add_signature_listener(&f.ae, sig_engine_ae_listener, NULL));
+    se_bound = true;
+
+    ce_config_t ccfg;
+    ce_config_set_defaults(&ccfg);
+    ccfg.n_enter = 1u;
+    ccfg.t_coast = 3u;
+    E2E_REQUIRE(ce_start(&f.ce, &ccfg));
+    E2E_REQUIRE(ce_bind_audio_engine(&f.ce, &f.ae));
+    sp_episode_registry_init(&f.reg);
+    const ear_obs_manager_config_t mcfg = {
+        .registry = &f.reg,
+        .ce = &f.ce,
+        .ae = &f.ae,
+        .uuid_fn = fake_uuid,
+        .observation_interval_ms = 1000u,
+        .pending_timeout_ms = 30000u,
+        .detached_end_timeout_ms = 1000u,
+        .as002_signature_absence_hold_ms = 2000u,
+        .producer_tag = 2u,
+        .emit_ctx = &events,
+        .emit_start = emit_start,
+        .emit_end = emit_end,
+    };
+    ear_obs_manager_init(&f.om, &mcfg);
+    om_ready = true;
+    ear_promotion_policy_init(&f.pol, &f.ce, &f.om);
+    ce_set_promotion_cb(&f.ce, om_promo_capture_exit, &f.om);
+
+    ae_signature_t sig;
+    for (uint32_t seq = 1u; seq <= 4u; seq++) {
+        fill_broadband_sig(&sig, seq, -55.0f);
+        E2E_REQUIRE(e2e_drive(&f, &sig, sig.window_end_mono_us));
+    }
+    E2E_REQUIRE(events.count == 0u);
+    fill_heli_sig(&sig, 17u, -40.0f);
+    E2E_REQUIRE(e2e_drive(&f, &sig, sig.window_end_mono_us));
+    E2E_REQUIRE(events.count == 1u);
+    E2E_REQUIRE(events.entries[0].start);
+    const uint64_t x = events.entries[0].candidate_id;
+    ae_candidate_t live = {0};
+    E2E_REQUIRE(ce_find_candidate(&f.ce, x, &live));
+    const uint32_t g1 = live.promotion_gen;
+    E2E_REQUIRE(g1 != 0u);
+    const int old_slot = find_bind_idx(&f, x);
+    E2E_REQUIRE(old_slot >= 0 && (unsigned)old_slot < EAR_OBS_MGR_BINDING_CAP);
+    E2E_REQUIRE(f.om.bind[old_slot].ce_promotion_gen == g1);
+    E2E_REQUIRE(f.om.bind[old_slot].evidence_updates > 0u);
+    E2E_REQUIRE(f.om.bind[old_slot].snap.sig_count > 0u);
+    E2E_REQUIRE(f.om.bind[old_slot].snap.sigs[0].window_seq == 17u);
+    E2E_REQUIRE(f.om.bind[old_slot].last_owned_sig_window_seq == 17u);
+
+    ae_candidate_t *fixture = plant(&f.ce, b, AE_CAND_ACTIVE, 4u, -31.0f);
+    E2E_REQUIRE(fixture != NULL);
+    fixture->last_evidence_mono_us = 17100000;
+    E2E_REQUIRE(promote_as002_with_reserve(&f, b, 17100000));
+    E2E_REQUIRE(events.count == 2u);
+    E2E_REQUIRE(events.entries[1].start && events.entries[1].candidate_id == b);
+    const int b_slot = find_bind_idx(&f, b);
+    E2E_REQUIRE(b_slot >= 0 && b_slot != old_slot);
+    fixture = plant(&f.ce, c, AE_CAND_ACTIVE, 4u, -32.0f);
+    E2E_REQUIRE(fixture != NULL);
+    fixture->last_evidence_mono_us = 17200000;
+    E2E_REQUIRE(promote_as002_with_reserve(&f, c, 17200000));
+    E2E_REQUIRE(events.count == 2u && find_bind_idx(&f, c) < 0);
+    E2E_REQUIRE(p3b_capacity_is(&f, 2u, 1u));
+    E2E_REQUIRE(f.om.pending_order[0] < EAR_OBS_MGR_PENDING_CAP);
+    E2E_REQUIRE(f.om.pending[f.om.pending_order[0]].candidate_id == c);
+    ear_obs_manager_on_as002_siren_window(
+        &f.om, true, false, 1000u, 17300000, true, -31.0f
+    );
+    E2E_REQUIRE(events.count == 2u);
+
+    E2E_REQUIRE(ce_unadmit_promotion(&f.ce, x, g1));
+    E2E_REQUIRE(g_captured_exit_n == 1u);
+    E2E_REQUIRE(g_captured_exit.candidate_id == x && g_captured_exit.promotion_gen == g1);
+    ear_obs_manager_poll(&f.om, detach_time);
+    E2E_REQUIRE(events.count == 2u && p3b_capacity_is(&f, 2u, 1u));
+    E2E_REQUIRE(!f.om.bind[old_slot].ce_live);
+    E2E_REQUIRE(f.om.bind[old_slot].detached_since_mono_us == detach_time);
+
+    fill_heli_sig(&sig, 18u, -39.0f);
+    E2E_REQUIRE(e2e_drive(&f, &sig, sig.window_end_mono_us));
+    E2E_REQUIRE(ce_find_candidate(&f.ce, x, &live));
+    E2E_REQUIRE(live.state == AE_CAND_ACTIVE && !live.promotion_entered);
+    ear_obs_manager_poll(&f.om, deadline - 1);
+    E2E_REQUIRE(events.count == 2u && p3b_capacity_is(&f, 2u, 1u));
+    ear_obs_manager_poll(&f.om, deadline);
+    E2E_REQUIRE(events.count == 4u);
+    E2E_REQUIRE(!events.entries[2].start && events.entries[2].candidate_id == x);
+    E2E_REQUIRE(strcmp(events.entries[2].id, events.entries[0].id) == 0);
+    E2E_REQUIRE(g_emit.last_end_reason == EAR_OBS_END_EXPLICIT);
+    E2E_REQUIRE(events.entries[3].start && events.entries[3].candidate_id == c);
+    E2E_REQUIRE(find_bind_idx(&f, c) == old_slot && find_bind_idx(&f, b) >= 0);
+    E2E_REQUIRE(p3b_capacity_is(&f, 2u, 0u));
+
+    ear_promotion_policy_poll(&f.pol, 18500000);
+    ear_obs_manager_poll(&f.om, 18500000);
+    E2E_REQUIRE(ce_find_candidate(&f.ce, x, &live));
+    const uint32_t g2 = live.promotion_gen;
+    E2E_REQUIRE(live.state == AE_CAND_PROMOTED && g2 != 0u && g2 != g1);
+    E2E_REQUIRE(events.count == 4u && find_bind_idx(&f, x) < 0);
+    E2E_REQUIRE(p3b_capacity_is(&f, 2u, 1u));
+    E2E_REQUIRE(f.om.pending_order[0] < EAR_OBS_MGR_PENDING_CAP);
+    E2E_REQUIRE(f.om.pending[f.om.pending_order[0]].candidate_id == x);
+    E2E_REQUIRE(f.om.pending[f.om.pending_order[0]].snap.promotion_gen == g2);
+
+    ear_obs_manager_on_as002_siren_window(
+        &f.om, true, false, 1000u, 18600000, true, -31.0f
+    );
+    E2E_REQUIRE(events.count == 6u);
+    E2E_REQUIRE(!events.entries[4].start && events.entries[4].candidate_id == b);
+    E2E_REQUIRE(strcmp(events.entries[4].id, events.entries[1].id) == 0);
+    E2E_REQUIRE(g_emit.last_end_reason == EAR_OBS_END_SIGNATURE);
+    E2E_REQUIRE(events.entries[5].start && events.entries[5].candidate_id == x);
+    E2E_REQUIRE(strcmp(events.entries[5].id, events.entries[0].id) != 0);
+    E2E_REQUIRE(p3b_capacity_is(&f, 2u, 0u));
+    const int slot = find_bind_idx(&f, x);
+    E2E_REQUIRE(slot >= 0 && (unsigned)slot < EAR_OBS_MGR_BINDING_CAP);
+    E2E_REQUIRE(slot == b_slot);
+    E2E_REQUIRE(f.om.bind[slot].ce_live && f.om.bind[slot].ce_promotion_gen == g2);
+    E2E_REQUIRE(f.om.bind[slot].detached_since_mono_us == 0);
+    E2E_REQUIRE(f.om.bind[slot].snap.sig_count > 0u);
+    E2E_REQUIRE(f.om.bind[slot].snap.sigs[0].window_seq == 18u);
+    E2E_REQUIRE(f.om.bind[slot].last_owned_sig_window_seq == 18u);
+
+    ear_obs_manager_on_promotion(&g_captured_exit, CE_PROMOTION_EXIT, &f.om);
+    ear_obs_manager_poll(&f.om, replay_time);
+    E2E_REQUIRE(events.count == 6u && p3b_capacity_is(&f, 2u, 0u));
+    E2E_REQUIRE(find_bind_idx(&f, x) == slot && f.om.bind[slot].ce_live);
+    E2E_REQUIRE(f.om.bind[slot].detached_since_mono_us == 0);
+    E2E_REQUIRE(f.om.diag.exit_stale == 1u);
+
+    ear_obs_promote_snapshot_t before_stale;
+    memcpy(&before_stale, &f.om.bind[slot].snap, sizeof(before_stale));
+    const uint32_t updates = f.om.bind[slot].evidence_updates;
+    const uint32_t dropped = f.om.diag.evidence_dropped;
+    ae_candidate_t stale = g_captured_exit;
+    fill_heli_sig(&sig, 20u, -35.0f);
+    stale.last_window_seq = sig.window_seq;
+    stale.last_evidence_mono_us = sig.window_end_mono_us;
+    stale.ema_rms_dbfs = sig.rms_dbfs;
+    ear_obs_manager_on_candidate_evidence(&f.om, x, &sig, &stale);
+    E2E_REQUIRE(f.om.bind[slot].last_owned_sig_window_seq == 18u);
+    E2E_REQUIRE(f.om.bind[slot].evidence_updates == updates);
+    E2E_REQUIRE(f.om.diag.evidence_dropped == dropped + 1u);
+    E2E_REQUIRE(memcmp(&before_stale, &f.om.bind[slot].snap, sizeof(before_stale)) == 0);
+
+    fill_heli_sig(&sig, 19u, -38.5f);
+    E2E_REQUIRE(e2e_drive(&f, &sig, sig.window_end_mono_us));
+    E2E_REQUIRE(f.om.bind[slot].last_owned_sig_window_seq == 19u);
+    E2E_REQUIRE(f.om.bind[slot].snap.sigs[0].window_seq == 19u);
+    E2E_REQUIRE(f.om.bind[slot].snap.sigs[0].rms_dbfs == sig.rms_dbfs);
+    E2E_REQUIRE(f.om.bind[slot].evidence_updates > updates);
+    ear_obs_manager_poll(&f.om, replay_time + 1000001);
+    E2E_REQUIRE(events.count == 6u && g_emit.starts == 4u && g_emit.ends == 2u);
+    E2E_REQUIRE(p3b_capacity_is(&f, 2u, 0u) && find_bind_idx(&f, c) == old_slot);
+    E2E_REQUIRE(find_bind_idx(&f, x) == slot && f.om.bind[slot].ce_live);
+    E2E_REQUIRE(f.om.bind[slot].ce_promotion_gen == g2);
+    E2E_REQUIRE(strcmp(f.om.bind[slot].observation_id, events.entries[5].id) == 0);
+
+e2e_cleanup:
+    if (se_bound) {
+        (void)ae_remove_signature_listener(&f.ae, sig_engine_ae_listener, NULL);
+    }
+    ce_set_promotion_cb(&f.ce, NULL, NULL);
+    ce_stop(&f.ce);
+    sig_engine_stop();
+    if (om_ready) {
+        ear_obs_manager_forget_bindings(&f.om);
+        sp_episode_registry_init(&f.reg);
+    }
+    g_captured_exit = (ae_candidate_t){0};
+    g_captured_exit_n = 0u;
+    g_emit = (emit_counts_t){0};
+    g_uuid_n = 0u;
+}
 #undef E2E_REQUIRE
 
 int main(void)
@@ -3304,6 +3534,7 @@ int main(void)
     test_p2_enter_queue_full_recovers();
     test_p2_unadmit_gen_protects_newer();
     test_p2_as001_ce_om_lifecycle_e2e();
+    test_p3b_fifo_handoff_rejects_old_generation();
 
     if (g_failures != 0) {
         fprintf(stderr, "%d failure(s)\n", g_failures);
