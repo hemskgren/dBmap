@@ -3,6 +3,7 @@
  *
  * Test 4 — Critical with both normal Observation slots occupied.
  * Test 5 — OTA product-binding cleanup while Critical is active (+ boot boundary).
+ * Package 3A — AE listener triad (SE → CE → Critical) + Critical coexistence.
  *
  * Uses production ear_obs_manager, episode registry, ear_critical_path, and
  * ear_obs_ota_release_product_bindings (same helper as ear_observation_close_for_ota).
@@ -58,6 +59,7 @@
 #include "ear_obs_manager.h"
 #include "ear_obs_ota_cleanup.h"
 #include "ear_promotion_policy.h"
+#include "sig_engine.h"
 #include "sp_episode_registry.h"
 
 #include <stdio.h>
@@ -81,9 +83,31 @@ typedef struct {
     uint32_t ends;
     char ids[SP_OBS_EPISODE_SLOTS][SP_OBS_EPISODE_ID_LEN];
     uint32_t n_ids;
+    char last_end_id[SP_OBS_EPISODE_ID_LEN];
+    int64_t last_start_mono_us;
+    int64_t last_end_mono_us;
+    uint16_t start_generation;
+    uint16_t end_generation;
+    bool have_start_ts;
+    bool have_end_ts;
+    bool have_end_id;
+    bool have_start_gen;
+    bool have_end_gen;
 } normal_emit_t;
 
 static normal_emit_t g_norm;
+
+static void p3a_copy_id(char *dst, size_t dst_len, const char *src)
+{
+    if (dst == NULL || dst_len == 0u) {
+        return;
+    }
+    if (src == NULL) {
+        dst[0] = '\0';
+        return;
+    }
+    snprintf(dst, dst_len, "%s", src);
+}
 
 static bool norm_emit_start(
     void *ctx,
@@ -94,13 +118,19 @@ static bool norm_emit_start(
 {
     (void)ctx;
     (void)snap;
-    (void)now_mono_us;
     g_norm.starts++;
+    g_norm.last_start_mono_us = now_mono_us;
+    g_norm.have_start_ts = true;
+    if (binding == NULL) {
+        return true;
+    }
+    g_norm.start_generation = binding->ep.generation;
+    g_norm.have_start_gen = true;
     if (g_norm.n_ids < SP_OBS_EPISODE_SLOTS) {
-        memcpy(
+        p3a_copy_id(
             g_norm.ids[g_norm.n_ids],
-            binding->observation_id,
-            SP_OBS_EPISODE_ID_LEN
+            sizeof(g_norm.ids[g_norm.n_ids]),
+            binding->observation_id
         );
         g_norm.n_ids++;
     }
@@ -137,13 +167,20 @@ static bool norm_emit_end(
 )
 {
     (void)ctx;
-    (void)binding;
     (void)reason;
     (void)a;
-    (void)b;
     (void)has_lvl;
     (void)lvl;
     g_norm.ends++;
+    g_norm.last_end_mono_us = b;
+    g_norm.have_end_ts = true;
+    if (binding == NULL) {
+        return true;
+    }
+    p3a_copy_id(g_norm.last_end_id, sizeof(g_norm.last_end_id), binding->observation_id);
+    g_norm.have_end_id = true;
+    g_norm.end_generation = binding->ep.generation;
+    g_norm.have_end_gen = true;
     return true;
 }
 
@@ -154,9 +191,21 @@ typedef struct {
     uint32_t periodics;
     uint32_t ends;
     char last_oid[EAR_CRITICAL_OBS_ID_LEN];
+    char start_oid[EAR_CRITICAL_OBS_ID_LEN];
+    char end_oid[EAR_CRITICAL_OBS_ID_LEN];
+    char periodic_oid[EAR_CRITICAL_OBS_ID_LEN];
     char last_kind[16];
     char last_term[16];
     char last_origin[32];
+    int64_t last_start_capture_mono_us;
+    int64_t periodic_capture_mono_us;
+    int64_t last_end_capture_mono_us;
+    bool have_start_ts;
+    bool have_periodic_ts;
+    bool have_end_ts;
+    bool have_start_oid;
+    bool have_end_oid;
+    bool have_periodic_oid;
 } crit_pub_t;
 
 static crit_pub_t g_crit;
@@ -176,18 +225,49 @@ static bool crit_publish(
 {
     (void)user;
     (void)interval_start_mono_us;
-    (void)capture_mono_us;
     (void)interval_duration_ms;
     (void)episode_duration_ms;
     (void)evidence_or_null;
-    if (strcmp(emission_kind, "start") == 0) {
+    /*
+     * Count every START/PERIODIC/END. Keep the first id and capture time.
+     * A later event must not replace that record; the count still shows it.
+     */
+    if (emission_kind != NULL && strcmp(emission_kind, "start") == 0) {
         g_crit.starts++;
-    } else if (strcmp(emission_kind, "periodic") == 0) {
+        if (!g_crit.have_start_ts) {
+            g_crit.last_start_capture_mono_us = capture_mono_us;
+            g_crit.have_start_ts = true;
+        }
+        if (!g_crit.have_start_oid) {
+            p3a_copy_id(g_crit.start_oid, sizeof(g_crit.start_oid), observation_id);
+            g_crit.have_start_oid = true;
+        }
+    } else if (emission_kind != NULL && strcmp(emission_kind, "periodic") == 0) {
         g_crit.periodics++;
-    } else if (strcmp(emission_kind, "end") == 0) {
+        if (!g_crit.have_periodic_oid) {
+            p3a_copy_id(
+                g_crit.periodic_oid,
+                sizeof(g_crit.periodic_oid),
+                observation_id
+            );
+            g_crit.have_periodic_oid = true;
+        }
+        if (!g_crit.have_periodic_ts) {
+            g_crit.periodic_capture_mono_us = capture_mono_us;
+            g_crit.have_periodic_ts = true;
+        }
+    } else if (emission_kind != NULL && strcmp(emission_kind, "end") == 0) {
         g_crit.ends++;
+        if (!g_crit.have_end_ts) {
+            g_crit.last_end_capture_mono_us = capture_mono_us;
+            g_crit.have_end_ts = true;
+        }
+        if (!g_crit.have_end_oid) {
+            p3a_copy_id(g_crit.end_oid, sizeof(g_crit.end_oid), observation_id);
+            g_crit.have_end_oid = true;
+        }
     }
-    snprintf(g_crit.last_oid, sizeof(g_crit.last_oid), "%s", observation_id ? observation_id : "");
+    p3a_copy_id(g_crit.last_oid, sizeof(g_crit.last_oid), observation_id);
     snprintf(g_crit.last_kind, sizeof(g_crit.last_kind), "%s", emission_kind ? emission_kind : "");
     snprintf(
         g_crit.last_term,
@@ -388,6 +468,102 @@ static void integ_init(integ_t *f)
 static void integ_fini(integ_t *f)
 {
     ce_stop(&f->ce);
+}
+
+/**
+ * Product-style Critical AE listener (mirrors ear_observation.c
+ * critical_on_ae_signature). Uses signature window end as host mono clock.
+ */
+static void critical_ae_listener(const ae_signature_t *sig, void *ctx)
+{
+    ear_critical_path_t *cp = (ear_critical_path_t *)ctx;
+    if (cp == NULL || sig == NULL) {
+        return;
+    }
+    ear_critical_on_signature(cp, sig, sig->window_end_mono_us);
+}
+
+/**
+ * Production-style product poll after AE publish (ear_observation.c activity
+ * path). Order is observable: Policy must run before OM for same-cycle START.
+ * Host mirrors call order; FreeRTOS scheduling is not verified here.
+ */
+static void p3a_drive_poll(
+    ear_promotion_policy_t *pol,
+    ear_obs_manager_t *om,
+    ce_engine_t *ce,
+    ear_critical_path_t *crit,
+    int64_t now_mono_us
+)
+{
+    ear_promotion_policy_poll(pol, now_mono_us);
+    ear_obs_manager_poll(om, now_mono_us);
+    ear_obs_manager_feed_from_ce(om, ce);
+    ear_critical_poll(crit, now_mono_us);
+}
+
+static int find_open_bind_idx(const ear_obs_manager_t *om, uint64_t cand_id)
+{
+    if (om == NULL) {
+        return -1;
+    }
+    for (uint8_t i = 0u; i < EAR_OBS_MGR_BINDING_CAP; i++) {
+        if (om->bind[i].in_use && om->bind[i].candidate_id == cand_id) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+/* Package 2 synthetic signature fixtures (short smoke reuse; not full lifecycle). */
+static void p3a_fill_heli_sig(ae_signature_t *s, uint32_t seq, float rms_dbfs)
+{
+    memset(s, 0, sizeof(*s));
+    s->schema_version = AE_SIGNATURE_SCHEMA_VERSION;
+    s->window_seq = seq;
+    s->window_end_mono_us = (int64_t)seq * 1000000LL;
+    s->window_ms = 1000u;
+    s->mic_mask = 0x1u;
+    s->quality = AE_QUALITY_OK;
+    s->flags = AE_FLAG_PAIR_MISSING;
+    s->rms_dbfs = rms_dbfs;
+    s->peak_dbfs = rms_dbfs + 7.3f;
+    s->crest_db = 7.3f;
+    s->band_dbfs[0] = rms_dbfs - 4.21f;
+    s->band_dbfs[1] = rms_dbfs - 3.52f;
+    s->band_dbfs[2] = rms_dbfs - 13.10f;
+    s->band_dbfs[3] = rms_dbfs - 32.77f;
+    s->hl_valid = true;
+    s->spectral_valid = true;
+    s->dominant_hz = 230.0f;
+    s->flatness = 0.141f;
+    s->centroid_hz = 800.0f;
+    s->bandwidth_hz = 920.0f;
+}
+
+static void p3a_fill_broadband_sig(ae_signature_t *s, uint32_t seq, float rms_dbfs)
+{
+    memset(s, 0, sizeof(*s));
+    s->schema_version = AE_SIGNATURE_SCHEMA_VERSION;
+    s->window_seq = seq;
+    s->window_end_mono_us = (int64_t)seq * 1000000LL;
+    s->window_ms = 1000u;
+    s->mic_mask = 0x1u;
+    s->quality = AE_QUALITY_OK;
+    s->flags = AE_FLAG_PAIR_MISSING;
+    s->rms_dbfs = rms_dbfs;
+    s->peak_dbfs = rms_dbfs + 8.0f;
+    s->crest_db = 8.0f;
+    s->band_dbfs[0] = rms_dbfs - 2.0f;
+    s->band_dbfs[1] = rms_dbfs - 1.0f;
+    s->band_dbfs[2] = rms_dbfs - 1.5f;
+    s->band_dbfs[3] = rms_dbfs - 3.0f;
+    s->hl_valid = true;
+    s->spectral_valid = true;
+    s->dominant_hz = 1800.0f;
+    s->flatness = 0.70f;
+    s->centroid_hz = 2200.0f;
+    s->bandwidth_hz = 2500.0f;
 }
 
 /* ========== Test 4 ========== */
@@ -610,10 +786,507 @@ static void test5_ota_cleanup_while_critical_active(void)
     }
 }
 
+/* ========== Package 3A ========== */
+
+/**
+ * Package 3A — AE listener triad + Critical coexistence (public APIs).
+ *
+ * Mirrors production wiring in ear_observation.c:
+ *   SE listener → CE bind → Critical AE listener (count 3)
+ *   Policy → OM → feed_from_ce → critical_poll  (via p3a_drive_poll)
+ *
+ * Observable evidence (not mere call order):
+ *   - ae_listener_count == 3 after triad registration
+ *   - Real AS-001 AE publish → SE primary + CE classification + Policy START
+ *     through p3a_drive_poll (Policy before OM required for same-cycle START)
+ *   - OM owns CE-associated heli evidence (window seq + rms), not just a counter
+ *   - Critical force_start: distinct id, origin critical_path, registry unchanged
+ *   - AE publish with auto-detect off does not Critical-START
+ *   - one monotonic fixture clock across AE/Policy/OM/Critical/cleanup
+ *   - normal END id and episode generation match START; END time >= START
+ *   - Critical END id matches published START id; capture times nondecreasing
+ *   - cleanup ends Observations, drains EXIT, listeners → 0, registry → 0
+ *
+ * Short smoke only — not Package 2's full AS-001 lifecycle.
+ */
+#define P3A_REQUIRE(cond)                                                      \
+    do {                                                                       \
+        if (!(cond)) {                                                         \
+            fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);     \
+            g_failures++;                                                      \
+            goto p3a_cleanup;                                                  \
+        }                                                                      \
+    } while (0)
+
+static void test_p3a_ae_listener_triad_critical_coexist(void)
+{
+    printf("test_p3a_ae_listener_triad_critical_coexist\n");
+
+    integ_t f;
+    memset(&f, 0, sizeof(f));
+    memset(&g_norm, 0, sizeof(g_norm));
+    memset(&g_crit, 0, sizeof(g_crit));
+    g_uuid_n = 1;
+
+    ear_promotion_policy_t pol;
+    memset(&pol, 0, sizeof(pol));
+
+    bool se_bound = false;
+    bool crit_bound = false;
+    bool ce_started = false;
+    bool sig_started = false;
+    bool om_ready = false;
+    bool crit_force_started = false;
+    const uint32_t reg_initial = 0u;
+    const uint32_t heli_seq = 17u;
+    const float heli_rms = -40.0f;
+    /* Single nondecreasing fixture clock for AE/Policy/OM/Critical/cleanup. */
+    int64_t now_us = 0;
+    int64_t cleanup_now_us = 0;
+
+    ae_config_t acfg;
+    ae_config_set_defaults(&acfg);
+    P3A_REQUIRE(ae_start(&f.ae, &acfg));
+
+    P3A_REQUIRE(sig_engine_start());
+    sig_started = true;
+    /* Production order: Signature Engine before CE on the AE listener list. */
+    P3A_REQUIRE(ae_add_signature_listener(&f.ae, sig_engine_ae_listener, NULL));
+    se_bound = true;
+    P3A_REQUIRE(ae_listener_count(&f.ae) == 1u);
+
+    ce_config_t ccfg;
+    ce_config_set_defaults(&ccfg);
+    ccfg.n_enter = 1u;
+    ccfg.t_coast = 3u;
+    P3A_REQUIRE(ce_start(&f.ce, &ccfg));
+    ce_started = true;
+    P3A_REQUIRE(ce_bind_audio_engine(&f.ce, &f.ae));
+    P3A_REQUIRE(ae_listener_count(&f.ae) == 2u);
+
+    sp_episode_registry_init(&f.reg);
+    P3A_REQUIRE(sp_episode_registry_in_use_count(&f.reg) == reg_initial);
+
+    ear_obs_manager_config_t mcfg;
+    memset(&mcfg, 0, sizeof(mcfg));
+    mcfg.registry = &f.reg;
+    mcfg.ce = &f.ce;
+    mcfg.ae = &f.ae;
+    mcfg.uuid_fn = fake_uuid;
+    mcfg.observation_interval_ms = 1000u;
+    mcfg.pending_timeout_ms = 30000u;
+    mcfg.detached_end_timeout_ms = 1000u;
+    mcfg.producer_tag = 2u;
+    mcfg.emit_start = norm_emit_start;
+    mcfg.emit_periodic = norm_emit_periodic;
+    mcfg.emit_end = norm_emit_end;
+    mcfg.enable_poll_periodic = false;
+    ear_obs_manager_init(&f.om, &mcfg);
+    om_ready = true;
+    ce_set_promotion_cb(&f.ce, ear_obs_manager_on_promotion, &f.om);
+    ear_promotion_policy_init(&pol, &f.ce, &f.om);
+
+    ear_critical_config_t ccfg_c;
+    ear_critical_config_set_defaults(&ccfg_c);
+    ccfg_c.auto_detect_enabled = false;
+    ccfg_c.lab_impulse_enabled = false;
+    ccfg_c.publish = crit_publish;
+    ccfg_c.uuid_fn = crit_uuid;
+    ccfg_c.periodic_ms = 5000u;
+    ccfg_c.idle_timeout_ms = 15000u;
+    ccfg_c.max_active_ms = 30000u;
+    P3A_REQUIRE(ear_critical_init(&f.crit, &ccfg_c));
+    /* Production order: Critical AE listener after SE and CE. */
+    P3A_REQUIRE(ae_add_signature_listener(&f.ae, critical_ae_listener, &f.crit));
+    crit_bound = true;
+    P3A_REQUIRE(ae_listener_count(&f.ae) == 3u);
+
+    ae_signature_t sig;
+
+    /* Unmatched broadband: SE/CE run, Policy must not open an Observation. */
+    for (uint32_t seq = 1u; seq <= 4u; seq++) {
+        p3a_fill_broadband_sig(&sig, seq, -55.0f);
+        now_us = sig.window_end_mono_us;
+        cleanup_now_us = now_us;
+        P3A_REQUIRE(ae_publish_signature(&f.ae, &sig));
+        p3a_drive_poll(&pol, &f.om, &f.ce, &f.crit, now_us);
+    }
+    P3A_REQUIRE(g_norm.starts == 0u);
+    P3A_REQUIRE(ear_obs_manager_n_open(&f.om) == 0u);
+    P3A_REQUIRE(sp_episode_registry_in_use_count(&f.reg) == reg_initial);
+
+    /*
+     * Real AS-001 heli through AE listeners, then p3a_drive_poll for Policy START.
+     * Assert SE/CE dispatch from the publish itself (before poll), so suppressing
+     * either listener fails for that reason — not only a missing START.
+     */
+    p3a_fill_heli_sig(&sig, heli_seq, heli_rms);
+    now_us = sig.window_end_mono_us;
+    cleanup_now_us = now_us;
+    P3A_REQUIRE(ae_publish_signature(&f.ae, &sig));
+
+    /* SE processed the current window (fails if SE AE dispatch is suppressed). */
+    sig_primary_distance_t prim;
+    memset(&prim, 0, sizeof(prim));
+    P3A_REQUIRE(sig_engine_get_primary_distance_match(&prim));
+    P3A_REQUIRE(prim.valid);
+    P3A_REQUIRE(prim.window_seq == heli_seq);
+    P3A_REQUIRE(prim.profile_id == AS_PROFILE_ID_AS001);
+
+    /*
+     * CE ingested the published heli (fails if CE AE dispatch is suppressed).
+     * With SE started, as.profile uses SE primary for this window.
+     */
+    uint64_t x_id = 0u;
+    {
+        bool found = false;
+        for (uint8_t i = 0u; i < CE_MAX_CANDIDATES; i++) {
+            ae_candidate_t c;
+            if (!ce_get_candidate(&f.ce, i, &c)) {
+                continue;
+            }
+            if (c.last_window_seq == heli_seq) {
+                x_id = c.candidate_id;
+                found = true;
+                break;
+            }
+        }
+        P3A_REQUIRE(found && x_id != 0u);
+    }
+    ae_candidate_t live;
+    memset(&live, 0, sizeof(live));
+    P3A_REQUIRE(ce_find_candidate(&f.ce, x_id, &live));
+    P3A_REQUIRE(live.last_window_seq == heli_seq);
+    ce_classification_t cls;
+    memset(&cls, 0, sizeof(cls));
+    P3A_REQUIRE(ce_get_classification(&f.ce, x_id, &cls));
+    P3A_REQUIRE(cls.valid && cls.matched);
+    P3A_REQUIRE(cls.profile_id == AS_PROFILE_ID_AS001);
+    P3A_REQUIRE(cls.distance == prim.distance);
+
+    /*
+     * Same-cycle START via p3a_drive_poll: Policy before OM is required.
+     * Reversing those two calls inside the helper leaves starts == 0.
+     */
+    p3a_drive_poll(&pol, &f.om, &f.ce, &f.crit, now_us);
+    P3A_REQUIRE(g_norm.starts == 1u);
+    P3A_REQUIRE(g_norm.have_start_ts);
+    P3A_REQUIRE(g_norm.last_start_mono_us == now_us);
+    P3A_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
+    P3A_REQUIRE(sp_episode_registry_in_use_count(&f.reg) == 1u);
+    P3A_REQUIRE(g_norm.ids[0][0] != '\0');
+    P3A_REQUIRE(g_norm.n_ids >= 1u);
+
+    P3A_REQUIRE(ce_find_candidate(&f.ce, x_id, &live));
+    P3A_REQUIRE(live.state == AE_CAND_PROMOTED);
+    P3A_REQUIRE(live.promotion_entered);
+
+    {
+        ear_promotion_policy_diag_t pd;
+        ear_promotion_policy_get_diag(&pol, &pd);
+        P3A_REQUIRE(pd.promote_ok >= 1u);
+        P3A_REQUIRE(pd.last_decision == EAR_PROMO_DECISION_PROMOTE);
+        P3A_REQUIRE(pd.last_profile_id == AS_PROFILE_ID_AS001);
+    }
+
+    const uint32_t reg_after_normal = sp_episode_registry_in_use_count(&f.reg);
+    const int bi = find_open_bind_idx(&f.om, x_id);
+    P3A_REQUIRE(bi >= 0);
+    P3A_REQUIRE((uint8_t)bi < EAR_OBS_MGR_BINDING_CAP);
+    P3A_REQUIRE(f.om.bind[bi].in_use);
+    P3A_REQUIRE(f.om.bind[bi].ce_live);
+    P3A_REQUIRE(strcmp(f.om.bind[bi].observation_id, g_norm.ids[0]) == 0);
+    /*
+     * CE-associated owned evidence from feed_from_ce in p3a_drive_poll.
+     * Sequence + rms pin the heli window (not evidence_updates alone).
+     */
+    P3A_REQUIRE(f.om.bind[bi].evidence_updates >= 1u);
+    P3A_REQUIRE(f.om.bind[bi].snap.sig_count >= 1u);
+    P3A_REQUIRE(f.om.bind[bi].last_owned_sig_window_seq == heli_seq);
+    P3A_REQUIRE(f.om.bind[bi].snap.sigs[0].window_seq == heli_seq);
+    P3A_REQUIRE(f.om.bind[bi].snap.sigs[0].quality == AE_QUALITY_OK);
+    P3A_REQUIRE(f.om.bind[bi].snap.sigs[0].rms_dbfs == heli_rms);
+
+    /*
+     * Heli AE publish already reached Critical while idle: production
+     * auto_detect/lab off → auto_start_blocked, no Critical START.
+     */
+    {
+        ear_critical_diag_t cd;
+        ear_critical_get_diag(&f.crit, &cd);
+        P3A_REQUIRE(cd.auto_start_blocked >= 1u);
+    }
+    P3A_REQUIRE(g_crit.starts == 0u);
+    P3A_REQUIRE(!ear_critical_is_active(&f.crit));
+    P3A_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
+
+    now_us += 1000000LL;
+    cleanup_now_us = now_us;
+    ae_signature_t crit_sig = make_impulse_sig(60);
+    crit_sig.window_end_mono_us = now_us;
+    P3A_REQUIRE(ear_critical_force_start(&f.crit, &crit_sig, now_us));
+    crit_force_started = true;
+    P3A_REQUIRE(ear_critical_is_active(&f.crit));
+    P3A_REQUIRE(g_crit.starts == 1u);
+    P3A_REQUIRE(g_crit.have_start_ts);
+    P3A_REQUIRE(g_crit.last_start_capture_mono_us == now_us);
+    P3A_REQUIRE(strcmp(g_crit.last_origin, EAR_CRITICAL_ORIGIN) == 0);
+    P3A_REQUIRE(strcmp(g_crit.last_origin, "critical_path") == 0);
+
+    char crit_oid[EAR_CRITICAL_OBS_ID_LEN];
+    P3A_REQUIRE(ear_critical_active_observation_id(&f.crit, crit_oid));
+    P3A_REQUIRE(g_crit.have_start_oid);
+    P3A_REQUIRE(g_crit.start_oid[0] != '\0');
+    P3A_REQUIRE(strcmp(g_crit.start_oid, crit_oid) == 0);
+    P3A_REQUIRE(strcmp(crit_oid, g_norm.ids[0]) != 0);
+    P3A_REQUIRE(sp_episode_registry_in_use_count(&f.reg) == reg_after_normal);
+    P3A_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
+
+    /* Publish while Critical active: no additional Critical START; PERIODIC via poll. */
+    const uint32_t crit_starts_before = g_crit.starts;
+    /* periodic_ms is 5000 — advance fixture clock enough for one PERIODIC. */
+    now_us += 5000000LL;
+    cleanup_now_us = now_us;
+    ae_signature_t live_sig = make_impulse_sig(70);
+    live_sig.window_end_mono_us = now_us;
+    P3A_REQUIRE(ae_publish_signature(&f.ae, &live_sig));
+    p3a_drive_poll(&pol, &f.om, &f.ce, &f.crit, now_us);
+    P3A_REQUIRE(g_crit.starts == crit_starts_before);
+    P3A_REQUIRE(ear_critical_is_active(&f.crit));
+    P3A_REQUIRE(g_crit.periodics == 1u);
+    P3A_REQUIRE(g_crit.have_periodic_oid);
+    P3A_REQUIRE(strcmp(g_crit.periodic_oid, g_crit.start_oid) == 0);
+    P3A_REQUIRE(strcmp(g_crit.last_origin, EAR_CRITICAL_ORIGIN) == 0);
+    P3A_REQUIRE(sp_episode_registry_in_use_count(&f.reg) == reg_after_normal);
+    P3A_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
+    /* Cleanup must run after the latest scenario event (not before START). */
+    cleanup_now_us = now_us + 1000000LL;
+
+p3a_cleanup:
+    /*
+     * Lifecycle cleanup before engine/listener teardown. Idempotent on early
+     * abort: force-end only when something is active/open.
+     */
+    if (crit_force_started || ear_critical_is_active(&f.crit)) {
+        ear_critical_force_end(&f.crit, cleanup_now_us, EAR_CRITICAL_END_EXPLICIT);
+        crit_force_started = false;
+    }
+    if (om_ready) {
+        if (ear_obs_manager_n_open(&f.om) > 0u
+            || ear_obs_manager_n_pending(&f.om) > 0u) {
+            ear_obs_manager_force_end_all(
+                &f.om, EAR_OBS_END_EXPLICIT, cleanup_now_us + 1000
+            );
+        }
+        /* Drain EXIT/pending transitions before ce_stop removes candidates. */
+        ear_obs_manager_poll(&f.om, cleanup_now_us + 2000);
+    }
+    if (crit_bound) {
+        (void)ae_remove_signature_listener(&f.ae, critical_ae_listener, &f.crit);
+        crit_bound = false;
+    }
+    if (ce_started) {
+        ce_set_promotion_cb(&f.ce, NULL, NULL);
+        ce_stop(&f.ce);
+        ce_started = false;
+        if (om_ready) {
+            /* Drain any EXIT queued by ce_stop. */
+            ear_obs_manager_poll(&f.om, cleanup_now_us + 3000);
+            if (ear_obs_manager_n_open(&f.om) > 0u) {
+                ear_obs_manager_force_end_all(
+                    &f.om, EAR_OBS_END_EXPLICIT, cleanup_now_us + 4000
+                );
+                ear_obs_manager_poll(&f.om, cleanup_now_us + 5000);
+            }
+        }
+    }
+    if (se_bound) {
+        (void)ae_remove_signature_listener(&f.ae, sig_engine_ae_listener, NULL);
+        se_bound = false;
+    }
+    if (sig_started) {
+        sig_engine_stop();
+        sig_started = false;
+    }
+
+    if (ear_critical_is_active(&f.crit)) {
+        fprintf(stderr, "FAIL %s:%d: Critical still active after cleanup\n",
+                __FILE__, __LINE__);
+        g_failures++;
+    }
+    if (om_ready && ear_obs_manager_n_open(&f.om) != 0u) {
+        fprintf(stderr, "FAIL %s:%d: normal OM still open after cleanup (n=%u)\n",
+                __FILE__, __LINE__, (unsigned)ear_obs_manager_n_open(&f.om));
+        g_failures++;
+    }
+    if (om_ready && ear_obs_manager_n_pending(&f.om) != 0u) {
+        fprintf(stderr, "FAIL %s:%d: normal OM still pending after cleanup\n",
+                __FILE__, __LINE__);
+        g_failures++;
+    }
+    if (sp_episode_registry_in_use_count(&f.reg) != reg_initial) {
+        fprintf(
+            stderr,
+            "FAIL %s:%d: registry occupancy after cleanup expected %u got %u\n",
+            __FILE__,
+            __LINE__,
+            (unsigned)reg_initial,
+            (unsigned)sp_episode_registry_in_use_count(&f.reg)
+        );
+        g_failures++;
+    }
+    if (ae_listener_count(&f.ae) != 0u) {
+        fprintf(
+            stderr,
+            "FAIL %s:%d: ae_listener_count cleanup expected 0 got %u\n",
+            __FILE__,
+            __LINE__,
+            (unsigned)ae_listener_count(&f.ae)
+        );
+        g_failures++;
+    }
+    /* Opened normal Observation must END once, for the same id, at/after START. */
+    if (g_norm.starts != 0u || g_norm.ends != 0u) {
+        if (g_norm.starts != 1u || g_norm.ends != 1u) {
+            fprintf(
+                stderr,
+                "FAIL %s:%d: expected exactly 1 normal START and 1 END, got start=%u end=%u\n",
+                __FILE__,
+                __LINE__,
+                (unsigned)g_norm.starts,
+                (unsigned)g_norm.ends
+            );
+            g_failures++;
+        }
+        if (!g_norm.have_end_id || g_norm.n_ids != 1u
+            || g_norm.ids[0][0] == '\0'
+            || strcmp(g_norm.last_end_id, g_norm.ids[0]) != 0) {
+            fprintf(
+                stderr,
+                "FAIL %s:%d: normal END observation_id does not match START "
+                "(start='%s' end='%s' have_end_id=%d n_ids=%u)\n",
+                __FILE__,
+                __LINE__,
+                g_norm.n_ids >= 1u ? g_norm.ids[0] : "",
+                g_norm.have_end_id ? g_norm.last_end_id : "",
+                (int)g_norm.have_end_id,
+                (unsigned)g_norm.n_ids
+            );
+            g_failures++;
+        }
+        if (!g_norm.have_start_ts || !g_norm.have_end_ts) {
+            fprintf(
+                stderr,
+                "FAIL %s:%d: missing normal START/END timestamps "
+                "(have_start=%d have_end=%d)\n",
+                __FILE__,
+                __LINE__,
+                (int)g_norm.have_start_ts,
+                (int)g_norm.have_end_ts
+            );
+            g_failures++;
+        } else if (g_norm.last_end_mono_us < g_norm.last_start_mono_us) {
+            fprintf(
+                stderr,
+                "FAIL %s:%d: normal END before START "
+                "(start=%lld end=%lld)\n",
+                __FILE__,
+                __LINE__,
+                (long long)g_norm.last_start_mono_us,
+                (long long)g_norm.last_end_mono_us
+            );
+            g_failures++;
+        }
+        if (!g_norm.have_start_gen || !g_norm.have_end_gen
+            || g_norm.end_generation != g_norm.start_generation) {
+            fprintf(
+                stderr,
+                "FAIL %s:%d: normal END episode generation does not match START "
+                "(start_gen=%u end_gen=%u have_start=%d have_end=%d)\n",
+                __FILE__,
+                __LINE__,
+                (unsigned)g_norm.start_generation,
+                (unsigned)g_norm.end_generation,
+                (int)g_norm.have_start_gen,
+                (int)g_norm.have_end_gen
+            );
+            g_failures++;
+        }
+    }
+    if (g_crit.starts != 0u || g_crit.ends != 0u) {
+        if (g_crit.starts != 1u || g_crit.ends != 1u
+            || !g_crit.have_start_ts || !g_crit.have_end_ts) {
+            fprintf(
+                stderr,
+                "FAIL %s:%d: Critical START/END incomplete "
+                "(starts=%u ends=%u have_start=%d have_end=%d)\n",
+                __FILE__,
+                __LINE__,
+                (unsigned)g_crit.starts,
+                (unsigned)g_crit.ends,
+                (int)g_crit.have_start_ts,
+                (int)g_crit.have_end_ts
+            );
+            g_failures++;
+        } else if (g_crit.last_end_capture_mono_us
+                   < g_crit.last_start_capture_mono_us) {
+            fprintf(
+                stderr,
+                "FAIL %s:%d: Critical END capture before START "
+                "(start=%lld end=%lld)\n",
+                __FILE__,
+                __LINE__,
+                (long long)g_crit.last_start_capture_mono_us,
+                (long long)g_crit.last_end_capture_mono_us
+            );
+            g_failures++;
+        }
+        if (g_crit.periodics != 0u) {
+            if (g_crit.periodics != 1u || !g_crit.have_periodic_ts
+                || !g_crit.have_periodic_oid
+                || !g_crit.have_start_ts || !g_crit.have_end_ts
+                || strcmp(g_crit.periodic_oid, g_crit.start_oid) != 0
+                || g_crit.periodic_capture_mono_us
+                       < g_crit.last_start_capture_mono_us
+                || g_crit.last_end_capture_mono_us
+                       < g_crit.periodic_capture_mono_us) {
+                fprintf(
+                    stderr,
+                    "FAIL %s:%d: Critical PERIODIC not between START and END "
+                    "(start=%lld periodic=%lld end=%lld periodics=%u)\n",
+                    __FILE__,
+                    __LINE__,
+                    (long long)g_crit.last_start_capture_mono_us,
+                    (long long)g_crit.periodic_capture_mono_us,
+                    (long long)g_crit.last_end_capture_mono_us,
+                    (unsigned)g_crit.periodics
+                );
+                g_failures++;
+            }
+        }
+        if (!g_crit.have_start_oid || !g_crit.have_end_oid
+            || g_crit.start_oid[0] == '\0'
+            || strcmp(g_crit.end_oid, g_crit.start_oid) != 0) {
+            fprintf(
+                stderr,
+                "FAIL %s:%d: Critical END observation_id does not match START "
+                "(start='%s' end='%s')\n",
+                __FILE__,
+                __LINE__,
+                g_crit.have_start_oid ? g_crit.start_oid : "",
+                g_crit.have_end_oid ? g_crit.end_oid : ""
+            );
+            g_failures++;
+        }
+    }
+}
+#undef P3A_REQUIRE
+
 int main(void)
 {
     test4_critical_with_both_normal_slots_occupied();
     test5_ota_cleanup_while_critical_active();
+    test_p3a_ae_listener_triad_critical_coexist();
     if (g_failures != 0) {
         fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;
