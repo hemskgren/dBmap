@@ -23,6 +23,8 @@
 #include "ae_engine.h"
 #include "dbmap_ear_acoustic.h"
 #include "sp_mic.h"
+#include "sp_mic_window_job.h"
+#include "ear_runtime_diag.h"
 #include "sp_episode_registry.h"
 #include "sp_health.h"
 #include "dbmap_lifecycle_v2.h"
@@ -491,97 +493,110 @@ static esp_err_t format_event_time_for_interval_start(
 }
 
 #if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
-/**
- * Merge OM / promotion-policy / CE failure counters into existing health
- * `diag` (omit-when-zero). Reads live module diags — no duplicate counters.
- */
-static void observation_enrich_attach_mgr_ce_diag(cJSON *state)
-{
-    if (state == NULL || !s_obs_mgr_ready) {
-        return;
-    }
+static ear_p8_outcomes_t s_p8_outcomes;
+static ear_runtime_snapshot_t s_p8_snapshot;
+static portMUX_TYPE s_p8_lock = portMUX_INITIALIZER_UNLOCKED;
 
+static void p8_snapshot_enter(void *ctx)
+{
+    (void)ctx;
+    portENTER_CRITICAL(&s_p8_lock);
+}
+
+static void p8_snapshot_leave(void *ctx)
+{
+    (void)ctx;
+    portEXIT_CRITICAL(&s_p8_lock);
+}
+
+static const ear_runtime_snapshot_lock_t s_p8_snapshot_lock = {
+    .enter = p8_snapshot_enter,
+    .leave = p8_snapshot_leave,
+};
+
+/* Called by the lifecycle owner after all managed callbacks have returned. */
+static void observation_capture_runtime_diag(void)
+{
     ear_obs_manager_diag_t od;
     ear_promotion_policy_diag_t pd;
     ce_diag_t cd;
+    ae_device_diag_t ad;
+    sp_mic_window_diag_t md;
     ear_obs_manager_get_diag(&s_obs_mgr, &od);
     ear_promotion_policy_get_diag(&s_promo_pol, &pd);
     ce_get_diag(&s_ce, &cd);
+    ae_device_get_diag(&ad);
+    sp_mic_get_window_diag(&md);
+    const ae_engine_t *ae = ae_device_engine();
+    ear_runtime_snapshot_t next = {
+        .values = {
+            [EAR_RUNTIME_obs_reserve_full] = od.reserve_full,
+            [EAR_RUNTIME_obs_promote_commit_fail] = od.promote_commit_fail,
+            [EAR_RUNTIME_obs_drain_alloc_fail] = od.drain_alloc_fail,
+            [EAR_RUNTIME_obs_pending_timeout] = od.pending_timeout,
+            [EAR_RUNTIME_obs_evidence_dropped] = od.evidence_dropped,
+            [EAR_RUNTIME_obs_enter_no_rsv] = od.enter_no_rsv,
+            [EAR_RUNTIME_obs_policy_reserve_full] = pd.reserve_full,
+            [EAR_RUNTIME_obs_policy_promote_fail] = pd.promote_fail,
+            [EAR_RUNTIME_ce_create_dropped_full] = cd.create_dropped_full,
+            [EAR_RUNTIME_ce_workflow_failed] = cd.workflow_failed,
+            [EAR_RUNTIME_ce_module_errors] = cd.module_errors,
+            [EAR_RUNTIME_mic_windows_published] = md.published,
+            [EAR_RUNTIME_mic_pcm_overwrites] = md.overwrites,
+            [EAR_RUNTIME_mic_pcm_pending] = md.pending,
+            [EAR_RUNTIME_mic_pcm_projection_failed] = md.projection_failed,
+            [EAR_RUNTIME_mic_pcm_reset_discards] = md.reset_discards,
+            [EAR_RUNTIME_mic_pcm_legacy_takes] = md.legacy_takes,
+            [EAR_RUNTIME_ae_epoch] = ad.epoch,
+            [EAR_RUNTIME_pcm_jobs_taken] = ad.pcm_jobs_taken,
+            [EAR_RUNTIME_ae_analyze_ok] = ad.analyze_ok,
+            [EAR_RUNTIME_ae_analyze_fail] = ad.analyze_fail,
+            [EAR_RUNTIME_sig_build_failed] = ad.sig_build_failed,
+            [EAR_RUNTIME_sig_publish_rejected] = ae_publish_rejected_count(ae),
+            [EAR_RUNTIME_sig_accepted] = ad.sig_accepted,
+            [EAR_RUNTIME_ce_in_use] = cd.in_use_count,
+            [EAR_RUNTIME_ce_active] = cd.state_hist[AE_CAND_ACTIVE],
+            [EAR_RUNTIME_ce_created] = cd.created,
+            [EAR_RUNTIME_ce_expired] = cd.expired,
+            [EAR_RUNTIME_ce_promote_successes] = cd.promote_successes,
+            [EAR_RUNTIME_pol_hold_irrelevant] = pd.hold_irrelevant,
+            [EAR_RUNTIME_pol_hold_no_class] = pd.hold_no_class,
+            [EAR_RUNTIME_pol_hold_signature_open] = pd.hold_signature_open,
+            [EAR_RUNTIME_pol_hold_busy] = pd.promote_skipped_busy,
+            [EAR_RUNTIME_pol_select_none] = pd.select_none,
+            [EAR_RUNTIME_pol_reserve_ok] = pd.reserve_ok,
+            [EAR_RUNTIME_pol_promote_ok] = pd.promote_ok,
+            [EAR_RUNTIME_om_open] = ear_obs_manager_n_open(&s_obs_mgr),
+            [EAR_RUNTIME_om_pending] = ear_obs_manager_n_pending(&s_obs_mgr),
+            [EAR_RUNTIME_om_held] = ear_obs_manager_n_held(&s_obs_mgr),
+            [EAR_RUNTIME_om_start_retry] = od.start_retry,
+            [EAR_RUNTIME_om_watchdog_end] = od.detached_watchdog_end,
+            [EAR_RUNTIME_om_evq_dropped] = od.evq_dropped,
+            [EAR_RUNTIME_om_promote_commit_bound] = od.promote_commit_bound,
+            [EAR_RUNTIME_om_promote_commit_pending] = od.promote_commit_pending,
+            [EAR_RUNTIME_obs_start_attempts] = od.start_attempts,
+            [EAR_RUNTIME_obs_periodic_attempts] = od.periodic_attempts,
+            [EAR_RUNTIME_obs_end_attempts] = od.end_attempts,
+            [EAR_RUNTIME_ear_p8_saturated] = md.saturated || ad.signature_counters_saturated || od.attempts_saturated || s_p8_outcomes.saturated,
+            [EAR_RUNTIME_obs_start_publish_accepted] = s_p8_outcomes.count[EAR_P8_START][EAR_P8_PUBLISH_ACCEPTED],
+            [EAR_RUNTIME_obs_start_mqtt_publish_failed] = s_p8_outcomes.count[EAR_P8_START][EAR_P8_MQTT_PUBLISH_FAILED],
+            [EAR_RUNTIME_obs_start_pre_mqtt_fail] = s_p8_outcomes.count[EAR_P8_START][EAR_P8_PRE_MQTT_FAIL],
+            [EAR_RUNTIME_obs_periodic_publish_accepted] = s_p8_outcomes.count[EAR_P8_PERIODIC][EAR_P8_PUBLISH_ACCEPTED],
+            [EAR_RUNTIME_obs_periodic_mqtt_publish_failed] = s_p8_outcomes.count[EAR_P8_PERIODIC][EAR_P8_MQTT_PUBLISH_FAILED],
+            [EAR_RUNTIME_obs_periodic_pre_mqtt_fail] = s_p8_outcomes.count[EAR_P8_PERIODIC][EAR_P8_PRE_MQTT_FAIL],
+            [EAR_RUNTIME_obs_end_publish_accepted] = s_p8_outcomes.count[EAR_P8_END][EAR_P8_PUBLISH_ACCEPTED],
+            [EAR_RUNTIME_obs_end_mqtt_publish_failed] = s_p8_outcomes.count[EAR_P8_END][EAR_P8_MQTT_PUBLISH_FAILED],
+            [EAR_RUNTIME_obs_end_pre_mqtt_fail] = s_p8_outcomes.count[EAR_P8_END][EAR_P8_PRE_MQTT_FAIL],
+        },
+    };
+    ear_runtime_snapshot_publish(&s_p8_snapshot, &next, &s_p8_snapshot_lock);
+}
 
-    const bool any =
-        od.reserve_full > 0u || od.promote_commit_fail > 0u || od.drain_alloc_fail > 0u
-        || od.pending_timeout > 0u || od.evidence_dropped > 0u || od.enter_no_rsv > 0u
-        || pd.reserve_full > 0u || pd.promote_fail > 0u || cd.create_dropped_full > 0u
-        || cd.workflow_failed > 0u || cd.module_errors > 0u;
-    if (!any) {
-        return;
-    }
-
-    cJSON *diag = cJSON_GetObjectItem(state, "diag");
-    const bool created = (diag == NULL);
-    if (created) {
-        diag = cJSON_CreateObject();
-        if (diag == NULL) {
-            return;
-        }
-    } else if (!cJSON_IsObject(diag)) {
-        return;
-    }
-
-    /* Only add keys that are > 0 (match sp_diag_attach_json omit-when-zero). */
-    if (od.reserve_full > 0u) {
-        cJSON_AddNumberToObject(diag, "obs_reserve_full", (double)od.reserve_full);
-    }
-    if (od.promote_commit_fail > 0u) {
-        cJSON_AddNumberToObject(
-            diag, "obs_promote_commit_fail", (double)od.promote_commit_fail
-        );
-    }
-    if (od.drain_alloc_fail > 0u) {
-        cJSON_AddNumberToObject(
-            diag, "obs_drain_alloc_fail", (double)od.drain_alloc_fail
-        );
-    }
-    if (od.pending_timeout > 0u) {
-        cJSON_AddNumberToObject(
-            diag, "obs_pending_timeout", (double)od.pending_timeout
-        );
-    }
-    if (od.evidence_dropped > 0u) {
-        cJSON_AddNumberToObject(
-            diag, "obs_evidence_dropped", (double)od.evidence_dropped
-        );
-    }
-    if (od.enter_no_rsv > 0u) {
-        cJSON_AddNumberToObject(diag, "obs_enter_no_rsv", (double)od.enter_no_rsv);
-    }
-    if (pd.reserve_full > 0u) {
-        cJSON_AddNumberToObject(
-            diag, "obs_policy_reserve_full", (double)pd.reserve_full
-        );
-    }
-    if (pd.promote_fail > 0u) {
-        cJSON_AddNumberToObject(
-            diag, "obs_policy_promote_fail", (double)pd.promote_fail
-        );
-    }
-    if (cd.create_dropped_full > 0u) {
-        cJSON_AddNumberToObject(
-            diag, "ce_create_dropped_full", (double)cd.create_dropped_full
-        );
-    }
-    if (cd.workflow_failed > 0u) {
-        cJSON_AddNumberToObject(
-            diag, "ce_workflow_failed", (double)cd.workflow_failed
-        );
-    }
-    if (cd.module_errors > 0u) {
-        cJSON_AddNumberToObject(diag, "ce_module_errors", (double)cd.module_errors);
-    }
-
-    if (created) {
-        cJSON_AddItemToObject(state, "diag", diag);
-    }
+static void observation_enrich_attach_mgr_ce_diag(cJSON *state)
+{
+    ear_runtime_snapshot_t snapshot;
+    ear_runtime_snapshot_read(&s_p8_snapshot, &snapshot, &s_p8_snapshot_lock);
+    ear_runtime_diag_attach(state, &snapshot);
 }
 #endif /* CONFIG_DBMAP_EAR_AUDIO_ENGINE */
 
@@ -733,7 +748,7 @@ esp_err_t dbmap_ear_observation_publish(
     );
 }
 
-esp_err_t dbmap_ear_observation_publish_ex(
+static esp_err_t observation_publish_result(
     const sp_effective_t *cfg,
     const char *observation_id,
     bool has_signal_level_dbfs,
@@ -748,7 +763,8 @@ esp_err_t dbmap_ear_observation_publish_ex(
     const dbmap_l1_interval_t *signature,
     const dbmap_l2_interval_t *dynamics,
     const char *origin,
-    const ear_cls_assessment_wire_t *assessment
+    const ear_cls_assessment_wire_t *assessment,
+    sp_mqtt_publish_result_t *result
 )
 {
     if (cfg == NULL || cfg->identity.node_id[0] == '\0' || cfg->topics.observation[0] == '\0') {
@@ -853,7 +869,7 @@ esp_err_t dbmap_ear_observation_publish_ex(
         return ESP_FAIL;
     }
 
-    esp_err_t pub_err = sp_mqtt_publish_json(cfg->topics.observation, json, 1);
+    esp_err_t pub_err = sp_mqtt_publish_json_result(cfg->topics.observation, json, 1, result);
     {
         const uint32_t dt = (uint32_t)(esp_timer_get_time() - t_pub0);
         s_r0_publish_n++;
@@ -876,7 +892,7 @@ esp_err_t dbmap_ear_observation_publish_ex(
     } else {
         ESP_LOGW(
             TAG,
-            "observation publish failed (%s); id=%s sequence=%lu consumed (not queued)",
+            "observation publish failed (%s); id=%s sequence=%lu consumed",
             esp_err_to_name(pub_err),
             observation_id,
             (unsigned long)sequence
@@ -884,6 +900,32 @@ esp_err_t dbmap_ear_observation_publish_ex(
     }
     free(json);
     return pub_err;
+}
+
+esp_err_t dbmap_ear_observation_publish_ex(
+    const sp_effective_t *cfg,
+    const char *observation_id,
+    bool has_signal_level_dbfs,
+    double signal_level_dbfs,
+    double interval_duration_ms,
+    double episode_duration_ms,
+    int64_t capture_timestamp_monotonic_us,
+    int64_t interval_start_monotonic_us,
+    const char *emission_kind,
+    const char *termination_reason,
+    const dbmap_l0_interval_t *measurements,
+    const dbmap_l1_interval_t *signature,
+    const dbmap_l2_interval_t *dynamics,
+    const char *origin,
+    const ear_cls_assessment_wire_t *assessment
+)
+{
+    return observation_publish_result(
+        cfg, observation_id, has_signal_level_dbfs, signal_level_dbfs,
+        interval_duration_ms, episode_duration_ms, capture_timestamp_monotonic_us,
+        interval_start_monotonic_us, emission_kind, termination_reason, measurements,
+        signature, dynamics, origin, assessment, NULL
+    );
 }
 
 static const char *emit_kind_name(dbmap_activity_emit_kind_t kind)
@@ -1391,14 +1433,13 @@ static void mgr_on_binding_released(
     ear_obs_start_retain_drop(observation_id, generation);
 }
 
-static bool mgr_emit_start(
-    void *ctx,
+static bool mgr_publish_start(
+    sp_mqtt_publish_result_t *result,
     const ear_obs_binding_view_t *binding,
     const ear_obs_promote_snapshot_t *snap,
     int64_t now_mono_us
 )
 {
-    (void)ctx;
     if (s_cfg == NULL || binding == NULL || snap == NULL) {
         return false;
     }
@@ -1509,7 +1550,7 @@ static bool mgr_emit_start(
         );
     }
 #endif
-    esp_err_t err = dbmap_ear_observation_publish_ex(
+    esp_err_t err = observation_publish_result(
         s_cfg,
         binding->observation_id,
         has_lvl,
@@ -1524,7 +1565,8 @@ static bool mgr_emit_start(
         meas.have_l1 ? &meas.l1 : NULL,
         meas.have_l2 ? &meas.l2 : NULL,
         NULL,
-        assess
+        assess,
+        result
     );
 #if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
     ear_obs_stack_hwm_om_publish("start", true);
@@ -1542,8 +1584,24 @@ static bool mgr_emit_start(
     return true;
 }
 
-static bool mgr_emit_periodic(
+static bool mgr_emit_start(
     void *ctx,
+    const ear_obs_binding_view_t *binding,
+    const ear_obs_promote_snapshot_t *snap,
+    int64_t now_mono_us
+)
+{
+    (void)ctx;
+    sp_mqtt_publish_result_t result = {0};
+    const bool ok = mgr_publish_start(
+        &result, binding, snap, now_mono_us
+    );
+    ear_p8_note_outcome(&s_p8_outcomes, EAR_P8_START, result.sdk_called, result.message_id);
+    return ok;
+}
+
+static bool mgr_publish_periodic(
+    sp_mqtt_publish_result_t *result,
     const ear_obs_binding_view_t *binding,
     int64_t interval_start_mono_us,
     int64_t interval_end_mono_us,
@@ -1551,7 +1609,6 @@ static bool mgr_emit_periodic(
     float signal_level_dbfs
 )
 {
-    (void)ctx;
     if (s_cfg == NULL || binding == NULL) {
         return false;
     }
@@ -1600,7 +1657,7 @@ static bool mgr_emit_periodic(
 #endif
     const ear_cls_assessment_wire_t *assess =
         (binding->assessment.present) ? &binding->assessment : NULL;
-    esp_err_t err = dbmap_ear_observation_publish_ex(
+    esp_err_t err = observation_publish_result(
         s_cfg,
         binding->observation_id,
         has_lvl,
@@ -1615,7 +1672,8 @@ static bool mgr_emit_periodic(
         sig_ptr,
         dyn_ptr,
         NULL,
-        assess
+        assess,
+        result
     );
 #if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
     ear_obs_stack_hwm_om_publish("periodic", true);
@@ -1627,8 +1685,27 @@ static bool mgr_emit_periodic(
     return true;
 }
 
-static bool mgr_emit_end(
+static bool mgr_emit_periodic(
     void *ctx,
+    const ear_obs_binding_view_t *binding,
+    int64_t interval_start_mono_us,
+    int64_t interval_end_mono_us,
+    bool has_signal_level_dbfs,
+    float signal_level_dbfs
+)
+{
+    (void)ctx;
+    sp_mqtt_publish_result_t result = {0};
+    const bool ok = mgr_publish_periodic(
+        &result, binding, interval_start_mono_us, interval_end_mono_us,
+        has_signal_level_dbfs, signal_level_dbfs
+    );
+    ear_p8_note_outcome(&s_p8_outcomes, EAR_P8_PERIODIC, result.sdk_called, result.message_id);
+    return ok;
+}
+
+static bool mgr_publish_end(
+    sp_mqtt_publish_result_t *result,
     const ear_obs_binding_view_t *binding,
     ear_obs_end_reason_t reason,
     int64_t interval_start_mono_us,
@@ -1637,7 +1714,6 @@ static bool mgr_emit_end(
     float signal_level_dbfs
 )
 {
-    (void)ctx;
     if (s_cfg == NULL || binding == NULL) {
         return false;
     }
@@ -1681,7 +1757,7 @@ static bool mgr_emit_end(
 #endif
     const ear_cls_assessment_wire_t *assess =
         (binding->assessment.present) ? &binding->assessment : NULL;
-    esp_err_t err = dbmap_ear_observation_publish_ex(
+    esp_err_t err = observation_publish_result(
         s_cfg,
         binding->observation_id,
         has_lvl,
@@ -1696,7 +1772,8 @@ static bool mgr_emit_end(
         sig_ptr,
         dyn_ptr,
         NULL,
-        assess
+        assess,
+        result
     );
 #if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
     ear_obs_stack_hwm_om_publish("end", true);
@@ -1716,6 +1793,26 @@ static bool mgr_emit_end(
     l2_continuity_break();
 #endif
     return true;
+}
+
+static bool mgr_emit_end(
+    void *ctx,
+    const ear_obs_binding_view_t *binding,
+    ear_obs_end_reason_t reason,
+    int64_t interval_start_mono_us,
+    int64_t interval_end_mono_us,
+    bool has_signal_level_dbfs,
+    float signal_level_dbfs
+)
+{
+    (void)ctx;
+    sp_mqtt_publish_result_t result = {0};
+    const bool ok = mgr_publish_end(
+        &result, binding, reason, interval_start_mono_us, interval_end_mono_us,
+        has_signal_level_dbfs, signal_level_dbfs
+    );
+    ear_p8_note_outcome(&s_p8_outcomes, EAR_P8_END, result.sdk_called, result.message_id);
+    return ok;
 }
 
 #endif /* AUDIO_ENGINE manager emit helpers */
@@ -2593,6 +2690,11 @@ static void activity_cycle_before_poll(ear_sig_product_section_args_t *args)
 
 static void activity_cycle_after_poll(ear_sig_product_section_args_t *args)
 {
+#if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
+    if (args->prod != NULL) {
+        observation_capture_runtime_diag();
+    }
+#endif
     activity_cycle_t *cycle = args->before_ctx;
     if (cycle->poll_t0 == 0) {
         return;

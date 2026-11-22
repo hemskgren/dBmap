@@ -3621,6 +3621,7 @@ static void test_p7_start_retry_same_identity(void)
     ear_obs_manager_diag_t d;
     ear_obs_manager_get_diag(&f.om, &d);
     EXPECT(d.start_retry == 1u);
+    EXPECT(d.start_attempts == 2u);
     fixture_fini(&f);
 }
 
@@ -3688,6 +3689,10 @@ static void test_p7_periodic_suppressed_both_paths(void)
     EXPECT(g_emit.periodics == 0u);
     ear_obs_manager_on_activity_periodic_hint(&f.om, 3000000, 4000000, true, -36.0f);
     EXPECT(g_emit.periodics == 1u);
+    EXPECT(f.om.diag.periodic_attempts == 1u);
+    f.om.cfg.enable_poll_periodic = true;
+    host_obs_poll(&f.om, t0 + 1200000);
+    EXPECT(f.om.diag.periodic_attempts == 2u);
     fixture_fini(&f);
 }
 
@@ -3703,6 +3708,7 @@ static void test_p7_silent_end_before_accept(void)
         &f.om, EAR_OBS_ACT_END_AMBIENT, t0, t0 + 100000, true, -50.0f
     );
     EXPECT(g_emit.ends == 0u);
+    EXPECT(f.om.diag.end_attempts == 0u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(sp_episode_registry_in_use_count(&f.reg) == 0u);
     host_obs_poll(&f.om, t0 + 5000000);
@@ -4148,6 +4154,7 @@ static void test_p7_accepted_start_failed_end_still_releases(void)
         &f.om, EAR_OBS_ACT_END_AMBIENT, 2000, 2100, true, -50.0f
     );
     EXPECT(g_emit.ends == 1u);
+    EXPECT(f.om.diag.end_attempts == 1u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(sp_episode_registry_in_use_count(&f.reg) == 0u);
     host_obs_poll(&f.om, 10000000);

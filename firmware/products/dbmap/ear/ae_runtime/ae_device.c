@@ -23,6 +23,7 @@ static const char *TAG = "ae";
 static ae_engine_t s_ae;
 static bool s_active;
 static ae_device_diag_t s_diag;
+static uint32_t s_epoch;
 static uint32_t s_diag_publish_count;
 static uint32_t s_last_overwrite_seen;
 
@@ -185,6 +186,7 @@ esp_err_t ae_device_start(void)
     }
     /* Baseline: ignore overwrite events that happened before AE start. */
     s_last_overwrite_seen = sp_mic_pcm_pending_overwrite();
+    s_diag.epoch = ++s_epoch;
     s_active = true;
     ESP_LOGI(TAG, "Audio Engine device path started (AE only, M5 stereo foundation)");
     return ESP_OK;
@@ -208,6 +210,15 @@ bool ae_device_active(void)
     return s_active;
 }
 
+static void count_signature_outcome(uint32_t *count)
+{
+    if (*count == UINT32_MAX) {
+        s_diag.signature_counters_saturated = true;
+    } else {
+        ++*count;
+    }
+}
+
 esp_err_t ae_device_poll(void)
 {
     if (!s_active) {
@@ -220,8 +231,11 @@ esp_err_t ae_device_poll(void)
     /* Coherent PCM + channel snapshots (same window_seq / measured_at).
      * Do not use get_channel() here — that can race s_latest publication. */
     sp_mic_window_job_t wjob;
-    if (!sp_mic_take_window_job(&wjob)) {
+    const sp_mic_window_take_result_t take = sp_mic_take_window_job_result(&wjob);
+    if (take == SP_MIC_WINDOW_EMPTY) {
         s_diag.no_job++;
+    }
+    if (take != SP_MIC_WINDOW_PROJECTED) {
         return ESP_OK;
     }
     const sp_mic_pcm_job_t *job = &wjob.pcm;
@@ -379,12 +393,15 @@ esp_err_t ae_device_poll(void)
             gap.gap_before,
             &sig
         )) {
+        count_signature_outcome(&s_diag.sig_build_failed);
         return ESP_OK;
     }
 
     /* If channels mismatched, never claim pair — already pair=NULL.
      * Mono signature still uses PCM-tied L0/L1/L2. */
-    (void)ae_publish_signature(&s_ae, &sig);
+    if (ae_publish_signature(&s_ae, &sig)) {
+        count_signature_outcome(&s_diag.sig_accepted);
+    }
     s_diag.sig_published++;
     s_diag.last_quality = sig.quality;
     if (gap.gap_before) {

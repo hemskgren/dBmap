@@ -14,6 +14,14 @@ esp_mqtt_client_handle_t sp_mqtt_handle(void);
 bool sp_mqtt_is_connected(void);
 /** Ensure a reconnect attempt is scheduled when MQTT is down (safe to call often). */
 void sp_mqtt_request_reconnect(void);
+typedef struct {
+    bool sdk_called;
+    int message_id;
+} sp_mqtt_publish_result_t;
+
+esp_err_t sp_mqtt_publish_json_result(
+    const char *topic, const char *json, int qos, sp_mqtt_publish_result_t *result
+);
 esp_err_t sp_mqtt_publish_json(const char *topic, const char *json, int qos);
 
 /**

@@ -410,18 +410,38 @@ bool sp_mic_take_pcm_job(sp_mic_pcm_job_t *out)
     if (!had) {
         return false;
     }
-    return sp_mic_window_slot_project_pcm(&job, s_pcm, out);
+    const bool projected = sp_mic_window_slot_project_pcm(&job, s_pcm, out);
+    portENTER_CRITICAL(&s_lock);
+    sp_mic_window_slot_note_projection(true, projected);
+    portEXIT_CRITICAL(&s_lock);
+    return projected;
 #endif
 }
 
 bool sp_mic_take_window_job(sp_mic_window_job_t *out)
 {
+    return sp_mic_take_window_job_result(out) == SP_MIC_WINDOW_PROJECTED;
+}
+
+void sp_mic_get_window_diag(sp_mic_window_diag_t *out)
+{
+#if CONFIG_SP_MIC_PCM_RETAIN
+    portENTER_CRITICAL(&s_lock);
+    sp_mic_window_slot_get_diag(out);
+    portEXIT_CRITICAL(&s_lock);
+#else
+    *out = (sp_mic_window_diag_t){0};
+#endif
+}
+
+sp_mic_window_take_result_t sp_mic_take_window_job_result(sp_mic_window_job_t *out)
+{
 #if !CONFIG_SP_MIC_PCM_RETAIN
     (void)out;
-    return false;
+    return SP_MIC_WINDOW_EMPTY;
 #else
     if (!s_pcm_ready) {
-        return false;
+        return SP_MIC_WINDOW_EMPTY;
     }
 
     sp_mic_window_slot_pending_t job;
@@ -431,11 +451,17 @@ bool sp_mic_take_window_job(sp_mic_window_job_t *out)
     const bool had = sp_mic_window_slot_take(&job);
     portEXIT_CRITICAL(&s_lock);
     if (!had) {
-        return false;
+        return SP_MIC_WINDOW_EMPTY;
     }
     /* Bank check runs after pending is cleared. Mask stays 0 on fill failure
      * so AE can still mono-analyze without inventing channels. */
-    return sp_mic_window_slot_project_window(&job, s_pcm, rate_hz, out);
+    const bool projected = sp_mic_window_slot_project_window(&job, s_pcm, rate_hz, out);
+    if (!projected) {
+        portENTER_CRITICAL(&s_lock);
+        sp_mic_window_slot_note_projection(false, false);
+        portEXIT_CRITICAL(&s_lock);
+    }
+    return projected ? SP_MIC_WINDOW_PROJECTED : SP_MIC_WINDOW_PROJECTION_FAILED;
 #endif
 }
 

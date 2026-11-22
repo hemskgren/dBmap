@@ -370,3 +370,45 @@ def test_apply_reported_accepts_additive_microphone_count_fields() -> None:
         assert payload["audio"]["microphones"][0]["index"] == 0
     finally:
         db.close()
+
+
+def test_ear_runtime_diag_preserves_health_and_monitoring() -> None:
+    from app.models import DeviceMonitorEvent, DeviceMonitorSample, Observation
+
+    _reset_db()
+    with SessionLocal() as db:
+        node_id = "OUTAAAAA"
+        _add_node(db, node_id)
+        models = (DeviceDiagEvent, DeviceMonitorEvent, DeviceMonitorSample, Observation)
+        empty = {"firmware_version": "1.0.0", "wifi_rssi_dbm": -55}
+        service.apply_reported(db, node_id, empty)
+        summary = device_diag.health_summary_for_node(db, node_id, online=True, reported_payload=empty)
+        assert summary["state"] == "unknown"
+        assert not summary["has_diag_evidence"]
+
+        # Existing EAR-only failure keys already establish diagnostic evidence.
+        legacy = {**empty, "diag": {"ce_create_dropped_full": 5}}
+        service.apply_reported(db, node_id, legacy)
+        before = device_diag.health_summary_for_node(db, node_id, online=True)
+        before_counts = [db.scalar(select(func.count()).select_from(model)) for model in models]
+        assert before["state"] == "healthy"
+        assert before["has_diag_evidence"]
+
+        for seq in (1, 2):
+            diag = {
+                "ce_create_dropped_full": 5,
+                "ear_p8": 1,
+                "ear_p8_seq": seq,
+                "obs_start_attempts": 4_294_967_295,
+                "obs_start_publish_accepted": seq,
+                "obs_start_mqtt_publish_failed": 4_294_967_000,
+                "mic_windows_published": 4_294_967_295,
+            }
+            service.apply_reported(db, node_id, {**empty, "diag": diag})
+            after = device_diag.health_summary_for_node(db, node_id, online=True)
+            for key in ("state", "score", "reason", "has_diag_evidence"):
+                assert after[key] == before[key]
+            assert after["last_diag"] == diag
+            assert [
+                db.scalar(select(func.count()).select_from(model)) for model in models
+            ] == before_counts

@@ -108,20 +108,26 @@ bool sp_mic_take_pcm_job(sp_mic_pcm_job_t *out)
 
 bool sp_mic_take_window_job(sp_mic_window_job_t *out)
 {
+    return sp_mic_take_window_job_result(out) == SP_MIC_WINDOW_PROJECTED;
+}
+
+sp_mic_window_take_result_t sp_mic_take_window_job_result(sp_mic_window_job_t *out)
+{
     if (!s_ready) {
-        return false;
+        return SP_MIC_WINDOW_EMPTY;
     }
     sp_mic_window_slot_pending_t job;
     const uint32_t rate = s_rate_hz;
     const bool had = sp_mic_window_slot_take(&job);
     if (!had) {
-        return false;
+        return SP_MIC_WINDOW_EMPTY;
     }
     const bool ok = sp_mic_window_slot_project_window(&job, s_banks, rate, out);
     if (ok && out != NULL) {
         s_last_pcm = out->pcm.samples;
     }
-    return ok;
+    sp_mic_window_slot_note_projection(false, ok);
+    return ok ? SP_MIC_WINDOW_PROJECTED : SP_MIC_WINDOW_PROJECTION_FAILED;
 }
 
 uint8_t sp_mic_pcm_retained_channels(void)

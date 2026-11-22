@@ -15,6 +15,7 @@ idf_component_register(
         "ear_cls_progressive.c"
         "ear_cls_as001.c"
         "ear_observation.c"
+        "ear_runtime_diag.c"
     INCLUDE_DIRS "include"
     REQUIRES
         node_common

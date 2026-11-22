@@ -305,6 +305,35 @@ static void test_seq_hole_and_recovery(void)
     stop_ae();
 }
 
+static void test_signature_rejection_and_ae_epoch(void)
+{
+    host_mic_begin(true, 16000u);
+    EXPECT(ae_device_start() == ESP_OK);
+    bind_listener();
+    EXPECT(publish_job(1u, 1000000, -31.0f, 250000) >= 0);
+    EXPECT(ae_device_poll() == ESP_OK);
+    EXPECT(publish_job(1u, 2000000, -31.0f, 250000) >= 0);
+    EXPECT(ae_device_poll() == ESP_OK);
+
+    ae_device_diag_t before;
+    ae_device_get_diag(&before);
+    EXPECT(before.pcm_jobs_taken == 2u);
+    EXPECT(before.sig_published == 2u);
+    EXPECT(before.sig_accepted == 1u);
+    EXPECT(before.sig_build_failed == 0u);
+    EXPECT(ae_publish_rejected_count(ae_device_engine()) == 1u);
+    EXPECT(g_hits == 1u);
+
+    stop_ae();
+    EXPECT(ae_device_start() == ESP_OK);
+    ae_device_diag_t after;
+    ae_device_get_diag(&after);
+    EXPECT(after.epoch == before.epoch + 1u);
+    EXPECT(after.pcm_jobs_taken == 0u);
+    EXPECT(after.sig_accepted == 0u);
+    stop_ae();
+}
+
 static void test_both_take_apis(void)
 {
     host_mic_begin(true, 16000u);
@@ -352,6 +381,7 @@ int main(void)
     test_start_baseline_and_single_delivery();
     test_pending_overwrite();
     test_seq_hole_and_recovery();
+    test_signature_rejection_and_ae_epoch();
     test_both_take_apis();
     if (g_failures != 0) {
         fprintf(stderr, "%d failure(s)\n", g_failures);

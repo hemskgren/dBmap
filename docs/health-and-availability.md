@@ -410,3 +410,12 @@ Device-side diagnostic defaults use on-device Kconfig / future Desired `payload.
 - Compose healthchecks: process/dependency checks used by Docker, not the historical score source of record
 - Device detail `Last seen` / status: same online window as D0 availability
 - Protocol `diag` fields: [protocol.md](./protocol.md)
+
+### EAR runtime snapshot
+
+Package 8 appends counters to the existing health/keepalive diagnostic object
+after the platform and legacy EAR diagnostic rules have run. It reuses the
+latest diagnostic snapshot and Device page. The new fields have no device
+diagnostic event, connectivity sample, health assessment, or Observation
+persistence rule. See [EAR runtime diagnostic snapshot](protocol.md#ear-runtime-diagnostic-snapshot)
+for field and publish outcome semantics.

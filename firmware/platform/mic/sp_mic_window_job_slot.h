@@ -32,6 +32,8 @@ typedef struct {
 void sp_mic_window_slot_reset_pending(void);
 
 uint32_t sp_mic_window_slot_overwrite_count(void);
+void sp_mic_window_slot_note_projection(bool legacy, bool projected);
+void sp_mic_window_slot_get_diag(sp_mic_window_diag_t *out);
 
 /**
  * Replace the pending job. A replacement of a job that is still pending
