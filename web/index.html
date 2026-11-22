@@ -112,7 +112,23 @@
       .component-status.offline, .component-status.error, .component-status.unhealthy, .component-status.unavailable { color: #a83232; }
       .component-status.degraded { color: #9a6700; }
       .component-status.unknown, .component-status.disabled, .component-status.unobserved { color: #526078; }
-      .monitoring-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      #hub-monitor h4 { margin: 0.65rem 0 0.3rem; }
+      #hub-monitor .component-list { gap: 0.45rem; }
+      #hub-monitor .component { padding: 0.45rem 0.6rem; }
+      .hub-monitor-overview { display: flex; flex-wrap: wrap; gap: 0.3rem 1.5rem; margin: 0 0 0.35rem; }
+      .hub-monitor-overview > div { display: flex; gap: 0.4rem; }
+      .hub-monitor-overview dd { margin: 0; font-weight: 650; }
+      .hub-availability-table :is(th, td) { padding: 0.32rem 0.55rem; white-space: nowrap; }
+      .hub-availability-table tbody th { color: inherit; font-size: inherit; }
+      .hub-availability-table td { width: 24%; font-variant-numeric: tabular-nums; }
+      .hub-availability-table th[scope="rowgroup"] { padding-top: 0.55rem; }
+      #hub-monitor-details { margin-top: 0.45rem; }
+      #hub-monitor-details summary { cursor: pointer; font-weight: 650; }
+      #hub-monitor-details .meta { margin-top: 0.35rem; }
+      #hub-monitor-details .notice { margin: 0.35rem 0; }
+      @media (min-width: 1100px) {
+        #hub-monitor .component-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      }
       .monitoring-events { margin: 0.5rem 0 0; padding-left: 1.15rem; }
       .monitoring-events li { margin: 0.25rem 0; }
       #hub-monitor-events-panel { margin-top: 0.35rem; }
@@ -591,26 +607,34 @@
               </div>
             </div>
           </section>
-          <section>
-            <h3>Health, availability and Logs</h3>
-            <p class="notice">Health is the current probe result. Core Hub availability is historical confirmed device-communication uptime (MQTT or reachability failure counts as unavailable). MQTT, API, and Web availability are shown separately. A working web session does not prove MQTT is up. Firmware Builder is excluded from this monitoring. Multi-day scores stay incomplete until enough of that window has been observed.</p>
-            <div class="overview-grid monitoring-grid" aria-live="polite">
-              <article class="overview-card"><span>Current health</span><strong id="hub-health-state">—</strong></article>
-              <article class="overview-card"><span>Health score</span><strong id="hub-health-score">—</strong></article>
-              <article class="overview-card"><span>Core Hub availability state</span><strong id="hub-availability-state">—</strong></article>
-              <article class="overview-card"><span>Core Hub availability 24h</span><strong id="hub-availability-24h">—</strong></article>
-              <article class="overview-card"><span>Core Hub availability 7d</span><strong id="hub-availability-7d">—</strong></article>
-              <article class="overview-card"><span>Core Hub availability 30d</span><strong id="hub-availability-30d">—</strong></article>
-              <article class="overview-card"><span>MQTT availability 24h</span><strong id="hub-mqtt-availability-24h">—</strong></article>
-              <article class="overview-card"><span>API availability 24h</span><strong id="hub-api-availability-24h">—</strong></article>
-              <article class="overview-card"><span>Web availability 24h</span><strong id="hub-web-availability-24h">—</strong></article>
+          <section id="hub-monitor">
+            <h3>Hub health and availability</h3>
+            <dl class="hub-monitor-overview" aria-live="polite">
+              <div><dt>Current health</dt><dd id="hub-health-state">—</dd></div>
+              <div><dt>Health score</dt><dd id="hub-health-score">—</dd></div>
+              <div><dt>Hub services state</dt><dd id="hub-availability-state">—</dd></div>
+            </dl>
+            <div class="table-wrap" role="region" aria-label="Hub availability by period" tabindex="0">
+              <table class="hub-availability-table">
+                <thead><tr><th scope="col">Service</th><th scope="col">24h</th><th scope="col">7d</th><th scope="col">30d</th></tr></thead>
+                <tbody>
+                  <tr><th scope="row">Hub services availability</th><td id="hub-availability-24h">—</td><td id="hub-availability-7d">—</td><td id="hub-availability-30d">—</td></tr>
+                  <tr><th scope="row">API</th><td id="hub-api-availability-24h">—</td><td id="hub-api-availability-7d">—</td><td id="hub-api-availability-30d">—</td></tr>
+                  <tr><th scope="row">MQTT</th><td id="hub-mqtt-availability-24h">—</td><td id="hub-mqtt-availability-7d">—</td><td id="hub-mqtt-availability-30d">—</td></tr>
+                  <tr><th scope="row">Web</th><td id="hub-web-availability-24h">—</td><td id="hub-web-availability-7d">—</td><td id="hub-web-availability-30d">—</td></tr>
+                </tbody>
+                <tbody id="hub-public-monitoring" hidden>
+                  <tr><th scope="rowgroup" colspan="4">Public endpoints</th></tr>
+                </tbody>
+              </table>
             </div>
             <p id="hub-monitoring-warning" class="notice" hidden></p>
-            <dl id="hub-monitor-meta" class="meta"></dl>
-            <section id="hub-public-monitoring" hidden>
-              <h4>Public endpoints from this Hub</h4>
-              <div id="hub-public-components" class="overview-grid"></div>
-            </section>
+            <details id="hub-monitor-details">
+              <summary>Observation details</summary>
+              <p class="notice">Hub services availability measures confirmed device communication. Unobserved time is excluded. Public checks run from the Hub’s network.</p>
+              <dl id="hub-monitor-meta" class="meta"></dl>
+              <div id="hub-public-components"></div>
+            </details>
             <h4>Monitored components</h4>
             <div id="component-list" class="component-list" aria-live="polite"><p class="notice">Checking Hub components…</p></div>
             <div id="component-details" hidden></div>
@@ -1293,20 +1317,15 @@
         return 60 * 60 * 1000;
       }
 
-      function formatSlotLabel(ms, slotMs) {
+      function formatSlotLabel(ms) {
+        if (typeof formatDisplayDateTime === 'function') {
+          return formatDisplayDateTime(ms, { timeOnly: true, invalid: 'Unknown' });
+        }
         const date = new Date(ms);
-        if (slotMs < 60 * 1000) {
-          return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        }
-        if (slotMs < 60 * 60 * 1000) {
-          return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-        }
-        return date.toLocaleString(undefined, {
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-        });
+        if (Number.isNaN(date.getTime())) return 'Unknown';
+        return new Intl.DateTimeFormat('sv-SE', {
+          timeZone: 'Europe/Stockholm', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+        }).format(date);
       }
 
       function formatSlotDuration(slotMs) {
@@ -1368,7 +1387,7 @@
           bar.setAttribute('aria-pressed', 'false');
           const heightPx = count ? Math.max(8, Math.round((count / maxCount) * 112)) : 3;
           bar.style.height = `${heightPx}px`;
-          bar.title = `${formatSlotLabel(slot.start, slotMs)} – ${formatSlotLabel(slot.end, slotMs)}\n${count} report${count === 1 ? '' : 's'}`;
+          bar.title = `${formatSeen(new Date(slot.start))} – ${formatSeen(new Date(slot.end))}\n${count} report${count === 1 ? '' : 's'}`;
           if (count >= 2 && heightPx >= 18) bar.textContent = String(count);
           if (!count) {
             bar.disabled = true;
@@ -1386,9 +1405,9 @@
 
         const axis = document.createElement('div');
         axis.className = 'obs-slot-axis';
-        axis.append(el('span', formatSlotLabel(slots[0].start, slotMs)));
+        axis.append(el('span', formatSlotLabel(slots[0].start)));
         if (slots.length > 1) {
-          axis.append(el('span', formatSlotLabel(slots[slots.length - 1].start, slotMs)));
+          axis.append(el('span', formatSlotLabel(slots[slots.length - 1].start)));
         }
         chart.append(axis);
       }
@@ -2155,41 +2174,97 @@
         return `Hub was not running for ${formatDurationSeconds(seconds)}${latestBit}. A stopped Hub container is recorded the same way as the computer being off, and that time is left out of the percentage.`;
       }
 
+      const HUB_AVAILABILITY_PERIODS = ['24h', '7d', '30d'];
+
+      function formatHubAvailabilityWindow(window) {
+        if (!window) return '—';
+        const observed = `${formatDurationSeconds(window.eligible_seconds)} observed`;
+        if (window.insufficient_data || window.percent == null) return `Insufficient data (${observed})`;
+        if (window.score_ready === false) return `Incomplete (${observed})`;
+        return `${window.percent}% (${observed})`;
+      }
+
+      function addHubWindowDetails(meta, label, windows) {
+        for (const period of HUB_AVAILABILITY_PERIODS) {
+          const window = windows?.[period];
+          if (!window) continue;
+          const parts = [
+            `${formatDurationSeconds(window.eligible_seconds)} observed`,
+            `${formatDurationSeconds(window.unavailable_seconds)} unavailable`,
+            `${formatDurationSeconds(window.unobserved_seconds)} unobserved`,
+          ];
+          if (window.not_running_seconds > 0) {
+            parts.push(`${formatDurationSeconds(window.not_running_seconds)} Hub not running`);
+          }
+          addDetailField(meta, `${label} ${period}`, parts.join(' · '));
+        }
+      }
+
+      function renderHubAvailability(availability) {
+        const groups = {'hub': availability?.windows};
+        for (const component of ['api', 'mqtt', 'web']) {
+          groups[`hub-${component}`] = availability?.components?.[component]?.windows;
+        }
+        for (const [id, windows] of Object.entries(groups)) {
+          for (const period of HUB_AVAILABILITY_PERIODS) {
+            document.getElementById(`${id}-availability-${period}`).textContent =
+              formatHubAvailabilityWindow(windows?.[period]);
+          }
+        }
+      }
+
+      function formatPublicTransition(event) {
+        const previous = event.previous_state;
+        const current = event.new_state;
+        const status = current === 'ok' ? 'Available' : current === 'offline' ? 'Unavailable' : 'Unobserved';
+        if (event.event_type === 'monitoring_resumed') return `Monitoring resumed: ${status}`;
+        if (previous === null) return `Initial observation: ${status}`;
+        if (previous === 'unknown' && current !== 'unknown') return `${status} after unobserved period`;
+        if (previous === 'offline' && current === 'ok') return 'Recovered';
+        if (previous === 'ok' && current === 'offline') return 'Became unavailable';
+        if (current === 'unknown' && (previous === 'ok' || previous === 'offline')) return 'Observation became unobserved';
+        return status;
+      }
+
       function renderPublicMonitoring(components) {
-        const section = document.getElementById('hub-public-monitoring');
+        const group = document.getElementById('hub-public-monitoring');
         const container = document.getElementById('hub-public-components');
         const open = new Set(Array.from(container.querySelectorAll('details[open]'), (item) => item.dataset.component));
         container.replaceChildren();
+        for (const row of group.querySelectorAll('tr[data-component]')) row.remove();
         const entries = Object.entries(components || {});
-        section.hidden = entries.length === 0;
+        group.hidden = entries.length === 0;
+        const states = { ok: 'Available', offline: 'Unavailable', unknown: 'Unobserved' };
         for (const [id, component] of entries) {
-          const card = el('article', null, 'overview-card');
-          card.append(el('h5', component.label));
+          const state = states[component.state] || 'Unobserved';
+          const row = el('tr');
+          row.dataset.component = id;
+          const name = el('th', `${component.label} (${state})`);
+          name.scope = 'row';
+          row.append(name);
+          for (const period of HUB_AVAILABILITY_PERIODS) {
+            row.append(el('td', formatHubAvailabilityWindow(component.windows?.[period])));
+          }
+          group.append(row);
+
+          const details = el('details');
+          details.dataset.component = id;
+          details.open = open.has(id);
+          details.append(el('summary', component.label));
           const meta = el('dl', null, 'meta');
-          const states = { ok: 'Available', offline: 'Unavailable', unknown: 'Unobserved' };
-          addDetailField(meta, 'Status', states[component.state] || 'Unobserved');
           if (component.reason) addDetailField(meta, 'Reason', component.reason);
           addDetailField(meta, 'Last check', component.checked_at ? formatSeen(component.checked_at) : 'None yet');
-          for (const name of ['24h', '7d', '30d']) {
-            const window = component.windows?.[name];
-            addDetailField(meta, name, formatAvailabilityWindow(window));
-            if (window) addDetailField(meta, `${name} eligible`, formatDurationSeconds(window.eligible_seconds));
-          }
-          card.append(meta);
+          addHubWindowDetails(meta, component.label, component.windows);
+          details.append(meta);
           if (component.recent_events?.length) {
-            const events = el('details');
-            events.dataset.component = id;
-            events.open = open.has(id);
-            events.append(el('summary', 'Recent transitions'));
-            const list = el('ul');
+            const list = el('ul', null, 'monitoring-events');
             for (const event of component.recent_events) {
-              const state = states[event.new_state] || 'Unobserved';
-              list.append(el('li', `${formatSeen(event.occurred_at)} · ${state}${event.reason ? ` · ${event.reason}` : ''}`));
+              const newState = formatPublicTransition(event);
+              list.append(el('li', `${formatSeen(event.occurred_at)} · ${newState}${event.reason ? ` · ${event.reason}` : ''}`));
             }
-            events.append(list);
-            card.append(events);
+            details.append(list);
           }
-          container.append(card);
+          container.append(details);
         }
       }
 
@@ -2203,44 +2278,10 @@
         document.getElementById('hub-health-score').textContent =
           health.score === null || health.score === undefined ? '—' : String(health.score);
         document.getElementById('hub-availability-state').textContent = availability.current_state || 'unknown';
-        document.getElementById('hub-availability-24h').textContent = formatAvailabilityWindow(windows['24h']);
-        document.getElementById('hub-availability-7d').textContent = formatAvailabilityWindow(windows['7d']);
-        document.getElementById('hub-availability-30d').textContent = formatAvailabilityWindow(windows['30d']);
-        document.getElementById('hub-mqtt-availability-24h').textContent = formatAvailabilityWindow(
-          componentAvailability.mqtt?.windows?.['24h'],
-        );
-        document.getElementById('hub-api-availability-24h').textContent = formatAvailabilityWindow(
-          componentAvailability.api?.windows?.['24h'],
-        );
-        document.getElementById('hub-web-availability-24h').textContent = formatAvailabilityWindow(
-          componentAvailability.web?.windows?.['24h'],
-        );
+        renderHubAvailability(availability);
         const warning = document.getElementById('hub-monitoring-warning');
-        const gapCount = Array.isArray(availability.gaps) ? availability.gaps.length : 0;
-        const incomplete = Object.values(windows).some((window) => window && window.score_ready === false);
-        const mqttDown = (Array.isArray(health.components) ? health.components : [])
-          .some((component) => component && component.id === 'mqtt' && !['ok', 'online', 'healthy', 'disabled'].includes(component.state));
-        if (availability.insufficient_data || incomplete || gapCount > 0 || monitoring?.error || health.reason || mqttDown) {
-          warning.hidden = false;
-          const parts = [];
-          if (monitoring?.error) parts.push(monitoring.error);
-          if (health.reason) parts.push(health.reason);
-          else if (mqttDown) {
-            parts.push('MQTT broker is unavailable; devices cannot communicate with the Hub even if this web session still works.');
-          }
-          if (availability.insufficient_data) {
-            parts.push('Some availability windows lack enough confirmed observation time.');
-          }
-          if (incomplete) {
-            parts.push('7d/30d scores stay incomplete until at least half that window has been observed.');
-          }
-          const notRunningNote = hubNotRunningNote(availability.gaps);
-          if (notRunningNote) parts.push(notRunningNote);
-          warning.textContent = parts.join(' ');
-        } else {
-          warning.hidden = true;
-          warning.textContent = '';
-        }
+        warning.textContent = monitoring?.error || health.reason || '';
+        warning.hidden = !warning.textContent;
         const meta = document.getElementById('hub-monitor-meta');
         meta.replaceChildren();
         const lastChange = monitoring?.last_state_change;
@@ -2261,21 +2302,11 @@
           'Failed component last success',
           failedChecks.length ? failedChecks.join(' · ') : 'All monitored components ok on last check',
         );
-        const core24 = windows['24h'] || {};
-        if (core24.unavailable_seconds > 0) {
-          addDetailField(
-            meta,
-            'Core Hub unavailable (24h)',
-            formatDurationSeconds(core24.unavailable_seconds),
-          );
-        }
-        const mqtt24 = componentAvailability.mqtt?.windows?.['24h'] || {};
-        if (mqtt24.unavailable_seconds > 0) {
-          addDetailField(
-            meta,
-            'MQTT unavailable (24h)',
-            formatDurationSeconds(mqtt24.unavailable_seconds),
-          );
+        const notRunningNote = hubNotRunningNote(availability.gaps);
+        if (notRunningNote) addDetailField(meta, 'Hub observation gaps', notRunningNote);
+        addHubWindowDetails(meta, 'Hub services', windows);
+        for (const [component, label] of Object.entries({api: 'API', mqtt: 'MQTT', web: 'Web'})) {
+          addHubWindowDetails(meta, label, componentAvailability[component]?.windows);
         }
         const eventsPanel = document.getElementById('hub-monitor-events-panel');
         if (eventsPanel && !eventsPanel.open) {
@@ -2560,12 +2591,7 @@
           document.getElementById('hub-health-state').textContent = '—';
           document.getElementById('hub-health-score').textContent = '—';
           document.getElementById('hub-availability-state').textContent = '—';
-          document.getElementById('hub-availability-24h').textContent = '—';
-          document.getElementById('hub-availability-7d').textContent = '—';
-          document.getElementById('hub-availability-30d').textContent = '—';
-          document.getElementById('hub-mqtt-availability-24h').textContent = '—';
-          document.getElementById('hub-api-availability-24h').textContent = '—';
-          document.getElementById('hub-web-availability-24h').textContent = '—';
+          renderHubAvailability();
           document.getElementById('hub-monitoring-warning').hidden = true;
           renderPublicMonitoring();
           document.getElementById('hub-monitor-meta').replaceChildren();

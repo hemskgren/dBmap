@@ -98,3 +98,37 @@ The reset scope is all rows with the approved `hub_id` in `device_monitor_sample
 - Once separately approved, deploy the reviewed Hub build. Use the existing Hub Compose volume and configuration. Verify the configured 60-second Hub probe interval, 120-second continuity threshold, 30-second Device Monitor cadence, and 90-second online window.
 - Observe at least 12 minutes with stable device reports. After startup, expect no recurring `monitoring_resumed` events during continuous checks, stable sample counts, and rising eligible time. A first inferred gap is possible when the sparse startup fallback reaches back to an old persisted sample.
 - Confirm Hub health and component availability are present on demand, Device Monitor shows a percentage once 600 eligible seconds are retained, and diagnostics still report normally. Review post-rollout event timestamps separately from retained incident data.
+
+## One-time Core Hub history reset
+
+Use this procedure only for a separately approved clean Hub services baseline. First verify the deployed Core checkpoint across a controlled restart. With the Hub writer stopped, read the current checkpoint and newest Core sample. After restart, confirm that the observation gap starts at the checkpoint and that the checkpoint advances with the first committed check. A gap shorter than the normal event threshold may have a sample marker without a resume event.
+
+For the reset, stop only the `hub-bootstrap` writer and use the protected, integrity-checked SQLite Backup API procedure above with a fresh filename. Preview the following counts for the approved Hub ID, including the checkpoint. Verify them again in the write transaction.
+
+```sql
+PRAGMA foreign_keys = ON;
+BEGIN IMMEDIATE;
+SELECT COUNT(*) FROM hub_monitor_samples WHERE hub_id = :hub_id;
+SELECT COUNT(*) FROM hub_monitor_events WHERE hub_id = :hub_id;
+SELECT COUNT(*) FROM hub_monitor_checkpoints WHERE hub_id = :hub_id;
+SELECT last_check_at FROM hub_monitor_checkpoints WHERE hub_id = :hub_id;
+```
+
+After reviewing the preview, delete only those rows in the same transaction. Clearing the checkpoint with the history prevents an observation from the previous baseline from carrying into the new one.
+
+```sql
+DELETE FROM hub_monitor_events WHERE hub_id = :hub_id;
+SELECT changes() AS events_deleted;
+DELETE FROM hub_monitor_samples WHERE hub_id = :hub_id;
+SELECT changes() AS samples_deleted;
+DELETE FROM hub_monitor_checkpoints WHERE hub_id = :hub_id;
+SELECT changes() AS checkpoints_deleted;
+SELECT COUNT(*) FROM hub_monitor_events WHERE hub_id = :hub_id;
+SELECT COUNT(*) FROM hub_monitor_samples WHERE hub_id = :hub_id;
+SELECT COUNT(*) FROM hub_monitor_checkpoints WHERE hub_id = :hub_id;
+PRAGMA foreign_key_check;
+```
+
+Commit only when deletion counts match the preview, scoped counts are zero, and foreign-key checks pass. Roll back on any discrepancy. The `public_monitor_*` tables, Device Monitor history, diagnostics, and unrelated tables stay outside the transaction.
+
+Resume the same Hub build. Verify through the API that initial Core history begins at the first new check, the checkpoint advances, and stable states write no extra samples or events. Observe Core, API, MQTT, Web, public endpoints and Device Monitor for at least 15 minutes. Confirm that the fresh 24h Core service windows report percentages once they have 600 eligible seconds. Verify the earlier public and device event IDs are still present. If verification passes and deletion was approved, delete only the new temporary backup after confirming its path and checksum. Retain it if verification fails.

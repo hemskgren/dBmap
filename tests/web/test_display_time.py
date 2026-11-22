@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
 
@@ -71,3 +75,32 @@ def test_nginx_allows_display_time_js_when_base_path_empty() -> None:
     asset_route = template.index("display-time\\.js")
     only_base = template.index("(?<only_base>")
     assert asset_route < only_base
+
+
+def test_observation_timeline_uses_stockholm_24_hour_clock_across_dst() -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required for JavaScript formatting tests")
+    html = (WEB_ROOT / "index.html").read_text()
+    slot = html.split("      function formatSlotLabel(", 1)[1].split(
+        "      function formatSlotDuration(", 1
+    )[0]
+    script = (
+        (WEB_ROOT / "display-time.js").read_text()
+        + f"\nfunction formatSlotLabel({slot}\n"
+        + """
+        const assert = require('node:assert/strict');
+        const label = (utc) => formatSlotLabel(Date.parse(utc));
+        assert.equal(label('2026-01-12T15:07:05Z'), '16:07');
+        assert.equal(label('2026-07-12T15:07:05Z'), '17:07');
+        assert.equal(label('2026-03-29T00:59:59Z'), '01:59');
+        assert.equal(label('2026-03-29T01:00:00Z'), '03:00');
+        assert.equal(label('2026-10-25T00:59:59Z'), '02:59');
+        assert.equal(label('2026-10-25T01:00:00Z'), '02:00');
+        assert.equal(label('2026-01-12T23:00:00Z'), '00:00');
+        assert.equal(label('invalid'), 'Unknown');
+        delete globalThis.formatDisplayDateTime;
+        assert.equal(label('2026-07-12T15:07:05Z'), '17:07');
+        """
+    )
+    subprocess.run([node, "-e", script], check=True, timeout=10)

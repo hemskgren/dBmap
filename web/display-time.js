@@ -20,7 +20,7 @@
 
   /**
    * @param {string|number|Date|null|undefined} value
-   * @param {{ empty?: string, invalid?: string }} [options]
+   * @param {{ empty?: string, invalid?: string, timeOnly?: boolean }} [options]
    */
   function formatDisplayDateTime(value, options) {
     const emptyLabel =
@@ -81,6 +81,7 @@
     if (!year || !month || !day) {
       return invalidLabel;
     }
+    if (options?.timeOnly) return `${hour}:${minute}`;
     // Force YYYY-MM-DD regardless of en-GB part order.
     return `${year}-${month}-${day} ${hour}:${minute}:${second} ${zone}`;
   }
