@@ -16,9 +16,10 @@ import paho.mqtt.client as mqtt
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app import monitoring_availability, monitoring_cycle
 from app.config import settings
 from app.db import SessionLocal
-from app.models import HubMonitorSample, PublicMonitorTransition
+from app.models import PublicMonitorTransition
 from app.monitoring_math import ensure_aware
 
 log = logging.getLogger("hub-bootstrap.public-monitor")
@@ -52,7 +53,7 @@ def _transitions(component: str):
 
 def prune_history(db: Session, component: str, now: datetime) -> None:
     """Remove aged transitions, preserving the state at the retention boundary."""
-    cutoff = now - timedelta(days=settings.hub_monitor_retention_days)
+    cutoff = monitoring_cycle.retention_cutoff(now, settings.hub_monitor_retention_days)
     aged = _transitions(component).where(PublicMonitorTransition.observed_at < cutoff)
     anchor = db.scalar(
         aged.order_by(PublicMonitorTransition.observed_at.desc()).limit(1)
@@ -190,28 +191,14 @@ def probe_mqtt() -> Result:
                 sock.close()
 
 
-def _sample(component: str, observed_at: datetime, state: str) -> HubMonitorSample:
-    return HubMonitorSample(
-        sample_id=str(uuid4()),
-        hub_id=settings.hub_id,
-        observed_at=observed_at,
-        overall_availability={"ok": "available", "offline": "unavailable"}.get(
-            state, "unobserved"
-        ),
-        overall_health="unknown",
-        source=component,
-        components_json=json.dumps(
-            {"states": {component: state}, "sample_mode": "sparse"}
-        ),
-    )
-
-
 def record_check(
     db: Session,
     component: str,
     observed_at: datetime,
     result: Result,
     previous_check_at: datetime | None,
+    *,
+    prune: bool = False,
 ) -> None:
     state, reason = result
     previous = db.scalar(
@@ -219,40 +206,52 @@ def record_check(
         .order_by(PublicMonitorTransition.observed_at.desc())
         .limit(1)
     )
-    previous_state = None
-    if previous is not None:
-        previous_state = previous.state
-        if previous_state != "unknown" and (
-            previous_check_at is None or observed_at - previous_check_at > STALE_AFTER
-        ):
-            start = max(
-                previous_check_at or ensure_aware(previous.observed_at),
-                ensure_aware(previous.observed_at) + timedelta(microseconds=1),
-            )
-            if start < observed_at:
-                db.add(
-                    PublicMonitorTransition(
-                        hub_id=settings.hub_id,
-                        component=component,
-                        observed_at=start,
-                        state="unknown",
-                        previous_state=previous_state,
-                        is_gap=True,
-                    )
+    gap = monitoring_cycle.plan_gap(
+        observed_at,
+        anchor_at=previous.observed_at if previous is not None else None,
+        previous_check_at=previous_check_at,
+        persisted_checkpoint=previous.last_check_at if previous is not None else None,
+        threshold=STALE_AFTER,
+    )
+
+    def record_history() -> PublicMonitorTransition:
+        latest = previous
+        if gap is not None and previous is not None and previous.state != "unknown":
+            marker_at = gap.marker_at(previous.observed_at)
+            if marker_at > ensure_aware(previous.observed_at):
+                latest = PublicMonitorTransition(
+                    hub_id=settings.hub_id,
+                    component=component,
+                    observed_at=marker_at,
+                    state="unknown",
+                    previous_state=previous.state,
+                    is_gap=True,
                 )
-                previous_state = "unknown"
-    if state == previous_state:
-        # A gap marker can be the only change when the resumed probe is unknown.
-        return
-    db.add(
-        PublicMonitorTransition(
-            hub_id=settings.hub_id,
-            component=component,
-            observed_at=observed_at,
-            state=state,
-            previous_state=previous_state,
-            reason=reason,
-        )
+                db.add(latest)
+        prior_state = latest.state if latest is not None else None
+        if monitoring_cycle.needs_sample(prior_state, state):
+            latest = PublicMonitorTransition(
+                hub_id=settings.hub_id,
+                component=component,
+                observed_at=observed_at,
+                state=state,
+                previous_state=prior_state,
+                reason=reason,
+            )
+            db.add(latest)
+        if prune:
+            prune_history(db, component, observed_at)
+        return latest
+
+    def save_checkpoint(latest: PublicMonitorTransition, value: str) -> None:
+        # The latest boundary carries metadata only; its observed_at is immutable.
+        latest.last_check_at = value
+
+    monitoring_cycle.commit_cycle(
+        db,
+        observed_at,
+        record_history=record_history,
+        save_checkpoint=save_checkpoint,
     )
 
 
@@ -271,10 +270,14 @@ def _loop(component: str, probe: Callable[[], Result], stop: threading.Event) ->
         now = _utcnow()
         try:
             with SessionLocal() as db:
-                record_check(db, component, now, result, previous_check_at)
-                if start >= next_prune:
-                    prune_history(db, component, now)
-                db.commit()
+                record_check(
+                    db,
+                    component,
+                    now,
+                    result,
+                    previous_check_at,
+                    prune=start >= next_prune,
+                )
         except Exception:  # noqa: BLE001 - retry on the next scheduled cycle
             log.warning("Could not persist the %s check", component)
         else:
@@ -304,12 +307,41 @@ def start(stop: threading.Event) -> None:
                 log.warning("Could not start the %s worker", component)
 
 
-def summary(db: Session, now: datetime) -> dict:
-    from app.hub_monitor import (
-        WINDOW_SPECS,
-        compute_component_availability_window,
-    )
+def _recent_events(
+    rows: list[PublicMonitorTransition], anchor: PublicMonitorTransition | None
+) -> list[dict]:
+    events = []
+    for index in range(len(rows) - 1, -1, -1):
+        row = rows[index]
+        if row is anchor or row.is_gap:
+            continue
+        previous = rows[index - 1] if index else None
+        resumed = previous is not None and previous.is_gap
+        if resumed and previous.previous_state == row.state:
+            # A short restart still has two history boundaries, just as Core
+            # does, but an unchanged result doesn't need a notification.
+            elapsed = ensure_aware(row.observed_at) - ensure_aware(previous.observed_at)
+            if elapsed <= STALE_AFTER:
+                continue
+        events.append(
+            monitoring_cycle.event_view(
+                event_id=row.transition_id,
+                occurred_at=row.observed_at,
+                observed_at=row.observed_at,
+                component=row.component,
+                event_type="monitoring_resumed" if resumed else "state_changed",
+                previous_state=row.previous_state,
+                new_state=row.state,
+                reason=row.reason,
+                source="public_monitor",
+            )
+        )
+        if len(events) == 5:
+            break
+    return events
 
+
+def summary(db: Session, now: datetime) -> dict:
     result = {}
     for component, name in COMPONENTS.items():
         if not enabled(component):
@@ -318,7 +350,9 @@ def summary(db: Session, now: datetime) -> dict:
             checked_at, (state, reason), last_success = _current.get(
                 component, (None, ("unknown", "Waiting for first check"), None)
             )
-        cutoff = now - timedelta(days=settings.hub_monitor_retention_days)
+        cutoff = monitoring_cycle.retention_cutoff(
+            now, settings.hub_monitor_retention_days
+        )
         anchor = db.scalar(
             _transitions(component)
             .where(PublicMonitorTransition.observed_at < cutoff)
@@ -332,20 +366,29 @@ def summary(db: Session, now: datetime) -> dict:
                 .order_by(PublicMonitorTransition.observed_at)
             )
         )
+        rows = ([anchor] if anchor is not None else []) + timeline
         history = [
-            _sample(component, row.observed_at, row.state)
-            for row in ([anchor] if anchor is not None else []) + timeline
+            monitoring_availability.Observation(
+                row.observed_at, monitoring_availability.component_state(row.state)
+            )
+            for row in rows
         ]
         stale = checked_at is None or now - checked_at > STALE_AFTER
-        if stale and history:
-            # The persisted timeline is extended only as far as current observation.
-            last_at = ensure_aware(history[-1].observed_at)
-            gap_at = max(checked_at or last_at, last_at + timedelta(microseconds=1))
-            if gap_at < now:
-                history.append(_sample(component, gap_at, "unknown"))
+        if stale and rows:
+            latest = rows[-1]
+            gap_at = monitoring_cycle.coverage_end_if_stale(
+                now,
+                anchor_at=latest.observed_at,
+                previous_check_at=checked_at,
+                persisted_checkpoint=latest.last_check_at,
+                threshold=STALE_AFTER,
+            )
+            if gap_at is not None:
+                history.append(
+                    monitoring_availability.Observation(gap_at, "unobserved")
+                )
         if stale and checked_at is not None:
             state, reason = "unknown", "No recent completed check"
-        recent = [row for row in reversed(timeline) if not row.is_gap][:5]
         result[component] = {
             "label": name,
             "state": state,
@@ -354,29 +397,15 @@ def summary(db: Session, now: datetime) -> dict:
             "last_success_at": last_success.isoformat() if last_success else None,
             "interval_seconds": INTERVAL_S,
             "windows": {
-                key: compute_component_availability_window(
+                key: monitoring_availability.component_window(
                     history,
                     component_id=component,
                     window_start=now - delta,
                     window_end=now,
                     interval_s=INTERVAL_S,
                 )
-                for key, delta in WINDOW_SPECS
+                for key, delta in monitoring_availability.WINDOW_SPECS
             },
-            "recent_events": [
-                {
-                    "event_id": row.transition_id,
-                    "occurred_at": ensure_aware(row.observed_at).isoformat(),
-                    "observed_at": ensure_aware(row.observed_at).isoformat(),
-                    "component": component,
-                    "event_type": "state_changed",
-                    "previous_state": row.previous_state,
-                    "new_state": row.state,
-                    "reason": row.reason,
-                    "source": "public_monitor",
-                    "certainty": "confirmed",
-                }
-                for row in recent
-            ],
+            "recent_events": _recent_events(rows, anchor),
         }
     return result

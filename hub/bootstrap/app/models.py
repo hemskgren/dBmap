@@ -506,6 +506,15 @@ class HubMonitorEvent(Base):
     certainty: Mapped[str] = mapped_column(String(16), default="confirmed")
 
 
+class HubMonitorCheckpoint(Base):
+    """Timestamp of the last atomically committed Core Hub observation."""
+
+    __tablename__ = "hub_monitor_checkpoints"
+
+    hub_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_check_at: Mapped[str] = mapped_column(String(40))
+
+
 class PublicMonitorTransition(Base):
     """One sparse public probe transition or unobserved boundary."""
 
@@ -526,6 +535,7 @@ class PublicMonitorTransition(Base):
     previous_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
     reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
     is_gap: Mapped[bool] = mapped_column(default=False)
+    last_check_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
 class DeviceMonitorSample(Base):
