@@ -53,6 +53,15 @@
       .button-link { display: inline-block; border-radius: 7px; padding: 0.48rem 0.72rem; color: #fff; background: #2457a7; font-size: 0.94rem; font-weight: 600; text-decoration: none; }
       .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 0.65rem; }
       .toolbar h2 { margin: 0; }
+      .refresh-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.15rem 0.5rem; }
+      .refresh-heading time { font-size: 0.8rem; font-weight: 400; color: #526078; }
+      #hub-refresh-status:empty, #refresh-status:empty, #observation-refresh-status:empty {
+        display: none;
+      }
+      #hub-refresh-status, #refresh-status, #observation-refresh-status {
+        min-height: 0;
+        margin: 0.25rem 0 0;
+      }
       .toolbar-actions { display: flex; align-items: center; gap: 0.85rem; flex-wrap: wrap; }
       .toolbar-actions label {
         display: inline-flex;
@@ -314,31 +323,38 @@
         margin: 0.55rem 0 0;
         padding: 0.1rem 0.15rem 0.1rem 0;
       }
-      .timeline-entry {
-        position: relative;
-        width: 100%;
-        padding: 0.5rem 0.7rem;
-        border: 1px solid #e3e9f1;
-        border-radius: 8px;
-        color: #172033;
-        background: #fff;
-        text-align: left;
-        font-size: 0.9rem;
-        overflow-wrap: anywhere;
+      .observation-id-filter { flex: 1 1 23rem; min-width: 0; }
+      #observation-id-form { margin-top: 0.35rem; }
+      #observation-id-input { flex: 1 1 12rem; width: auto; min-width: 0; }
+      .observation-emissions { border: 0; padding: 0; margin: 0; min-width: 0; }
+      #observation-filters .observation-emissions label { display: inline-block; margin-right: 0.4rem; }
+      .observation-emissions input { width: auto; }
+      .observation-table { table-layout: fixed; font-size: 0.85rem; }
+      .observation-table th:nth-child(1) { width: 12rem; }
+      .observation-table th:nth-child(2) { width: 8rem; }
+      .observation-table th:nth-child(3) { width: 20rem; }
+      .observation-table th:nth-child(4) { width: 6rem; }
+      .observation-table td { padding: 0.4rem 0.6rem; vertical-align: top; overflow-wrap: anywhere; }
+      .observation-table code { font-family: monospace; }
+      .observation-table tr.selected { background: #f3f7ff; }
+      .observation-table tr.in-slot-focus { background: #fff6e8; }
+      .observation-table tr.in-slot-focus.selected { background: #ffe0a8; }
+      .timeline-entry, .observation-row-actions button {
+        padding: 0.15rem 0.35rem;
+        font-size: inherit;
       }
-      .timeline-entry[aria-pressed="true"]:not(.in-slot-focus) {
-        border-color: #2457a7;
-        background: #f3f7ff;
-      }
-      .timeline-entry.in-slot-focus {
-        border-color: #d08920;
-        background: #fff6e8;
-        box-shadow: inset 4px 0 0 #e59a2d;
-      }
-      .timeline-entry.in-slot-focus[aria-pressed="true"] {
-        border-color: #9a4f00;
-        background: #ffe0a8;
-        box-shadow: inset 4px 0 0 #9a4f00;
+      .observation-row-actions { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.2rem; }
+      @media (max-width: 900px) {
+        .observation-table, .observation-table tbody { display: block; }
+        .observation-table thead { position: absolute; clip-path: inset(50%); }
+        .observation-table tbody tr { display: grid; border-bottom: 1px solid #e3e9f1; }
+        .observation-table td {
+          display: grid;
+          grid-template-columns: 7rem minmax(0, 1fr);
+          gap: 0 0.5rem;
+        }
+        .observation-table td::before { content: attr(data-label); grid-column: 1; font-weight: 600; }
+        .observation-table td > * { grid-column: 2; justify-self: start; }
       }
       #tab-devices > section { margin-top: 0.6rem; padding: 0.75rem; }
       #tab-devices > section h2, #tab-devices > section h3 { margin: 0 0 0.45rem; }
@@ -585,7 +601,7 @@
         <section id="tab-hub" role="tabpanel" aria-labelledby="tab-button-hub">
           <div class="toolbar">
             <div>
-              <h2>Hub overview</h2>
+              <div class="refresh-heading"><h2>Hub overview</h2><time id="hub-updated" hidden></time></div>
               <p id="hub-refresh-status" class="notice" aria-live="polite">Loading Hub status…</p>
             </div>
             <button id="refresh-hub" class="secondary" type="button">Refresh</button>
@@ -647,7 +663,7 @@
         </section>
         <section id="tab-devices" role="tabpanel" aria-labelledby="tab-button-devices" hidden>
           <div class="toolbar">
-            <div><h2>Devices</h2><p id="refresh-status" class="notice" aria-live="polite"></p></div>
+            <div><div class="refresh-heading"><h2>Devices</h2><time id="devices-updated" hidden></time></div><p id="refresh-status" class="notice" aria-live="polite"></p></div>
             <button id="refresh" class="secondary" type="button">Refresh</button>
           </div>
           <div class="overview-grid" aria-live="polite">
@@ -972,7 +988,7 @@
         </section>
         <section id="tab-observations" role="tabpanel" aria-labelledby="tab-button-observations" hidden>
           <div class="toolbar">
-            <div><h2>Observations</h2><p id="observation-refresh-status" class="notice" aria-live="polite"></p></div>
+            <div><div class="refresh-heading"><h2>Observations</h2><time id="observation-updated" hidden></time></div><p id="observation-refresh-status" class="notice" aria-live="polite"></p></div>
             <div class="toolbar-actions">
               <label for="observation-auto-refresh">
                 <input id="observation-auto-refresh" type="checkbox" checked>
@@ -984,13 +1000,13 @@
           <div class="overview-grid obs-stats" aria-live="polite">
             <article class="overview-card"><span>Unique observations</span><strong id="hub-observation-unique-total">—</strong></article>
             <article class="overview-card"><span>Observation reports</span><strong id="hub-observation-db-total">—</strong></article>
-            <article class="overview-card"><span>Recent (max 100)</span><strong id="hub-observation-count">—</strong></article>
+            <article class="overview-card"><span>Recent (max 200)</span><strong id="hub-observation-count">—</strong></article>
             <article class="overview-card"><span>Latest</span><strong id="latest-observation-card">—</strong></article>
           </div>
           <details id="observation-retained-stats" aria-label="Retained observation statistics">
             <summary>Observation Statistics</summary>
             <div class="obs-stats-body">
-              <p class="notice">Complete retained Observation history under a frozen Hub snapshot (CLI <code>hub_event_track summary</code> semantics). Not limited to the recent-100 timeline below. Loads only when you expand this panel (can be slow on large history).</p>
+              <p class="notice">Complete retained Observation history under a frozen Hub snapshot (CLI <code>hub_event_track summary</code> semantics). Not limited to the recent-200 timeline below. Loads only when you expand this panel (can be slow on large history).</p>
               <div class="obs-stats-actions">
                 <button id="refresh-observation-stats" class="secondary" type="button">Refresh statistics</button>
               </div>
@@ -1004,20 +1020,38 @@
           </details>
           <section>
             <h3>Observation timeline</h3>
-            <p class="notice">Recent window only: newest 100 reports globally (not full retained history). Each list row is one observation report (MQTT payload). Node/Observation filter counts are raw report counts inside this recent-100 window — not unique observation lifecycles. Bars stack filtered reports into adaptive time slots (height = report count). Amber = selected time slot; darker amber = selected row. Clicking a time slot turns Auto-refresh off; re-check Auto-refresh to return to the live latest view. Expanding the JSON panel alone does not pause refresh.</p>
-            <div id="observation-filters" aria-label="Filter observation reports in the recent-100 window">
-              <label for="observation-filter-node">Node ID (recent 100 reports)
+            <p class="notice">Recent window only: newest 200 reports globally (not full retained history). Each list row is one observation report (MQTT payload). Node/Observation filter counts are raw report counts inside this recent-200 window — not unique observation lifecycles. Bars stack filtered reports into adaptive time slots (height = report count). Amber = selected time slot; darker amber = selected row. Clicking a time slot turns Auto-refresh off; re-check Auto-refresh to return to the live latest view. Expanding the JSON panel alone does not pause refresh.</p>
+            <div id="observation-filters" aria-label="Filter observation reports in the recent-200 window">
+              <label for="observation-filter-node">Node ID (recent 200 reports)
                 <select id="observation-filter-node" multiple size="4"></select>
               </label>
-              <label for="observation-filter-observation">Observation ID (recent 100 reports)
+              <div class="observation-id-filter">
+                <label for="observation-filter-observation">Observation IDs (Ctrl/Cmd to select several)</label>
                 <select id="observation-filter-observation" multiple size="4"></select>
-              </label>
+                <form id="observation-id-form">
+                  <label for="observation-id-input">Add Observation UUID</label>
+                  <div class="obs-filter-actions">
+                    <input id="observation-id-input" type="text" spellcheck="false"
+                      autocomplete="off" aria-describedby="observation-id-error">
+                    <button class="secondary" type="submit">Add</button>
+                  </div>
+                  <span id="observation-id-error" class="error" role="status"></span>
+                </form>
+              </div>
+              <fieldset class="observation-emissions">
+                <legend>Emission</legend>
+                <label><input type="checkbox" value="start" checked> Start</label>
+                <label><input type="checkbox" value="periodic" checked> Periodic</label>
+                <label><input type="checkbox" value="end" checked> End</label>
+                <label><input type="checkbox" value="complete" checked> Complete</label>
+              </fieldset>
               <div class="obs-filter-actions">
                 <button id="observation-filter-clear" class="secondary" type="button">Clear filters</button>
               </div>
             </div>
             <p id="observation-filter-status" class="notice" aria-live="polite"></p>
             <div id="observation-chart" class="obs-slot-chart" aria-live="polite"></div>
+            <span id="observation-copy-status" role="status"></span>
             <div id="observation-list" class="observation-list" aria-live="polite"><p class="notice">Loading observations…</p></div>
           </section>
           <section>
@@ -1199,6 +1233,14 @@
         return node;
       }
 
+      function markUpdated(key) {
+        const time = document.getElementById(`${key}-updated`);
+        const now = new Date();
+        time.dateTime = now.toISOString();
+        time.textContent = `– Updated ${formatSeen(now)}`;
+        time.hidden = false;
+      }
+
       function formatSeen(value) {
         if (typeof formatDisplayDateTime === 'function') {
           return formatDisplayDateTime(value, { empty: 'Never', invalid: 'Unknown' });
@@ -1277,28 +1319,37 @@
         return ids.size;
       }
 
-      function shortObservationId(observationId) {
-        if (!observationId) return 'unknown';
-        return observationId.length > 13
-          ? `${observationId.slice(0, 8)}…${observationId.slice(-4)}`
-          : observationId;
-      }
-
       function selectedMultiValues(select) {
         return [...select.selectedOptions].map((option) => option.value).filter(Boolean);
       }
 
-      function syncMultiSelect(select, values, selected) {
-        const previous = selected instanceof Set ? selected : new Set(selected || []);
+      function syncMultiSelect(select, choices, selected) {
+        const scrollTop = select.scrollTop;
         select.replaceChildren();
-        for (const { value, label } of values) {
-          const option = document.createElement('option');
+        for (const { value, label, group } of choices) {
+          const option = el('option', label);
           option.value = value;
-          option.textContent = label;
-          option.selected = previous.has(value);
+          option.selected = selected.has(value);
+          if (group) {
+            let parent = [...select.children].find((child) => child.label === group);
+            if (!parent) {
+              parent = el('optgroup');
+              parent.label = group;
+              select.append(parent);
+            }
+            parent.append(option);
+          } else {
+            select.append(option);
+          }
+        }
+        for (const value of selected) {
+          if (choices.some((choice) => choice.value === value)) continue;
+          const option = el('option', `${value} (outside recent window)`);
+          option.value = value;
+          option.selected = true;
           select.append(option);
         }
-        return new Set(selectedMultiValues(select));
+        select.scrollTop = scrollTop;
       }
 
       function observationEventMs(observation) {
@@ -1307,7 +1358,7 @@
       }
 
       function chooseObservationSlotMs(spanMs) {
-        /* Adaptive buckets from the span of the recent (≤100) observations. */
+        /* Adaptive buckets from the span of the recent (≤200) observations. */
         if (spanMs <= 2 * 60 * 1000) return 5 * 1000;
         if (spanMs <= 10 * 60 * 1000) return 15 * 1000;
         if (spanMs <= 20 * 60 * 1000) return 20 * 1000;
@@ -1412,6 +1463,7 @@
         chart.append(axis);
       }
 
+      const observationEmissionKinds = ['start', 'periodic', 'end', 'complete'];
       let observationViewState = {
         selectedId: null,
         slotStartMs: null,
@@ -1421,10 +1473,11 @@
         items: [],
         filterNodeIds: new Set(),
         filterObservationIds: new Set(),
+        filterEmissionKinds: new Set(observationEmissionKinds),
         detailsOpen: false,
       };
 
-      /* Retained-history statistics (CLI summary semantics). Separate from recent-100 timeline. */
+      /* Retained-history statistics (CLI summary semantics). Separate from recent-200 timeline. */
       let observationStatsState = {
         status: 'idle', // idle | loading | ready | incomplete | error | empty
         summary: null,
@@ -1470,63 +1523,98 @@
         }
       }
 
+      function applyObservationFilters() {
+        pauseObservationAutoRefresh();
+        observationViewState.slotStartMs = null;
+        observationViewState.slotIds = null;
+        renderObservationView({ preserveDetails: true });
+      }
+
+      function setObservationIdError(message) {
+        const input = document.getElementById('observation-id-input');
+        input.setAttribute('aria-invalid', String(Boolean(message)));
+        document.getElementById('observation-id-error').textContent = message;
+      }
+
+      function addObservationId(value) {
+        const uuid = value.trim().toLowerCase();
+        if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(uuid)) {
+          setObservationIdError('Enter a complete Observation UUID.');
+          return false;
+        }
+        observationViewState.filterObservationIds.add(uuid);
+        setObservationIdError('');
+        updateObservationFilterOptions(observationViewState.items);
+        applyObservationFilters();
+        return true;
+      }
+
       function clearObservationFilters() {
-        observationViewState.filterNodeIds = new Set();
-        observationViewState.filterObservationIds = new Set();
-        const nodeSelect = document.getElementById('observation-filter-node');
-        const observationSelect = document.getElementById('observation-filter-observation');
-        if (nodeSelect) [...nodeSelect.options].forEach((option) => { option.selected = false; });
-        if (observationSelect) [...observationSelect.options].forEach((option) => { option.selected = false; });
+        observationViewState.filterNodeIds.clear();
+        observationViewState.filterObservationIds.clear();
+        observationViewState.filterEmissionKinds = new Set(observationEmissionKinds);
+        observationViewState.slotStartMs = null;
+        observationViewState.slotIds = null;
+        document.getElementById('observation-id-input').value = '';
+        setObservationIdError('');
+        for (const checkbox of document.querySelectorAll('.observation-emissions input')) {
+          checkbox.checked = true;
+        }
+        updateObservationFilterOptions(observationViewState.items);
         renderObservationView({ preserveDetails: true });
       }
 
       function filteredObservationReports(observations) {
-        const nodeFilter = observationViewState.filterNodeIds;
-        const observationFilter = observationViewState.filterObservationIds;
-        return observations.filter((observation) => {
-          const nodeId = observationNodeId(observation);
-          const observationId = observationIdValue(observation);
-          if (nodeFilter.size && (!nodeId || !nodeFilter.has(nodeId))) return false;
-          if (observationFilter.size && (!observationId || !observationFilter.has(observationId))) {
-            return false;
-          }
-          return true;
-        });
+        const { filterNodeIds, filterObservationIds, filterEmissionKinds } = observationViewState;
+        return observations.filter((report) =>
+          (!filterNodeIds.size || filterNodeIds.has(observationNodeId(report)))
+          && (!filterObservationIds.size || filterObservationIds.has(observationIdValue(report)))
+          && filterEmissionKinds.has(observationContext(report)?.emission_kind));
+      }
+
+      function observationFilterNotes(observations) {
+        const { filterNodeIds, filterObservationIds } = observationViewState;
+        const absent = [];
+        const otherNodes = [];
+        for (const id of filterObservationIds) {
+          const reports = observations.filter((report) => observationIdValue(report) === id);
+          if (!reports.length) absent.push(id);
+          else if (filterNodeIds.size && !reports.some((report) =>
+            filterNodeIds.has(observationNodeId(report)))) otherNodes.push(id);
+        }
+        return [
+          absent.length ? `Outside the latest 200 reports: ${absent.join(', ')}.` : '',
+          otherNodes.length ? `Outside the selected nodes: ${otherNodes.join(', ')}. Change the Node filter to include these reports.` : '',
+        ].filter(Boolean).join(' ');
       }
 
       function updateObservationFilterOptions(observations) {
         const nodeCounts = new Map();
-        const observationCounts = new Map();
-        for (const observation of observations) {
-          const nodeId = observationNodeId(observation);
-          const observationId = observationIdValue(observation);
-          if (nodeId) nodeCounts.set(nodeId, (nodeCounts.get(nodeId) || 0) + 1);
-          if (observationId) {
-            observationCounts.set(observationId, (observationCounts.get(observationId) || 0) + 1);
-          }
+        const ids = new Map();
+        const { filterNodeIds, filterObservationIds } = observationViewState;
+        for (const report of observations) {
+          const node = observationNodeId(report);
+          const id = observationIdValue(report);
+          if (node) nodeCounts.set(node, (nodeCounts.get(node) || 0) + 1);
+          if (!id) continue;
+          if (!ids.has(id)) ids.set(id, { count: 0, nodes: new Set() });
+          const entry = ids.get(id);
+          entry.count += 1;
+          if (node) entry.nodes.add(node);
         }
-        const nodeValues = [...nodeCounts.entries()]
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([value, count]) => ({
-            value,
-            label: `${value} (${count} report${count === 1 ? '' : 's'} in recent 100)`,
-          }));
-        const observationValues = [...observationCounts.entries()]
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([value, count]) => ({
-            value,
-            label: `${shortObservationId(value)} (${count} report${count === 1 ? '' : 's'} in recent 100)`,
-          }));
-        observationViewState.filterNodeIds = syncMultiSelect(
-          document.getElementById('observation-filter-node'),
-          nodeValues,
-          observationViewState.filterNodeIds
-        );
-        observationViewState.filterObservationIds = syncMultiSelect(
-          document.getElementById('observation-filter-observation'),
-          observationValues,
-          observationViewState.filterObservationIds
-        );
+        const byValue = ([a], [b]) => a.localeCompare(b);
+        const nodeChoices = [...nodeCounts].sort(byValue).map(([value, count]) => ({
+          value, label: `${value} (${count})`,
+        }));
+        const idChoices = [...ids].sort(byValue).map(([value, { count, nodes }]) => ({
+          value,
+          label: `${value} (${count})`,
+          group: filterNodeIds.size
+            ? ([...nodes].some((node) => filterNodeIds.has(node)) ? 'Selected nodes' : 'Other nodes')
+            : '',
+        }));
+        syncMultiSelect(document.getElementById('observation-filter-node'), nodeChoices, filterNodeIds);
+        syncMultiSelect(document.getElementById('observation-filter-observation'), idChoices, filterObservationIds);
       }
 
       function applyObservationListSelection(list, selectedId) {
@@ -1534,59 +1622,117 @@
           const id = entry.dataset.reportKey;
           entry.setAttribute('aria-pressed', String(id === selectedId));
           const inSlot = Boolean(observationViewState.slotIds?.has(id));
-          entry.classList.toggle('in-slot-focus', inSlot);
+          const row = entry.closest('tr');
+          row.classList.toggle('selected', id === selectedId);
+          row.classList.toggle('in-slot-focus', inSlot);
         });
+      }
+
+      function observationAssessmentLabel(report) {
+        const assessment = observationAcoustic(report)?.assessment;
+        if (assessment?.schema === 'ear_hyp_v2' && assessment.path?.length) {
+          return assessment.path.map(({ id, confidence }) =>
+            Number.isFinite(confidence) ? `${id} ${confidence.toFixed(2)}` : id
+          ).join(' / ');
+        }
+        if (assessment?.schema === 'ear_hyp_v1' && assessment.primary?.family) {
+          const { family, tier } = assessment.primary;
+          return tier ? `${family} (${tier})` : family;
+        }
+        return observationContext(report)?.origin === 'critical_path'
+          ? 'Critical path · No assessment' : 'No assessment';
+      }
+
+      async function copyObservationId(id) {
+        const status = document.getElementById('observation-copy-status');
+        try {
+          await navigator.clipboard.writeText(id);
+          status.textContent = 'Observation ID copied.';
+        } catch (_error) {
+          status.textContent = 'Could not copy. Select the UUID to copy it manually.';
+        }
+      }
+
+      function filterToObservationId(id) {
+        observationViewState.filterObservationIds = new Set([id]);
+        updateObservationFilterOptions(observationViewState.items);
+        applyObservationFilters();
+        document.getElementById('observation-filter-observation').focus();
       }
 
       function renderObservationList(list, observations, onSelect) {
         list.replaceChildren();
         if (!observations.length) {
           const hasSource = observationViewState.items.length > 0;
-          list.append(el(
-            'p',
-            hasSource
-              ? 'No observation reports match the current filters.'
-              : 'No observation reports have been received yet.',
-            'notice'
-          ));
+          list.append(el('p', hasSource
+            ? 'No observation reports match the current filters.'
+            : 'No observation reports have been received yet.', 'notice'));
           return;
         }
-        for (const observation of observations) {
-          const identity = observationIdentity(observation) || {};
-          const context = observationContext(observation) || {};
-          const acoustic = observationAcoustic(observation) || {};
-          const duration = Number(context.interval_duration_ms);
-          const durationLabel = Number.isFinite(duration) ? `${Math.round(duration)} ms` : 'n/a';
-          const family = acoustic.classification?.source_family || 'unclassified';
-          const kind = typeof context.emission_kind === 'string' ? context.emission_kind : 'report';
-          const observationId = observationIdValue(observation) || 'unknown-id';
-          const reportKey = observationReportKey(observation);
-          const item = el(
-            'button',
-            `${identity.node_id || 'unknown'} · ${formatSeen(context.event_time_utc)} (local) · ${durationLabel} · ${kind} · ${family} · ${observationId}`,
-            'timeline-entry'
-          );
+        const columns = ['Time', 'Node', 'Observation ID', 'Emission', 'Assessment'];
+        const table = el('table', undefined, 'observation-table');
+        table.setAttribute('role', 'table');
+        table.setAttribute('aria-label', 'Observation reports');
+        const header = table.createTHead().insertRow();
+        for (const label of columns) {
+          const heading = el('th', label);
+          heading.scope = 'col';
+          header.append(heading);
+        }
+        const body = table.createTBody();
+        body.setAttribute('role', 'rowgroup');
+        for (const report of observations) {
+          const context = observationContext(report) || {};
+          const uuid = observationIdValue(report);
+          const reportKey = observationReportKey(report);
+          const row = body.insertRow();
+          row.setAttribute('role', 'row');
+          const cells = columns.map((label) => {
+            const cell = row.insertCell();
+            cell.dataset.label = label;
+            cell.setAttribute('role', 'cell');
+            return cell;
+          });
+          const item = el('button', formatSeen(context.event_time_utc), 'timeline-entry');
           item.type = 'button';
+          item.setAttribute('aria-label',
+            `View report JSON for ${observationNodeId(report) || 'unknown node'} at ${item.textContent}`);
           if (reportKey) item.dataset.reportKey = reportKey;
           item.setAttribute('aria-pressed', 'false');
           item.addEventListener('click', () => {
-            const id = reportKey;
-            const stillInFocusedSlot = Boolean(id && observationViewState.slotIds?.has(id));
-            if (!stillInFocusedSlot) {
+            if (!observationViewState.slotIds?.has(reportKey)) {
               observationViewState.slotStartMs = null;
               observationViewState.slotIds = null;
               document.querySelectorAll('#observation-chart .obs-slot-bar').forEach((bar) => {
                 bar.setAttribute('aria-pressed', 'false');
               });
             }
-            // Digging into a specific row pauses live follow; latest stays live.
-            if (id !== observationViewState.latestId) pauseObservationAutoRefresh();
-            observationViewState.selectedId = id;
-            applyObservationListSelection(list, id);
-            onSelect(observation, { openDetails: true });
+            if (reportKey !== observationViewState.latestId) pauseObservationAutoRefresh();
+            observationViewState.selectedId = reportKey;
+            applyObservationListSelection(list, reportKey);
+            onSelect(report, { openDetails: true });
           });
-          list.append(item);
+          row.addEventListener('click', (event) => {
+            if (!event.target.closest('button') && !window.getSelection()?.toString()) item.click();
+          });
+          cells[0].append(item);
+          cells[1].append(el('span', observationNodeId(report) || 'Unknown'));
+          cells[2].append(el('code', uuid || 'Unknown'));
+          if (uuid) {
+            const actions = el('div', undefined, 'observation-row-actions');
+            for (const [label, action] of [['Copy', copyObservationId], ['Filter', filterToObservationId]]) {
+              const button = el('button', label, 'secondary');
+              button.type = 'button';
+              button.setAttribute('aria-label', `${label} Observation ID ${uuid}`);
+              button.addEventListener('click', () => action(uuid));
+              actions.append(button);
+            }
+            cells[2].append(actions);
+          }
+          cells[3].append(el('span', context.emission_kind || 'Unknown'));
+          cells[4].append(el('span', observationAssessmentLabel(report)));
         }
+        list.append(table);
       }
 
       function focusObservationSlot(list, slot, selectedId) {
@@ -1646,15 +1792,17 @@
         const visibleUnique = countUniqueObservationIds(visible);
         const nodeFilterCount = observationViewState.filterNodeIds.size;
         const observationFilterCount = observationViewState.filterObservationIds.size;
-        const filtersActive = nodeFilterCount > 0 || observationFilterCount > 0;
+        const emissionCount = observationViewState.filterEmissionKinds.size;
+        const filtersActive = nodeFilterCount > 0 || observationFilterCount > 0
+          || emissionCount !== observationEmissionKinds.length;
 
         filterStatus.className = 'notice';
-        if (!observations.length) {
+        if (!observations.length && !filtersActive) {
           filterStatus.textContent = '';
         } else if (!filtersActive) {
           filterStatus.textContent =
             `Showing all ${observations.length} report${observations.length === 1 ? '' : 's'} `
-            + `in the recent-100 window `
+            + `in the recent-200 window `
             + `(${sourceUnique} distinct observation_id${sourceUnique === 1 ? '' : 's'} in this window). `
             + 'Hold Ctrl/Cmd to multi-select in either filter.';
         } else {
@@ -1667,11 +1815,14 @@
               `${observationFilterCount} observation id${observationFilterCount === 1 ? '' : 's'}`
             );
           }
+          if (emissionCount !== observationEmissionKinds.length) {
+            parts.push(`${emissionCount} emission kinds`);
+          }
           filterStatus.textContent =
             `Filtered to ${visible.length} report${visible.length === 1 ? '' : 's'} `
             + `(${visibleUnique} distinct observation_id${visibleUnique === 1 ? '' : 's'}) `
-            + `of ${observations.length} in the recent-100 window. `
-            + `${parts.join(', ')} selected.`;
+            + `of ${observations.length} in the recent-200 window. `
+            + `${parts.join(', ')} selected. ${observationFilterNotes(observations)}`.trimEnd();
         }
 
         const selectObservation = (observation, selectOptions = {}) => {
@@ -1939,8 +2090,7 @@
           return;
         }
 
-        const followLive = observationViewState.autoRefresh;
-        if (followLive) clearObservationDigDown();
+        if (observationViewState.autoRefresh) clearObservationDigDown();
 
         const status = document.getElementById('observation-refresh-status');
         const chart = document.getElementById('observation-chart');
@@ -1952,7 +2102,7 @@
         list.replaceChildren();
         try {
           const [observationPage, countBody] = await Promise.all([
-            api('/api/v1/observations?page=1&page_size=100&order=newest'),
+            api('/api/v1/observations?page=1&page_size=200&order=newest'),
             api('/api/v1/observations/count'),
           ]);
           if (!observationPage || typeof observationPage !== 'object' || !Array.isArray(observationPage.reports)) {
@@ -1968,12 +2118,13 @@
           const totalLabel = Number.isFinite(dbTotal) && Number.isFinite(uniqueTotal)
             ? `${uniqueTotal} unique · ${dbTotal} reports in database`
             : 'database totals unavailable';
-          if (followLive) {
-            status.textContent = `${totalLabel}. Updated ${formatSeen(new Date())}.`;
+          markUpdated('observation');
+          if (observationViewState.autoRefresh) {
+            status.textContent = `${totalLabel}.`;
           } else {
             status.textContent =
               `Auto-refresh off (dig-down). ${totalLabel}. `
-              + `Re-check Auto-refresh for the live latest view. Updated ${formatSeen(new Date())}.`;
+              + 'Re-check Auto-refresh for the live latest view.';
           }
         } catch (error) {
           observationViewState.items = [];
@@ -2433,9 +2584,9 @@
         addDetailField(deviceState, 'Lifecycle', formatCounts(summary.devices_by_lifecycle));
         addDetailField(deviceState, 'Availability', formatCounts(summary.devices_by_availability));
         addDetailField(deviceState, 'Device types', formatCounts(summary.devices_by_type));
-        const updated = formatSeen(new Date());
         const statusLine = document.getElementById('hub-refresh-status');
-        statusLine.textContent = `Updated ${updated}`;
+        markUpdated('hub');
+        statusLine.textContent = '';
         statusLine.className = 'notice';
       }
 
@@ -3563,7 +3714,8 @@
         try {
           const devices = await api('/api/v1/devices');
           renderDevices(devices);
-          showStatus(`Updated ${formatSeen(new Date())}`);
+          markUpdated('devices');
+          showStatus('');
         } catch (error) {
           showStatus(error.message, true);
         }
@@ -6127,13 +6279,23 @@
       });
       document.getElementById('observation-filter-node').addEventListener('change', () => {
         readObservationFiltersFromDom();
-        pauseObservationAutoRefresh();
-        renderObservationView({ preserveDetails: true });
+        updateObservationFilterOptions(observationViewState.items);
+        applyObservationFilters();
       });
       document.getElementById('observation-filter-observation').addEventListener('change', () => {
         readObservationFiltersFromDom();
-        pauseObservationAutoRefresh();
-        renderObservationView({ preserveDetails: true });
+        applyObservationFilters();
+      });
+      document.getElementById('observation-id-form').addEventListener('submit', (event) => {
+        event.preventDefault();
+        const input = document.getElementById('observation-id-input');
+        if (addObservationId(input.value)) input.value = '';
+      });
+      document.querySelector('.observation-emissions').addEventListener('change', (event) => {
+        const kind = event.target.value;
+        if (event.target.checked) observationViewState.filterEmissionKinds.add(kind);
+        else observationViewState.filterEmissionKinds.delete(kind);
+        applyObservationFilters();
       });
       document.getElementById('observation-filter-clear').addEventListener('click', () => {
         clearObservationFilters();
