@@ -397,6 +397,146 @@ static void fill_binding_view(
     out->assessment = om->bind[bi].cls_wire;
 }
 
+static void lifecycle_lock(ear_obs_manager_t *om)
+{
+    if (om->cfg.lifecycle_lock != NULL) {
+        om->cfg.lifecycle_lock(om->cfg.lifecycle_lock_ctx);
+    }
+}
+
+static void lifecycle_unlock(ear_obs_manager_t *om)
+{
+    if (om->cfg.lifecycle_unlock != NULL) {
+        om->cfg.lifecycle_unlock(om->cfg.lifecycle_lock_ctx);
+    }
+}
+
+static bool slot_start_accepted(const ear_obs_manager_t *om, sp_ep_handle_t ep)
+{
+    if (om == NULL || om->cfg.registry == NULL) {
+        return false;
+    }
+    const sp_episode_slot_t *slot = sp_episode_registry_get_const(om->cfg.registry, ep);
+    return slot != NULL && slot->start_publish_accepted;
+}
+
+static void fill_frozen_start_view(
+    const ear_obs_manager_t *om,
+    uint8_t bi,
+    ear_obs_binding_view_t *out
+)
+{
+    fill_binding_view(om, bi, out);
+    out->assessment = om->bind[bi].start_assessment;
+}
+
+static void freeze_start_inputs(ear_obs_manager_t *om, uint8_t bi, int64_t now_mono_us)
+{
+    if (om->bind[bi].start_frozen) {
+        return;
+    }
+    om->bind[bi].start_snap = om->bind[bi].snap;
+    om->bind[bi].start_assessment = om->bind[bi].cls_wire;
+    om->bind[bi].start_capture_mono_us = now_mono_us;
+    om->bind[bi].start_frozen = true;
+}
+
+/**
+ * One START publication. Does not allocate, promote, or change generation.
+ * Failed attempts keep the binding and schedule a single later retry.
+ */
+static void attempt_start_publish(
+    ear_obs_manager_t *om,
+    uint8_t bi,
+    int64_t attempt_now_us
+)
+{
+    if (om == NULL || bi >= EAR_OBS_MGR_BINDING_CAP || !om->bind[bi].in_use) {
+        return;
+    }
+    if (om->cfg.registry == NULL) {
+        return;
+    }
+    if (!sp_episode_registry_handle_valid(om->cfg.registry, om->bind[bi].ep)) {
+        return;
+    }
+    if (slot_start_accepted(om, om->bind[bi].ep)) {
+        return;
+    }
+
+    freeze_start_inputs(om, bi, attempt_now_us);
+
+    lifecycle_lock(om);
+    if (!om->bind[bi].in_use
+        || !sp_episode_registry_handle_valid(om->cfg.registry, om->bind[bi].ep)
+        || slot_start_accepted(om, om->bind[bi].ep)) {
+        lifecycle_unlock(om);
+        return;
+    }
+
+    ear_obs_binding_view_t view;
+    fill_frozen_start_view(om, bi, &view);
+    bool ok = true;
+    if (om->cfg.emit_start != NULL) {
+        ok = om->cfg.emit_start(
+            om->cfg.emit_ctx,
+            &view,
+            &om->bind[bi].start_snap,
+            om->bind[bi].start_capture_mono_us
+        );
+    }
+    if (ok) {
+        sp_episode_registry_mark_start_accepted(
+            om->cfg.registry,
+            om->bind[bi].ep,
+            om->bind[bi].start_capture_mono_us
+        );
+    } else {
+        om->bind[bi].start_retry_not_before_mono_us =
+            attempt_now_us + EAR_OBS_START_RETRY_INTERVAL_US;
+    }
+    lifecycle_unlock(om);
+}
+
+/** At most one retry per due binding. No catch-up loop. */
+static void retry_unaccepted_starts(ear_obs_manager_t *om, int64_t now_mono_us)
+{
+    for (uint8_t bi = 0u; bi < EAR_OBS_MGR_BINDING_CAP; bi++) {
+        if (!om->bind[bi].in_use || !om->bind[bi].start_frozen) {
+            continue;
+        }
+        if (om->cfg.registry == NULL) {
+            continue;
+        }
+        if (!sp_episode_registry_handle_valid(om->cfg.registry, om->bind[bi].ep)) {
+            continue;
+        }
+        if (slot_start_accepted(om, om->bind[bi].ep)) {
+            continue;
+        }
+        if (om->bind[bi].start_retry_not_before_mono_us == 0) {
+            continue;
+        }
+        if (now_mono_us < om->bind[bi].start_retry_not_before_mono_us) {
+            continue;
+        }
+        om->diag.start_retry++;
+        attempt_start_publish(om, bi, now_mono_us);
+    }
+}
+
+static void note_binding_released(ear_obs_manager_t *om, uint8_t bi)
+{
+    if (om->cfg.on_binding_released == NULL) {
+        return;
+    }
+    om->cfg.on_binding_released(
+        om->cfg.emit_ctx,
+        om->bind[bi].observation_id,
+        om->bind[bi].ep.generation
+    );
+}
+
 /** Deepen AS-001 AIRCRAFT → Helicopter before PERIODIC/END emit (not START). */
 static void as001_maybe_deepen(
     ear_obs_manager_t *om,
@@ -528,19 +668,7 @@ static bool allocate_and_bind(
         ear_cls_evidence_clear(&om->cls_arm);
     }
 
-    if (om->cfg.emit_start != NULL) {
-        ear_obs_binding_view_t view;
-        fill_binding_view(om, (uint8_t)free_bi, &view);
-        if (!om->cfg.emit_start(om->cfg.emit_ctx, &view, snap, now_mono_us)) {
-            /* Keep binding; START acceptance is product publish concern. */
-        } else {
-            sp_episode_registry_mark_start_accepted(
-                om->cfg.registry, ep, now_mono_us
-            );
-        }
-    } else {
-        sp_episode_registry_mark_start_accepted(om->cfg.registry, ep, now_mono_us);
-    }
+    attempt_start_publish(om, (uint8_t)free_bi, now_mono_us);
 
     om->diag.promote_commit_bound++;
     return true;
@@ -863,21 +991,26 @@ static void end_binding(
         }
     }
 
-    /* Deepen AS-001 leaf before END if START was parent-only. */
-    as001_maybe_deepen(om, bi, EAR_CLS_PHASE_END);
-
-    ear_obs_binding_view_t view;
-    fill_binding_view(om, bi, &view);
     const sp_ep_handle_t ep = om->bind[bi].ep;
     const bool have_ep =
         om->cfg.registry != NULL
         && sp_episode_registry_handle_valid(om->cfg.registry, ep);
+    const bool publish_end = have_ep && slot_start_accepted(om, ep);
+
+    /* Deepen AS-001 leaf before a published END if START was parent-only. */
+    if (publish_end) {
+        as001_maybe_deepen(om, bi, EAR_CLS_PHASE_END);
+    }
+
+    ear_obs_binding_view_t view;
+    fill_binding_view(om, bi, &view);
+    note_binding_released(om, bi);
 
     /* Terminal transition first: subsequent callbacks see an empty slot. */
     memset(&om->bind[bi], 0, sizeof(om->bind[bi]));
     om->diag.end_done++;
 
-    if (om->cfg.emit_end != NULL) {
+    if (publish_end && om->cfg.emit_end != NULL) {
         (void)om->cfg.emit_end(
             om->cfg.emit_ctx,
             &view,
@@ -1440,7 +1573,7 @@ void ear_obs_manager_on_activity_periodic_hint(
     }
     om->diag.periodic_hint++;
     for (uint8_t bi = 0u; bi < EAR_OBS_MGR_BINDING_CAP; bi++) {
-        if (!om->bind[bi].in_use) {
+        if (!om->bind[bi].in_use || !slot_start_accepted(om, om->bind[bi].ep)) {
             continue;
         }
         as001_maybe_deepen(om, bi, EAR_CLS_PHASE_PERIODIC);
@@ -1558,6 +1691,7 @@ void ear_obs_manager_forget_bindings(ear_obs_manager_t *om)
     }
     for (uint8_t bi = 0u; bi < EAR_OBS_MGR_BINDING_CAP; bi++) {
         if (om->bind[bi].in_use) {
+            note_binding_released(om, bi);
             memset(&om->bind[bi], 0, sizeof(om->bind[bi]));
         }
     }
@@ -1649,7 +1783,7 @@ void ear_obs_manager_poll(ear_obs_manager_t *om, int64_t now_mono_us)
         const int64_t interval_us =
             (int64_t)om->cfg.observation_interval_ms * 1000LL;
         for (uint8_t bi = 0u; bi < EAR_OBS_MGR_BINDING_CAP; bi++) {
-            if (!om->bind[bi].in_use) {
+            if (!om->bind[bi].in_use || !slot_start_accepted(om, om->bind[bi].ep)) {
                 continue;
             }
             if (now_mono_us - om->bind[bi].last_emit_mono_us < interval_us) {
@@ -1676,6 +1810,9 @@ void ear_obs_manager_poll(ear_obs_manager_t *om, int64_t now_mono_us)
             }
         }
     }
+
+    /* After queued events, watchdog/terminal END, FIFO drain, and PERIODIC. */
+    retry_unaccepted_starts(om, now_mono_us);
 }
 
 void ear_obs_manager_arm_cls_evidence(

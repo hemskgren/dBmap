@@ -415,6 +415,7 @@ run_host_tests() {
         "${EAR_OBS}/ear_cls_progressive.c" \
         "${EAR_OBS}/ear_cls_as001.c" \
         "${EAR_OBS}/ear_obs_manager.c" \
+        "${EAR_OBS}/ear_obs_start_retain.c" \
         "${EAR_OBS}/ear_promotion_policy.c" \
         "${EAR_OBS}/test_host/test_ear_obs_manager.c" || host_fail=1
       run_host_one ear_cls_progressive \

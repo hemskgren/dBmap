@@ -140,6 +140,13 @@ typedef enum {
 #define EAR_OBS_DETACHED_END_TIMEOUT_MS_DEFAULT 60000u
 #endif
 
+/**
+ * Minimum spacing between START publication attempts for one binding.
+ * The first attempt is immediate. Each failure schedules one later attempt
+ * at attempt_time + this interval. Poll does not catch up missed attempts.
+ */
+#define EAR_OBS_START_RETRY_INTERVAL_US 1000000LL
+
 typedef struct {
     uint64_t candidate_id;
     sp_ep_handle_t ep;
@@ -180,6 +187,20 @@ typedef bool (*ear_obs_emit_end_fn)(
     float signal_level_dbfs
 );
 
+/**
+ * Serialize START publication and registry acceptance with OTA close.
+ * NULL skips the hook (host tests). The product passes the existing
+ * lifecycle mutex. The same task may re-enter; a second mutex is not used.
+ */
+typedef void (*ear_obs_lifecycle_lock_fn)(void *ctx);
+
+/** Publisher drops retained START measurements. NULL is a no-op. */
+typedef void (*ear_obs_binding_released_fn)(
+    void *ctx,
+    const char *observation_id,
+    uint16_t generation
+);
+
 typedef struct {
     sp_episode_registry_t *registry;
     ce_engine_t *ce;
@@ -211,6 +232,10 @@ typedef struct {
      * PERIODIC hints must not reset the timer.
      */
     uint32_t detached_end_timeout_ms;
+    ear_obs_lifecycle_lock_fn lifecycle_lock;
+    ear_obs_lifecycle_lock_fn lifecycle_unlock;
+    void *lifecycle_lock_ctx;
+    ear_obs_binding_released_fn on_binding_released;
 } ear_obs_manager_config_t;
 
 typedef struct {
@@ -271,6 +296,8 @@ typedef struct {
     uint32_t detached_watchdog_end;
     /** ENTER re-attached ce_live on an open detached binding (same candidate). */
     uint32_t enter_reattach;
+    /** START attempts issued from poll after the immediate first attempt. */
+    uint32_t start_retry;
 } ear_obs_manager_diag_t;
 
 typedef struct ear_obs_manager ear_obs_manager_t;
@@ -567,6 +594,16 @@ struct ear_obs_manager {
          */
         bool as002_sig_track;
         uint32_t as002_absent_ms;
+        /**
+         * Frozen at the first START attempt. Live snap / cls_wire may change
+         * afterward; retries publish these copies and start_capture_mono_us.
+         */
+        bool start_frozen;
+        int64_t start_capture_mono_us;
+        /** 0 = no retry scheduled. Otherwise the earliest monotonic retry time. */
+        int64_t start_retry_not_before_mono_us;
+        ear_obs_promote_snapshot_t start_snap;
+        ear_cls_assessment_wire_t start_assessment;
     } bind[EAR_OBS_MGR_BINDING_CAP];
 
     struct {

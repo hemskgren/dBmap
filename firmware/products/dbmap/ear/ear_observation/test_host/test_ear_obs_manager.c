@@ -11,7 +11,8 @@
  *     -I firmware/platform/observation/include \
  *     -I firmware/platform/audio/include \
  *     … ae/ce/ap sources … episode_registry.c \
- *     ear_obs_manager.c ear_promotion_policy.c test_ear_obs_manager.c \
+ *     ear_obs_manager.c ear_obs_start_retain.c ear_promotion_policy.c \
+ *     test_ear_obs_manager.c \
  *     -lm -o /tmp/test_ear_obs_manager && /tmp/test_ear_obs_manager
  */
 #include "ae_engine.h"
@@ -20,6 +21,7 @@
 #include "ce_engine.h"
 #include "ear_cls_as001.h"
 #include "ear_obs_manager.h"
+#include "ear_obs_start_retain.h"
 #include "ear_promotion_policy.h"
 #include "sig_engine.h"
 #include "sp_episode_registry.h"
@@ -42,6 +44,7 @@ typedef struct {
     uint32_t periodics;
     uint32_t ends;
     uint64_t last_start_cand;
+    uint64_t last_periodic_cand;
     uint64_t last_end_cand;
     char last_obs_id[SP_OBS_EPISODE_ID_LEN];
     char last_end_obs_id[SP_OBS_EPISODE_ID_LEN];
@@ -64,6 +67,20 @@ typedef struct {
     bool last_periodic_assessment_present;
     /** When true, emit_end returns false (publication failure seam). */
     bool fail_end;
+    /** Remaining START attempts that return false, then succeed. */
+    uint32_t fail_start_remaining;
+    bool saw_lock;
+    struct {
+        int64_t capture;
+        uint16_t gen;
+        char id[SP_OBS_EPISODE_ID_LEN];
+        float ema;
+        uint32_t seq;
+        bool assess_present;
+        char assess[96];
+        uint8_t sig_count;
+    } sample[6];
+    uint32_t sample_n;
     /** When true, emit_end re-enters activity END once. */
     bool reenter_end;
     ear_obs_manager_t *reenter_om;
@@ -122,6 +139,8 @@ static void p3b_record(void *ctx, const ear_obs_binding_view_t *binding, bool st
     }
 }
 
+static int g_lock_depth;
+
 static bool emit_start(
     void *ctx,
     const ear_obs_binding_view_t *binding,
@@ -130,17 +149,39 @@ static bool emit_start(
 )
 {
     p3b_record(ctx, binding, true);
-    (void)snap;
-    (void)now_mono_us;
     g_emit.starts++;
-    g_emit.last_start_cand = binding->candidate_id;
-    memcpy(g_emit.last_obs_id, binding->observation_id, sizeof(g_emit.last_obs_id));
-    g_emit.last_start_assessment_present = binding->assessment.present;
-    path_join_assessment(
-        &binding->assessment,
-        g_emit.last_start_assessment_path,
-        sizeof(g_emit.last_start_assessment_path)
-    );
+    g_emit.last_start_cand = binding != NULL ? binding->candidate_id : 0u;
+    if (binding != NULL) {
+        memcpy(g_emit.last_obs_id, binding->observation_id, sizeof(g_emit.last_obs_id));
+        g_emit.last_start_assessment_present = binding->assessment.present;
+        path_join_assessment(
+            &binding->assessment,
+            g_emit.last_start_assessment_path,
+            sizeof(g_emit.last_start_assessment_path)
+        );
+    }
+    if (g_lock_depth > 0) {
+        g_emit.saw_lock = true;
+    }
+    if (binding != NULL && snap != NULL && g_emit.sample_n < 6u) {
+        const uint32_t n = g_emit.sample_n++;
+        g_emit.sample[n].capture = now_mono_us;
+        g_emit.sample[n].gen = binding->ep.generation;
+        memcpy(g_emit.sample[n].id, binding->observation_id, SP_OBS_EPISODE_ID_LEN);
+        g_emit.sample[n].ema = snap->ema_rms_dbfs;
+        g_emit.sample[n].seq = snap->last_window_seq;
+        g_emit.sample[n].sig_count = snap->sig_count;
+        g_emit.sample[n].assess_present = binding->assessment.present;
+        path_join_assessment(
+            &binding->assessment,
+            g_emit.sample[n].assess,
+            sizeof(g_emit.sample[n].assess)
+        );
+    }
+    if (g_emit.fail_start_remaining > 0u) {
+        g_emit.fail_start_remaining--;
+        return false;
+    }
     return true;
 }
 
@@ -155,6 +196,7 @@ static bool emit_periodic(
 {
     (void)ctx;
     g_emit.periodics++;
+    g_emit.last_periodic_cand = binding != NULL ? binding->candidate_id : 0u;
     g_emit.last_periodic_start = interval_start_mono_us;
     g_emit.last_periodic_end = interval_end_mono_us;
     g_emit.last_periodic_has_lvl = has_signal_level_dbfs;
@@ -359,6 +401,42 @@ static void fixture_init(fixture_t *f, bool bind_policy)
 static void fixture_fini(fixture_t *f)
 {
     ce_stop(&f->ce);
+}
+
+static fixture_t *g_lock_fx;
+static int g_accepted_at_unlock;
+
+static void p7_lock(void *ctx)
+{
+    (void)ctx;
+    g_lock_depth++;
+}
+
+static void p7_unlock(void *ctx)
+{
+    (void)ctx;
+    if (g_lock_fx != NULL) {
+        for (uint8_t i = 0u; i < SP_OBS_EPISODE_SLOTS; i++) {
+            if (g_lock_fx->reg.slots[i].in_use
+                && g_lock_fx->reg.slots[i].start_publish_accepted) {
+                g_accepted_at_unlock = 1;
+            }
+        }
+    }
+    if (g_lock_depth > 0) {
+        g_lock_depth--;
+    }
+}
+
+static void p7_arm_lock(fixture_t *f)
+{
+    g_lock_fx = f;
+    g_lock_depth = 0;
+    g_accepted_at_unlock = 0;
+    g_emit.saw_lock = false;
+    f->om.cfg.lifecycle_lock = p7_lock;
+    f->om.cfg.lifecycle_unlock = p7_unlock;
+    f->om.cfg.lifecycle_lock_ctx = NULL;
 }
 
 /**
@@ -3461,6 +3539,484 @@ e2e_cleanup:
 }
 #undef E2E_REQUIRE
 
+static void test_p7_start_retry_same_identity(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    g_emit.fail_start_remaining = 1u;
+    plant(&f.ce, 7001u, AE_CAND_ACTIVE, 4u, -30.0f);
+    /* handle_enter freezes START at last_evidence_mono_us (plant: id * 1000). */
+    const int64_t t0 = 7001LL * 1000;
+    EXPECT(promote_with_reserve(&f, 7001u, t0));
+    const int bi = find_bind_idx(&f, 7001u);
+    EXPECT(bi >= 0);
+    EXPECT(g_emit.starts == 1u);
+    EXPECT(g_emit.sample_n == 1u);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
+    EXPECT(!f.reg.slots[f.om.bind[bi].ep.index].start_publish_accepted);
+    EXPECT(f.om.bind[bi].start_frozen);
+    EXPECT(f.om.bind[bi].start_capture_mono_us == t0);
+    EXPECT(f.om.bind[bi].start_retry_not_before_mono_us == t0 + 1000000);
+
+    const uint16_t gen = f.om.bind[bi].ep.generation;
+    f.om.bind[bi].snap.ema_rms_dbfs = 12.5f;
+    f.om.bind[bi].snap.last_window_seq += 9u;
+    f.om.bind[bi].cls_wire.present = true;
+    f.om.bind[bi].cls_wire.n_nodes = 1u;
+    snprintf(f.om.bind[bi].cls_wire.nodes[0].id, EAR_CLS_NODE_ID_MAX, "SIREN");
+
+    ear_obs_manager_poll(&f.om, t0 + 999999);
+    EXPECT(g_emit.starts == 1u);
+
+    ear_obs_manager_poll(&f.om, t0 + 1000000);
+    EXPECT(g_emit.starts == 2u);
+    EXPECT(g_emit.sample_n == 2u);
+    EXPECT(strcmp(g_emit.sample[0].id, g_emit.sample[1].id) == 0);
+    EXPECT(g_emit.sample[0].gen == g_emit.sample[1].gen);
+    EXPECT(g_emit.sample[1].gen == gen);
+    EXPECT(g_emit.sample[0].capture == g_emit.sample[1].capture);
+    EXPECT(g_emit.sample[1].capture == t0);
+    EXPECT(g_emit.sample[0].ema == g_emit.sample[1].ema);
+    EXPECT(g_emit.sample[1].ema != 12.5f);
+    EXPECT(g_emit.sample[0].seq == g_emit.sample[1].seq);
+    EXPECT(g_emit.sample[0].sig_count == g_emit.sample[1].sig_count);
+    EXPECT(strcmp(g_emit.sample[0].assess, g_emit.sample[1].assess) == 0);
+    EXPECT(strcmp(g_emit.sample[1].assess, "AIRCRAFT") == 0);
+    EXPECT(f.reg.slots[f.om.bind[bi].ep.index].start_publish_accepted);
+    EXPECT(f.om.bind[bi].ep.generation == gen);
+    ear_obs_manager_diag_t d;
+    ear_obs_manager_get_diag(&f.om, &d);
+    EXPECT(d.start_retry == 1u);
+    fixture_fini(&f);
+}
+
+static void test_p7_assessment_frozen_across_retry(void)
+{
+    fixture_t as2;
+    fixture_init(&as2, false);
+    g_emit.fail_start_remaining = 1u;
+    plant(&as2.ce, 7002u, AE_CAND_ACTIVE, 4u, -30.0f);
+    const int64_t t0 = 7002LL * 1000;
+    EXPECT(promote_as002_with_reserve(&as2, 7002u, t0));
+    const int bi = find_bind_idx(&as2, 7002u);
+    EXPECT(bi >= 0);
+    EXPECT(!g_emit.sample[0].assess_present);
+    EXPECT(g_emit.sample[0].assess[0] == '\0');
+    as2.om.bind[bi].cls_wire.present = true;
+    as2.om.bind[bi].cls_wire.n_nodes = 1u;
+    snprintf(as2.om.bind[bi].cls_wire.nodes[0].id, EAR_CLS_NODE_ID_MAX, "SIREN");
+    ear_obs_manager_poll(&as2.om, t0 + 1000000);
+    EXPECT(g_emit.starts == 2u);
+    EXPECT(!g_emit.sample[1].assess_present);
+    EXPECT(g_emit.sample[1].assess[0] == '\0');
+    EXPECT(g_emit.sample[1].capture == t0);
+    fixture_fini(&as2);
+}
+
+static void test_p7_retry_spacing_and_no_duplicate(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    g_emit.fail_start_remaining = 1u;
+    plant(&f.ce, 7003u, AE_CAND_ACTIVE, 3u, -28.0f);
+    const int64_t t0 = 7003LL * 1000;
+    EXPECT(promote_with_reserve(&f, 7003u, t0));
+    for (int64_t t = t0 + 100000; t < t0 + 1000000; t += 100000) {
+        ear_obs_manager_poll(&f.om, t);
+    }
+    EXPECT(g_emit.starts == 1u);
+    ear_obs_manager_poll(&f.om, t0 + 1000000);
+    EXPECT(g_emit.starts == 2u);
+    const uint32_t accepted = g_emit.starts;
+    for (int i = 0; i < 20; i++) {
+        ear_obs_manager_poll(&f.om, t0 + 1000000 + (int64_t)i * 100000);
+    }
+    EXPECT(g_emit.starts == accepted);
+    fixture_fini(&f);
+}
+
+static void test_p7_periodic_suppressed_both_paths(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    g_emit.fail_start_remaining = 1u;
+    plant(&f.ce, 7004u, AE_CAND_ACTIVE, 4u, -30.0f);
+    const int64_t t0 = 7004LL * 1000;
+    EXPECT(promote_with_reserve(&f, 7004u, t0));
+    ear_obs_manager_on_activity_periodic_hint(&f.om, t0 - 1000000, t0, true, -36.0f);
+    EXPECT(g_emit.periodics == 0u);
+    f.om.cfg.observation_interval_ms = 100u;
+    ear_obs_manager_poll(&f.om, t0 + 100000);
+    EXPECT(g_emit.periodics == 0u);
+    EXPECT(g_emit.starts == 1u);
+    ear_obs_manager_poll(&f.om, t0 + 1000000);
+    EXPECT(g_emit.starts == 2u);
+    EXPECT(g_emit.periodics == 0u);
+    ear_obs_manager_on_activity_periodic_hint(&f.om, 3000000, 4000000, true, -36.0f);
+    EXPECT(g_emit.periodics == 1u);
+    fixture_fini(&f);
+}
+
+static void test_p7_silent_end_before_accept(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    g_emit.fail_start_remaining = 1u;
+    plant(&f.ce, 7005u, AE_CAND_ACTIVE, 4u, -30.0f);
+    const int64_t t0 = 7005LL * 1000;
+    EXPECT(promote_with_reserve(&f, 7005u, t0));
+    ear_obs_manager_on_activity_end_hint(
+        &f.om, EAR_OBS_ACT_END_AMBIENT, t0, t0 + 100000, true, -50.0f
+    );
+    EXPECT(g_emit.ends == 0u);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
+    EXPECT(sp_episode_registry_in_use_count(&f.reg) == 0u);
+    ear_obs_manager_poll(&f.om, t0 + 5000000);
+    EXPECT(g_emit.starts == 1u);
+    EXPECT(g_emit.ends == 0u);
+
+    g_emit.fail_start_remaining = 1u;
+    plant(&f.ce, 7006u, AE_CAND_ACTIVE, 4u, -29.0f);
+    const int64_t t1 = 7006LL * 1000;
+    EXPECT(promote_with_reserve(&f, 7006u, t1));
+    ear_obs_manager_force_end_all(&f.om, EAR_OBS_END_EXPLICIT, t1 + 100000);
+    EXPECT(g_emit.ends == 0u);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
+    EXPECT(sp_episode_registry_in_use_count(&f.reg) == 0u);
+    fixture_fini(&f);
+}
+
+static void test_p7_exit_and_watchdog_before_accept(void)
+{
+    fixture_t stale;
+    fixture_init(&stale, false);
+    stale.om.cfg.detached_end_timeout_ms = 1000u;
+    g_emit.fail_start_remaining = 1u;
+    plant(&stale.ce, 7010u, AE_CAND_ACTIVE, 4u, -30.0f);
+    const int64_t ts = 7010LL * 1000;
+    EXPECT(promote_with_reserve(&stale, 7010u, ts));
+    const int bi = find_bind_idx(&stale, 7010u);
+    EXPECT(bi >= 0);
+    ae_candidate_t c;
+    EXPECT(ce_find_candidate(&stale.ce, 7010u, &c));
+    c.promotion_gen = stale.om.bind[bi].ce_promotion_gen + 99u;
+    ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &stale.om);
+    ear_obs_manager_poll(&stale.om, ts + 100000);
+    EXPECT(stale.om.bind[bi].ce_live);
+    EXPECT(g_emit.ends == 0u);
+    ear_obs_manager_diag_t ds;
+    ear_obs_manager_get_diag(&stale.om, &ds);
+    EXPECT(ds.exit_stale >= 1u);
+    ear_obs_manager_poll(&stale.om, ts + 1000000);
+    EXPECT(g_emit.starts == 2u);
+    EXPECT(g_emit.ends == 0u);
+    EXPECT(ear_obs_manager_n_open(&stale.om) == 1u);
+    fixture_fini(&stale);
+
+    fixture_t f;
+    fixture_init(&f, false);
+    f.om.cfg.detached_end_timeout_ms = 1000u;
+    g_emit.fail_start_remaining = 1u;
+    plant(&f.ce, 7011u, AE_CAND_ACTIVE, 4u, -30.0f);
+    const int64_t t0 = 7011LL * 1000;
+    EXPECT(promote_with_reserve(&f, 7011u, t0));
+    EXPECT(ce_find_candidate(&f.ce, 7011u, &c));
+    ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
+    ear_obs_manager_poll(&f.om, t0);
+    const int live = find_bind_idx(&f, 7011u);
+    EXPECT(live >= 0);
+    EXPECT(!f.om.bind[live].ce_live);
+    EXPECT(f.om.bind[live].detached_since_mono_us == t0);
+    EXPECT(g_emit.ends == 0u);
+    EXPECT(g_emit.starts == 1u);
+    ear_obs_manager_poll(&f.om, t0 + 1000000);
+    EXPECT(g_emit.ends == 0u);
+    EXPECT(g_emit.starts == 1u);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
+    ear_obs_manager_diag_t d;
+    ear_obs_manager_get_diag(&f.om, &d);
+    EXPECT(d.detached_watchdog_end == 1u);
+    EXPECT(d.start_retry == 0u);
+    fixture_fini(&f);
+}
+
+static void test_p7_as002_absence_and_invalid_hold_before_accept(void)
+{
+    fixture_t abs;
+    fixture_init(&abs, false);
+    abs.om.cfg.as002_signature_absence_hold_ms = 2000u;
+    g_emit.fail_start_remaining = 1u;
+    plant(&abs.ce, 7020u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_as002_with_reserve(&abs, 7020u, 1000));
+    ear_obs_manager_on_as002_siren_window(
+        &abs.om, true, false, 1000u, 6000, true, -40.0f
+    );
+    ear_obs_manager_on_as002_siren_window(
+        &abs.om, true, false, 1000u, 7000, true, -40.0f
+    );
+    EXPECT(g_emit.ends == 0u);
+    EXPECT(ear_obs_manager_n_open(&abs.om) == 0u);
+    EXPECT(sp_episode_registry_in_use_count(&abs.reg) == 0u);
+    fixture_fini(&abs);
+
+    fixture_t hold;
+    fixture_init(&hold, false);
+    g_emit.fail_start_remaining = 1u;
+    plant(&hold.ce, 7021u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_as002_with_reserve(&hold, 7021u, 1000));
+    ear_obs_manager_on_activity_end_hint(
+        &hold.om, EAR_OBS_ACT_END_INVALID_HOLD, 1000, 2000, true, -55.0f
+    );
+    EXPECT(g_emit.ends == 0u);
+    EXPECT(ear_obs_manager_n_open(&hold.om) == 0u);
+    EXPECT(sp_episode_registry_in_use_count(&hold.reg) == 0u);
+    fixture_fini(&hold);
+}
+
+static void test_p7_two_slots_independent(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    g_emit.fail_start_remaining = 1u;
+    plant(&f.ce, 7030u, AE_CAND_ACTIVE, 4u, -30.0f);
+    plant(&f.ce, 7031u, AE_CAND_ACTIVE, 4u, -31.0f);
+    const int64_t t_a = 7030LL * 1000;
+    const int64_t t_b = 7031LL * 1000;
+    EXPECT(promote_with_reserve(&f, 7030u, t_a));
+    EXPECT(promote_with_reserve(&f, 7031u, t_b));
+    EXPECT(g_emit.starts == 2u);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 2u);
+    const int ia = find_bind_idx(&f, 7030u);
+    const int ib = find_bind_idx(&f, 7031u);
+    EXPECT(ia >= 0 && ib >= 0);
+    EXPECT(!f.reg.slots[f.om.bind[ia].ep.index].start_publish_accepted);
+    EXPECT(f.reg.slots[f.om.bind[ib].ep.index].start_publish_accepted);
+    ear_obs_manager_on_activity_periodic_hint(&f.om, t_a, t_b, true, -34.0f);
+    EXPECT(g_emit.periodics == 1u);
+    EXPECT(g_emit.last_periodic_cand == 7031u);
+    ear_obs_manager_poll(&f.om, t_a + 999999);
+    EXPECT(g_emit.starts == 2u);
+    ear_obs_manager_poll(&f.om, t_a + 1000000);
+    EXPECT(g_emit.starts == 3u);
+    EXPECT(strcmp(g_emit.sample[2].id, g_emit.sample[0].id) == 0);
+    EXPECT(g_emit.sample[2].gen == g_emit.sample[0].gen);
+    EXPECT(f.reg.slots[f.om.bind[ib].ep.index].start_publish_accepted);
+    EXPECT(strcmp(f.om.bind[ib].observation_id, g_emit.sample[1].id) == 0);
+    fixture_fini(&f);
+}
+
+static void test_p7_stale_handle_and_fifo(void)
+{
+    fixture_t stale;
+    fixture_init(&stale, false);
+    g_emit.fail_start_remaining = 1u;
+    plant(&stale.ce, 7040u, AE_CAND_ACTIVE, 4u, -30.0f);
+    const int64_t t_stale = 7040LL * 1000;
+    EXPECT(promote_with_reserve(&stale, 7040u, t_stale));
+    const int bi = find_bind_idx(&stale, 7040u);
+    EXPECT(bi >= 0);
+    char kept_id[SP_OBS_EPISODE_ID_LEN];
+    memcpy(kept_id, stale.reg.slots[stale.om.bind[bi].ep.index].observation_id, sizeof(kept_id));
+    stale.om.bind[bi].ep.generation = (uint16_t)(stale.om.bind[bi].ep.generation + 50u);
+    ear_obs_manager_poll(&stale.om, t_stale + 1000000);
+    EXPECT(g_emit.starts == 1u);
+    EXPECT(stale.reg.slots[0].in_use || stale.reg.slots[1].in_use);
+    EXPECT(sp_episode_registry_in_use_count(&stale.reg) == 1u);
+    EXPECT(strcmp(stale.reg.slots[0].observation_id, kept_id) == 0
+        || strcmp(stale.reg.slots[1].observation_id, kept_id) == 0);
+    ear_obs_manager_on_activity_end_hint(
+        &stale.om, EAR_OBS_ACT_END_AMBIENT, 2000000, 2100000, true, -50.0f
+    );
+    EXPECT(g_emit.ends == 0u);
+    EXPECT(sp_episode_registry_in_use_count(&stale.reg) == 1u);
+    EXPECT(strcmp(stale.reg.slots[0].observation_id, kept_id) == 0
+        || strcmp(stale.reg.slots[1].observation_id, kept_id) == 0);
+    fixture_fini(&stale);
+
+    fixture_t reuse;
+    fixture_init(&reuse, false);
+    g_emit.fail_start_remaining = 1u;
+    plant(&reuse.ce, 7041u, AE_CAND_ACTIVE, 4u, -30.0f);
+    const int64_t t_reuse = 7041LL * 1000;
+    EXPECT(promote_with_reserve(&reuse, 7041u, t_reuse));
+    const int old = find_bind_idx(&reuse, 7041u);
+    EXPECT(old >= 0);
+    const sp_ep_handle_t old_ep = reuse.om.bind[old].ep;
+    sp_episode_registry_release(&reuse.reg, old_ep);
+    sp_ep_handle_t neu;
+    EXPECT(sp_episode_registry_allocate(
+        &reuse.reg, &neu, 3000000, 1000u, 2u, fake_uuid, false
+    ));
+    char neu_id[SP_OBS_EPISODE_ID_LEN];
+    memcpy(neu_id, reuse.reg.slots[neu.index].observation_id, sizeof(neu_id));
+    EXPECT(neu.generation != old_ep.generation);
+    ear_obs_manager_poll(&reuse.om, t_reuse + 1000000);
+    EXPECT(g_emit.starts == 1u);
+    EXPECT(reuse.reg.slots[neu.index].in_use);
+    EXPECT(strcmp(reuse.reg.slots[neu.index].observation_id, neu_id) == 0);
+    EXPECT(!reuse.reg.slots[neu.index].start_publish_accepted);
+    ear_obs_manager_on_activity_end_hint(
+        &reuse.om, EAR_OBS_ACT_END_AMBIENT, 2000000, 2100000, true, -50.0f
+    );
+    EXPECT(g_emit.ends == 0u);
+    EXPECT(reuse.reg.slots[neu.index].in_use);
+    EXPECT(strcmp(reuse.reg.slots[neu.index].observation_id, neu_id) == 0);
+    fixture_fini(&reuse);
+
+    fixture_t fifo;
+    fixture_init(&fifo, false);
+    g_emit.fail_start_remaining = 2u;
+    plant(&fifo.ce, 7042u, AE_CAND_ACTIVE, 4u, -30.0f);
+    plant(&fifo.ce, 7043u, AE_CAND_ACTIVE, 4u, -31.0f);
+    plant(&fifo.ce, 7044u, AE_CAND_ACTIVE, 4u, -32.0f);
+    EXPECT(promote_with_reserve(&fifo, 7042u, 1000000));
+    EXPECT(promote_with_reserve(&fifo, 7043u, 1100000));
+    EXPECT(promote_with_reserve(&fifo, 7044u, 1200000));
+    EXPECT(ear_obs_manager_n_open(&fifo.om) == 2u);
+    EXPECT(ear_obs_manager_n_pending(&fifo.om) == 1u);
+    EXPECT(g_emit.starts == 2u);
+    ear_obs_manager_on_activity_end_hint(
+        &fifo.om, EAR_OBS_ACT_END_AMBIENT, 1200000, 1300000, true, -50.0f
+    );
+    EXPECT(g_emit.ends == 0u);
+    EXPECT(g_emit.starts == 3u);
+    EXPECT(ear_obs_manager_n_open(&fifo.om) == 1u);
+    EXPECT(ear_obs_manager_n_pending(&fifo.om) == 0u);
+    EXPECT(find_bind_idx(&fifo, 7044u) >= 0);
+    EXPECT(g_emit.last_start_cand == 7044u);
+    fixture_fini(&fifo);
+}
+
+static void test_p7_ota_and_lock_and_corrupt_retry(void)
+{
+    fixture_t before;
+    fixture_init(&before, false);
+    g_emit.fail_start_remaining = 1u;
+    plant(&before.ce, 7050u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_with_reserve(&before, 7050u, 1000000));
+    ear_obs_manager_forget_bindings(&before.om);
+    ear_obs_manager_poll(&before.om, 1000000 + 10000000);
+    EXPECT(g_emit.starts == 1u);
+    EXPECT(g_emit.ends == 0u);
+    EXPECT(ear_obs_manager_n_open(&before.om) == 0u);
+    fixture_fini(&before);
+
+    fixture_t after;
+    fixture_init(&after, false);
+    p7_arm_lock(&after);
+    plant(&after.ce, 7051u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_with_reserve(&after, 7051u, 1000000));
+    EXPECT(g_emit.saw_lock);
+    EXPECT(g_accepted_at_unlock == 1);
+    EXPECT(g_lock_depth == 0);
+    const int bi = find_bind_idx(&after, 7051u);
+    EXPECT(bi >= 0);
+    const uint8_t accepted_index = after.om.bind[bi].ep.index;
+    EXPECT(after.reg.slots[accepted_index].start_publish_accepted);
+    ear_obs_manager_forget_bindings(&after.om);
+    EXPECT(g_emit.ends == 0u);
+    EXPECT(after.reg.slots[accepted_index].in_use);
+    EXPECT(after.reg.slots[accepted_index].start_publish_accepted);
+    ear_obs_manager_poll(&after.om, 1000000 + 10000000);
+    EXPECT(g_emit.starts == 1u);
+    fixture_fini(&after);
+
+    /*
+     * Negative injections. These fail if the deadline guard or the
+     * one-attempt-per-poll guard is removed.
+     */
+    fixture_t zero;
+    fixture_init(&zero, false);
+    g_emit.fail_start_remaining = 1u;
+    plant(&zero.ce, 7052u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_with_reserve(&zero, 7052u, 1000000));
+    const int zi = find_bind_idx(&zero, 7052u);
+    EXPECT(zi >= 0);
+    zero.om.bind[zi].start_retry_not_before_mono_us = 0;
+    ear_obs_manager_poll(&zero.om, 1000000 + 10000000);
+    EXPECT(g_emit.starts == 1u);
+    ear_obs_manager_diag_t zd;
+    ear_obs_manager_get_diag(&zero.om, &zd);
+    EXPECT(zd.start_retry == 0u);
+    fixture_fini(&zero);
+
+    fixture_t ancient;
+    fixture_init(&ancient, false);
+    g_emit.fail_start_remaining = 5u;
+    plant(&ancient.ce, 7053u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_with_reserve(&ancient, 7053u, 1000000));
+    EXPECT(g_emit.starts == 1u);
+    EXPECT(g_emit.fail_start_remaining == 4u);
+    const int ai = find_bind_idx(&ancient, 7053u);
+    EXPECT(ai >= 0);
+    ancient.om.bind[ai].start_retry_not_before_mono_us = 1;
+    ear_obs_manager_poll(&ancient.om, 1000000 + 10000000);
+    EXPECT(g_emit.starts == 2u);
+    EXPECT(g_emit.fail_start_remaining == 3u);
+    fixture_fini(&ancient);
+}
+
+static void test_p7_measure_retain_bytes(void)
+{
+    ear_obs_start_retain_reset();
+    ear_obs_start_measure_t in;
+    memset(&in, 0, sizeof(in));
+    in.capture_mono_us = 42;
+    in.interval_start_mono_us = 7;
+    in.l0.rms_mean_dbfs = -33.25f;
+    in.l0.has_rms_stats = true;
+    in.l0.window_count = 4u;
+    in.have_l1 = true;
+    in.l1.interval_start_mono_us = 7;
+    in.have_l2 = false;
+    ear_obs_start_retain_put("obs-a", 3u, &in);
+    in.l0.rms_mean_dbfs = 0.0f;
+    in.capture_mono_us = 99;
+    ear_obs_start_measure_t out;
+    memset(&out, 0, sizeof(out));
+    EXPECT(ear_obs_start_retain_find("obs-a", 3u, &out));
+    EXPECT(out.capture_mono_us == 42);
+    EXPECT(out.interval_start_mono_us == 7);
+    EXPECT(out.l0.rms_mean_dbfs == -33.25f);
+    EXPECT(out.l0.window_count == 4u);
+    EXPECT(out.have_l1);
+    EXPECT(!ear_obs_start_retain_find("obs-a", 4u, &out));
+    ear_obs_start_retain_drop("obs-a", 3u);
+    EXPECT(!ear_obs_start_retain_find("obs-a", 3u, &out));
+
+    ear_obs_start_measure_t b;
+    memset(&b, 0, sizeof(b));
+    b.capture_mono_us = 2;
+    b.l0.rms_mean_dbfs = -10.0f;
+    ear_obs_start_retain_put("obs-b", 1u, &in);
+    ear_obs_start_retain_put("obs-c", 1u, &b);
+    EXPECT(ear_obs_start_retain_find("obs-c", 1u, &out));
+    EXPECT(out.l0.rms_mean_dbfs == -10.0f);
+    EXPECT(!ear_obs_start_retain_find("obs-c", 2u, &out));
+    ear_obs_start_retain_reset();
+}
+
+static void test_p7_accepted_start_failed_end_still_releases(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    plant(&f.ce, 7060u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(promote_with_reserve(&f, 7060u, 1000));
+    EXPECT(g_emit.starts == 1u);
+    EXPECT(sp_episode_registry_in_use_count(&f.reg) == 1u);
+    g_emit.fail_end = true;
+    ear_obs_manager_on_activity_end_hint(
+        &f.om, EAR_OBS_ACT_END_AMBIENT, 2000, 2100, true, -50.0f
+    );
+    EXPECT(g_emit.ends == 1u);
+    EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
+    EXPECT(sp_episode_registry_in_use_count(&f.reg) == 0u);
+    ear_obs_manager_poll(&f.om, 10000000);
+    EXPECT(g_emit.starts == 1u);
+    EXPECT(g_emit.ends == 1u);
+    fixture_fini(&f);
+}
+
 int main(void)
 {
     test_no_promote_no_obs();
@@ -3535,6 +4091,18 @@ int main(void)
     test_p2_unadmit_gen_protects_newer();
     test_p2_as001_ce_om_lifecycle_e2e();
     test_p3b_fifo_handoff_rejects_old_generation();
+    test_p7_start_retry_same_identity();
+    test_p7_assessment_frozen_across_retry();
+    test_p7_retry_spacing_and_no_duplicate();
+    test_p7_periodic_suppressed_both_paths();
+    test_p7_silent_end_before_accept();
+    test_p7_exit_and_watchdog_before_accept();
+    test_p7_as002_absence_and_invalid_hold_before_accept();
+    test_p7_two_slots_independent();
+    test_p7_stale_handle_and_fifo();
+    test_p7_ota_and_lock_and_corrupt_retry();
+    test_p7_measure_retain_bytes();
+    test_p7_accepted_start_failed_end_still_releases();
 
     if (g_failures != 0) {
         fprintf(stderr, "%d failure(s)\n", g_failures);

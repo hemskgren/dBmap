@@ -13,6 +13,7 @@
 #include "ae_device.h"
 #include "ce_engine.h"
 #include "ear_obs_manager.h"
+#include "ear_obs_start_retain.h"
 #include "ear_promotion_policy.h"
 #include "ear_sig_product.h"
 #include "sig_engine.h"
@@ -74,6 +75,9 @@ static bool s_test_published;
 static bool s_logged_wait_mqtt;
 static bool s_ota_close_registered;
 static SemaphoreHandle_t s_lifecycle_mu;
+/** 1 while this task already holds s_lifecycle_mu. START lock re-enters. */
+static int s_lifecycle_outer_hold;
+static int s_lifecycle_reentry;
 static sp_obs_emit_gate_t s_emit_gate = SP_OBS_GATE_RUN;
 
 /* R0 wall-clock stage timers (esp_timer_get_time); aggregated only. */
@@ -1350,6 +1354,45 @@ static void critical_on_ae_signature(const ae_signature_t *sig, void *ctx)
 }
 #endif /* CRITICAL_PATH */
 
+static void obs_lifecycle_lock(void *ctx)
+{
+    (void)ctx;
+    if (s_lifecycle_mu == NULL) {
+        return;
+    }
+    if (s_lifecycle_outer_hold) {
+        s_lifecycle_reentry++;
+        return;
+    }
+    xSemaphoreTake(s_lifecycle_mu, portMAX_DELAY);
+    s_lifecycle_outer_hold = 1;
+    s_lifecycle_reentry = 0;
+}
+
+static void obs_lifecycle_unlock(void *ctx)
+{
+    (void)ctx;
+    if (s_lifecycle_mu == NULL) {
+        return;
+    }
+    if (s_lifecycle_reentry > 0) {
+        s_lifecycle_reentry--;
+        return;
+    }
+    s_lifecycle_outer_hold = 0;
+    xSemaphoreGive(s_lifecycle_mu);
+}
+
+static void mgr_on_binding_released(
+    void *ctx,
+    const char *observation_id,
+    uint16_t generation
+)
+{
+    (void)ctx;
+    ear_obs_start_retain_drop(observation_id, generation);
+}
+
 static bool mgr_emit_start(
     void *ctx,
     const ear_obs_binding_view_t *binding,
@@ -1361,33 +1404,69 @@ static bool mgr_emit_start(
     if (s_cfg == NULL || binding == NULL || snap == NULL) {
         return false;
     }
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    ear_obs_stack_hwm_om_publish("start", false);
+#endif
+    /*
+     * Freeze L0/L1/L2 on the first attempt. Retries reuse that aggregate and
+     * the capture anchor in now_mono_us. UTC is resolved later inside publish.
+     */
+    ear_obs_start_measure_t meas;
+    if (!ear_obs_start_retain_find(
+            binding->observation_id, binding->ep.generation, &meas
+        )) {
+        const int64_t interval_us =
+            (int64_t)CONFIG_DBMAP_EAR_OBS_INTERVAL_MS * 1000LL;
+        int64_t built_start = now_mono_us - interval_us;
+        if (built_start < binding->start_mono_us) {
+            built_start = binding->start_mono_us;
+        }
+        dbmap_l0_interval_t built_l0;
+        dbmap_l1_interval_t built_l1;
+        dbmap_l2_interval_t built_l2;
+        const dbmap_l1_interval_t *built_sig = NULL;
+        const dbmap_l2_interval_t *built_dyn = NULL;
+        mgr_build_levels(
+            built_start,
+            now_mono_us,
+            "start",
+            &built_l0,
+            &built_sig,
+            &built_dyn,
+            &built_l1,
+            &built_l2
+        );
+        memset(&meas, 0, sizeof(meas));
+        meas.capture_mono_us = now_mono_us;
+        meas.interval_start_mono_us = built_start;
+        meas.l0 = built_l0;
+        if (built_sig != NULL) {
+            meas.have_l1 = true;
+            meas.l1 = *built_sig;
+        }
+        if (built_dyn != NULL) {
+            meas.have_l2 = true;
+            meas.l2 = *built_dyn;
+        }
+        ear_obs_start_retain_put(
+            binding->observation_id, binding->ep.generation, &meas
+        );
+    }
+    if (!sp_obs_gate_allows_feed(s_emit_gate)) {
+        return false;
+    }
     if (!sp_mqtt_is_connected()) {
         sp_diag_note_obs_skipped_disconnected();
         return false;
     }
-#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
-    ear_obs_stack_hwm_om_publish("start", false);
-#endif
-    const int64_t interval_us =
-        (int64_t)CONFIG_DBMAP_EAR_OBS_INTERVAL_MS * 1000LL;
-    int64_t iv_start = now_mono_us - interval_us;
-    if (iv_start < binding->start_mono_us) {
-        iv_start = binding->start_mono_us;
-    }
-    const double interval_ms = (double)(now_mono_us - iv_start) / 1000.0;
-    dbmap_l0_interval_t local_iv;
-    dbmap_l1_interval_t local_l1;
-    dbmap_l2_interval_t local_l2;
-    const dbmap_l1_interval_t *sig_ptr = NULL;
-    const dbmap_l2_interval_t *dyn_ptr = NULL;
-    mgr_build_levels(
-        iv_start, now_mono_us, "start", &local_iv, &sig_ptr, &dyn_ptr, &local_l1, &local_l2
-    );
+    const int64_t iv_start = meas.interval_start_mono_us;
+    const int64_t capture_us = meas.capture_mono_us;
+    const double interval_ms = (double)(capture_us - iv_start) / 1000.0;
     bool has_lvl = true;
     double lvl = (double)snap->ema_rms_dbfs;
 #if CONFIG_DBMAP_EAR_OBS_L0
-    if (local_iv.has_rms_stats) {
-        lvl = (double)local_iv.rms_mean_dbfs;
+    if (meas.l0.has_rms_stats) {
+        lvl = (double)meas.l0.rms_mean_dbfs;
     }
 #endif
     const ear_cls_assessment_wire_t *assess =
@@ -1402,7 +1481,7 @@ static bool mgr_emit_start(
          */
         const char *lvl_src = "snap_ema";
 #if CONFIG_DBMAP_EAR_OBS_L0
-        if (local_iv.has_rms_stats) {
+        if (meas.l0.has_rms_stats) {
             lvl_src = "l0_mean";
         }
 #endif
@@ -1443,7 +1522,7 @@ static bool mgr_emit_start(
             (unsigned long long)binding->candidate_id,
             binding->observation_id,
             (long long)esp_timer_get_time(),
-            (long long)now_mono_us,
+            (long long)capture_us,
             (long long)binding->start_mono_us,
             (long long)iv_start,
             (long long)snap->promote_mono_us,
@@ -1464,13 +1543,13 @@ static bool mgr_emit_start(
         lvl,
         interval_ms > 0.0 ? interval_ms : (double)CONFIG_DBMAP_EAR_OBS_INTERVAL_MS,
         interval_ms > 0.0 ? interval_ms : (double)CONFIG_DBMAP_EAR_OBS_INTERVAL_MS,
-        now_mono_us,
+        capture_us,
         iv_start,
         "start",
         NULL,
-        &local_iv,
-        sig_ptr,
-        dyn_ptr,
+        &meas.l0,
+        meas.have_l1 ? &meas.l1 : NULL,
+        meas.have_l2 ? &meas.l2 : NULL,
         NULL,
         assess
     );
@@ -2436,10 +2515,13 @@ static void activity_task(void *arg)
 
         if (s_lifecycle_mu != NULL) {
             xSemaphoreTake(s_lifecycle_mu, portMAX_DELAY);
+            s_lifecycle_outer_hold = 1;
+            s_lifecycle_reentry = 0;
         }
         /* Recheck after lock: OTA may have entered CLOSING/CLOSED. */
         if (!sp_obs_gate_allows_feed(s_emit_gate)) {
             if (s_lifecycle_mu != NULL) {
+                s_lifecycle_outer_hold = 0;
                 xSemaphoreGive(s_lifecycle_mu);
             }
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -2539,6 +2621,7 @@ static void activity_task(void *arg)
         }
 #endif
         if (s_lifecycle_mu != NULL) {
+            s_lifecycle_outer_hold = 0;
             xSemaphoreGive(s_lifecycle_mu);
         }
 #if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
@@ -2817,6 +2900,12 @@ static esp_err_t ear_observation_close_for_ota(void)
     }
 
     xSemaphoreTake(s_lifecycle_mu, portMAX_DELAY);
+    /*
+     * This task owns the mutex. Nested START from force-end drain must
+     * re-enter instead of taking the non-recursive mutex again.
+     */
+    s_lifecycle_outer_hold = 1;
+    s_lifecycle_reentry = 0;
     s_emit_gate = SP_OBS_GATE_CLOSING;
 
     /* Force detector / v2 idle; registry owns MQTT episode closure. */
@@ -2913,6 +3002,8 @@ static esp_err_t ear_observation_close_for_ota(void)
     l2_continuity_break(); /* OTA acoustic close */
 #endif
     s_emit_gate = SP_OBS_GATE_CLOSED;
+    s_lifecycle_outer_hold = 0;
+    s_lifecycle_reentry = 0;
     xSemaphoreGive(s_lifecycle_mu);
 
     const bool mqtt_was_connected = sp_mqtt_is_connected();
@@ -3199,6 +3290,10 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg)
         mcfg.emit_periodic = mgr_emit_periodic;
         mcfg.emit_end = mgr_emit_end;
         mcfg.emit_ctx = NULL;
+        mcfg.lifecycle_lock = obs_lifecycle_lock;
+        mcfg.lifecycle_unlock = obs_lifecycle_unlock;
+        mcfg.lifecycle_lock_ctx = NULL;
+        mcfg.on_binding_released = mgr_on_binding_released;
         /* PERIODIC driven by RMS activity hints (L0 window cadence). */
         mcfg.enable_poll_periodic = false;
 #if defined(CONFIG_DBMAP_EAR_OBS_AS002_SIGNATURE_ABSENCE_HOLD_MS)
