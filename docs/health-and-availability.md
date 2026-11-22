@@ -185,6 +185,19 @@ The Hub tab and `scripts/hub_summary.py` both use those shared calculations. The
 | `DBMAP_HUB_MONITOR_INTERVAL_S` | `60` | Full probe interval in seconds |
 | `DBMAP_HUB_MONITOR_GAP_THRESHOLD_S` | `120` | Infer a gap when elapsed time between successful Hub observations exceeds this threshold |
 | `DBMAP_HUB_MONITOR_RETENTION_DAYS` | `30` | Clamped to 30–90; raise via env if longer Hub sample history is needed |
+| `DBMAP_PUBLIC_API_MONITOR_ENABLED` | `false` | Probe the public Hub HTTPS health endpoint |
+| `DBMAP_PUBLIC_MQTT_MONITOR_ENABLED` | `false` | Probe an authenticated MQTT session through the public endpoint |
+
+### Public API and Public MQTT
+
+These optional checks run independently every 60 seconds in the Hub process. The Hub tab displays their state, last check, reason, transitions, and 24h, 7d, and 30d availability with eligible observation time. API clients can read `monitoring.public_components` in `GET /api/v1/hub/status`. Public checks are informational. Core Hub, Web, and Device Monitor continue using their existing inputs and schedules.
+
+- Public API appends `/health` to `DBMAP_PUBLIC_HUB_URL`, verifies the configured hostname with the existing CA, and requires a successful response identifying `hub-bootstrap`. It sends no API credentials.
+- Public MQTT uses `DBMAP_PUBLIC_MQTT_HOST`, `DBMAP_PUBLIC_MQTT_PORT`, the existing MQTT CA and regular Hub login, and verified TLS. It requires a successful MQTT 3.1.1 CONNACK for a unique, clean client session. It disconnects without subscribing, publishing, or reconnecting. DynSec client-ID restrictions or rejected credentials can block this check and are surfaced as failure reasons.
+
+A separate public history table stores one row per transition or gap boundary. It uses the Hub retention period and keeps one carry-in row per enabled timeline. Existing Core Hub history stays isolated, including when rolling back to a build without public checks. Time before the first observation and gaps without fresh checks are excluded from public availability. After a process restart, the last sparse public sample is a conservative fallback when the last in-memory check time is unavailable. A delayed probe stays on its own worker and can skip a scheduled check without delaying local monitoring.
+
+These results describe reachability from the Hub's network. Router NAT loopback and split DNS can make the result differ from what an internet client sees. The probes use the Hub resolver and do not compare DNS answers to an independently measured WAN address. Use an off-LAN client to validate externally visible reachability.
 
 ## Limitations (Hub)
 

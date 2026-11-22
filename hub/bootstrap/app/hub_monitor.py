@@ -19,7 +19,7 @@ from uuid import uuid4
 from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
-from app import container_logs, edge_status, policy
+from app import container_logs, edge_status, policy, public_monitor
 from app.config import settings
 from app.db import SessionLocal
 from app.models import HubMonitorEvent, HubMonitorSample
@@ -1242,7 +1242,7 @@ def build_monitoring_summary(
 
     insufficient = any(window.get("insufficient_data") for window in windows.values())
     failure_reason = health_failure_reason(states)
-    return {
+    result = {
         "health": {
             "state": health,
             "score": health_score(health),
@@ -1311,6 +1311,14 @@ def build_monitoring_summary(
         "events_endpoint": "/api/v1/hub/monitoring/events",
         "sample_count": len(history),
     }
+    try:
+        public_components = public_monitor.summary(db, now)
+    except Exception:
+        log.exception("failed to build public monitoring summary")
+    else:
+        if public_components:
+            result["public_components"] = public_components
+    return result
 
 
 def _event_view(event: HubMonitorEvent) -> dict[str, Any]:
@@ -1445,6 +1453,7 @@ def start_monitor_thread() -> threading.Thread | None:
     _stop.clear()
     _thread = threading.Thread(target=_loop, name="hub-monitor", daemon=True)
     _thread.start()
+    public_monitor.start(_stop)
     log.info(
         "hub monitor started interval=%ss retention=%sd",
         settings.hub_monitor_interval_s,
