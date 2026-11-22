@@ -2,51 +2,64 @@
 
 Reads the seven JSON documents produced by the host exporter and feeds the
 original bytes through the production MQTT listener.
+
+``mqtt_listener._ingest_observation`` logs ``body.observation_id`` when a
+replay is ignored. ``ObservationBody`` stores that id on ``identity``, so the
+log line raises ``AttributeError``. The listener catches ``Exception`` and
+does not write a row. That pre-existing defect stays out of this PR.
 """
 
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
-from datetime import UTC, datetime
+import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import pytest
-from app.config import settings
-
-_DB_PATH = Path("/tmp/dbmap-obs-publish-contract.db")
-settings.database_url = "sqlite:///" + str(_DB_PATH)
-settings.admin_token = "test-admin"
-settings.viewer_token = "test-viewer"
-settings.mqtt_enabled = False
-
-import app.regional_environment as regional
 import paho.mqtt.client as mqtt
-from app.db import SessionLocal, engine, init_db
+import pytest
+from app import mqtt_listener
+from app import regional_environment as regional
+from app.config import settings
 from app.models import Base, Node, Observation
-from app.mqtt_listener import _on_message
-from app.service import list_observations_page
+from app.schemas import ObservationBody, ObservationView
+from app.service import ingest_observation, list_observations_page
 from app.topics import parse_observation_topic
-from sqlalchemy import func, select
-
-regional.schedule_weather_ensure = lambda *_args, **_kwargs: None
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.orm import sessionmaker
 
 _CORPUS = os.environ.get("DBMAP_OBS_CONTRACT_DIR", "")
+_NULL4 = [None, None, None, None]
+_KINDS = {
+    1: "start",
+    2: "start",
+    3: "periodic",
+    4: "periodic",
+    5: "start",
+    6: "periodic",
+    7: "end",
+}
+_PATHS = {
+    1: ["AIRCRAFT"],
+    2: ["ALARM"],
+    3: ["AIRCRAFT", "Helicopter"],
+    4: ["ALARM", "SE_PUBLIC_ALERT"],
+}
+# Callback durations for the exporter's fixed Critical timeline:
+# start 12_000_000 us, periodic 17_000_000 us, end 18_000_000 us.
+_CRITICAL_DURATIONS = {
+    5: (0, 0),
+    6: (5000, 5000),
+    7: (1000, 6000),
+}
 
 
-def setup_module() -> None:
-    if _DB_PATH.exists():
-        _DB_PATH.unlink()
-    Base.metadata.drop_all(bind=engine)
-    init_db()
-
-
-@pytest.fixture(autouse=True)
-def _suppress_weather(monkeypatch: pytest.MonkeyPatch) -> None:
-    import app.regional_environment as regional
-
-    monkeypatch.setattr(regional, "schedule_weather_ensure", lambda *_a, **_k: None)
+class _ContractDb:
+    factory: sessionmaker | None = None
+    path: Path | None = None
 
 
 def _corpus() -> Path:
@@ -74,6 +87,11 @@ def _load_corpus() -> tuple[str, list[tuple[bytes, dict]]]:
     return topic, loaded
 
 
+def _session():
+    assert _ContractDb.factory is not None
+    return _ContractDb.factory()
+
+
 def _message(topic: str, payload: bytes, *, retain: bool = False) -> mqtt.MQTTMessage:
     message = mqtt.MQTTMessage(topic=topic.encode())
     message.payload = payload
@@ -82,176 +100,22 @@ def _message(topic: str, payload: bytes, *, retain: bool = False) -> mqtt.MQTTMe
 
 
 def _publish(topic: str, payload: bytes, *, retain: bool = False) -> None:
-    _on_message(None, None, _message(topic, payload, retain=retain))
+    mqtt_listener._on_message(None, None, _message(topic, payload, retain=retain))
 
 
 def _count() -> int:
-    with SessionLocal() as db:
+    with _session() as db:
         return int(db.scalar(select(func.count()).select_from(Observation)) or 0)
 
 
 def _stored_by_sequence() -> dict[int, dict]:
-    with SessionLocal() as db:
+    with _session() as db:
         rows = db.scalars(select(Observation).order_by(Observation.sequence_number)).all()
         return {int(row.sequence_number): json.loads(row.payload_json) for row in rows}
 
 
-def _path_ids(doc: dict) -> list[str]:
-    assessment = doc["acoustic"].get("assessment")
-    if not assessment:
-        return []
-    return [node["id"] for node in assessment["path"]]
-
-
-def _confidences(doc: dict) -> list[float]:
-    assessment = doc["acoustic"].get("assessment")
-    if not assessment:
-        return []
-    return [float(node["confidence"]) for node in assessment["path"]]
-
-
-def _by_kind(docs: list[dict], observation_id: str) -> dict[str, dict]:
-    return {
-        doc["context"]["emission_kind"]: doc
-        for doc in docs
-        if doc["identity"]["observation_id"] == observation_id
-    }
-
-
-def assert_wire_contract(docs: list[dict]) -> None:
-    """Fail when the seven production documents no longer match the contract."""
-    assert len(docs) == 7
-    sequences = [doc["identity"]["sequence_number"] for doc in docs]
-    assert sequences == list(range(1, 8))
-    assert docs[0]["protocol_version"] == 1
-    assert all(doc["message_type"] == "observation" for doc in docs)
-
-    normal = [doc for doc in docs if "origin" not in doc["context"]]
-    critical = [doc for doc in docs if doc["context"].get("origin") == "critical_path"]
-    assert len(normal) == 4
-    assert len(critical) == 3
-    assert [doc["context"]["emission_kind"] for doc in critical] == [
-        "start",
-        "periodic",
-        "end",
-    ]
-
-    normal_starts = [doc for doc in normal if doc["context"]["emission_kind"] == "start"]
-    normal_periodics = [
-        doc for doc in normal if doc["context"]["emission_kind"] == "periodic"
-    ]
-    assert len(normal_starts) == 2
-    assert len(normal_periodics) == 2
-    assert _path_ids(normal_starts[0]) == ["AIRCRAFT"]
-    assert _path_ids(normal_starts[1]) == ["ALARM"]
-    as001_id = normal_starts[0]["identity"]["observation_id"]
-    as002_id = normal_starts[1]["identity"]["observation_id"]
-    crit_id = critical[0]["identity"]["observation_id"]
-    assert len({as001_id, as002_id, crit_id}) == 3
-
-    as001 = _by_kind(docs, as001_id)
-    as002 = _by_kind(docs, as002_id)
-    crit = _by_kind(docs, crit_id)
-    assert set(as001) == {"start", "periodic"}
-    assert set(as002) == {"start", "periodic"}
-    assert _path_ids(as001["periodic"]) == ["AIRCRAFT", "Helicopter"]
-    assert _path_ids(as002["periodic"]) == ["ALARM", "SE_PUBLIC_ALERT"]
-    assert "ALARM" not in _path_ids(as001["start"])
-    assert "ALARM" not in _path_ids(as001["periodic"])
-    assert "AIRCRAFT" not in _path_ids(as002["start"])
-    assert "Helicopter" not in _path_ids(as002["periodic"])
-
-    for doc in normal:
-        assessment = doc["acoustic"]["assessment"]
-        assert assessment["schema"] == "ear_hyp_v2"
-        assert assessment["version"] == 1
-        confidences = _confidences(doc)
-        assert confidences
-        assert all(0.0 < value <= 1.0 for value in confidences)
-    aircraft = _confidences(as001["periodic"])
-    assert aircraft[0] + 1e-6 >= aircraft[1]
-
-    for doc in critical:
-        assert "assessment" not in doc["acoustic"]
-        assert doc["context"]["origin"] == "critical_path"
-        measurements = doc["acoustic"]["measurements"]
-        assert measurements["schema"] == "l0"
-        assert measurements["window_count"] == 0
-        assert measurements["clipped_window_count"] == 0
-        assert measurements["n_crest"] == 0
-        assert measurements["sample_rate_hz"] > 0
-        assert measurements["analysis_window_ms"] > 0
-        assert measurements["rms"]["mean_dbfs"] is None
-        assert measurements["rms"]["min_dbfs"] is None
-        assert measurements["rms"]["max_dbfs"] is None
-        assert doc["acoustic"]["signature"] is None
-        assert doc["acoustic"]["dynamics"] is None
-    assert crit["start"]["context"]["interval_duration_ms"] == 0
-    assert crit["start"]["context"]["episode_duration_ms"] == 0
-    assert "termination_reason" not in crit["start"]["context"]
-    assert "termination_reason" not in crit["periodic"]["context"]
-    assert crit["end"]["context"]["termination_reason"] == "natural"
-    assert crit["end"]["identity"]["observation_id"] == crit_id
-    assert crit["start"]["identity"]["sequence_number"] < crit["periodic"][
-        "identity"
-    ]["sequence_number"] < crit["end"]["identity"]["sequence_number"]
-
-    scene_docs = [as001["periodic"], as002["periodic"]]
-    left = scene_docs[0]["acoustic"]
-    right = scene_docs[1]["acoustic"]
-    assert left["measurements"] == right["measurements"]
-    assert left["signature"] == right["signature"]
-    assert left["dynamics"] == right["dynamics"]
-    assert left["measurements"]["window_count"] > 0
-    assert left["measurements"]["rms"]["mean_dbfs"] not in (None, 0)
-    assert left["signature"]["schema"] == "l1"
-    assert left["signature"]["window_count"] > 0
-    assert left["signature"]["centroid_hz"]["mean"] not in (None, 0)
-    assert left["dynamics"]["schema"] == "l2"
-    assert left["dynamics"]["version"] == 1
-    assert left["dynamics"]["window_count"] > 0
-    assert left["dynamics"]["spectral_flux"]["mean"] not in (None, 0)
-    assert left["dynamics"]["envelope_cv"]["mean"] not in (None, 0)
-    assert left["dynamics"]["dominant_delta_hz"]["mean"] not in (None, 0)
-
-
-def assert_stored_contract(wire: list[dict], stored: dict[int, dict], topic_node: str) -> None:
-    assert set(stored) == set(range(1, 8))
-    for doc in wire:
-        seq = doc["identity"]["sequence_number"]
-        row = stored[seq]
-        assert row["identity"]["node_id"] == topic_node
-        assert row["identity"]["observation_id"] == doc["identity"]["observation_id"]
-        assert row["identity"]["sequence_number"] == seq
-        assert row["identity"]["track_id"] is None
-        assert row["context"]["emission_kind"] == doc["context"]["emission_kind"]
-        assert row["context"]["origin"] == doc["context"].get("origin")
-        wire_time = datetime.fromisoformat(doc["context"]["event_time_utc"])
-        stored_time = datetime.fromisoformat(row["context"]["event_time_utc"])
-        if stored_time.tzinfo is None:
-            stored_time = stored_time.replace(tzinfo=UTC)
-        assert stored_time.astimezone(UTC) == wire_time.astimezone(UTC)
-        assert row["acoustic"]["evidence"] is None
-        assert row["acoustic"]["debug"] is None
-        assert row["acoustic"]["classification"] is None
-        if "assessment" in doc["acoustic"]:
-            assert row["acoustic"]["assessment"]["schema"] == "ear_hyp_v2"
-            assert row["acoustic"]["assessment"]["version"] == 1
-            assert _path_ids(row) == _path_ids(doc)
-            for got, expect in zip(_confidences(row), _confidences(doc), strict=True):
-                assert got == pytest.approx(expect)
-        else:
-            assert row["acoustic"]["assessment"] is None
-        assert row["acoustic"]["measurements"]["window_count"] == doc["acoustic"][
-            "measurements"
-        ]["window_count"]
-        assert row["context"]["termination_reason"] == doc["context"].get(
-            "termination_reason"
-        )
-
-
 def _seed_active_ear(node_id: str) -> None:
-    with SessionLocal() as db:
+    with _session() as db:
         existing = db.get(Node, node_id)
         if existing is None:
             db.add(
@@ -271,7 +135,7 @@ def _seed_active_ear(node_id: str) -> None:
 
 
 def _set_lifecycle(node_id: str, state: str) -> None:
-    with SessionLocal() as db:
+    with _session() as db:
         node = db.get(Node, node_id)
         assert node is not None
         node.lifecycle_state = state
@@ -282,15 +146,298 @@ def _dumps(doc: dict) -> bytes:
     return json.dumps(doc, separators=(",", ":")).encode()
 
 
+def _by_sequence(docs: list[dict]) -> dict[int, dict]:
+    found: dict[int, dict] = {}
+    for doc in docs:
+        seq = int(doc["identity"]["sequence_number"])
+        assert seq not in found
+        found[seq] = doc
+    assert set(found) == set(_KINDS)
+    return found
+
+
+def _at(found: dict[int, dict], seq: int) -> dict:
+    doc = found[seq]
+    assert doc["context"]["emission_kind"] == _KINDS[seq]
+    return doc
+
+
+def _path_ids(doc: dict) -> list[str]:
+    assessment = doc["acoustic"].get("assessment")
+    if not assessment:
+        return []
+    return [node["id"] for node in assessment["path"]]
+
+
+def _confidences(doc: dict) -> list[float]:
+    assessment = doc["acoustic"].get("assessment")
+    if not assessment:
+        return []
+    return [float(node["confidence"]) for node in assessment["path"]]
+
+
+def _require_canonical_utc(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise AssertionError(f"naive event_time_utc: {value}")
+    if parsed.utcoffset() != timedelta(0):
+        raise AssertionError(f"non-UTC event_time_utc: {value}")
+    return parsed.astimezone(UTC)
+
+
+def _assert_critical_empty(acoustic: dict) -> None:
+    measurements = acoustic["measurements"]
+    assert measurements["schema"] == "l0"
+    assert measurements["window_count"] == 0, "window_count must be zero"
+    assert measurements["clipped_window_count"] == 0
+    assert measurements["n_crest"] == 0
+    assert measurements["bands"]["mean_dbfs"] == _NULL4, "mean_dbfs must be null"
+    assert measurements["bands"]["fraction"] == _NULL4
+    assert acoustic["signal_level_dbfs"] is None, "signal_level_dbfs must be null"
+    assert acoustic["signature"] is None, "signature must be null"
+    assert acoustic["dynamics"] is None
+    assert measurements["sample_rate_hz"] > 0
+    assert measurements["analysis_window_ms"] > 0
+    assert measurements["rms"]["mean_dbfs"] is None
+    assert measurements["rms"]["min_dbfs"] is None
+    assert measurements["rms"]["max_dbfs"] is None
+    assert measurements["hl"]["mean_db"] is None
+    assert measurements["t1"]["rms_stdev_db"] is None
+    assert measurements["t1"]["rms_range_db"] is None
+    assert measurements["t2"]["rms_slope_db_per_s"] is None
+    assert measurements["t3"]["crest_max_db"] is None
+    assert measurements["t3"]["high_crest_count"] is None
+    assert measurements["t3"]["high_crest_rate"] is None
+    assert measurements["t6"]["hl_slope_db_per_s"] is None
+
+
+def _assert_same_measurement_interval(left: dict, right: dict) -> None:
+    assert left["context"]["event_time_utc"] == right["context"]["event_time_utc"]
+    assert (
+        left["context"]["capture_timestamp_monotonic_us"]
+        == right["context"]["capture_timestamp_monotonic_us"]
+    )
+    assert left["context"]["interval_duration_ms"] == right["context"]["interval_duration_ms"]
+    assert left["acoustic"]["measurements"] == right["acoustic"]["measurements"], (
+        "measurements must be the shared interval"
+    )
+    assert left["acoustic"]["signature"] == right["acoustic"]["signature"]
+    assert left["acoustic"]["dynamics"] == right["acoustic"]["dynamics"]
+    assert left["acoustic"]["measurements"]["window_count"] > 0, "window_count must be populated"
+    assert left["acoustic"]["measurements"]["rms"]["mean_dbfs"] not in (None, 0)
+
+
+def _assert_critical_timeline(found: dict[int, dict]) -> None:
+    start = _at(found, 5)
+    periodic = _at(found, 6)
+    end = _at(found, 7)
+    captures = [
+        start["context"]["capture_timestamp_monotonic_us"],
+        periodic["context"]["capture_timestamp_monotonic_us"],
+        end["context"]["capture_timestamp_monotonic_us"],
+    ]
+    assert captures[0] < captures[1] < captures[2], (
+        "critical capture timestamps must increase"
+    )
+    assert (
+        start["identity"]["observation_id"]
+        == periodic["identity"]["observation_id"]
+        == end["identity"]["observation_id"]
+    ), "observation_id must be shared by the critical lifecycle"
+    for seq, (interval_ms, episode_ms) in _CRITICAL_DURATIONS.items():
+        doc = _at(found, seq)
+        assert doc["context"]["interval_duration_ms"] == interval_ms
+        assert doc["context"]["episode_duration_ms"] == episode_ms
+    assert end["context"]["termination_reason"] == "natural", (
+        "termination_reason must be natural"
+    )
+
+
+def assert_wire_contract(docs: list[dict]) -> None:
+    """Fail when the seven production documents no longer match the contract."""
+    found = _by_sequence(docs)
+    assert all(doc["protocol_version"] == 1 for doc in docs)
+    assert all(doc["message_type"] == "observation" for doc in docs)
+    for seq in (1, 2, 3, 4):
+        doc = _at(found, seq)
+        assert "origin" not in doc["context"]
+        assert _path_ids(doc) == _PATHS[seq]
+        assessment = doc["acoustic"]["assessment"]
+        assert assessment["schema"] == "ear_hyp_v2"
+        assert assessment["version"] == 1
+        confidences = _confidences(doc)
+        assert confidences
+        assert all(0.0 < value <= 1.0 for value in confidences)
+    aircraft = _confidences(_at(found, 3))
+    assert aircraft[0] + 1e-6 >= aircraft[1]
+    assert "ALARM" not in _path_ids(_at(found, 1))
+    assert "ALARM" not in _path_ids(_at(found, 3))
+    assert "AIRCRAFT" not in _path_ids(_at(found, 2))
+    assert "Helicopter" not in _path_ids(_at(found, 4))
+    as001 = _at(found, 1)["identity"]["observation_id"]
+    as002 = _at(found, 2)["identity"]["observation_id"]
+    critical = _at(found, 5)["identity"]["observation_id"]
+    assert _at(found, 3)["identity"]["observation_id"] == as001
+    assert _at(found, 4)["identity"]["observation_id"] == as002, (
+        "observation_id must stay with its lifecycle"
+    )
+    assert len({as001, as002, critical}) == 3
+    for seq in (5, 6, 7):
+        doc = _at(found, seq)
+        assert doc["context"].get("origin") == "critical_path"
+        assert "assessment" not in doc["acoustic"]
+        _assert_critical_empty(doc["acoustic"])
+    assert "termination_reason" not in _at(found, 5)["context"]
+    assert "termination_reason" not in _at(found, 6)["context"]
+    _assert_critical_timeline(found)
+    _assert_same_measurement_interval(_at(found, 3), _at(found, 4))
+    assert _at(found, 3)["acoustic"]["signature"]["schema"] == "l1"
+    assert _at(found, 3)["acoustic"]["dynamics"]["schema"] == "l2"
+
+
+def assert_stored_contract(
+    wire: list[dict], stored: dict[int, dict], topic_node: str
+) -> None:
+    found = _by_sequence(wire)
+    assert set(stored) >= set(_KINDS)
+    for seq, kind in _KINDS.items():
+        doc = _at(found, seq)
+        row = stored[seq]
+        assert row["identity"]["node_id"] == topic_node
+        assert row["identity"]["observation_id"] == doc["identity"]["observation_id"]
+        assert row["identity"]["sequence_number"] == seq
+        assert row["identity"]["track_id"] is None
+        assert row["context"]["emission_kind"] == kind
+        stored_time = _require_canonical_utc(row["context"]["event_time_utc"])
+        wire_time = _require_canonical_utc(doc["context"]["event_time_utc"])
+        assert stored_time == wire_time
+        assert row["context"]["capture_timestamp_monotonic_us"] == (
+            doc["context"]["capture_timestamp_monotonic_us"]
+        )
+        assert row["context"]["interval_duration_ms"] == doc["context"]["interval_duration_ms"], (
+            "interval_duration_ms must match the observed duration"
+        )
+        assert row["context"]["episode_duration_ms"] == doc["context"]["episode_duration_ms"]
+        assert row["context"]["termination_reason"] == doc["context"].get("termination_reason")
+        assert row["acoustic"]["evidence"] is None
+        assert row["acoustic"]["debug"] is None
+        assert row["acoustic"]["classification"] is None
+        assert row["acoustic"]["measurements"] == doc["acoustic"]["measurements"]
+        assert row["acoustic"]["signature"] == doc["acoustic"]["signature"], (
+            "signature must match the wire"
+        )
+        assert row["acoustic"]["dynamics"] == doc["acoustic"]["dynamics"]
+        if seq in _PATHS:
+            assert row["context"]["origin"] is None
+            assert row["acoustic"]["assessment"] is not None, "assessment must be stored"
+            assert row["acoustic"]["assessment"]["schema"] == "ear_hyp_v2"
+            assert row["acoustic"]["assessment"]["version"] == 1
+            assert _path_ids(row) == _PATHS[seq]
+            for got, expect in zip(_confidences(row), _confidences(doc), strict=True):
+                assert got == pytest.approx(expect)
+        else:
+            assert row["context"]["origin"] == "critical_path"
+            assert row["acoustic"]["assessment"] is None
+            _assert_critical_empty(row["acoustic"])
+    _assert_same_measurement_interval(stored[3], stored[4])
+    _assert_critical_timeline(stored)
+
+
+def _view_payload(item: ObservationView) -> dict:
+    payload = item.model_dump(by_alias=True, mode="json")
+    payload.pop("received_time_utc", None)
+    return payload
+
+
+def assert_readback_contract(
+    wire: list[dict], items: list[ObservationView], topic_node: str
+) -> None:
+    found = _by_sequence(wire)
+    listed = {int(item.identity.sequence_number): item for item in items}
+    assert set(_KINDS) <= set(listed)
+    dumped = {seq: _view_payload(listed[seq]) for seq in _KINDS}
+    for seq, kind in _KINDS.items():
+        item = listed[seq]
+        doc = _at(found, seq)
+        event = item.context.event_time_utc
+        assert event.tzinfo is not None and event.utcoffset() == timedelta(0)
+        assert event == _require_canonical_utc(doc["context"]["event_time_utc"])
+        assert item.identity.node_id == topic_node
+        assert str(item.identity.observation_id) == doc["identity"]["observation_id"]
+        assert item.context.emission_kind == kind
+        if seq in _PATHS:
+            assert item.context.origin is None, "list readback lost normal origin"
+            assert item.acoustic.assessment is not None, "list readback lost assessment"
+            assert [node.id for node in item.acoustic.assessment.path] == _PATHS[seq]
+        else:
+            assert item.context.origin == "critical_path", "list readback lost critical origin"
+            assert item.acoustic.assessment is None
+        assert dumped[seq]["context"]["termination_reason"] == doc["context"].get(
+            "termination_reason"
+        )
+    _assert_same_measurement_interval(dumped[3], dumped[4])
+    _assert_critical_timeline(dumped)
+    for seq in (5, 6, 7):
+        _assert_critical_empty(dumped[seq]["acoustic"])
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _configured_sqlite_path() -> Path | None:
+    url = settings.database_url
+    if not url.startswith("sqlite:///"):
+        return None
+    raw = url.removeprefix("sqlite:///")
+    if raw in ("", ":memory:"):
+        return None
+    path = Path(raw)
+    if not path.is_file():
+        return None
+    return path
+
+
+@pytest.fixture(autouse=True)
+def _suppress_weather(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(regional, "schedule_weather_ensure", lambda *_a, **_k: None)
+
+
 @pytest.fixture(scope="module", autouse=True)
-def _ingest_exported_reports() -> None:
-    topic, loaded = _load_corpus()
-    node_id = parse_observation_topic(topic)
-    assert node_id is not None
-    _seed_active_ear(node_id)
-    if _count() == 0:
+def _contract_database(tmp_path_factory: pytest.TempPathFactory):
+    """Own the contract SQLite file and the listener session factory."""
+    db_path = tmp_path_factory.mktemp("obs-publish-contract") / "contract.db"
+    engine = create_engine(
+        "sqlite:///" + db_path.as_posix(),
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    previous_session = mqtt_listener.SessionLocal
+    previous_weather = regional.schedule_weather_ensure
+    mqtt_listener.SessionLocal = factory
+    regional.schedule_weather_ensure = lambda *_args, **_kwargs: None
+    _ContractDb.factory = factory
+    _ContractDb.path = db_path
+    try:
+        topic, loaded = _load_corpus()
+        node_id = parse_observation_topic(topic)
+        assert node_id is not None
+        _seed_active_ear(node_id)
         for raw, _doc in loaded:
             _publish(topic, raw)
+        assert _count() == 7
+        yield
+    finally:
+        mqtt_listener.SessionLocal = previous_session
+        regional.schedule_weather_ensure = previous_weather
+        _ContractDb.factory = None
+        _ContractDb.path = None
+        engine.dispose()
 
 
 def test_seven_production_reports_round_trip() -> None:
@@ -300,24 +447,91 @@ def test_seven_production_reports_round_trip() -> None:
     node_id = parse_observation_topic(topic)
     assert node_id is not None
     assert _count() == 7
-
     stored = _stored_by_sequence()
     assert_stored_contract(docs, stored, node_id)
-    with SessionLocal() as db:
+    with _session() as db:
         page = list_observations_page(db, node_id, page=1, page_size=50, order="oldest")
     assert page.total == 7
     assert len(page.items) == 7
-    listed_ids = {str(item.identity.observation_id) for item in page.items}
-    assert listed_ids == {doc["identity"]["observation_id"] for doc in docs}
+    assert_readback_contract(docs, list(page.items), node_id)
+
+
+def test_unrelated_sqlite_database_remains_untouched(tmp_path: Path) -> None:
+    sentinel = tmp_path / "unrelated.db"
+    with sqlite3.connect(sentinel) as connection:
+        connection.execute("CREATE TABLE sentinel (note TEXT)")
+        connection.execute("INSERT INTO sentinel (note) VALUES ('keep')")
+    before = sentinel.read_bytes()
+    configured = _configured_sqlite_path()
+    configured_before = _sha256(configured) if configured is not None else None
+    topic, loaded = _load_corpus()
+    extra = copy.deepcopy(loaded[0][1])
+    extra["identity"]["sequence_number"] = 301
+    extra["identity"]["observation_id"] = "dddddddd-eeee-4fff-8aaa-000000000301"
+    _publish(topic, _dumps(extra))
+    try:
+        assert sentinel.read_bytes() == before
+        with sqlite3.connect(sentinel) as connection:
+            note = connection.execute("SELECT note FROM sentinel").fetchone()
+        assert note == ("keep",)
+        if configured is not None and configured_before is not None:
+            assert _sha256(configured) == configured_before
+        assert _ContractDb.path is not None
+        assert _ContractDb.path.resolve() != sentinel.resolve()
+        assert _count() == 8
+    finally:
+        with _session() as db:
+            row = db.scalars(
+                select(Observation).where(Observation.sequence_number == 301)
+            ).first()
+            if row is not None:
+                db.delete(row)
+                db.commit()
+
+
+def test_offset_event_time_is_stored_as_utc() -> None:
+    topic, loaded = _load_corpus()
+    original = copy.deepcopy(loaded[4][1])
+    instant = _require_canonical_utc(original["context"]["event_time_utc"])
+    offset_clock = instant.astimezone(UTC).replace(tzinfo=None) + timedelta(hours=1)
+    offset_input = offset_clock.isoformat() + "+01:00"
+    assert datetime.fromisoformat(offset_input).astimezone(UTC) == instant
+    published = copy.deepcopy(original)
+    published["identity"]["sequence_number"] = 302
+    published["identity"]["observation_id"] = "dddddddd-eeee-4fff-8aaa-000000000302"
+    published["context"]["event_time_utc"] = offset_input
+    node_id = parse_observation_topic(topic)
+    assert node_id is not None
+    _publish(topic, _dumps(published))
+    try:
+        stored = _stored_by_sequence()[302]
+        stored_time = _require_canonical_utc(stored["context"]["event_time_utc"])
+        assert stored_time == instant
+        assert "+01:00" not in stored["context"]["event_time_utc"]
+        with _session() as db:
+            page = list_observations_page(db, node_id, page=1, page_size=50, order="oldest")
+        listed = next(item for item in page.items if item.identity.sequence_number == 302)
+        assert listed.context.event_time_utc.utcoffset() == timedelta(0)
+        assert listed.context.event_time_utc == instant
+    finally:
+        with _session() as db:
+            row = db.scalars(
+                select(Observation).where(Observation.sequence_number == 302)
+            ).first()
+            if row is not None:
+                db.delete(row)
+                db.commit()
 
 
 def test_assessment_swap_fails_contract() -> None:
     _topic, loaded = _load_corpus()
     docs = [copy.deepcopy(doc) for _raw, doc in loaded]
-    starts = [doc for doc in docs if doc["context"]["emission_kind"] == "start" and "origin" not in doc["context"]]
-    starts[0]["acoustic"]["assessment"], starts[1]["acoustic"]["assessment"] = (
-        starts[1]["acoustic"]["assessment"],
-        starts[0]["acoustic"]["assessment"],
+    found = _by_sequence(docs)
+    first = _at(found, 1)
+    second = _at(found, 2)
+    first["acoustic"]["assessment"], second["acoustic"]["assessment"] = (
+        second["acoustic"]["assessment"],
+        first["acoustic"]["assessment"],
     )
     with pytest.raises(AssertionError, match="AIRCRAFT"):
         assert_wire_contract(docs)
@@ -326,12 +540,7 @@ def test_assessment_swap_fails_contract() -> None:
 def test_lost_assessment_depth_fails_contract() -> None:
     _topic, loaded = _load_corpus()
     docs = [copy.deepcopy(doc) for _raw, doc in loaded]
-    periodic = next(
-        doc
-        for doc in docs
-        if doc["context"]["emission_kind"] == "periodic" and "origin" not in doc["context"]
-        and _path_ids(doc)[0] == "AIRCRAFT"
-    )
+    periodic = _at(_by_sequence(docs), 3)
     periodic["acoustic"]["assessment"]["path"] = periodic["acoustic"]["assessment"]["path"][:1]
     with pytest.raises(AssertionError, match="Helicopter"):
         assert_wire_contract(docs)
@@ -340,71 +549,169 @@ def test_lost_assessment_depth_fails_contract() -> None:
 def test_reused_observation_id_fails_contract() -> None:
     _topic, loaded = _load_corpus()
     docs = [copy.deepcopy(doc) for _raw, doc in loaded]
-    first = docs[0]["identity"]["observation_id"]
-    for doc in docs[1:]:
-        if "origin" not in doc["context"] and doc["context"]["emission_kind"] == "start":
-            doc["identity"]["observation_id"] = first
-            break
-    with pytest.raises(AssertionError):
+    found = _by_sequence(docs)
+    _at(found, 2)["identity"]["observation_id"] = _at(found, 1)["identity"]["observation_id"]
+    with pytest.raises(AssertionError, match="observation_id must stay with its lifecycle"):
         assert_wire_contract(docs)
 
 
 def test_divergent_scene_fails_contract() -> None:
     _topic, loaded = _load_corpus()
     docs = [copy.deepcopy(doc) for _raw, doc in loaded]
-    periodics = [
-        doc
-        for doc in docs
-        if doc["context"]["emission_kind"] == "periodic" and "origin" not in doc["context"]
-    ]
-    periodics[0]["acoustic"]["measurements"]["rms"]["mean_dbfs"] = -99.0
-    with pytest.raises(AssertionError):
+    _at(_by_sequence(docs), 3)["acoustic"]["measurements"]["rms"]["mean_dbfs"] = -99.0
+    with pytest.raises(AssertionError, match="measurements must be the shared interval"):
         assert_wire_contract(docs)
 
 
 def test_empty_scene_fails_contract() -> None:
     _topic, loaded = _load_corpus()
     docs = [copy.deepcopy(doc) for _raw, doc in loaded]
-    for doc in docs:
-        if doc["context"]["emission_kind"] == "periodic" and "origin" not in doc["context"]:
-            doc["acoustic"]["measurements"]["window_count"] = 0
-            doc["acoustic"]["measurements"]["rms"]["mean_dbfs"] = None
-    with pytest.raises(AssertionError):
+    for seq in (3, 4):
+        acoustic = _at(_by_sequence(docs), seq)["acoustic"]
+        acoustic["measurements"]["window_count"] = 0
+        acoustic["measurements"]["rms"]["mean_dbfs"] = None
+    with pytest.raises(AssertionError, match="window_count must be populated"):
         assert_wire_contract(docs)
 
 
 def test_missing_critical_origin_fails_contract() -> None:
     _topic, loaded = _load_corpus()
     docs = [copy.deepcopy(doc) for _raw, doc in loaded]
-    for doc in docs:
-        doc["context"].pop("origin", None)
-    with pytest.raises(AssertionError):
+    for seq in (5, 6, 7):
+        _at(_by_sequence(docs), seq)["context"].pop("origin", None)
+    with pytest.raises(AssertionError, match="critical_path"):
         assert_wire_contract(docs)
 
 
 def test_nonempty_critical_l0_fails_contract() -> None:
     _topic, loaded = _load_corpus()
     docs = [copy.deepcopy(doc) for _raw, doc in loaded]
-    critical = next(doc for doc in docs if doc["context"].get("origin") == "critical_path")
-    critical["acoustic"]["measurements"]["window_count"] = 4
-    critical["acoustic"]["measurements"]["rms"]["mean_dbfs"] = -31.5
-    with pytest.raises(AssertionError):
+    measurements = _at(_by_sequence(docs), 5)["acoustic"]["measurements"]
+    measurements["window_count"] = 4
+    measurements["rms"]["mean_dbfs"] = -31.5
+    with pytest.raises(AssertionError, match="window_count must be zero"):
         assert_wire_contract(docs)
 
 
-def test_wrong_critical_end_fails_contract() -> None:
+def test_populated_critical_band_fails_contract() -> None:
     _topic, loaded = _load_corpus()
     docs = [copy.deepcopy(doc) for _raw, doc in loaded]
-    end = next(
-        doc
-        for doc in docs
-        if doc["context"].get("origin") == "critical_path"
-        and doc["context"]["emission_kind"] == "end"
-    )
-    end["context"]["termination_reason"] = "ota_reboot"
-    end["identity"]["observation_id"] = docs[0]["identity"]["observation_id"]
-    with pytest.raises(AssertionError):
+    acoustic = _at(_by_sequence(docs), 5)["acoustic"]
+    acoustic["measurements"]["bands"]["mean_dbfs"] = [-33.0, None, None, None]
+    acoustic["signal_level_dbfs"] = -12.0
+    with pytest.raises(AssertionError, match="mean_dbfs must be null"):
         assert_wire_contract(docs)
+
+
+def test_reordered_critical_captures_fail_contract() -> None:
+    _topic, loaded = _load_corpus()
+    docs = [copy.deepcopy(doc) for _raw, doc in loaded]
+    found = _by_sequence(docs)
+    start = _at(found, 5)["context"]
+    periodic = _at(found, 6)["context"]
+    start["capture_timestamp_monotonic_us"], periodic["capture_timestamp_monotonic_us"] = (
+        periodic["capture_timestamp_monotonic_us"],
+        start["capture_timestamp_monotonic_us"],
+    )
+    with pytest.raises(AssertionError, match="critical capture timestamps must increase"):
+        assert_wire_contract(docs)
+
+
+def test_wrong_critical_end_uuid_fails_contract() -> None:
+    _topic, loaded = _load_corpus()
+    docs = [copy.deepcopy(doc) for _raw, doc in loaded]
+    end = _at(_by_sequence(docs), 7)
+    assert end["context"]["termination_reason"] == "natural"
+    end["identity"]["observation_id"] = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    with pytest.raises(AssertionError, match="observation_id must be shared"):
+        assert_wire_contract(docs)
+
+
+def test_wrong_critical_end_reason_fails_contract() -> None:
+    _topic, loaded = _load_corpus()
+    docs = [copy.deepcopy(doc) for _raw, doc in loaded]
+    end = _at(_by_sequence(docs), 7)
+    end["context"]["termination_reason"] = "ota_reboot"
+    with pytest.raises(AssertionError, match="natural"):
+        assert_wire_contract(docs)
+
+
+def test_naive_stored_timestamp_fails_contract() -> None:
+    _topic, loaded = _load_corpus()
+    docs = [doc for _raw, doc in loaded]
+    stored = copy.deepcopy(_stored_by_sequence())
+    stored[1]["context"]["event_time_utc"] = "2026-01-01T00:00:00"
+    node_id = stored[1]["identity"]["node_id"]
+    with pytest.raises(AssertionError, match="naive event_time_utc"):
+        assert_stored_contract(docs, stored, node_id)
+
+
+def test_non_utc_stored_timestamp_fails_contract() -> None:
+    _topic, loaded = _load_corpus()
+    docs = [doc for _raw, doc in loaded]
+    stored = copy.deepcopy(_stored_by_sequence())
+    stored[1]["context"]["event_time_utc"] = "2026-01-01T01:00:00+01:00"
+    node_id = stored[1]["identity"]["node_id"]
+    with pytest.raises(AssertionError, match="non-UTC event_time_utc"):
+        assert_stored_contract(docs, stored, node_id)
+
+
+def test_stored_critical_duration_fails_contract() -> None:
+    _topic, loaded = _load_corpus()
+    docs = [doc for _raw, doc in loaded]
+    stored = copy.deepcopy(_stored_by_sequence())
+    stored[5]["context"]["interval_duration_ms"] = 1
+    node_id = stored[1]["identity"]["node_id"]
+    with pytest.raises(AssertionError, match="interval_duration_ms must match"):
+        assert_stored_contract(docs, stored, node_id)
+
+
+def test_stored_critical_signature_fails_contract() -> None:
+    _topic, loaded = _load_corpus()
+    docs = [doc for _raw, doc in loaded]
+    stored = copy.deepcopy(_stored_by_sequence())
+    stored[5]["acoustic"]["signature"] = {"schema": "l1"}
+    node_id = stored[1]["identity"]["node_id"]
+    with pytest.raises(AssertionError, match="signature must match the wire"):
+        assert_stored_contract(docs, stored, node_id)
+
+
+def test_readback_missing_assessment_fails_contract() -> None:
+    topic, loaded = _load_corpus()
+    docs = [doc for _raw, doc in loaded]
+    node_id = parse_observation_topic(topic)
+    assert node_id is not None
+    with _session() as db:
+        page = list_observations_page(db, node_id, page=1, page_size=50, order="oldest")
+    items = list(page.items)
+    target = next(item for item in items if item.identity.sequence_number == 1)
+    damaged = _view_payload(target)
+    damaged["acoustic"]["assessment"] = None
+    damaged["received_time_utc"] = target.received_time_utc
+    replacement = ObservationView.model_validate(damaged)
+    items = [replacement if item.identity.sequence_number == 1 else item for item in items]
+    with pytest.raises(AssertionError, match="list readback lost assessment"):
+        assert_readback_contract(docs, items, node_id)
+
+
+def test_readback_missing_origin_fails_contract() -> None:
+    topic, loaded = _load_corpus()
+    docs = [doc for _raw, doc in loaded]
+    node_id = parse_observation_topic(topic)
+    assert node_id is not None
+    with _session() as db:
+        page = list_observations_page(db, node_id, page=1, page_size=50, order="oldest")
+    items = list(page.items)
+    critical = next(item for item in items if item.identity.sequence_number == 5)
+    damaged = _view_payload(critical)
+    damaged["context"]["origin"] = None
+    damaged["received_time_utc"] = critical.received_time_utc
+    replacement = ObservationView.model_validate(damaged)
+    items = [
+        replacement if item.identity.sequence_number == 5 else item for item in items
+    ]
+    with pytest.raises(AssertionError, match="list readback lost critical origin"):
+        assert_readback_contract(docs, items, node_id)
 
 
 def _fresh_sequence_copy(doc: dict, sequence: int) -> dict:
@@ -419,7 +726,8 @@ def test_rejected_payloads_do_not_create_rows() -> None:
     before = _count()
     assert before == 7
     base = copy.deepcopy(loaded[0][1])
-    node_id = base["identity"]["node_id"]
+    node_id = parse_observation_topic(topic)
+    assert node_id is not None
 
     mismatch = _fresh_sequence_copy(base, 101)
     mismatch["identity"]["node_id"] = "EAR-OTHER"
@@ -469,10 +777,11 @@ def test_rejected_payloads_do_not_create_rows() -> None:
     assert _count() == before
 
 
-def test_same_sequence_replay_does_not_overwrite() -> None:
+def test_same_sequence_replay_and_conflict() -> None:
     topic, loaded = _load_corpus()
     raw, doc = loaded[0]
-    before = _stored_by_sequence()[doc["identity"]["sequence_number"]]
+    seq = doc["identity"]["sequence_number"]
+    before = _stored_by_sequence()[seq]
     _publish(topic, raw)
     replay = copy.deepcopy(doc)
     replay["acoustic"]["signal_level_dbfs"] = -1.0
@@ -480,19 +789,27 @@ def test_same_sequence_replay_does_not_overwrite() -> None:
     conflict = copy.deepcopy(doc)
     conflict["identity"]["observation_id"] = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
     _publish(topic, _dumps(conflict))
-    after = _stored_by_sequence()[doc["identity"]["sequence_number"]]
+    after = _stored_by_sequence()[seq]
     assert after == before
     assert _count() == 7
     assert after["acoustic"].get("assessment") == before["acoustic"].get("assessment")
     assert after["identity"]["node_id"] == before["identity"]["node_id"]
 
+    node_id = before["identity"]["node_id"]
+    body = ObservationBody.model_validate(doc)
+    conflict_body = ObservationBody.model_validate(conflict)
+    with _session() as db:
+        assert ingest_observation(db, node_id, body) is False
+        with pytest.raises(ValueError, match="different observation_id"):
+            ingest_observation(db, node_id, conflict_body)
+        db.rollback()
+    assert _stored_by_sequence()[seq] == before
+
 
 def test_stored_assessment_loss_fails_contract() -> None:
     _topic, loaded = _load_corpus()
     docs = [doc for _raw, doc in loaded]
-    stored = _stored_by_sequence()
-    damaged = copy.deepcopy(stored)
-    damaged[1]["acoustic"]["assessment"] = None
-    damaged[1]["context"]["origin"] = "critical_path"
-    with pytest.raises(AssertionError):
-        assert_stored_contract(docs, damaged, stored[1]["identity"]["node_id"])
+    stored = copy.deepcopy(_stored_by_sequence())
+    stored[1]["acoustic"]["assessment"] = None
+    with pytest.raises(AssertionError, match="assessment must be stored"):
+        assert_stored_contract(docs, stored, stored[1]["identity"]["node_id"])

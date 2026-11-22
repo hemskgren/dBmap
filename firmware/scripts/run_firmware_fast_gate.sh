@@ -941,13 +941,30 @@ run_observation_publish_contract() {
     record_fail "contract/report_count"
     return 1
   fi
-  if ! (
-    cd "${hub}"
-    uv sync --extra dev --frozen
-    DBMAP_OBS_CONTRACT_DIR="${reports}" uv run pytest tests/test_observation_publish_contract.py -q
-    uv run ruff check tests/test_observation_publish_contract.py
-  ); then
+  # Each Hub command is checked on its own. A subshell under "if !" disables
+  # errexit, so a later successful Ruff run must not hide a failed sync or pytest.
+  local sync_rc=0
+  ( cd "${hub}" && uv sync --extra dev --frozen ) || sync_rc=$?
+  if [[ "${sync_rc}" -ne 0 ]]; then
+    log "FAIL  contract hub sync rc=${sync_rc}"
+    record_fail "contract/hub_sync"
+    return 1
+  fi
+  local pytest_rc=0
+  (
+    cd "${hub}" && DBMAP_OBS_CONTRACT_DIR="${reports}" \
+      uv run pytest tests/test_observation_publish_contract.py -q
+  ) || pytest_rc=$?
+  if [[ "${pytest_rc}" -ne 0 ]]; then
+    log "FAIL  contract hub pytest rc=${pytest_rc}"
     record_fail "contract/hub_pytest"
+    return 1
+  fi
+  local ruff_rc=0
+  ( cd "${hub}" && uv run ruff check tests/test_observation_publish_contract.py ) || ruff_rc=$?
+  if [[ "${ruff_rc}" -ne 0 ]]; then
+    log "FAIL  contract hub ruff rc=${ruff_rc}"
+    record_fail "contract/hub_ruff"
     return 1
   fi
   record_pass "contract/observation_publish"
