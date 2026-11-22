@@ -7,6 +7,7 @@ idf_component_register(
         "ce_promotion_bridge.c"
         "ear_obs_manager.c"
         "ear_obs_start_retain.c"
+        "ear_obs_lifecycle_section.c"
         "ear_promotion_policy.c"
         "ear_sig_product.c"
         "ear_critical_path.c"

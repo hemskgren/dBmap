@@ -187,13 +187,6 @@ typedef bool (*ear_obs_emit_end_fn)(
     float signal_level_dbfs
 );
 
-/**
- * Serialize START publication and registry acceptance with OTA close.
- * NULL skips the hook (host tests). The product passes the existing
- * lifecycle mutex. The same task may re-enter; a second mutex is not used.
- */
-typedef void (*ear_obs_lifecycle_lock_fn)(void *ctx);
-
 /** Publisher drops retained START measurements. NULL is a no-op. */
 typedef void (*ear_obs_binding_released_fn)(
     void *ctx,
@@ -232,9 +225,6 @@ typedef struct {
      * PERIODIC hints must not reset the timer.
      */
     uint32_t detached_end_timeout_ms;
-    ear_obs_lifecycle_lock_fn lifecycle_lock;
-    ear_obs_lifecycle_lock_fn lifecycle_unlock;
-    void *lifecycle_lock_ctx;
     ear_obs_binding_released_fn on_binding_released;
 } ear_obs_manager_config_t;
 
@@ -332,7 +322,8 @@ bool ear_obs_manager_commit_reservation(
     ear_obs_manager_t *om,
     ear_obs_rsv_handle_t h,
     uint64_t candidate_id,
-    const ear_obs_promote_snapshot_t *snapshot
+    const ear_obs_promote_snapshot_t *snapshot,
+    int64_t attempt_mono_us
 );
 
 void ear_obs_manager_release_reservation(
@@ -599,8 +590,16 @@ struct ear_obs_manager {
          * afterward; retries publish these copies and start_capture_mono_us.
          */
         bool start_frozen;
+        /** Event/evidence time published on START. Not a retry clock. */
         int64_t start_capture_mono_us;
-        /** 0 = no retry scheduled. Otherwise the earliest monotonic retry time. */
+        /** Monotonic time of the latest START publication attempt. */
+        int64_t start_last_attempt_mono_us;
+        /** Set for the poll that already attempted START. Cleared at poll entry. */
+        bool start_attempted_this_poll;
+        /**
+         * 0 = no retry scheduled. Earliest monotonic time for another attempt,
+         * measured from start_last_attempt_mono_us, never from the capture anchor.
+         */
         int64_t start_retry_not_before_mono_us;
         ear_obs_promote_snapshot_t start_snap;
         ear_cls_assessment_wire_t start_assessment;

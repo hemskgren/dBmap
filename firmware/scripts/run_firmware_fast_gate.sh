@@ -418,6 +418,12 @@ run_host_tests() {
         "${EAR_OBS}/ear_obs_start_retain.c" \
         "${EAR_OBS}/ear_promotion_policy.c" \
         "${EAR_OBS}/test_host/test_ear_obs_manager.c" || host_fail=1
+      run_host_one ear_obs_start_publish \
+        ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
+        "${PLAT_OBS}/observation_lifecycle.c" \
+        "${EAR_OBS}/ear_obs_start_retain.c" \
+        "${EAR_OBS}/ear_obs_lifecycle_section.c" \
+        "${EAR_OBS}/test_host/test_ear_obs_start_publish.c" || host_fail=1
       run_host_one ear_cls_progressive \
         ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
         "${ce_srcs[@]}" \

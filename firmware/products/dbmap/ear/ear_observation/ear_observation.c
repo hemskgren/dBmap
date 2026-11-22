@@ -12,6 +12,7 @@
 #include "sp_diag.h"
 #include "ae_device.h"
 #include "ce_engine.h"
+#include "ear_obs_lifecycle_section.h"
 #include "ear_obs_manager.h"
 #include "ear_obs_start_retain.h"
 #include "ear_promotion_policy.h"
@@ -75,9 +76,6 @@ static bool s_test_published;
 static bool s_logged_wait_mqtt;
 static bool s_ota_close_registered;
 static SemaphoreHandle_t s_lifecycle_mu;
-/** 1 while this task already holds s_lifecycle_mu. START lock re-enters. */
-static int s_lifecycle_outer_hold;
-static int s_lifecycle_reentry;
 static sp_obs_emit_gate_t s_emit_gate = SP_OBS_GATE_RUN;
 
 /* R0 wall-clock stage timers (esp_timer_get_time); aggregated only. */
@@ -1354,33 +1352,33 @@ static void critical_on_ae_signature(const ae_signature_t *sig, void *ctx)
 }
 #endif /* CRITICAL_PATH */
 
-static void obs_lifecycle_lock(void *ctx)
+static void mgr_build_start_aggregates(
+    void *ctx,
+    int64_t interval_start_mono_us,
+    int64_t capture_mono_us,
+    ear_obs_start_aggregates_t *out
+)
 {
     (void)ctx;
-    if (s_lifecycle_mu == NULL) {
-        return;
+    memset(out, 0, sizeof(*out));
+    const dbmap_l1_interval_t *sig = NULL;
+    const dbmap_l2_interval_t *dyn = NULL;
+    mgr_build_levels(
+        interval_start_mono_us,
+        capture_mono_us,
+        "start",
+        &out->l0,
+        &sig,
+        &dyn,
+        &out->l1,
+        &out->l2
+    );
+    if (sig != NULL) {
+        out->have_l1 = true;
     }
-    if (s_lifecycle_outer_hold) {
-        s_lifecycle_reentry++;
-        return;
+    if (dyn != NULL) {
+        out->have_l2 = true;
     }
-    xSemaphoreTake(s_lifecycle_mu, portMAX_DELAY);
-    s_lifecycle_outer_hold = 1;
-    s_lifecycle_reentry = 0;
-}
-
-static void obs_lifecycle_unlock(void *ctx)
-{
-    (void)ctx;
-    if (s_lifecycle_mu == NULL) {
-        return;
-    }
-    if (s_lifecycle_reentry > 0) {
-        s_lifecycle_reentry--;
-        return;
-    }
-    s_lifecycle_outer_hold = 0;
-    xSemaphoreGive(s_lifecycle_mu);
 }
 
 static void mgr_on_binding_released(
@@ -1409,48 +1407,23 @@ static bool mgr_emit_start(
 #endif
     /*
      * Freeze L0/L1/L2 on the first attempt. Retries reuse that aggregate and
-     * the capture anchor in now_mono_us. UTC is resolved later inside publish.
+     * the capture anchor in now_mono_us. A full retain table does not publish.
+     * UTC is resolved later inside publish.
      */
     ear_obs_start_measure_t meas;
-    if (!ear_obs_start_retain_find(
-            binding->observation_id, binding->ep.generation, &meas
-        )) {
-        const int64_t interval_us =
-            (int64_t)CONFIG_DBMAP_EAR_OBS_INTERVAL_MS * 1000LL;
-        int64_t built_start = now_mono_us - interval_us;
-        if (built_start < binding->start_mono_us) {
-            built_start = binding->start_mono_us;
-        }
-        dbmap_l0_interval_t built_l0;
-        dbmap_l1_interval_t built_l1;
-        dbmap_l2_interval_t built_l2;
-        const dbmap_l1_interval_t *built_sig = NULL;
-        const dbmap_l2_interval_t *built_dyn = NULL;
-        mgr_build_levels(
-            built_start,
-            now_mono_us,
-            "start",
-            &built_l0,
-            &built_sig,
-            &built_dyn,
-            &built_l1,
-            &built_l2
-        );
-        memset(&meas, 0, sizeof(meas));
-        meas.capture_mono_us = now_mono_us;
-        meas.interval_start_mono_us = built_start;
-        meas.l0 = built_l0;
-        if (built_sig != NULL) {
-            meas.have_l1 = true;
-            meas.l1 = *built_sig;
-        }
-        if (built_dyn != NULL) {
-            meas.have_l2 = true;
-            meas.l2 = *built_dyn;
-        }
-        ear_obs_start_retain_put(
-            binding->observation_id, binding->ep.generation, &meas
-        );
+    const ear_obs_start_prepare_status_t prepared = ear_obs_start_prepare(
+        binding->observation_id,
+        binding->ep.generation,
+        now_mono_us,
+        binding->start_mono_us,
+        (int64_t)CONFIG_DBMAP_EAR_OBS_INTERVAL_MS * 1000LL,
+        mgr_build_start_aggregates,
+        NULL,
+        &meas,
+        NULL
+    );
+    if (prepared != EAR_OBS_START_PREPARE_READY) {
+        return false;
     }
     if (!sp_obs_gate_allows_feed(s_emit_gate)) {
         return false;
@@ -2515,13 +2488,10 @@ static void activity_task(void *arg)
 
         if (s_lifecycle_mu != NULL) {
             xSemaphoreTake(s_lifecycle_mu, portMAX_DELAY);
-            s_lifecycle_outer_hold = 1;
-            s_lifecycle_reentry = 0;
         }
         /* Recheck after lock: OTA may have entered CLOSING/CLOSED. */
         if (!sp_obs_gate_allows_feed(s_emit_gate)) {
             if (s_lifecycle_mu != NULL) {
-                s_lifecycle_outer_hold = 0;
                 xSemaphoreGive(s_lifecycle_mu);
             }
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -2620,13 +2590,14 @@ static void activity_task(void *arg)
             s_mqtt_episode_rearm_required = false;
         }
 #endif
-        if (s_lifecycle_mu != NULL) {
-            s_lifecycle_outer_hold = 0;
-            xSemaphoreGive(s_lifecycle_mu);
-        }
 #if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
-        /* Promotion policy + Observation Manager outside lifecycle lock. */
-        if (s_obs_mgr_ready) {
+        /*
+         * s_lifecycle_mu is still held. START publish and registry acceptance
+         * happen inside ear_sig_product_poll, before the give below.
+         * This mutex is not recursive: poll callbacks must not take it.
+         * The hold blocks OTA close until acceptance is decided.
+         */
+        if (sp_obs_gate_allows_feed(s_emit_gate) && s_obs_mgr_ready) {
 #if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
             ear_obs_stack_hwm_checkpoint(
                 "pre_promo",
@@ -2658,6 +2629,11 @@ static void activity_task(void *arg)
             );
 #endif
         }
+#endif /* AUDIO_ENGINE product poll */
+        if (s_lifecycle_mu != NULL) {
+            xSemaphoreGive(s_lifecycle_mu);
+        }
+#if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
 #if defined(CONFIG_DBMAP_EAR_OBS_CRITICAL_PATH) && CONFIG_DBMAP_EAR_OBS_CRITICAL_PATH
         if (s_critical_ready) {
             ear_critical_poll(&s_critical, esp_timer_get_time());
@@ -2887,25 +2863,29 @@ static esp_err_t publish_ota_end_snapshot(const ear_obs_end_snapshot_t *snap)
     return pub_err;
 }
 
-static esp_err_t ear_observation_close_for_ota(void)
+typedef struct {
+    ear_obs_end_snapshot_t *snaps;
+    bool *attempted_end;
+} ota_close_args_t;
+
+static void lifecycle_sem_take(void *ctx)
 {
-    /* Static: snapshots too large for the main/OTA call stack. */
-    static ear_obs_end_snapshot_t snaps[SP_OBS_EPISODE_SLOTS];
-    memset(snaps, 0, sizeof(snaps));
-    bool attempted_end = false;
+    xSemaphoreTake((SemaphoreHandle_t)ctx, portMAX_DELAY);
+}
 
-    if (!s_started || s_lifecycle_mu == NULL) {
-        ESP_LOGI(TAG, "OTA acoustic close: observation not started; nothing to close");
-        return ESP_OK;
-    }
+static void lifecycle_sem_give(void *ctx)
+{
+    xSemaphoreGive((SemaphoreHandle_t)ctx);
+}
 
-    xSemaphoreTake(s_lifecycle_mu, portMAX_DELAY);
-    /*
-     * This task owns the mutex. Nested START from force-end drain must
-     * re-enter instead of taking the non-recursive mutex again.
-     */
-    s_lifecycle_outer_hold = 1;
-    s_lifecycle_reentry = 0;
+/*
+ * Runs only while s_lifecycle_mu is held by ear_obs_lifecycle_section.
+ * Must not take that mutex. END MQTT waits after the section returns.
+ */
+static void ota_close_locked(void *ctx)
+{
+    ota_close_args_t *args = (ota_close_args_t *)ctx;
+    ear_obs_end_snapshot_t *snaps = args->snaps;
     s_emit_gate = SP_OBS_GATE_CLOSING;
 
     /* Force detector / v2 idle; registry owns MQTT episode closure. */
@@ -2932,7 +2912,7 @@ static esp_err_t ear_observation_close_for_ota(void)
 
         ear_obs_end_snapshot_t *snap = &snaps[i];
         snap->should_publish = true;
-        attempted_end = true;
+        *args->attempted_end = true;
         strncpy(snap->observation_id, slot->observation_id, sizeof(snap->observation_id) - 1);
         strncpy(snap->emission_kind, "end", sizeof(snap->emission_kind) - 1);
         strncpy(snap->termination_reason, "ota_reboot", sizeof(snap->termination_reason) - 1);
@@ -3002,9 +2982,34 @@ static esp_err_t ear_observation_close_for_ota(void)
     l2_continuity_break(); /* OTA acoustic close */
 #endif
     s_emit_gate = SP_OBS_GATE_CLOSED;
-    s_lifecycle_outer_hold = 0;
-    s_lifecycle_reentry = 0;
-    xSemaphoreGive(s_lifecycle_mu);
+}
+
+static esp_err_t ear_observation_close_for_ota(void)
+{
+    /* Static: snapshots too large for the main/OTA call stack. */
+    static ear_obs_end_snapshot_t snaps[SP_OBS_EPISODE_SLOTS];
+    memset(snaps, 0, sizeof(snaps));
+    bool attempted_end = false;
+
+    if (!s_started || s_lifecycle_mu == NULL) {
+        ESP_LOGI(TAG, "OTA acoustic close: observation not started; nothing to close");
+        return ESP_OK;
+    }
+
+    ota_close_args_t args = {
+        .snaps = snaps,
+        .attempted_end = &attempted_end,
+    };
+    const ear_obs_lifecycle_lock_ops_t ops = {
+        .take = lifecycle_sem_take,
+        .give = lifecycle_sem_give,
+        .lock_ctx = s_lifecycle_mu,
+    };
+    /*
+     * gate NULL: close always runs. Snapshot, cleanup, and the accepted-START
+     * decision finish before the give inside ear_obs_lifecycle_section.
+     */
+    (void)ear_obs_lifecycle_section(&ops, NULL, ota_close_locked, &args);
 
     const bool mqtt_was_connected = sp_mqtt_is_connected();
     sp_obs_mqtt_wait_result_t wait_result = SP_OBS_MQTT_WAIT_FAILED;
@@ -3290,9 +3295,6 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg)
         mcfg.emit_periodic = mgr_emit_periodic;
         mcfg.emit_end = mgr_emit_end;
         mcfg.emit_ctx = NULL;
-        mcfg.lifecycle_lock = obs_lifecycle_lock;
-        mcfg.lifecycle_unlock = obs_lifecycle_unlock;
-        mcfg.lifecycle_lock_ctx = NULL;
         mcfg.on_binding_released = mgr_on_binding_released;
         /* PERIODIC driven by RMS activity hints (L0 window cadence). */
         mcfg.enable_poll_periodic = false;

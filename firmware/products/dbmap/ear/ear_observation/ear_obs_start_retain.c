@@ -47,29 +47,27 @@ bool ear_obs_start_retain_find(
     return false;
 }
 
-void ear_obs_start_retain_put(
+bool ear_obs_start_retain_put(
     const char *observation_id,
     uint16_t generation,
     const ear_obs_start_measure_t *in
 )
 {
     if (observation_id == NULL || observation_id[0] == '\0' || in == NULL) {
-        return;
+        return false;
     }
     int free_i = -1;
     for (uint8_t i = 0u; i < EAR_OBS_START_RETAIN_SLOTS; i++) {
         if (same_identity(&s_slot[i], observation_id, generation)) {
             s_slot[i].measure = *in;
-            return;
+            return true;
         }
         if (!s_slot[i].in_use && free_i < 0) {
             free_i = (int)i;
         }
     }
     if (free_i < 0) {
-        /* Both slots belong to other identities. Caller should have dropped
-         * a released binding. Replacing slot 0 keeps the table bounded. */
-        free_i = 0;
+        return false;
     }
     memset(&s_slot[free_i], 0, sizeof(s_slot[free_i]));
     s_slot[free_i].in_use = true;
@@ -80,6 +78,77 @@ void ear_obs_start_retain_put(
         sizeof(s_slot[free_i].observation_id) - 1u
     );
     s_slot[free_i].measure = *in;
+    return true;
+}
+
+static bool retain_has_identity_or_room(const char *observation_id, uint16_t generation)
+{
+    bool have_free = false;
+    for (uint8_t i = 0u; i < EAR_OBS_START_RETAIN_SLOTS; i++) {
+        if (same_identity(&s_slot[i], observation_id, generation)) {
+            return true;
+        }
+        if (!s_slot[i].in_use) {
+            have_free = true;
+        }
+    }
+    return have_free;
+}
+
+ear_obs_start_prepare_status_t ear_obs_start_prepare(
+    const char *observation_id,
+    uint16_t generation,
+    int64_t capture_mono_us,
+    int64_t binding_start_mono_us,
+    int64_t interval_us,
+    ear_obs_start_build_fn build,
+    void *build_ctx,
+    ear_obs_start_measure_t *out,
+    bool *built_this_call
+)
+{
+    if (built_this_call != NULL) {
+        *built_this_call = false;
+    }
+    if (observation_id == NULL || observation_id[0] == '\0' || out == NULL || build == NULL) {
+        return EAR_OBS_START_PREPARE_BAD_ARG;
+    }
+    if (ear_obs_start_retain_find(observation_id, generation, out)) {
+        return EAR_OBS_START_PREPARE_READY;
+    }
+    if (!retain_has_identity_or_room(observation_id, generation)) {
+        return EAR_OBS_START_PREPARE_RETAIN_FULL;
+    }
+
+    int64_t iv_start = capture_mono_us - interval_us;
+    if (iv_start < binding_start_mono_us) {
+        iv_start = binding_start_mono_us;
+    }
+    ear_obs_start_aggregates_t built;
+    memset(&built, 0, sizeof(built));
+    build(build_ctx, iv_start, capture_mono_us, &built);
+
+    ear_obs_start_measure_t meas;
+    memset(&meas, 0, sizeof(meas));
+    meas.capture_mono_us = capture_mono_us;
+    meas.interval_start_mono_us = iv_start;
+    meas.l0 = built.l0;
+    meas.have_l1 = built.have_l1;
+    if (built.have_l1) {
+        meas.l1 = built.l1;
+    }
+    meas.have_l2 = built.have_l2;
+    if (built.have_l2) {
+        meas.l2 = built.l2;
+    }
+    if (!ear_obs_start_retain_put(observation_id, generation, &meas)) {
+        return EAR_OBS_START_PREPARE_RETAIN_FULL;
+    }
+    *out = meas;
+    if (built_this_call != NULL) {
+        *built_this_call = true;
+    }
+    return EAR_OBS_START_PREPARE_READY;
 }
 
 void ear_obs_start_retain_drop(const char *observation_id, uint16_t generation)

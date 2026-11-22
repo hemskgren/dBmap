@@ -397,20 +397,6 @@ static void fill_binding_view(
     out->assessment = om->bind[bi].cls_wire;
 }
 
-static void lifecycle_lock(ear_obs_manager_t *om)
-{
-    if (om->cfg.lifecycle_lock != NULL) {
-        om->cfg.lifecycle_lock(om->cfg.lifecycle_lock_ctx);
-    }
-}
-
-static void lifecycle_unlock(ear_obs_manager_t *om)
-{
-    if (om->cfg.lifecycle_unlock != NULL) {
-        om->cfg.lifecycle_unlock(om->cfg.lifecycle_lock_ctx);
-    }
-}
-
 static bool slot_start_accepted(const ear_obs_manager_t *om, sp_ep_handle_t ep)
 {
     if (om == NULL || om->cfg.registry == NULL) {
@@ -430,14 +416,14 @@ static void fill_frozen_start_view(
     out->assessment = om->bind[bi].start_assessment;
 }
 
-static void freeze_start_inputs(ear_obs_manager_t *om, uint8_t bi, int64_t now_mono_us)
+static void freeze_start_inputs(ear_obs_manager_t *om, uint8_t bi)
 {
     if (om->bind[bi].start_frozen) {
         return;
     }
     om->bind[bi].start_snap = om->bind[bi].snap;
     om->bind[bi].start_assessment = om->bind[bi].cls_wire;
-    om->bind[bi].start_capture_mono_us = now_mono_us;
+    om->bind[bi].start_capture_mono_us = om->bind[bi].start_mono_us;
     om->bind[bi].start_frozen = true;
 }
 
@@ -464,15 +450,21 @@ static void attempt_start_publish(
         return;
     }
 
-    freeze_start_inputs(om, bi, attempt_now_us);
+    freeze_start_inputs(om, bi);
 
-    lifecycle_lock(om);
     if (!om->bind[bi].in_use
         || !sp_episode_registry_handle_valid(om->cfg.registry, om->bind[bi].ep)
         || slot_start_accepted(om, om->bind[bi].ep)) {
-        lifecycle_unlock(om);
         return;
     }
+
+    /*
+     * attempt_now_us is the caller's monotonic clock, captured before emit.
+     * The callback may take time; the deadline stays on this value.
+     * One poll attempts a binding at most once (start_attempted_this_poll).
+     */
+    om->bind[bi].start_attempted_this_poll = true;
+    om->bind[bi].start_last_attempt_mono_us = attempt_now_us;
 
     ear_obs_binding_view_t view;
     fill_frozen_start_view(om, bi, &view);
@@ -495,7 +487,6 @@ static void attempt_start_publish(
         om->bind[bi].start_retry_not_before_mono_us =
             attempt_now_us + EAR_OBS_START_RETRY_INTERVAL_US;
     }
-    lifecycle_unlock(om);
 }
 
 /** At most one retry per due binding. No catch-up loop. */
@@ -512,6 +503,9 @@ static void retry_unaccepted_starts(ear_obs_manager_t *om, int64_t now_mono_us)
             continue;
         }
         if (slot_start_accepted(om, om->bind[bi].ep)) {
+            continue;
+        }
+        if (om->bind[bi].start_attempted_this_poll) {
             continue;
         }
         if (om->bind[bi].start_retry_not_before_mono_us == 0) {
@@ -564,7 +558,7 @@ static bool allocate_and_bind(
     ear_obs_manager_t *om,
     uint64_t candidate_id,
     const ear_obs_promote_snapshot_t *snap,
-    int64_t now_mono_us
+    int64_t attempt_mono_us
 )
 {
     if (om->cfg.registry == NULL || om->cfg.uuid_fn == NULL || snap == NULL) {
@@ -594,10 +588,18 @@ static bool allocate_and_bind(
     }
 
     sp_ep_handle_t ep;
+    int64_t capture_mono_us = snap->promote_mono_us;
+    if (capture_mono_us == 0) {
+        capture_mono_us = snap->last_evidence_mono_us;
+    }
+    if (capture_mono_us == 0) {
+        capture_mono_us = attempt_mono_us;
+    }
+
     if (!sp_episode_registry_allocate(
             om->cfg.registry,
             &ep,
-            now_mono_us,
+            capture_mono_us,
             om->cfg.observation_interval_ms,
             om->cfg.producer_tag,
             om->cfg.uuid_fn,
@@ -626,8 +628,8 @@ static bool allocate_and_bind(
         slot->observation_id,
         sizeof(om->bind[free_bi].observation_id)
     );
-    om->bind[free_bi].start_mono_us = now_mono_us;
-    om->bind[free_bi].last_emit_mono_us = now_mono_us;
+    om->bind[free_bi].start_mono_us = capture_mono_us;
+    om->bind[free_bi].last_emit_mono_us = capture_mono_us;
     om->bind[free_bi].snap = *snap;
     om->bind[free_bi].last_owned_sig_window_seq = 0u;
     if (snap->sig_count > 0u) {
@@ -668,7 +670,7 @@ static bool allocate_and_bind(
         ear_cls_evidence_clear(&om->cls_arm);
     }
 
-    attempt_start_publish(om, (uint8_t)free_bi, now_mono_us);
+    attempt_start_publish(om, (uint8_t)free_bi, attempt_mono_us);
 
     om->diag.promote_commit_bound++;
     return true;
@@ -795,7 +797,8 @@ bool ear_obs_manager_commit_reservation(
     ear_obs_manager_t *om,
     ear_obs_rsv_handle_t h,
     uint64_t candidate_id,
-    const ear_obs_promote_snapshot_t *snapshot
+    const ear_obs_promote_snapshot_t *snapshot,
+    int64_t attempt_mono_us
 )
 {
     if (!rsv_handle_valid(om, h, EAR_OBS_RSV_ST_HELD) || snapshot == NULL
@@ -826,7 +829,7 @@ bool ear_obs_manager_commit_reservation(
         return false;
     }
 
-    const int64_t now_us =
+    const int64_t capture_us =
         snapshot->promote_mono_us != 0 ? snapshot->promote_mono_us
                                       : snapshot->last_evidence_mono_us;
 
@@ -839,23 +842,23 @@ bool ear_obs_manager_commit_reservation(
     /* Consume HELD before open/pending transition. */
     clear_rsv_slot(om, (uint8_t)h.index);
 
-    drain_pending_to_open(om, now_us);
+    drain_pending_to_open(om, attempt_mono_us);
 
     if (count_open(om) < EAR_OBS_MGR_BINDING_CAP
         && om->cfg.registry != NULL
         && sp_episode_registry_in_use_count(om->cfg.registry) < SP_OBS_EPISODE_SLOTS) {
-        if (allocate_and_bind(om, candidate_id, &owned, now_us)) {
+        if (allocate_and_bind(om, candidate_id, &owned, attempt_mono_us)) {
             return true;
         }
         /* Fall through to pending if allocate raced/failed. */
     }
 
-    if (!pending_enqueue(om, candidate_id, &owned, now_us, h)) {
+    if (!pending_enqueue(om, candidate_id, &owned, capture_us, h)) {
         om->diag.promote_commit_fail++;
         request_ce_unadmit(om, candidate_id, owned.promotion_gen);
         return false;
     }
-    drain_pending_to_open(om, now_us);
+    drain_pending_to_open(om, attempt_mono_us);
     return true;
 }
 
@@ -1085,7 +1088,12 @@ static bool cancel_pending_for_candidate(
     return true;
 }
 
-static void handle_enter(ear_obs_manager_t *om, uint64_t candidate_id, const ae_candidate_t *c)
+static void handle_enter(
+    ear_obs_manager_t *om,
+    uint64_t candidate_id,
+    const ae_candidate_t *c,
+    int64_t attempt_mono_us
+)
 {
     const int existing_bi = find_binding(om, candidate_id);
     if (existing_bi >= 0) {
@@ -1189,7 +1197,9 @@ static void handle_enter(ear_obs_manager_t *om, uint64_t candidate_id, const ae_
     );
 #endif
 
-    (void)ear_obs_manager_commit_reservation(om, h, candidate_id, &snap);
+    (void)ear_obs_manager_commit_reservation(
+        om, h, candidate_id, &snap, attempt_mono_us
+    );
 }
 
 static void handle_exit(
@@ -1292,7 +1302,7 @@ static void process_event_queue(ear_obs_manager_t *om, int64_t now_mono_us)
         om->evq_count--;
 
         if (ev == CE_PROMOTION_ENTER) {
-            handle_enter(om, cid, have ? &cand_copy : NULL);
+            handle_enter(om, cid, have ? &cand_copy : NULL, now_mono_us);
         } else if (ev == CE_PROMOTION_EXIT) {
             handle_exit(
                 om,
@@ -1703,6 +1713,10 @@ void ear_obs_manager_poll(ear_obs_manager_t *om, int64_t now_mono_us)
 {
     if (om == NULL) {
         return;
+    }
+
+    for (uint8_t bi = 0u; bi < EAR_OBS_MGR_BINDING_CAP; bi++) {
+        om->bind[bi].start_attempted_this_poll = false;
     }
 
     process_event_queue(om, now_mono_us);
