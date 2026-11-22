@@ -28,10 +28,12 @@ Every `DBMAP_HUB_MONITOR_INTERVAL_S` seconds (default **60**), a background thre
 1. Probes API/database, Nginx, Web, MQTT, and OPA.
 2. Optionally reads Docker runtime diagnostics for monitored Compose services (not Firmware Builder).
 3. Persists a compact Hub sample **only on state transitions** (and after monitoring gaps), marked with `sample_mode: sparse`. Payload stores `states`, `last_success`, and `reasons` only — Docker inspect is not persisted in new samples; restart detection uses in-memory signatures and events.
-4. On a monitoring gap (> 2× interval since the previous sample), records `monitoring_resumed` and inserts an explicit `unobserved` sample so hold attribution excludes Hub-down / PC-off time from availability percentages.
+4. On a monitoring gap (more than 120 seconds by default since the previous successful Hub check), records `monitoring_resumed` and inserts an explicit `unobserved` sample so hold attribution excludes Hub-down / PC-off time from availability percentages. Successful Hub checks keep this clock current even when no sample is written.
 5. Records events on state transitions, monitoring gaps, and detected restarts.
-6. Samples **device** connectivity from `last_seen` (transition-sparse).
+6. Propagates a detected gap to Device Monitor. A device-only check that is due at the same time normally runs in this cycle.
 7. Periodically deletes monitor rows older than retention (default **30** days for Hub samples, configurable **30–90**).
+
+The background cycle persists samples and events. Status requests calculate the full availability history on demand.
 
 **Attribution compatibility:** sparse-era samples hold state until the next sample (including a pre-window carry-in sample so a stable state can cover a window with no interior samples). Legacy dense samples (no `sample_mode`) keep interval confirmation for long inter-sample gaps so historical Hub-down periods stay unobserved without rewriting rows. Older samples may still contain a `docker` blob in `components_json`; readers must tolerate its presence or absence.
 
@@ -133,7 +135,7 @@ Unknown or missing component states are **unobserved** for that component and ar
 
 ### Gaps after restart
 
-A Local Hub cannot continuously record its own availability while it is fully offline. A stopped Hub container and a powered-off computer are the same situation: the monitor is not running. When monitoring resumes and the previous sample is older than two intervals, the Hub records a `monitoring_resumed` event with `certainty: inferred` and treats the intervening wall-clock time as unobserved (`kind: not_running`). Exact outage start/end times inside that gap are not invented. The Hub tab and `hub_summary` show that duration as “hub not running” and leave it out of the percentage.
+A Local Hub cannot continuously record its own availability while it is fully offline. On the first check after a process restart, the monitor uses the last persisted sample as a fallback. If that sample is older than the gap threshold, the Hub records a `monitoring_resumed` event with `certainty: inferred` and treats the intervening time as unobserved (`kind: not_running`). The fallback may include time before the restart when successful checks wrote no samples. The Hub tab and `hub_summary` show that duration as “hub not running” and leave it out of the percentage.
 
 A detected `service_restart_detected` event (Docker `StartedAt` / `RestartCount` change) is diagnostic only. It does **not** invent an unavailable duration. Confirmed outage duration comes only from probe-based sample states. Restart event `previous_state` / `new_state` use `running` → `restart_detected` so they are not confused with health scores or availability enums.
 
@@ -180,10 +182,13 @@ The Hub tab and `scripts/hub_summary.py` both use those shared calculations. The
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `DBMAP_HUB_MONITOR_ENABLED` | `true` | Set `false` to disable the background thread |
-| `DBMAP_HUB_MONITOR_INTERVAL_S` | `60` | Sample interval in seconds |
+| `DBMAP_HUB_MONITOR_INTERVAL_S` | `60` | Full probe interval in seconds |
+| `DBMAP_HUB_MONITOR_GAP_THRESHOLD_S` | `120` | Infer a gap when elapsed time between successful Hub observations exceeds this threshold |
 | `DBMAP_HUB_MONITOR_RETENTION_DAYS` | `30` | Clamped to 30–90; raise via env if longer Hub sample history is needed |
 
 ## Limitations (Hub)
+
+For a separately approved history reset, see [Monitoring history recovery](monitoring-history-recovery.md).
 
 - Local monitoring cannot prove external client reachability beyond the Hub’s own probes.
 - Complete Hub outages appear as unobserved gaps after recovery, not as precisely timed downtime.
@@ -206,7 +211,9 @@ Online means `last_seen_at` is within `DBMAP_DEVICE_ONLINE_WINDOW_S` (default **
 
 ### D0 — Hub-observed availability
 
-Each Hub monitor cycle:
+Device Monitor runs every 30 seconds by default on the same background thread. A due full Hub check takes priority. Device-only checks pause after a failed full cycle or when the last successful Hub check is older than the gap threshold. These checks sample connectivity from reported state. They do not run Hub probes or update Hub continuity.
+
+Each Device Monitor check:
 
 1. For every **active** node that has been seen at least once, compute `available` or `unavailable` from `last_seen_at`.
 2. Persist a sample only on **state transitions** (and when a Hub monitoring gap is detected).
@@ -352,7 +359,8 @@ A later phase may correlate device-reported MQTT disconnect/reconnect diag event
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `DBMAP_DEVICE_ONLINE_WINDOW_S` | `90` | Seconds; clamped 30–600 |
-| `DBMAP_DEVICE_MONITOR_ENABLED` | `true` | Skip device sampling inside the Hub monitor cycle when `false` |
+| `DBMAP_DEVICE_MONITOR_ENABLED` | `true` | Enable Device Monitor sampling and gap recording |
+| `DBMAP_DEVICE_MONITOR_INTERVAL_S` | `30` | Device connectivity sampling interval in seconds (5–3600) |
 | `DBMAP_DEVICE_MONITOR_RETENTION_DAYS` | `90` | Clamped to 30–90 |
 | `DBMAP_DEVICE_MONITOR_MAX_SAMPLES_PER_DEVICE` | `500` | Soft cap for availability samples |
 | `DBMAP_DEVICE_MONITOR_MAX_EVENTS_PER_DEVICE` | `500` | Soft cap for Hub-observed monitor events |

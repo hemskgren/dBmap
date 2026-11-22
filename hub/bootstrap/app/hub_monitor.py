@@ -12,6 +12,7 @@ import json
 import logging
 import threading
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 
@@ -22,6 +23,7 @@ from app import container_logs, edge_status, policy
 from app.config import settings
 from app.db import SessionLocal
 from app.models import HubMonitorEvent, HubMonitorSample
+from app.monitoring_math import attribute_hold, ensure_aware
 from app.mqtt_listener import get_broker_metrics, is_connected
 
 log = logging.getLogger("hub-bootstrap.hub-monitor")
@@ -60,18 +62,13 @@ SAMPLE_MODE_SPARSE = "sparse"
 _thread: threading.Thread | None = None
 _stop = threading.Event()
 _cycle_lock = threading.Lock()
+_last_check_at: datetime | None = None
 _last_docker_signatures: dict[str, tuple[Any, ...]] = {}
 _cycles_since_cleanup = 0
 
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
-
-
-def _ensure_aware(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
 
 
 def health_score(state: str) -> int | None:
@@ -284,14 +281,15 @@ def _latest_sample(db: Session) -> HubMonitorSample | None:
     )
 
 
-def _maybe_record_gap(db: Session, now: datetime) -> tuple[datetime, datetime] | None:
+def _maybe_record_gap(
+    db: Session, now: datetime, previous_at: datetime | None
+) -> tuple[datetime, datetime] | None:
     """Record a monitoring_resumed event when needed.
 
     Returns (gap_start, gap_end) when an unobserved wall-clock gap was detected
     so device monitoring can exclude that interval from availability.
     """
-    previous = _latest_sample(db)
-    if previous is None:
+    if previous_at is None:
         _record_event(
             db,
             component="monitor",
@@ -304,9 +302,8 @@ def _maybe_record_gap(db: Session, now: datetime) -> tuple[datetime, datetime] |
             certainty="confirmed",
         )
         return None
-    previous_at = _ensure_aware(previous.observed_at)
     gap = now - previous_at
-    threshold = timedelta(seconds=2 * settings.hub_monitor_interval_s)
+    threshold = timedelta(seconds=settings.hub_monitor_gap_threshold_s)
     if gap <= threshold:
         return None
     _record_event(
@@ -431,7 +428,7 @@ def _emit_transitions(
 
 def cleanup_history(db: Session, now: datetime | None = None) -> dict[str, int]:
     """Delete monitor rows older than retention. Does not touch other tables."""
-    now = _ensure_aware(now or _utcnow())
+    now = ensure_aware(now or _utcnow())
     days = settings.hub_monitor_retention_days
     cutoff = now - timedelta(days=days)
     # SQLite returns naive datetimes into the ORM identity map. Evaluating the
@@ -463,7 +460,7 @@ def _add_unobserved_gap_sample(
     db: Session, *, previous: HubMonitorSample, gap_start: datetime, gap_end: datetime
 ) -> HubMonitorSample:
     """Insert an explicit unobserved marker so hold attribution excludes Hub-down time."""
-    previous_at = _ensure_aware(previous.observed_at)
+    previous_at = ensure_aware(previous.observed_at)
     unobserved_at = max(gap_start, previous_at + timedelta(microseconds=1))
     if unobserved_at >= gap_end:
         unobserved_at = gap_end - timedelta(microseconds=1)
@@ -508,9 +505,15 @@ def _should_persist_hub_sample(
     return any(previous_states.get(name) != components.get(name) for name in COMPONENT_IDS)
 
 
-def run_check(db: Session, *, record_startup_gap: bool = True) -> dict[str, Any]:
-    """Run one monitoring cycle and persist sample/events. Safe against probe failures."""
-    global _cycles_since_cleanup
+def run_check(
+    db: Session,
+    *,
+    record_startup_gap: bool = True,
+    sample_devices: bool = True,
+    include_summary: bool = True,
+) -> dict[str, Any] | None:
+    """Persist one Hub check and optionally return its historical summary."""
+    global _cycles_since_cleanup, _last_check_at
     with _cycle_lock:
         probe = _probe_components(db)
         observed_at: datetime = probe["observed_at"]
@@ -519,7 +522,12 @@ def run_check(db: Session, *, record_startup_gap: bool = True) -> dict[str, Any]
         previous = _latest_sample(db)
         hub_gap: tuple[datetime, datetime] | None = None
         if record_startup_gap:
-            hub_gap = _maybe_record_gap(db, observed_at)
+            # Sparse samples can be older than the last successful check.
+            # Use the persisted sample only when there is no in-process check.
+            previous_check_at = _last_check_at
+            if previous_check_at is None and previous is not None:
+                previous_check_at = ensure_aware(previous.observed_at)
+            hub_gap = _maybe_record_gap(db, observed_at, previous_check_at)
         if (
             hub_gap is not None
             and previous is not None
@@ -528,8 +536,8 @@ def run_check(db: Session, *, record_startup_gap: bool = True) -> dict[str, Any]
             _add_unobserved_gap_sample(
                 db,
                 previous=previous,
-                gap_start=_ensure_aware(hub_gap[0]),
-                gap_end=_ensure_aware(hub_gap[1]),
+                gap_start=ensure_aware(hub_gap[0]),
+                gap_end=ensure_aware(hub_gap[1]),
             )
         transition_previous = previous
         _emit_transitions(
@@ -577,11 +585,13 @@ def run_check(db: Session, *, record_startup_gap: bool = True) -> dict[str, Any]
         # Device sampling shares the Hub cycle; failures must not lose the Hub sample.
         from app import device_monitor
 
-        try:
-            device_monitor.sample_devices(db, observed_at=observed_at, hub_gap=hub_gap)
-        except Exception:
-            log.exception("device monitor cycle failed")
+        if sample_devices or hub_gap is not None:
+            try:
+                device_monitor.sample_devices(db, observed_at=observed_at, hub_gap=hub_gap)
+            except Exception:
+                log.exception("device monitor cycle failed")
         db.commit()
+        _last_check_at = observed_at
         # Retention cleanup must not block or roll back a successful sample.
         _cycles_since_cleanup += 1
         if _cycles_since_cleanup >= CLEANUP_EVERY_CYCLES:
@@ -599,9 +609,9 @@ def run_check(db: Session, *, record_startup_gap: bool = True) -> dict[str, Any]
                 except Exception as rollback_exc:  # noqa: BLE001
                     log.debug("rollback after cleanup failure: %s", rollback_exc)
             _cycles_since_cleanup = 0
-        return build_monitoring_summary(
-            db, current_probe=probe, current_sample=sample
-        )
+        if include_summary:
+            return build_monitoring_summary(db, current_probe=probe, current_sample=sample)
+        return None
 
 
 def _parse_sample_payload(sample: HubMonitorSample) -> dict[str, Any]:
@@ -670,20 +680,6 @@ def _attribute_interval(
     return 0.0, 0.0, confirmed + unobserved
 
 
-def _attribute_hold(
-    state: str, start: datetime, end: datetime
-) -> tuple[float, float, float]:
-    """Attribute the full interval to the sample state (transition-sparse model)."""
-    total = max((end - start).total_seconds(), 0.0)
-    if total <= 0:
-        return 0.0, 0.0, 0.0
-    if state in {"available", "degraded"}:
-        return total, 0.0, 0.0
-    if state == "unavailable":
-        return 0.0, total, 0.0
-    return 0.0, 0.0, total
-
-
 def _payload_sample_mode(payload: dict[str, Any]) -> str | None:
     mode = payload.get("sample_mode")
     return mode if isinstance(mode, str) else None
@@ -714,7 +710,7 @@ def _attribute_hub_span(
     unobserved without rewriting historical rows.
     """
     if sparse_hold:
-        return _attribute_hold(state, start, end)
+        return attribute_hold(state, start, end)
     return _attribute_interval(state, start, end, interval)
 
 
@@ -725,16 +721,16 @@ def _select_samples_for_window(
     window_end: datetime,
 ) -> list[HubMonitorSample]:
     """Include the latest sample before the window so hold can cover it."""
-    ordered = sorted(samples, key=lambda item: _ensure_aware(item.observed_at))
+    ordered = sorted(samples, key=lambda item: ensure_aware(item.observed_at))
     before = [
         sample
         for sample in ordered
-        if _ensure_aware(sample.observed_at) < window_start
+        if ensure_aware(sample.observed_at) < window_start
     ]
     inside = [
         sample
         for sample in ordered
-        if window_start <= _ensure_aware(sample.observed_at) <= window_end
+        if window_start <= ensure_aware(sample.observed_at) <= window_end
     ]
     if before:
         return [before[-1], *inside]
@@ -866,15 +862,15 @@ def compute_availability_window(
         unobserved = window_seconds
         gaps.append(_observation_gap(window_start, window_end, "not_started"))
     else:
-        first_at = _ensure_aware(ordered[0].observed_at)
+        first_at = ensure_aware(ordered[0].observed_at)
         if first_at > window_start:
             leading = (first_at - window_start).total_seconds()
             unobserved += leading
             gaps.append(_observation_gap(window_start, first_at, "not_started"))
         for index, sample in enumerate(ordered):
-            start = max(_ensure_aware(sample.observed_at), window_start)
+            start = max(ensure_aware(sample.observed_at), window_start)
             if index + 1 < len(ordered):
-                end = min(_ensure_aware(ordered[index + 1].observed_at), window_end)
+                end = min(ensure_aware(ordered[index + 1].observed_at), window_end)
             else:
                 end = window_end
             if end <= start:
@@ -919,7 +915,7 @@ def compute_availability_window(
     inside_count = sum(
         1
         for sample in ordered
-        if window_start <= _ensure_aware(sample.observed_at) <= window_end
+        if window_start <= ensure_aware(sample.observed_at) <= window_end
     )
     return _window_result(
         available=available,
@@ -993,7 +989,7 @@ def compute_component_availability_window(
     if not ordered:
         unobserved = window_seconds
     else:
-        first_at = _ensure_aware(ordered[0].observed_at)
+        first_at = ensure_aware(ordered[0].observed_at)
         if first_at > window_start:
             unobserved += (first_at - window_start).total_seconds()
             gaps.append(
@@ -1004,9 +1000,9 @@ def compute_component_availability_window(
                 }
             )
         for index, sample in enumerate(ordered):
-            start = max(_ensure_aware(sample.observed_at), window_start)
+            start = max(ensure_aware(sample.observed_at), window_start)
             if index + 1 < len(ordered):
-                end = min(_ensure_aware(ordered[index + 1].observed_at), window_end)
+                end = min(ensure_aware(ordered[index + 1].observed_at), window_end)
             else:
                 end = window_end
             if end <= start:
@@ -1053,7 +1049,7 @@ def compute_component_availability_window(
     inside_count = sum(
         1
         for sample in ordered
-        if window_start <= _ensure_aware(sample.observed_at) <= window_end
+        if window_start <= ensure_aware(sample.observed_at) <= window_end
     )
     result = _window_result(
         available=available,
@@ -1138,7 +1134,7 @@ def build_monitoring_summary(
         docker = payload["docker"]
         health = sample.overall_health
         availability = sample.overall_availability
-        calculated_at = _ensure_aware(sample.observed_at)
+        calculated_at = ensure_aware(sample.observed_at)
     else:
         states = {name: "unknown" for name in COMPONENT_IDS}
         last_success = {}
@@ -1219,8 +1215,8 @@ def build_monitoring_summary(
     last_change = None
     if last_event is not None:
         last_change = {
-            "occurred_at": _ensure_aware(last_event.occurred_at).isoformat(),
-            "observed_at": _ensure_aware(last_event.observed_at).isoformat(),
+            "occurred_at": ensure_aware(last_event.occurred_at).isoformat(),
+            "observed_at": ensure_aware(last_event.observed_at).isoformat(),
             "component": last_event.component,
             "event_type": last_event.event_type,
             "previous_state": last_event.previous_state,
@@ -1258,7 +1254,7 @@ def build_monitoring_summary(
             },
             "reason": failure_reason,
             "components": _component_views(states, last_success, reasons, docker),
-            "calculated_at": _ensure_aware(calculated_at).isoformat(),
+            "calculated_at": ensure_aware(calculated_at).isoformat(),
             "notes": (
                 "Health is the current rule-based state. Reachability path is API, "
                 "database, Nginx, and Web (failure ⇒ unhealthy). MQTT failure with "
@@ -1320,8 +1316,8 @@ def build_monitoring_summary(
 def _event_view(event: HubMonitorEvent) -> dict[str, Any]:
     return {
         "event_id": event.event_id,
-        "occurred_at": _ensure_aware(event.occurred_at).isoformat(),
-        "observed_at": _ensure_aware(event.observed_at).isoformat(),
+        "occurred_at": ensure_aware(event.occurred_at).isoformat(),
+        "observed_at": ensure_aware(event.observed_at).isoformat(),
         "component": event.component,
         "event_type": event.event_type,
         "previous_state": event.previous_state,
@@ -1386,19 +1382,56 @@ def monitoring_status(db: Session) -> dict[str, Any]:
 
 
 def _loop() -> None:
+    from app import device_monitor
+
+    next_hub = next_device = monotonic()
+    hub_check_succeeded = False
     while not _stop.is_set():
+        now = monotonic()
+        hub_due = now >= next_hub
+        device_due = settings.device_monitor_enabled and now >= next_device
+        if not hub_due and not device_due:
+            deadline = next_hub
+            if settings.device_monitor_enabled:
+                deadline = min(deadline, next_device)
+            _stop.wait(deadline - now)
+            continue
+
+        if hub_due:
+            next_hub = now + settings.hub_monitor_interval_s
+            hub_check_succeeded = False
+        if device_due:
+            next_device = now + settings.device_monitor_interval_s
+
+        if not hub_due and not hub_check_succeeded:
+            continue
+
         db = SessionLocal()
         try:
-            run_check(db)
+            if hub_due:
+                run_check(db, sample_devices=device_due, include_summary=False)
+                hub_check_succeeded = True
+            else:
+                # Fast checks observe device connectivity only. A failed Hub
+                # cycle pauses them until the next successful full check.
+                with _cycle_lock:
+                    observed_at = _utcnow()
+                    if _last_check_at is None or (
+                        observed_at - _last_check_at
+                    ).total_seconds() > settings.hub_monitor_gap_threshold_s:
+                        # Wall time can advance while the scheduler clock is
+                        # paused (for example during host suspend).
+                        continue
+                    device_monitor.sample_devices(db, observed_at=observed_at)
+                    db.commit()
         except Exception:
-            log.exception("hub monitor cycle failed")
+            log.exception("%s monitor cycle failed", "hub" if hub_due else "device")
             try:
                 db.rollback()
             except Exception as rollback_exc:  # noqa: BLE001
                 log.debug("rollback after monitor cycle failure: %s", rollback_exc)
         finally:
             db.close()
-        _stop.wait(settings.hub_monitor_interval_s)
 
 
 def start_monitor_thread() -> threading.Thread | None:
