@@ -1497,19 +1497,25 @@
         observationViewState.slotIds = null;
       }
 
+      const observationPausedStatus = 'Auto-refresh off. Re-check Auto-refresh to return to the live latest view.';
+
       function pauseObservationAutoRefresh() {
         if (!observationViewState.autoRefresh) return;
         observationViewState.autoRefresh = false;
         syncObservationAutoRefreshCheckbox();
+        const status = document.getElementById('observation-refresh-status');
+        if (!status.classList.contains('error')) status.textContent = observationPausedStatus;
       }
 
       function setObservationAutoRefresh(enabled) {
-        observationViewState.autoRefresh = Boolean(enabled);
-        syncObservationAutoRefreshCheckbox();
-        if (observationViewState.autoRefresh) {
-          clearObservationDigDown();
-          refreshObservations({ force: true });
+        if (!enabled) {
+          pauseObservationAutoRefresh();
+          return;
         }
+        observationViewState.autoRefresh = true;
+        syncObservationAutoRefreshCheckbox();
+        clearObservationDigDown();
+        refreshObservations({ force: true });
       }
 
       function readObservationFiltersFromDom() {
@@ -1772,14 +1778,12 @@
         document.getElementById('latest-observation-card').textContent = observations.length
           ? formatSeen(observations[0].received_time_utc)
           : 'None';
-        return { dbTotal, uniqueTotal };
       }
 
       function renderObservationView(options = {}) {
         const preserveDetails = Boolean(options.preserveDetails);
         const followLive = observationViewState.autoRefresh;
         const observations = observationViewState.items;
-        const status = document.getElementById('observation-refresh-status');
         const filterStatus = document.getElementById('observation-filter-status');
         const chart = document.getElementById('observation-chart');
         const list = document.getElementById('observation-list');
@@ -1844,8 +1848,6 @@
             bar.setAttribute('aria-pressed', String(Number(bar.dataset.slotIndex) === slot.index));
           });
           if (chosen) selectObservation(chosen, { openDetails: true });
-          status.className = 'notice';
-          status.textContent = 'Auto-refresh off while inspecting a time slot. Re-check Auto-refresh to return to the live latest view.';
         });
         renderObservationList(list, visible, selectObservation);
 
@@ -1892,14 +1894,6 @@
         try {
           const countBody = await api('/api/v1/observations/count');
           updateObservationCountCards(countBody, observationViewState.items);
-          const dbTotal = Number(countBody?.total);
-          const uniqueTotal = Number(countBody?.unique_observations);
-          const status = document.getElementById('observation-refresh-status');
-          status.className = 'notice';
-          status.textContent =
-            `Auto-refresh off (dig-down). Totals still update. Re-check Auto-refresh to return to the live latest view. `
-            + `Database: ${Number.isFinite(uniqueTotal) ? uniqueTotal : '—'} unique · `
-            + `${Number.isFinite(dbTotal) ? dbTotal : '—'} reports.`;
         } catch (_error) {
           /* Keep the current inspection view intact. */
         }
@@ -2111,21 +2105,12 @@
           const observations = observationPage.reports;
           observationViewState.items = observations;
           observationViewState.latestId = observationReportKey(observations[0]) || null;
-          const { dbTotal, uniqueTotal } = updateObservationCountCards(countBody, observations);
+          updateObservationCountCards(countBody, observations);
           updateObservationFilterOptions(observations);
           renderObservationView({ preserveDetails: true });
 
-          const totalLabel = Number.isFinite(dbTotal) && Number.isFinite(uniqueTotal)
-            ? `${uniqueTotal} unique · ${dbTotal} reports in database`
-            : 'database totals unavailable';
           markUpdated('observation');
-          if (observationViewState.autoRefresh) {
-            status.textContent = `${totalLabel}.`;
-          } else {
-            status.textContent =
-              `Auto-refresh off (dig-down). ${totalLabel}. `
-              + 'Re-check Auto-refresh for the live latest view.';
-          }
+          status.textContent = observationViewState.autoRefresh ? '' : observationPausedStatus;
         } catch (error) {
           observationViewState.items = [];
           document.getElementById('hub-observation-unique-total').textContent = '—';

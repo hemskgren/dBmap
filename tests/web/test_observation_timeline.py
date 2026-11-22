@@ -110,7 +110,9 @@ def test_observation_timeline_in_browser(tmp_path, width):
           expect(get(key + '-updated').textContent.includes('17:24:36 CET'), 'local timestamp');
           expect(Boolean(get(key + '-updated').dateTime), 'machine-readable timestamp');
         }
-        expect(!get('observation-refresh-status').textContent.includes('Updated'), 'duplicate timestamp');
+        expect(get('observation-refresh-status').textContent === '', 'live refresh has no duplicate status');
+        expect(get('hub-observation-db-total').textContent === '4' &&
+          get('hub-observation-unique-total').textContent === '3', 'database totals appear in cards');
         const columns = [...document.querySelectorAll('.observation-table th')];
         expect(columns.map((th) => th.textContent).join('|') ===
           'Time|Node|Observation ID|Emission|Assessment', 'column order');
@@ -174,10 +176,15 @@ def test_observation_timeline_in_browser(tmp_path, width):
         expect(selected(ids).join() === a && state().includes('Outside the latest 200'),
           'refresh retains aged-out selection');
         const lastUpdated = get('observation-updated').dateTime;
+        const pausedStatus = get('observation-refresh-status').textContent;
+        expect(pausedStatus.startsWith('Auto-refresh off.') && !/unique|database|reports/i.test(pausedStatus),
+          'manual refresh displays pause guidance without duplicate totals');
+        expect(get('hub-observation-db-total').textContent === '2', 'manual refresh updates totals card');
         const requestCount = requests.length;
         await refreshObservations();
         expect(requests.slice(requestCount).join() === '/api/v1/observations/count', 'paused totals-only request');
         expect(get('observation-updated').dateTime === lastUpdated, 'paused timestamp unchanged');
+        expect(get('observation-refresh-status').textContent === pausedStatus, 'paused poll keeps status stable');
         reset();
         expect(!selected(ids).length && !selected(node).length &&
           checks.every((box) => box.checked) && !draft.value && draft.getAttribute('aria-invalid') === 'false',
