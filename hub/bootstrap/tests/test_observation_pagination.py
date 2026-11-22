@@ -568,3 +568,45 @@ def test_out_of_range_page_returns_empty_reports_with_metadata() -> None:
     assert body["pagination"]["total_count"] == 3
     assert body["pagination"]["total_pages"] == 2
     assert body["pagination"]["page"] == 9
+
+
+def test_listener_logs_replay_without_mutating_original(monkeypatch, caplog) -> None:
+    import json
+    import logging
+
+    from app import mqtt_listener
+    from app.models import Observation
+    from sqlalchemy import select
+
+    node = "EAR-LISTENER"
+    oid = str(uuid4())
+    payload = _payload(
+        node, observation_id=oid, sequence_number=1, event_time=datetime.now(UTC)
+    )
+    monkeypatch.setattr(mqtt_listener, "SessionLocal", SessionLocal)
+    with SessionLocal() as db:
+        _ensure_node(db, node)
+        assert ingest_observation(db, node, ObservationBody.model_validate(payload))
+        query = select(Observation).where(Observation.node_id == node)
+        original = db.scalars(query).one()
+        original_id, original_json = original.id, original.payload_json
+
+    payload["acoustic"]["signal_level_dbfs"] = -10.0
+    with caplog.at_level(logging.INFO):
+        mqtt_listener._ingest_observation(node, json.dumps(payload).encode())
+        payload["identity"]["observation_id"] = str(uuid4())
+        mqtt_listener._ingest_observation(node, json.dumps(payload).encode())
+
+    diagnostics = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.INFO
+        and "duplicate observation" in record.getMessage()
+    ]
+    assert diagnostics == [f"duplicate observation {oid} from {node} ignored"]
+    assert "sequence_number already registered with a different observation_id" in caplog.text
+    assert "failed to persist observation" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+    with SessionLocal() as db:
+        row = db.scalars(query).one()
+        assert (row.id, row.payload_json) == (original_id, original_json)

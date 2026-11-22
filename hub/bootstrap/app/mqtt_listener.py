@@ -183,7 +183,7 @@ def _ingest_observation(node_id: str, message: bytes) -> None:
         inserted = ingest_observation(db, node_id, body)
         if not inserted:
             log.info(
-                "duplicate observation %s from %s ignored", body.observation_id, node_id
+                "duplicate observation %s from %s ignored", body.identity.observation_id, node_id
             )
         else:
             try:
