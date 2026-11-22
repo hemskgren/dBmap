@@ -17,6 +17,7 @@
 #include "sp_mic_error_report.h"
 #include "sp_mic_pcm.h"
 #include "sp_mic_window_job.h"
+#include "sp_mic_window_job_slot.h"
 #include "driver/i2s_std.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
@@ -186,55 +187,8 @@ static uint32_t s_pcm_cap;
 static int s_pcm_fill_idx;
 static bool s_pcm_ready;
 static sp_mic_pcm_ready_hook_t s_pcm_ready_hook;
-
-typedef struct {
-    bool pending;
-    int buf_idx;
-    size_t sample_count_ch[SP_MIC_COUNT_MAX];
-    uint8_t pcm_channel_mask;
-    uint32_t window_ms;
-    int64_t window_end_mono_us;
-    int full_scale_bits;
-    uint32_t window_seq;
-    uint8_t live_mic_count;
-    sp_mic_window_view_t views[SP_MIC_COUNT_MAX];
-} ear_pcm_pending_t;
-
-static ear_pcm_pending_t s_pcm_pending;
-static uint32_t s_pcm_pending_overwrite;
 static uint32_t s_pcm_free_heap_after_init;
 static uint32_t s_pcm_free_spiram_after_init;
-
-static void fill_pcm_job_from_pending(const ear_pcm_pending_t *job, sp_mic_pcm_job_t *out)
-{
-    if (out == NULL || job == NULL) {
-        return;
-    }
-    memset(out, 0, sizeof(*out));
-    out->full_scale_bits = job->full_scale_bits;
-    out->window_ms = job->window_ms;
-    out->window_end_mono_us = job->window_end_mono_us;
-    out->window_seq = job->window_seq;
-    out->pcm_channel_mask = job->pcm_channel_mask;
-    out->active_mic_count = job->live_mic_count;
-    if (job->buf_idx < 0 || job->buf_idx > 1) {
-        return;
-    }
-    for (uint8_t ch = 0; ch < SP_MIC_COUNT_MAX; ++ch) {
-        if ((job->pcm_channel_mask & (uint8_t)(1u << ch)) == 0u) {
-            continue;
-        }
-        if (s_pcm[ch][job->buf_idx] == NULL) {
-            continue;
-        }
-        out->samples_ch[ch] = s_pcm[ch][job->buf_idx];
-        out->sample_count_ch[ch] = job->sample_count_ch[ch];
-        if (ch == 0u) {
-            out->samples = out->samples_ch[0];
-            out->sample_count = out->sample_count_ch[0];
-        }
-    }
-}
 
 static void pcm_store_sample(uint8_t mic_index, int32_t sample, uint32_t pcm_count)
 {
@@ -449,23 +403,14 @@ bool sp_mic_take_pcm_job(sp_mic_pcm_job_t *out)
         return false;
     }
 
-    ear_pcm_pending_t job;
+    sp_mic_window_slot_pending_t job;
     portENTER_CRITICAL(&s_lock);
-    job = s_pcm_pending;
-    if (!job.pending) {
-        portEXIT_CRITICAL(&s_lock);
-        return false;
-    }
-    s_pcm_pending.pending = false;
+    const bool had = sp_mic_window_slot_take(&job);
     portEXIT_CRITICAL(&s_lock);
-
-    if (job.buf_idx < 0 || job.buf_idx > 1 || s_pcm[0][job.buf_idx] == NULL) {
+    if (!had) {
         return false;
     }
-    if (out != NULL) {
-        fill_pcm_job_from_pending(&job, out);
-    }
-    return true;
+    return sp_mic_window_slot_project_pcm(&job, s_pcm, out);
 #endif
 }
 
@@ -479,36 +424,18 @@ bool sp_mic_take_window_job(sp_mic_window_job_t *out)
         return false;
     }
 
-    ear_pcm_pending_t job;
+    sp_mic_window_slot_pending_t job;
     uint32_t rate_hz;
     portENTER_CRITICAL(&s_lock);
-    job = s_pcm_pending;
     rate_hz = (uint32_t)s_mic_cfg.sample_rate_hz;
-    if (!job.pending) {
-        portEXIT_CRITICAL(&s_lock);
-        return false;
-    }
-    s_pcm_pending.pending = false;
+    const bool had = sp_mic_window_slot_take(&job);
     portEXIT_CRITICAL(&s_lock);
-
-    if (job.buf_idx < 0 || job.buf_idx > 1 || s_pcm[0][job.buf_idx] == NULL) {
+    if (!had) {
         return false;
     }
-    if (out == NULL) {
-        return true;
-    }
-
-    memset(out, 0, sizeof(*out));
-    fill_pcm_job_from_pending(&job, &out->pcm);
-
-    uint8_t live = job.live_mic_count;
-    if (live < 1u || live > SP_MIC_COUNT_MAX) {
-        live = 1u;
-    }
-    /* Packaging is atomic with PCM; coherence should hold. Mask stays 0 on
-     * fill failure so AE can still mono-analyze without inventing channels. */
-    (void)sp_mic_window_job_set_channels_from_views(out, live, rate_hz, job.views);
-    return true;
+    /* Bank check runs after pending is cleared. Mask stays 0 on fill failure
+     * so AE can still mono-analyze without inventing channels. */
+    return sp_mic_window_slot_project_window(&job, s_pcm, rate_hz, out);
 #endif
 }
 
@@ -550,7 +477,7 @@ uint32_t sp_mic_pcm_pending_overwrite(void)
 #else
     uint32_t v;
     portENTER_CRITICAL(&s_lock);
-    v = s_pcm_pending_overwrite;
+    v = sp_mic_window_slot_overwrite_count();
     portEXIT_CRITICAL(&s_lock);
     return v;
 #endif
@@ -1452,23 +1379,22 @@ static void measure_window(ear_audio_snapshot_t *out, uint8_t live_count)
         for (uint8_t i = 0; i < SP_MIC_COUNT_MAX; ++i) {
             s_latest[i] = out[i];
         }
-        if (s_pcm_pending.pending) {
-            s_pcm_pending_overwrite++;
-        }
-        s_pcm_pending.pending = true;
-        s_pcm_pending.buf_idx = s_pcm_fill_idx;
+        sp_mic_window_slot_pending_t pub;
+        memset(&pub, 0, sizeof(pub));
+        pub.buf_idx = s_pcm_fill_idx;
         for (uint8_t ch = 0; ch < SP_MIC_COUNT_MAX; ++ch) {
-            s_pcm_pending.sample_count_ch[ch] = stored[ch];
+            pub.sample_count_ch[ch] = stored[ch];
         }
-        s_pcm_pending.pcm_channel_mask = pcm_mask;
-        s_pcm_pending.window_ms = window_ms;
-        s_pcm_pending.window_end_mono_us = measured_at;
-        s_pcm_pending.full_scale_bits = useful_bits;
-        s_pcm_pending.window_seq = s_window_seq;
-        s_pcm_pending.live_mic_count = live_count;
+        pub.pcm_channel_mask = pcm_mask;
+        pub.window_ms = window_ms;
+        pub.window_end_mono_us = measured_at;
+        pub.full_scale_bits = useful_bits;
+        pub.window_seq = s_window_seq;
+        pub.live_mic_count = live_count;
         for (uint8_t i = 0; i < SP_MIC_COUNT_MAX; ++i) {
-            snapshot_to_view(&out[i], &s_pcm_pending.views[i]);
+            snapshot_to_view(&out[i], &pub.views[i]);
         }
+        sp_mic_window_slot_publish(&pub);
         s_pcm_fill_idx ^= 1;
         portEXIT_CRITICAL(&s_lock);
     } else {
@@ -1758,7 +1684,7 @@ esp_err_t sp_mic_start(const sp_effective_t *cfg, const sp_mic_config_t *mic_cfg
         } else {
             s_pcm_ready = true;
             s_pcm_fill_idx = 0;
-            memset(&s_pcm_pending, 0, sizeof(s_pcm_pending));
+            sp_mic_window_slot_reset_pending();
             s_pcm_free_heap_after_init = (uint32_t)esp_get_free_heap_size();
             s_pcm_free_spiram_after_init =
                 (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);

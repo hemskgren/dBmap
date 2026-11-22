@@ -246,6 +246,32 @@ run_host_tests() {
     "${EAR_AE}/ae_align.c" "${EAR_AE}/ae_gap.c" "${EAR_AE}/ae_time.c" \
     "${EAR_AE}/ae_signature.c" "${EAR_AE}/ae_history.c" "${EAR_AE}/ae_engine.c" \
     "${EAR_AE}/test_host/test_ae_window_validity_contract.c" || host_fail=1
+  # Package 5: real ae_device_poll + analyze over the production window slot.
+  local EAR_AE_RT="${FIRMWARE_ROOT}/products/dbmap/ear/ae_runtime"
+  if [[ -f "${EAR_AE_RT}/test_host/test_ae_device_intake.c" \
+    && -f "${EAR_AE_RT}/ae_device.c" \
+    && -f "${SP_MIC}/sp_mic_window_job.c" ]]; then
+    run_host_one ae_device_intake \
+      -DCONFIG_DBMAP_EAR_AUDIO_ENGINE=1 -DCONFIG_SP_AUDIO_L0=1 \
+      "-I${EAR_AE_RT}/test_host/host_shim" \
+      "-I${EAR_AE_RT}/test_host" \
+      "-I${EAR_AE_RT}/include" \
+      ${ae_inc} "-I${SP_MIC}" \
+      "${SP_AUDIO}/sp_acoustic_l0.c" "${SP_AUDIO}/sp_audio_analyze.c" \
+      "${SP_MIC}/sp_mic_window_job.c" "${SP_MIC}/ear_mic_channel_api.c" \
+      "${SP_MIC}/audio_metrics.c" \
+      "${EAR_AC}/ear_acoustic_runtime.c" \
+      "${EAR_AE}/ae_align.c" "${EAR_AE}/ae_stereo.c" "${EAR_AE}/ae_gap.c" \
+      "${EAR_AE}/ae_signature.c" "${EAR_AE}/ae_history.c" \
+      "${EAR_AE}/ae_time.c" "${EAR_AE}/ae_engine.c" \
+      "${EAR_AE_RT}/ae_sig_capture.c" \
+      "${EAR_AE_RT}/ae_device.c" \
+      "${EAR_AE_RT}/test_host/host_mic_facade.c" \
+      "${EAR_AE_RT}/test_host/test_ae_device_intake.c" || host_fail=1
+  else
+    record_fail "host/ae_device_intake (sources/tests not in tree)"
+    host_fail=1
+  fi
   # Mic diagnostic emit policy (show_zero_error_counters); header-only helper.
   if [[ -f "${SP_MIC}/test_host/test_sp_mic_error_report.c" ]]; then
     run_host_one sp_mic_error_report \
