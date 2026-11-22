@@ -160,6 +160,15 @@ bool ear_obs_manager_has_signature_observation(
     return false;
 }
 
+static void count_emit_attempt(uint32_t *count, bool *saturated)
+{
+    if (*count == UINT32_MAX) {
+        *saturated = true;
+    } else {
+        ++*count;
+    }
+}
+
 void ear_obs_manager_get_diag(const ear_obs_manager_t *om, ear_obs_manager_diag_t *out)
 {
     if (out == NULL) {
@@ -485,6 +494,7 @@ static void attempt_start_publish(
     fill_frozen_start_view(om, bi, &view);
     bool ok = true;
     if (om->cfg.emit_start != NULL) {
+        count_emit_attempt(&om->diag.start_attempts, &om->diag.attempts_saturated);
         ok = om->cfg.emit_start(
             om->cfg.emit_ctx,
             &view,
@@ -1037,6 +1047,7 @@ static void end_binding(
     om->diag.end_done++;
 
     if (publish_end && om->cfg.emit_end != NULL) {
+        count_emit_attempt(&om->diag.end_attempts, &om->diag.attempts_saturated);
         (void)om->cfg.emit_end(
             om->cfg.emit_ctx,
             &view,
@@ -1612,6 +1623,7 @@ void ear_obs_manager_on_activity_periodic_hint(
         as001_maybe_deepen(om, bi, EAR_CLS_PHASE_PERIODIC);
         ear_obs_binding_view_t view;
         fill_binding_view(om, bi, &view);
+        count_emit_attempt(&om->diag.periodic_attempts, &om->diag.attempts_saturated);
         if (om->cfg.emit_periodic(
                 om->cfg.emit_ctx,
                 &view,
@@ -1830,6 +1842,7 @@ void ear_obs_manager_poll(ear_obs_manager_t *om, int64_t now_mono_us)
             as001_maybe_deepen(om, bi, EAR_CLS_PHASE_PERIODIC);
             ear_obs_binding_view_t view;
             fill_binding_view(om, bi, &view);
+            count_emit_attempt(&om->diag.periodic_attempts, &om->diag.attempts_saturated);
             if (om->cfg.emit_periodic(
                     om->cfg.emit_ctx,
                     &view,

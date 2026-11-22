@@ -730,6 +730,16 @@ void sp_mqtt_request_reconnect(void)
 
 esp_err_t sp_mqtt_publish_json(const char *topic, const char *json, int qos)
 {
+    return sp_mqtt_publish_json_result(topic, json, qos, NULL);
+}
+
+esp_err_t sp_mqtt_publish_json_result(
+    const char *topic, const char *json, int qos, sp_mqtt_publish_result_t *result
+)
+{
+    if (result != NULL) {
+        *result = (sp_mqtt_publish_result_t){0};
+    }
     if (!s_client) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -737,6 +747,9 @@ esp_err_t sp_mqtt_publish_json(const char *topic, const char *json, int qos)
         return ESP_ERR_INVALID_STATE;
     }
     int msg_id = esp_mqtt_client_publish(s_client, topic, json, 0, qos, 0);
+    if (result != NULL) {
+        *result = (sp_mqtt_publish_result_t){.sdk_called = true, .message_id = msg_id};
+    }
     if (msg_id > 0 && qos > 0) {
         sp_mqtt_progress_note_result_t note;
         progress_lock();

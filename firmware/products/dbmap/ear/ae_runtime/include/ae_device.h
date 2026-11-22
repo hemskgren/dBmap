@@ -22,10 +22,14 @@ extern "C" {
 #endif
 
 typedef struct {
+    uint32_t epoch;
     uint32_t pcm_jobs_taken;
     uint32_t analyze_ok;
     uint32_t analyze_fail;
     uint32_t sig_published;
+    uint32_t sig_build_failed;
+    uint32_t sig_accepted;
+    bool signature_counters_saturated;
     uint32_t mic0_aligned;
     uint32_t mic1_aligned;
     uint32_t pair_aligned;

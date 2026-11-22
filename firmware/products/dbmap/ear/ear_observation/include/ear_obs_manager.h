@@ -296,6 +296,10 @@ typedef struct {
     uint32_t enter_reattach;
     /** START attempts issued from poll after the immediate first attempt. */
     uint32_t start_retry;
+    uint32_t start_attempts;
+    uint32_t periodic_attempts;
+    uint32_t end_attempts;
+    bool attempts_saturated;
 } ear_obs_manager_diag_t;
 
 typedef struct ear_obs_manager ear_obs_manager_t;

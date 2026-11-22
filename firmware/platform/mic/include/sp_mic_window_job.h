@@ -51,6 +51,26 @@ bool sp_mic_window_job_channels_coherent(const sp_mic_window_job_t *job);
  */
 bool sp_mic_take_window_job(sp_mic_window_job_t *out);
 
+typedef enum {
+    SP_MIC_WINDOW_EMPTY,
+    SP_MIC_WINDOW_PROJECTED,
+    SP_MIC_WINDOW_PROJECTION_FAILED,
+} sp_mic_window_take_result_t;
+
+typedef struct {
+    uint32_t published;
+    uint32_t overwrites;
+    uint32_t reset_discards;
+    uint32_t legacy_takes;
+    uint32_t projection_failed;
+    bool pending;
+    bool saturated;
+} sp_mic_window_diag_t;
+
+sp_mic_window_take_result_t sp_mic_take_window_job_result(sp_mic_window_job_t *out);
+void sp_mic_get_window_diag(sp_mic_window_diag_t *out);
+
+
 #ifdef __cplusplus
 }
 #endif

@@ -64,9 +64,37 @@ bool sp_mic_window_job_channels_coherent(const sp_mic_window_job_t *job)
 
 static sp_mic_window_slot_pending_t s_pending;
 static uint32_t s_overwrite_count;
+static sp_mic_window_diag_t s_diag;
+
+static void count_slot_event(uint32_t *count)
+{
+    if (*count == UINT32_MAX) {
+        s_diag.saturated = true;
+    } else {
+        ++*count;
+    }
+}
+
+void sp_mic_window_slot_get_diag(sp_mic_window_diag_t *out)
+{
+    *out = s_diag;
+    out->pending = s_pending.pending;
+}
+
+void sp_mic_window_slot_note_projection(bool legacy, bool projected)
+{
+    if (!projected) {
+        count_slot_event(&s_diag.projection_failed);
+    } else if (legacy) {
+        count_slot_event(&s_diag.legacy_takes);
+    }
+}
 
 void sp_mic_window_slot_reset_pending(void)
 {
+    if (s_pending.pending) {
+        count_slot_event(&s_diag.reset_discards);
+    }
     memset(&s_pending, 0, sizeof(s_pending));
 }
 
@@ -82,7 +110,9 @@ void sp_mic_window_slot_publish(const sp_mic_window_slot_pending_t *in)
     }
     if (s_pending.pending) {
         s_overwrite_count++;
+        count_slot_event(&s_diag.overwrites);
     }
+    count_slot_event(&s_diag.published);
     s_pending = *in;
     s_pending.pending = true;
 }

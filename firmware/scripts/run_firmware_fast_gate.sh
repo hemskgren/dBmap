@@ -390,6 +390,20 @@ run_host_tests() {
     else
       record_skip "host/sig_engine_ce_primary (test not in tree)"
     fi
+    local p8_json_inc=()
+    local p8_json_link=()
+    if [[ -n "${IDF_PATH:-}" && -f "${IDF_PATH}/components/json/cJSON/cJSON.c" ]]; then
+      p8_json_inc=("-I${IDF_PATH}/components/json/cJSON")
+      p8_json_link=("${IDF_PATH}/components/json/cJSON/cJSON.c")
+    elif [[ -f /usr/include/cjson/cJSON.h ]]; then
+      p8_json_inc=(-I/usr/include/cjson)
+      p8_json_link=(-lcjson)
+    else
+      p8_json_link=(-lcjson)
+    fi
+    run_host_one ear_runtime_diag \
+      -pthread "${p8_json_inc[@]}" "${EAR_OBS}/ear_runtime_diag.c" \
+      "${EAR_OBS}/test_host/test_ear_runtime_diag.c" "${p8_json_link[@]}" || host_fail=1
     local EAR_AE_RT="${FIRMWARE_ROOT}/products/dbmap/ear/ae_runtime"
     if [[ -f "${EAR_AE_RT}/test_host/test_ae_sig_capture.c" \
       && -f "${EAR_AE_RT}/ae_sig_capture.c" ]]; then

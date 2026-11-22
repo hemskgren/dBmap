@@ -571,3 +571,59 @@ for configuring the two local tokens.
 
 Event and track APIs, a general node polling endpoint, and configuration
 delivery are not implemented.
+
+### EAR runtime diagnostic snapshot
+
+Managed EAR builds can attach `ear_p8: 1` to the existing health/keepalive
+`diag` object. The marker applies to that message's snapshot. Omitted numeric
+fields represent zero when the marker is present. A missing marker means the
+message has no Package 8 snapshot. The legacy diagnostic path still decides
+whether the base object exists. Hello carries no snapshot.
+
+`ear_p8_seq` counts completed snapshot publications modulo 2³². Compare
+snapshots within the same boot. The sequence stops advancing when the managed
+loop stops publishing, including after OTA closes its lifecycle gate. The
+snapshot combines completed EAR state with a locked sample from the mic task.
+
+For each managed `start`, `periodic` and `end`, `obs_<kind>_attempts` counts actual
+Observation Manager callback dispatches. A retry is another dispatch for the
+same Observation. A completed dispatch increments one outcome:
+
+- `obs_<kind>_publish_accepted` means ESP-MQTT returned a positive QoS 1 message
+  ID. The client may have queued the message during a disconnect race without
+  completing an initial write. PUBACK and Hub retention are separate.
+- `obs_<kind>_mqtt_publish_failed` means the SDK was called and returned a
+  nonpositive result. An initial write error can leave an outbox entry eligible
+  for later transmission.
+- `obs_<kind>_pre_mqtt_fail` means the callback returned without calling the SDK,
+  including connection guards and report preparation failures.
+
+Before saturation, the outcomes sum to attempts in each completed snapshot
+within one manager lifetime. Detached OTA, Critical Path, and legacy RMS
+publishes are outside these counters. Legacy publish rejection and disconnect
+counters retain their original scope.
+
+`mic_windows_published` counts PCM jobs stored in the mic slot.
+`mic_pcm_pending` is its current occupancy. `mic_pcm_overwrites` counts
+replacement of pending jobs, `mic_pcm_reset_discards` counts pending jobs cleared
+on reset, and `mic_pcm_projection_failed` counts failed projection after a take.
+`mic_pcm_legacy_takes` counts successful takes by the fallback PCM consumer.
+Mic totals persist through an AE restart. `pcm_jobs_taken` counts successfully
+projected AE jobs within `ae_epoch`, which advances at each successful AE start.
+Use these as stage counters. Mic read failures can prevent a job from being
+published, and the producer and AE counters have different reset boundaries.
+
+`ae_analyze_ok` counts successful acoustic analysis calls. `ae_analyze_fail`
+includes invalid input, analysis errors and missing aligned L0. Both can
+increment for the same job when a later check fails. `sig_build_failed` counts
+signature builder failures, `sig_publish_rejected` counts AE publisher time
+validation failures, and `sig_accepted` counts successful AE publisher calls
+that dispatch listeners.
+
+CE, policy and OM fields expose existing occupancy, decisions, admission and
+failure totals. Policy counts are poll decisions and can repeat for one
+candidate. New mic totals, signature outcome totals and managed publish
+accounting saturate at 2³² − 1. `ear_p8_saturated` indicates an increment could
+not be represented. Existing copied module totals retain their original reset
+and unsigned wrap behavior. Treat decreases as discontinuities in delta
+calculations. Gauges describe sampled occupancy.

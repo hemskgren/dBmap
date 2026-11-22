@@ -1,3 +1,4 @@
+#include "../sp_mic_window_job_slot.h"
 /**
  * Host tests: coherent PCM + channel window job (race-free pairing).
  *
@@ -162,8 +163,50 @@ static void test_invalid_measurement_unmasked(void)
     EXPECT(job.channels[1].sample_count > 0u);
 }
 
+static void test_slot_diagnostics(void)
+{
+    sp_mic_window_slot_reset_pending();
+    sp_mic_window_diag_t before;
+    sp_mic_window_slot_get_diag(&before);
+    sp_mic_window_slot_pending_t job = {.buf_idx = -1};
+    sp_mic_window_slot_publish(&job);
+    sp_mic_window_slot_publish(&job);
+
+    sp_mic_window_diag_t current;
+    sp_mic_window_slot_get_diag(&current);
+    EXPECT(current.pending);
+    EXPECT(current.published == before.published + 2u);
+    EXPECT(current.overwrites == before.overwrites + 1u);
+
+    EXPECT(sp_mic_window_slot_take(&job));
+    sp_mic_window_job_t projected;
+    int32_t *banks[SP_MIC_COUNT_MAX][2] = {0};
+    const bool ok = sp_mic_window_slot_project_window(&job, banks, 16000u, &projected);
+    EXPECT(!ok);
+    sp_mic_window_slot_note_projection(false, ok);
+    sp_mic_window_slot_get_diag(&current);
+    EXPECT(!current.pending);
+    EXPECT(current.projection_failed == before.projection_failed + 1u);
+
+    sp_mic_window_slot_publish(&job);
+    sp_mic_window_slot_reset_pending();
+    sp_mic_window_slot_reset_pending();
+    sp_mic_window_slot_get_diag(&current);
+    EXPECT(!current.pending);
+    EXPECT(current.published == before.published + 3u);
+    EXPECT(current.reset_discards == before.reset_discards + 1u);
+
+    sp_mic_window_slot_publish(&job);
+    EXPECT(sp_mic_window_slot_take(&job));
+    sp_mic_window_slot_note_projection(true, true);
+    sp_mic_window_slot_get_diag(&current);
+    EXPECT(current.legacy_takes == before.legacy_takes + 1u);
+    EXPECT(current.projection_failed == before.projection_failed + 1u);
+}
+
 int main(void)
 {
+    test_slot_diagnostics();
     test_mono_mic_count_one();
     test_pair_same_window();
     test_bundle_survives_stale_latest();
