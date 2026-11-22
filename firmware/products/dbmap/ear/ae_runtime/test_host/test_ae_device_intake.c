@@ -282,7 +282,8 @@ static void test_seq_hole_and_recovery(void)
     EXPECT(g_sig.window_seq == 3u);
     EXPECT(g_sig.quality == AE_QUALITY_GAP);
 
-    EXPECT(publish_job(4u, 4000000, -31.0f, 250000) >= 0);
+    /* 4500000 is not the hole time and not seq*1000000. */
+    EXPECT(publish_job(4u, 4500000, -31.0f, 250000) >= 0);
     EXPECT(ae_device_poll() == ESP_OK);
     ae_device_diag_t after_recover;
     ae_device_get_diag(&after_recover);
@@ -293,6 +294,14 @@ static void test_seq_hole_and_recovery(void)
     EXPECT(after_recover.gap_sigs_published == after_hole.gap_sigs_published);
     EXPECT(after_recover.pcm_overwrite_events == after_hole.pcm_overwrite_events);
     EXPECT(ae_publish_rejected_count(ae_device_engine()) == 0u);
+    ae_engine_t *ae = ae_device_engine();
+    ae_signature_t accepted;
+    EXPECT(g_hits == 3u);
+    EXPECT(ae_get_latest_signature(ae, &accepted));
+    EXPECT(accepted.window_seq == 4u);
+    EXPECT(accepted.window_end_mono_us == 4500000);
+    EXPECT(g_sig.window_end_mono_us == 4500000);
+    EXPECT(ae_last_window_end_mono_us(ae) == 4500000);
     stop_ae();
 }
 
