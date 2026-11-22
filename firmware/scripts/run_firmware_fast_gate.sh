@@ -415,8 +415,18 @@ run_host_tests() {
         "${EAR_OBS}/ear_cls_progressive.c" \
         "${EAR_OBS}/ear_cls_as001.c" \
         "${EAR_OBS}/ear_obs_manager.c" \
+        "${EAR_OBS}/ear_obs_start_retain.c" \
         "${EAR_OBS}/ear_promotion_policy.c" \
+        "${EAR_OBS}/ear_sig_product.c" \
+        "${EAR_OBS}/ear_obs_lifecycle_section.c" \
+        "${PLAT_OBS}/observation_lifecycle.c" \
         "${EAR_OBS}/test_host/test_ear_obs_manager.c" || host_fail=1
+      run_host_one ear_obs_start_publish \
+        ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
+        "${PLAT_OBS}/observation_lifecycle.c" \
+        "${EAR_OBS}/ear_obs_start_retain.c" \
+        "${EAR_OBS}/ear_obs_lifecycle_section.c" \
+        "${EAR_OBS}/test_host/test_ear_obs_start_publish.c" || host_fail=1
       run_host_one ear_cls_progressive \
         ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
         "${ce_srcs[@]}" \
@@ -560,6 +570,8 @@ run_host_tests() {
         "${EAR_OBS}/ear_obs_manager.c" \
         "${EAR_OBS}/ear_promotion_policy.c" \
         "${EAR_OBS}/ear_sig_product.c" \
+        "${EAR_OBS}/ear_obs_lifecycle_section.c" \
+        "${PLAT_OBS}/observation_lifecycle.c" \
         "${EAR_OBS}/ear_critical_path.c" \
         "${EAR_OBS}/ear_obs_ota_cleanup.c" \
         "${EAR_OBS}/test_host/test_ear_critical_integration.c" || host_fail=1
@@ -921,7 +933,9 @@ run_observation_publish_contract() {
       "${plat_obs}/episode_registry.c" \
       "${ear_obs}/ear_cls_progressive.c" "${ear_obs}/ear_cls_as001.c" \
       "${ear_obs}/ear_obs_manager.c" "${ear_obs}/ear_promotion_policy.c" \
-      "${ear_obs}/ear_sig_product.c" "${ear_obs}/ear_critical_path.c" \
+      "${ear_obs}/ear_sig_product.c" "${ear_obs}/ear_obs_lifecycle_section.c" \
+      "${plat_obs}/observation_lifecycle.c" \
+      "${ear_obs}/ear_critical_path.c" \
       "${ear_obs}/ear_obs_ota_cleanup.c" "${ear_obs}/observation_payload.c" \
       ${cjson_src} \
       "${nc}/identity.c" \

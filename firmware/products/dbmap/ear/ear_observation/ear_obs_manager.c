@@ -397,6 +397,161 @@ static void fill_binding_view(
     out->assessment = om->bind[bi].cls_wire;
 }
 
+static bool slot_start_accepted(const ear_obs_manager_t *om, sp_ep_handle_t ep)
+{
+    if (om == NULL || om->cfg.registry == NULL) {
+        return false;
+    }
+    const sp_episode_slot_t *slot = sp_episode_registry_get_const(om->cfg.registry, ep);
+    return slot != NULL && slot->start_publish_accepted;
+}
+
+static void fill_frozen_start_view(
+    const ear_obs_manager_t *om,
+    uint8_t bi,
+    ear_obs_binding_view_t *out
+)
+{
+    fill_binding_view(om, bi, out);
+    out->assessment = om->bind[bi].start_assessment;
+}
+
+static void freeze_start_inputs(ear_obs_manager_t *om, uint8_t bi)
+{
+    if (om->bind[bi].start_frozen) {
+        return;
+    }
+    om->bind[bi].start_snap = om->bind[bi].snap;
+    om->bind[bi].start_assessment = om->bind[bi].cls_wire;
+    om->bind[bi].start_capture_mono_us = om->bind[bi].start_mono_us;
+    om->bind[bi].start_frozen = true;
+}
+
+/**
+ * Device code installs mono_now_us (esp_timer). The fallback is only for
+ * host callers that have not installed a clock.
+ */
+static int64_t sample_attempt_now(const ear_obs_manager_t *om, int64_t fallback_us)
+{
+    if (om != NULL && om->cfg.mono_now_us != NULL) {
+        return om->cfg.mono_now_us(om->cfg.mono_now_ctx);
+    }
+    return fallback_us;
+}
+
+/**
+ * One START publication. Does not allocate, promote, or change generation.
+ * Failed attempts keep the binding and schedule a single later retry.
+ */
+static void attempt_start_publish(
+    ear_obs_manager_t *om,
+    uint8_t bi,
+    int64_t attempt_now_us
+)
+{
+    if (om == NULL || bi >= EAR_OBS_MGR_BINDING_CAP || !om->bind[bi].in_use) {
+        return;
+    }
+    if (om->cfg.registry == NULL) {
+        return;
+    }
+    if (!sp_episode_registry_handle_valid(om->cfg.registry, om->bind[bi].ep)) {
+        return;
+    }
+    if (slot_start_accepted(om, om->bind[bi].ep)) {
+        return;
+    }
+
+    freeze_start_inputs(om, bi);
+
+    if (!om->bind[bi].in_use
+        || !sp_episode_registry_handle_valid(om->cfg.registry, om->bind[bi].ep)
+        || slot_start_accepted(om, om->bind[bi].ep)) {
+        return;
+    }
+
+    /*
+     * Sample the attempt clock here, immediately before emit. A blocking
+     * callback cannot move this deadline, and the next binding in this poll
+     * samples again after the callback returns.
+     * start_attempted_this_poll stops a second attempt of this binding in
+     * the same poll, including when the callback itself passes one second.
+     */
+    const int64_t sampled_us = sample_attempt_now(om, attempt_now_us);
+    om->bind[bi].start_attempted_this_poll = true;
+    om->bind[bi].start_last_attempt_mono_us = sampled_us;
+
+    ear_obs_binding_view_t view;
+    fill_frozen_start_view(om, bi, &view);
+    bool ok = true;
+    if (om->cfg.emit_start != NULL) {
+        ok = om->cfg.emit_start(
+            om->cfg.emit_ctx,
+            &view,
+            &om->bind[bi].start_snap,
+            om->bind[bi].start_capture_mono_us
+        );
+    }
+    if (ok) {
+        sp_episode_registry_mark_start_accepted(
+            om->cfg.registry,
+            om->bind[bi].ep,
+            om->bind[bi].start_capture_mono_us
+        );
+    } else {
+        om->bind[bi].start_retry_not_before_mono_us =
+            sampled_us + EAR_OBS_START_RETRY_INTERVAL_US;
+    }
+}
+
+/** At most one retry per due binding. No catch-up loop. */
+static void retry_unaccepted_starts(ear_obs_manager_t *om, int64_t now_mono_us)
+{
+    for (uint8_t bi = 0u; bi < EAR_OBS_MGR_BINDING_CAP; bi++) {
+        if (!om->bind[bi].in_use || !om->bind[bi].start_frozen) {
+            continue;
+        }
+        if (om->cfg.registry == NULL) {
+            continue;
+        }
+        if (!sp_episode_registry_handle_valid(om->cfg.registry, om->bind[bi].ep)) {
+            continue;
+        }
+        if (slot_start_accepted(om, om->bind[bi].ep)) {
+            continue;
+        }
+        if (om->bind[bi].start_attempted_this_poll) {
+            continue;
+        }
+        if (om->bind[bi].start_retry_not_before_mono_us == 0) {
+            continue;
+        }
+        /*
+         * Due-check uses a fresh sample too. An aged poll argument must not
+         * make this binding look due, and must not be shared with the next
+         * binding after a blocking callback.
+         */
+        const int64_t now_us = sample_attempt_now(om, now_mono_us);
+        if (now_us < om->bind[bi].start_retry_not_before_mono_us) {
+            continue;
+        }
+        om->diag.start_retry++;
+        attempt_start_publish(om, bi, now_us);
+    }
+}
+
+static void note_binding_released(ear_obs_manager_t *om, uint8_t bi)
+{
+    if (om->cfg.on_binding_released == NULL) {
+        return;
+    }
+    om->cfg.on_binding_released(
+        om->cfg.emit_ctx,
+        om->bind[bi].observation_id,
+        om->bind[bi].ep.generation
+    );
+}
+
 /** Deepen AS-001 AIRCRAFT → Helicopter before PERIODIC/END emit (not START). */
 static void as001_maybe_deepen(
     ear_obs_manager_t *om,
@@ -424,7 +579,8 @@ static bool allocate_and_bind(
     ear_obs_manager_t *om,
     uint64_t candidate_id,
     const ear_obs_promote_snapshot_t *snap,
-    int64_t now_mono_us
+    int64_t capture_mono_us,
+    int64_t attempt_fallback_us
 )
 {
     if (om->cfg.registry == NULL || om->cfg.uuid_fn == NULL || snap == NULL) {
@@ -454,10 +610,16 @@ static bool allocate_and_bind(
     }
 
     sp_ep_handle_t ep;
+    /*
+     * capture_mono_us is the selected START anchor from the caller:
+     * direct admission passes promotion/evidence time; FIFO passes the
+     * handoff timestamp (END, absence window, or poll). The queued
+     * snapshot's promote_mono_us is not that anchor.
+     */
     if (!sp_episode_registry_allocate(
             om->cfg.registry,
             &ep,
-            now_mono_us,
+            capture_mono_us,
             om->cfg.observation_interval_ms,
             om->cfg.producer_tag,
             om->cfg.uuid_fn,
@@ -486,8 +648,8 @@ static bool allocate_and_bind(
         slot->observation_id,
         sizeof(om->bind[free_bi].observation_id)
     );
-    om->bind[free_bi].start_mono_us = now_mono_us;
-    om->bind[free_bi].last_emit_mono_us = now_mono_us;
+    om->bind[free_bi].start_mono_us = capture_mono_us;
+    om->bind[free_bi].last_emit_mono_us = capture_mono_us;
     om->bind[free_bi].snap = *snap;
     om->bind[free_bi].last_owned_sig_window_seq = 0u;
     if (snap->sig_count > 0u) {
@@ -528,19 +690,7 @@ static bool allocate_and_bind(
         ear_cls_evidence_clear(&om->cls_arm);
     }
 
-    if (om->cfg.emit_start != NULL) {
-        ear_obs_binding_view_t view;
-        fill_binding_view(om, (uint8_t)free_bi, &view);
-        if (!om->cfg.emit_start(om->cfg.emit_ctx, &view, snap, now_mono_us)) {
-            /* Keep binding; START acceptance is product publish concern. */
-        } else {
-            sp_episode_registry_mark_start_accepted(
-                om->cfg.registry, ep, now_mono_us
-            );
-        }
-    } else {
-        sp_episode_registry_mark_start_accepted(om->cfg.registry, ep, now_mono_us);
-    }
+    attempt_start_publish(om, (uint8_t)free_bi, attempt_fallback_us);
 
     om->diag.promote_commit_bound++;
     return true;
@@ -655,7 +805,7 @@ static void drain_pending_to_open(ear_obs_manager_t *om, int64_t now_mono_us)
             continue;
         }
 
-        if (!allocate_and_bind(om, cid, &snap, now_mono_us)) {
+        if (!allocate_and_bind(om, cid, &snap, now_mono_us, now_mono_us)) {
             om->diag.drain_alloc_fail++;
             break;
         }
@@ -667,7 +817,8 @@ bool ear_obs_manager_commit_reservation(
     ear_obs_manager_t *om,
     ear_obs_rsv_handle_t h,
     uint64_t candidate_id,
-    const ear_obs_promote_snapshot_t *snapshot
+    const ear_obs_promote_snapshot_t *snapshot,
+    int64_t attempt_fallback_us
 )
 {
     if (!rsv_handle_valid(om, h, EAR_OBS_RSV_ST_HELD) || snapshot == NULL
@@ -698,7 +849,7 @@ bool ear_obs_manager_commit_reservation(
         return false;
     }
 
-    const int64_t now_us =
+    const int64_t capture_us =
         snapshot->promote_mono_us != 0 ? snapshot->promote_mono_us
                                       : snapshot->last_evidence_mono_us;
 
@@ -711,23 +862,26 @@ bool ear_obs_manager_commit_reservation(
     /* Consume HELD before open/pending transition. */
     clear_rsv_slot(om, (uint8_t)h.index);
 
-    drain_pending_to_open(om, now_us);
+    /* Origin handoff time for a commit-time drain is this snapshot's anchor. */
+    drain_pending_to_open(om, capture_us);
 
     if (count_open(om) < EAR_OBS_MGR_BINDING_CAP
         && om->cfg.registry != NULL
         && sp_episode_registry_in_use_count(om->cfg.registry) < SP_OBS_EPISODE_SLOTS) {
-        if (allocate_and_bind(om, candidate_id, &owned, now_us)) {
+        if (allocate_and_bind(
+                om, candidate_id, &owned, capture_us, attempt_fallback_us
+            )) {
             return true;
         }
         /* Fall through to pending if allocate raced/failed. */
     }
 
-    if (!pending_enqueue(om, candidate_id, &owned, now_us, h)) {
+    if (!pending_enqueue(om, candidate_id, &owned, capture_us, h)) {
         om->diag.promote_commit_fail++;
         request_ce_unadmit(om, candidate_id, owned.promotion_gen);
         return false;
     }
-    drain_pending_to_open(om, now_us);
+    drain_pending_to_open(om, capture_us);
     return true;
 }
 
@@ -863,21 +1017,26 @@ static void end_binding(
         }
     }
 
-    /* Deepen AS-001 leaf before END if START was parent-only. */
-    as001_maybe_deepen(om, bi, EAR_CLS_PHASE_END);
-
-    ear_obs_binding_view_t view;
-    fill_binding_view(om, bi, &view);
     const sp_ep_handle_t ep = om->bind[bi].ep;
     const bool have_ep =
         om->cfg.registry != NULL
         && sp_episode_registry_handle_valid(om->cfg.registry, ep);
+    const bool publish_end = have_ep && slot_start_accepted(om, ep);
+
+    /* Deepen AS-001 leaf before a published END if START was parent-only. */
+    if (publish_end) {
+        as001_maybe_deepen(om, bi, EAR_CLS_PHASE_END);
+    }
+
+    ear_obs_binding_view_t view;
+    fill_binding_view(om, bi, &view);
+    note_binding_released(om, bi);
 
     /* Terminal transition first: subsequent callbacks see an empty slot. */
     memset(&om->bind[bi], 0, sizeof(om->bind[bi]));
     om->diag.end_done++;
 
-    if (om->cfg.emit_end != NULL) {
+    if (publish_end && om->cfg.emit_end != NULL) {
         (void)om->cfg.emit_end(
             om->cfg.emit_ctx,
             &view,
@@ -952,7 +1111,12 @@ static bool cancel_pending_for_candidate(
     return true;
 }
 
-static void handle_enter(ear_obs_manager_t *om, uint64_t candidate_id, const ae_candidate_t *c)
+static void handle_enter(
+    ear_obs_manager_t *om,
+    uint64_t candidate_id,
+    const ae_candidate_t *c,
+    int64_t attempt_mono_us
+)
 {
     const int existing_bi = find_binding(om, candidate_id);
     if (existing_bi >= 0) {
@@ -1056,7 +1220,9 @@ static void handle_enter(ear_obs_manager_t *om, uint64_t candidate_id, const ae_
     );
 #endif
 
-    (void)ear_obs_manager_commit_reservation(om, h, candidate_id, &snap);
+    (void)ear_obs_manager_commit_reservation(
+        om, h, candidate_id, &snap, attempt_mono_us
+    );
 }
 
 static void handle_exit(
@@ -1159,7 +1325,7 @@ static void process_event_queue(ear_obs_manager_t *om, int64_t now_mono_us)
         om->evq_count--;
 
         if (ev == CE_PROMOTION_ENTER) {
-            handle_enter(om, cid, have ? &cand_copy : NULL);
+            handle_enter(om, cid, have ? &cand_copy : NULL, now_mono_us);
         } else if (ev == CE_PROMOTION_EXIT) {
             handle_exit(
                 om,
@@ -1440,7 +1606,7 @@ void ear_obs_manager_on_activity_periodic_hint(
     }
     om->diag.periodic_hint++;
     for (uint8_t bi = 0u; bi < EAR_OBS_MGR_BINDING_CAP; bi++) {
-        if (!om->bind[bi].in_use) {
+        if (!om->bind[bi].in_use || !slot_start_accepted(om, om->bind[bi].ep)) {
             continue;
         }
         as001_maybe_deepen(om, bi, EAR_CLS_PHASE_PERIODIC);
@@ -1558,6 +1724,7 @@ void ear_obs_manager_forget_bindings(ear_obs_manager_t *om)
     }
     for (uint8_t bi = 0u; bi < EAR_OBS_MGR_BINDING_CAP; bi++) {
         if (om->bind[bi].in_use) {
+            note_binding_released(om, bi);
             memset(&om->bind[bi], 0, sizeof(om->bind[bi]));
         }
     }
@@ -1569,6 +1736,10 @@ void ear_obs_manager_poll(ear_obs_manager_t *om, int64_t now_mono_us)
 {
     if (om == NULL) {
         return;
+    }
+
+    for (uint8_t bi = 0u; bi < EAR_OBS_MGR_BINDING_CAP; bi++) {
+        om->bind[bi].start_attempted_this_poll = false;
     }
 
     process_event_queue(om, now_mono_us);
@@ -1649,7 +1820,7 @@ void ear_obs_manager_poll(ear_obs_manager_t *om, int64_t now_mono_us)
         const int64_t interval_us =
             (int64_t)om->cfg.observation_interval_ms * 1000LL;
         for (uint8_t bi = 0u; bi < EAR_OBS_MGR_BINDING_CAP; bi++) {
-            if (!om->bind[bi].in_use) {
+            if (!om->bind[bi].in_use || !slot_start_accepted(om, om->bind[bi].ep)) {
                 continue;
             }
             if (now_mono_us - om->bind[bi].last_emit_mono_us < interval_us) {
@@ -1676,6 +1847,9 @@ void ear_obs_manager_poll(ear_obs_manager_t *om, int64_t now_mono_us)
             }
         }
     }
+
+    /* After queued events, watchdog/terminal END, FIFO drain, and PERIODIC. */
+    retry_unaccepted_starts(om, now_mono_us);
 }
 
 void ear_obs_manager_arm_cls_evidence(

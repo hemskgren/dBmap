@@ -140,6 +140,13 @@ typedef enum {
 #define EAR_OBS_DETACHED_END_TIMEOUT_MS_DEFAULT 60000u
 #endif
 
+/**
+ * Minimum spacing between START publication attempts for one binding.
+ * The first attempt is immediate. Each failure schedules one later attempt
+ * at attempt_time + this interval. Poll does not catch up missed attempts.
+ */
+#define EAR_OBS_START_RETRY_INTERVAL_US 1000000LL
+
 typedef struct {
     uint64_t candidate_id;
     sp_ep_handle_t ep;
@@ -180,6 +187,13 @@ typedef bool (*ear_obs_emit_end_fn)(
     float signal_level_dbfs
 );
 
+/** Publisher drops retained START measurements. NULL is a no-op. */
+typedef void (*ear_obs_binding_released_fn)(
+    void *ctx,
+    const char *observation_id,
+    uint16_t generation
+);
+
 typedef struct {
     sp_episode_registry_t *registry;
     ce_engine_t *ce;
@@ -211,6 +225,15 @@ typedef struct {
      * PERIODIC hints must not reset the timer.
      */
     uint32_t detached_end_timeout_ms;
+    ear_obs_binding_released_fn on_binding_released;
+    /**
+     * Monotonic clock sampled immediately before each START publication
+     * attempt. Independent of the capture anchor and of any poll or END
+     * timestamp the caller passed in. NULL keeps the caller's fallback,
+     * which device code does not use.
+     */
+    int64_t (*mono_now_us)(void *ctx);
+    void *mono_now_ctx;
 } ear_obs_manager_config_t;
 
 typedef struct {
@@ -271,6 +294,8 @@ typedef struct {
     uint32_t detached_watchdog_end;
     /** ENTER re-attached ce_live on an open detached binding (same candidate). */
     uint32_t enter_reattach;
+    /** START attempts issued from poll after the immediate first attempt. */
+    uint32_t start_retry;
 } ear_obs_manager_diag_t;
 
 typedef struct ear_obs_manager ear_obs_manager_t;
@@ -301,11 +326,16 @@ bool ear_obs_manager_stamp_reservation_relevance(
     float match_distance
 );
 
+/**
+ * Direct admission uses the snapshot promotion/evidence time as the START
+ * capture anchor. attempt_fallback_us is used only when mono_now_us is NULL.
+ */
 bool ear_obs_manager_commit_reservation(
     ear_obs_manager_t *om,
     ear_obs_rsv_handle_t h,
     uint64_t candidate_id,
-    const ear_obs_promote_snapshot_t *snapshot
+    const ear_obs_promote_snapshot_t *snapshot,
+    int64_t attempt_fallback_us
 );
 
 void ear_obs_manager_release_reservation(
@@ -567,6 +597,24 @@ struct ear_obs_manager {
          */
         bool as002_sig_track;
         uint32_t as002_absent_ms;
+        /**
+         * Frozen at the first START attempt. Live snap / cls_wire may change
+         * afterward; retries publish these copies and start_capture_mono_us.
+         */
+        bool start_frozen;
+        /** Event/evidence time published on START. Not a retry clock. */
+        int64_t start_capture_mono_us;
+        /** Monotonic time of the latest START publication attempt. */
+        int64_t start_last_attempt_mono_us;
+        /** Set for the poll that already attempted START. Cleared at poll entry. */
+        bool start_attempted_this_poll;
+        /**
+         * 0 = no retry scheduled. Earliest monotonic time for another attempt,
+         * measured from start_last_attempt_mono_us, never from the capture anchor.
+         */
+        int64_t start_retry_not_before_mono_us;
+        ear_obs_promote_snapshot_t start_snap;
+        ear_cls_assessment_wire_t start_assessment;
     } bind[EAR_OBS_MGR_BINDING_CAP];
 
     struct {

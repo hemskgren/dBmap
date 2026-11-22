@@ -12,7 +12,9 @@
 #include "sp_diag.h"
 #include "ae_device.h"
 #include "ce_engine.h"
+#include "ear_obs_lifecycle_section.h"
 #include "ear_obs_manager.h"
+#include "ear_obs_start_retain.h"
 #include "ear_promotion_policy.h"
 #include "ear_sig_product.h"
 #include "sig_engine.h"
@@ -1350,6 +1352,45 @@ static void critical_on_ae_signature(const ae_signature_t *sig, void *ctx)
 }
 #endif /* CRITICAL_PATH */
 
+static void mgr_build_start_aggregates(
+    void *ctx,
+    int64_t interval_start_mono_us,
+    int64_t capture_mono_us,
+    ear_obs_start_aggregates_t *out
+)
+{
+    (void)ctx;
+    memset(out, 0, sizeof(*out));
+    const dbmap_l1_interval_t *sig = NULL;
+    const dbmap_l2_interval_t *dyn = NULL;
+    mgr_build_levels(
+        interval_start_mono_us,
+        capture_mono_us,
+        "start",
+        &out->l0,
+        &sig,
+        &dyn,
+        &out->l1,
+        &out->l2
+    );
+    if (sig != NULL) {
+        out->have_l1 = true;
+    }
+    if (dyn != NULL) {
+        out->have_l2 = true;
+    }
+}
+
+static void mgr_on_binding_released(
+    void *ctx,
+    const char *observation_id,
+    uint16_t generation
+)
+{
+    (void)ctx;
+    ear_obs_start_retain_drop(observation_id, generation);
+}
+
 static bool mgr_emit_start(
     void *ctx,
     const ear_obs_binding_view_t *binding,
@@ -1361,33 +1402,44 @@ static bool mgr_emit_start(
     if (s_cfg == NULL || binding == NULL || snap == NULL) {
         return false;
     }
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    ear_obs_stack_hwm_om_publish("start", false);
+#endif
+    /*
+     * Freeze L0/L1/L2 on the first attempt. Retries reuse that aggregate and
+     * the capture anchor in now_mono_us. A full retain table does not publish.
+     * UTC is resolved later inside publish.
+     */
+    ear_obs_start_measure_t meas;
+    const ear_obs_start_prepare_status_t prepared = ear_obs_start_prepare(
+        binding->observation_id,
+        binding->ep.generation,
+        now_mono_us,
+        binding->start_mono_us,
+        (int64_t)CONFIG_DBMAP_EAR_OBS_INTERVAL_MS * 1000LL,
+        mgr_build_start_aggregates,
+        NULL,
+        &meas,
+        NULL
+    );
+    if (prepared != EAR_OBS_START_PREPARE_READY) {
+        return false;
+    }
+    if (!sp_obs_gate_allows_feed(s_emit_gate)) {
+        return false;
+    }
     if (!sp_mqtt_is_connected()) {
         sp_diag_note_obs_skipped_disconnected();
         return false;
     }
-#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
-    ear_obs_stack_hwm_om_publish("start", false);
-#endif
-    const int64_t interval_us =
-        (int64_t)CONFIG_DBMAP_EAR_OBS_INTERVAL_MS * 1000LL;
-    int64_t iv_start = now_mono_us - interval_us;
-    if (iv_start < binding->start_mono_us) {
-        iv_start = binding->start_mono_us;
-    }
-    const double interval_ms = (double)(now_mono_us - iv_start) / 1000.0;
-    dbmap_l0_interval_t local_iv;
-    dbmap_l1_interval_t local_l1;
-    dbmap_l2_interval_t local_l2;
-    const dbmap_l1_interval_t *sig_ptr = NULL;
-    const dbmap_l2_interval_t *dyn_ptr = NULL;
-    mgr_build_levels(
-        iv_start, now_mono_us, "start", &local_iv, &sig_ptr, &dyn_ptr, &local_l1, &local_l2
-    );
+    const int64_t iv_start = meas.interval_start_mono_us;
+    const int64_t capture_us = meas.capture_mono_us;
+    const double interval_ms = (double)(capture_us - iv_start) / 1000.0;
     bool has_lvl = true;
     double lvl = (double)snap->ema_rms_dbfs;
 #if CONFIG_DBMAP_EAR_OBS_L0
-    if (local_iv.has_rms_stats) {
-        lvl = (double)local_iv.rms_mean_dbfs;
+    if (meas.l0.has_rms_stats) {
+        lvl = (double)meas.l0.rms_mean_dbfs;
     }
 #endif
     const ear_cls_assessment_wire_t *assess =
@@ -1402,7 +1454,7 @@ static bool mgr_emit_start(
          */
         const char *lvl_src = "snap_ema";
 #if CONFIG_DBMAP_EAR_OBS_L0
-        if (local_iv.has_rms_stats) {
+        if (meas.l0.has_rms_stats) {
             lvl_src = "l0_mean";
         }
 #endif
@@ -1443,7 +1495,7 @@ static bool mgr_emit_start(
             (unsigned long long)binding->candidate_id,
             binding->observation_id,
             (long long)esp_timer_get_time(),
-            (long long)now_mono_us,
+            (long long)capture_us,
             (long long)binding->start_mono_us,
             (long long)iv_start,
             (long long)snap->promote_mono_us,
@@ -1464,13 +1516,13 @@ static bool mgr_emit_start(
         lvl,
         interval_ms > 0.0 ? interval_ms : (double)CONFIG_DBMAP_EAR_OBS_INTERVAL_MS,
         interval_ms > 0.0 ? interval_ms : (double)CONFIG_DBMAP_EAR_OBS_INTERVAL_MS,
-        now_mono_us,
+        capture_us,
         iv_start,
         "start",
         NULL,
-        &local_iv,
-        sig_ptr,
-        dyn_ptr,
+        &meas.l0,
+        meas.have_l1 ? &meas.l1 : NULL,
+        meas.have_l2 ? &meas.l2 : NULL,
         NULL,
         assess
     );
@@ -2405,6 +2457,163 @@ static void fill_lifecycle_v2_window(
 }
 #endif
 
+static int64_t obs_mono_now(void *ctx)
+{
+    (void)ctx;
+    return esp_timer_get_time();
+}
+
+static void lifecycle_sem_take(void *ctx);
+static void lifecycle_sem_give(void *ctx);
+
+typedef struct {
+    const sp_mic_levels_t *levels;
+    bool levels_ok;
+    dbmap_activity_emission_t *emission;
+    int64_t poll_t0;
+} activity_cycle_t;
+
+static void activity_cycle_before_poll(ear_sig_product_section_args_t *args)
+{
+    activity_cycle_t *cycle = args->before_ctx;
+    const sp_mic_levels_t levels = *cycle->levels;
+    const bool levels_ok = cycle->levels_ok;
+    dbmap_activity_emission_t emission = *cycle->emission;
+
+    /* Detector and handle_emission run under the lifecycle section. */
+#if defined(CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2) && CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2
+    /*
+     * v2: analyze first so L0/L1/L2 scalars are available for the score,
+     * then feed lifecycle. Baseline (v2 off) keeps detector-before-L0 order.
+     */
+#if CONFIG_DBMAP_EAR_OBS_L0
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    ear_obs_stack_hwm_checkpoint(
+        "pre_analyze",
+        "none",
+        &s_stack_hwm_bytes_pre_analyze,
+        &s_stack_hwm_have_pre_analyze
+    );
+#endif
+    l0_on_new_window(&levels, levels_ok);
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    ear_obs_stack_hwm_checkpoint(
+        "post_analyze",
+        "none",
+        &s_stack_hwm_bytes_post_analyze,
+        &s_stack_hwm_have_post_analyze
+    );
+#endif
+#endif
+    if (levels_ok && levels.valid) {
+        dbmap_lifecycle_v2_window_t win;
+        fill_lifecycle_v2_window(&win, &levels);
+        const int64_t t0 = esp_timer_get_time();
+        emission = dbmap_lifecycle_v2_feed(&s_lifecycle_v2, &win);
+        const uint32_t dt = (uint32_t)(esp_timer_get_time() - t0);
+        s_lc_v2_feed_count++;
+        s_lc_v2_feed_us_last = dt;
+        if (dt > s_lc_v2_feed_us_max) {
+            s_lc_v2_feed_us_max = dt;
+        }
+    }
+#else
+    if (levels_ok && levels.valid) {
+        dbmap_activity_sample_t sample = {
+            .has_measurement = true,
+            .rms_dbfs = levels.rms_dbfs,
+            .peak_dbfs = levels.peak_dbfs,
+            .window_ms = levels.window_ms,
+            .measured_at_us = levels.measured_at_us,
+            .window_seq = levels.window_seq,
+            .ms_since_i2s_enable = levels.ms_since_i2s_enable,
+            .transport_status = levels.transport_status,
+            .microphone_status = levels.microphone_status,
+        };
+        /* Detector first — L0 must not affect enter/exit decisions. */
+        emission = dbmap_activity_detector_feed(&s_detector, &sample);
+    }
+#if CONFIG_DBMAP_EAR_OBS_L0
+    /* Push before finalize so the closing window is in the ring. Membership
+     * is start < window_end <= end, so that closing window is associated
+     * with this emission (not the next). Still after feed — L0 is not on
+     * the detector decision path. */
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    {
+        const char *ek = emit_kind_name(emission.kind);
+        ear_obs_stack_hwm_checkpoint(
+            "pre_analyze",
+            ek,
+            &s_stack_hwm_bytes_pre_analyze,
+            &s_stack_hwm_have_pre_analyze
+        );
+    }
+#endif
+    l0_on_new_window(&levels, levels_ok);
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    {
+        const char *ek = emit_kind_name(emission.kind);
+        ear_obs_stack_hwm_checkpoint(
+            "post_analyze",
+            ek,
+            &s_stack_hwm_bytes_post_analyze,
+            &s_stack_hwm_have_post_analyze
+        );
+    }
+#endif
+#endif
+#endif /* LIFECYCLE_V2 */
+    handle_emission(&emission);
+#if defined(CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2) && CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2
+    if (dbmap_lifecycle_v2_state(&s_lifecycle_v2) == DBMAP_LC_V2_IDLE) {
+        s_mqtt_episode_rearm_required = false;
+    }
+#else
+    if (dbmap_activity_detector_state(&s_detector) == DBMAP_ACTIVITY_IDLE) {
+        s_mqtt_episode_rearm_required = false;
+    }
+#endif
+
+    *cycle->emission = emission;
+#if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
+    if (args->prod != NULL) {
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+        ear_obs_stack_hwm_checkpoint(
+            "pre_promo",
+            "none",
+            &s_stack_hwm_bytes_pre_promo,
+            &s_stack_hwm_have_pre_promo
+        );
+#endif
+        args->now_mono_us = esp_timer_get_time();
+        cycle->poll_t0 = args->now_mono_us;
+    }
+#endif
+}
+
+static void activity_cycle_after_poll(ear_sig_product_section_args_t *args)
+{
+    activity_cycle_t *cycle = args->before_ctx;
+    if (cycle->poll_t0 == 0) {
+        return;
+    }
+    const uint32_t dt = (uint32_t)(esp_timer_get_time() - cycle->poll_t0);
+    s_r0_promo_mgr_n++;
+    s_r0_promo_mgr_us_last = dt;
+    s_r0_promo_mgr_us_sum += dt;
+    if (dt > s_r0_promo_mgr_us_max) {
+        s_r0_promo_mgr_us_max = dt;
+    }
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    ear_obs_stack_hwm_checkpoint(
+        "post_promo",
+        "none",
+        &s_stack_hwm_bytes_post_promo,
+        &s_stack_hwm_have_post_promo
+    );
+#endif
+}
+
 static void activity_task(void *arg)
 {
     (void)arg;
@@ -2434,147 +2643,45 @@ static void activity_task(void *arg)
         memset(&emission, 0, sizeof(emission));
         emission.kind = DBMAP_ACTIVITY_EMIT_NONE;
 
-        if (s_lifecycle_mu != NULL) {
-            xSemaphoreTake(s_lifecycle_mu, portMAX_DELAY);
+        activity_cycle_t cycle = {
+            .levels = &levels,
+            .levels_ok = levels_ok,
+            .emission = &emission,
+            .poll_t0 = 0,
+        };
+        ear_sig_product_section_args_t section_args = {
+            .prod = NULL,
+            .now_mono_us = 0,
+            .before_poll = activity_cycle_before_poll,
+            .after_poll = activity_cycle_after_poll,
+            .before_ctx = &cycle,
+        };
+#if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
+        if (s_obs_mgr_ready) {
+            section_args.prod = &s_sig_product;
         }
-        /* Recheck after lock: OTA may have entered CLOSING/CLOSED. */
-        if (!sp_obs_gate_allows_feed(s_emit_gate)) {
-            if (s_lifecycle_mu != NULL) {
-                xSemaphoreGive(s_lifecycle_mu);
-            }
+#endif
+        const ear_obs_lifecycle_lock_ops_t lock_ops = {
+            .take = lifecycle_sem_take,
+            .give = lifecycle_sem_give,
+            .lock_ctx = s_lifecycle_mu,
+        };
+        /*
+         * Detector, START publication, and registry acceptance share this
+         * section. Critical Path polling stays after it returns.
+         */
+        const ear_obs_lifecycle_section_result_t section =
+            ear_sig_product_poll_in_section(
+                s_lifecycle_mu != NULL ? &lock_ops : NULL,
+                &s_emit_gate,
+                &section_args
+            );
+        if (section == EAR_OBS_LIFECYCLE_SECTION_SKIPPED_GATE) {
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
-#if defined(CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2) && CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2
-        /*
-         * v2: analyze first so L0/L1/L2 scalars are available for the score,
-         * then feed lifecycle. Baseline (v2 off) keeps detector-before-L0 order.
-         */
-#if CONFIG_DBMAP_EAR_OBS_L0
-#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
-        ear_obs_stack_hwm_checkpoint(
-            "pre_analyze",
-            "none",
-            &s_stack_hwm_bytes_pre_analyze,
-            &s_stack_hwm_have_pre_analyze
-        );
-#endif
-        l0_on_new_window(&levels, levels_ok);
-#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
-        ear_obs_stack_hwm_checkpoint(
-            "post_analyze",
-            "none",
-            &s_stack_hwm_bytes_post_analyze,
-            &s_stack_hwm_have_post_analyze
-        );
-#endif
-#endif
-        if (levels_ok && levels.valid) {
-            dbmap_lifecycle_v2_window_t win;
-            fill_lifecycle_v2_window(&win, &levels);
-            const int64_t t0 = esp_timer_get_time();
-            emission = dbmap_lifecycle_v2_feed(&s_lifecycle_v2, &win);
-            const uint32_t dt = (uint32_t)(esp_timer_get_time() - t0);
-            s_lc_v2_feed_count++;
-            s_lc_v2_feed_us_last = dt;
-            if (dt > s_lc_v2_feed_us_max) {
-                s_lc_v2_feed_us_max = dt;
-            }
-        }
-#else
-        if (levels_ok && levels.valid) {
-            dbmap_activity_sample_t sample = {
-                .has_measurement = true,
-                .rms_dbfs = levels.rms_dbfs,
-                .peak_dbfs = levels.peak_dbfs,
-                .window_ms = levels.window_ms,
-                .measured_at_us = levels.measured_at_us,
-                .window_seq = levels.window_seq,
-                .ms_since_i2s_enable = levels.ms_since_i2s_enable,
-                .transport_status = levels.transport_status,
-                .microphone_status = levels.microphone_status,
-            };
-            /* Detector first — L0 must not affect enter/exit decisions. */
-            emission = dbmap_activity_detector_feed(&s_detector, &sample);
-        }
-#if CONFIG_DBMAP_EAR_OBS_L0
-        /* Push before finalize so the closing window is in the ring. Membership
-         * is start < window_end <= end, so that closing window is associated
-         * with this emission (not the next). Still after feed — L0 is not on
-         * the detector decision path. */
-#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
-        {
-            const char *ek = emit_kind_name(emission.kind);
-            ear_obs_stack_hwm_checkpoint(
-                "pre_analyze",
-                ek,
-                &s_stack_hwm_bytes_pre_analyze,
-                &s_stack_hwm_have_pre_analyze
-            );
-        }
-#endif
-        l0_on_new_window(&levels, levels_ok);
-#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
-        {
-            const char *ek = emit_kind_name(emission.kind);
-            ear_obs_stack_hwm_checkpoint(
-                "post_analyze",
-                ek,
-                &s_stack_hwm_bytes_post_analyze,
-                &s_stack_hwm_have_post_analyze
-            );
-        }
-#endif
-#endif
-#endif /* LIFECYCLE_V2 */
-        handle_emission(&emission);
-#if defined(CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2) && CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2
-        if (dbmap_lifecycle_v2_state(&s_lifecycle_v2) == DBMAP_LC_V2_IDLE) {
-            s_mqtt_episode_rearm_required = false;
-        }
-#else
-        if (dbmap_activity_detector_state(&s_detector) == DBMAP_ACTIVITY_IDLE) {
-            s_mqtt_episode_rearm_required = false;
-        }
-#endif
-        if (s_lifecycle_mu != NULL) {
-            xSemaphoreGive(s_lifecycle_mu);
-        }
 #if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
-        /* Promotion policy + Observation Manager outside lifecycle lock. */
-        if (s_obs_mgr_ready) {
-#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
-            ear_obs_stack_hwm_checkpoint(
-                "pre_promo",
-                "none",
-                &s_stack_hwm_bytes_pre_promo,
-                &s_stack_hwm_have_pre_promo
-            );
-#endif
-            const int64_t now_us = esp_timer_get_time();
-            const int64_t t_pm0 = now_us;
-            /* Siren evidence was updated in AE listeners during ae_device_poll. */
-            ear_sig_product_poll(&s_sig_product, now_us);
-            {
-                const uint32_t dt =
-                    (uint32_t)(esp_timer_get_time() - t_pm0);
-                s_r0_promo_mgr_n++;
-                s_r0_promo_mgr_us_last = dt;
-                s_r0_promo_mgr_us_sum += dt;
-                if (dt > s_r0_promo_mgr_us_max) {
-                    s_r0_promo_mgr_us_max = dt;
-                }
-            }
-#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
-            ear_obs_stack_hwm_checkpoint(
-                "post_promo",
-                "none",
-                &s_stack_hwm_bytes_post_promo,
-                &s_stack_hwm_have_post_promo
-            );
-#endif
-        }
 #if defined(CONFIG_DBMAP_EAR_OBS_CRITICAL_PATH) && CONFIG_DBMAP_EAR_OBS_CRITICAL_PATH
         if (s_critical_ready) {
             ear_critical_poll(&s_critical, esp_timer_get_time());
@@ -2804,19 +2911,29 @@ static esp_err_t publish_ota_end_snapshot(const ear_obs_end_snapshot_t *snap)
     return pub_err;
 }
 
-static esp_err_t ear_observation_close_for_ota(void)
+typedef struct {
+    ear_obs_end_snapshot_t *snaps;
+    bool *attempted_end;
+} ota_close_args_t;
+
+static void lifecycle_sem_take(void *ctx)
 {
-    /* Static: snapshots too large for the main/OTA call stack. */
-    static ear_obs_end_snapshot_t snaps[SP_OBS_EPISODE_SLOTS];
-    memset(snaps, 0, sizeof(snaps));
-    bool attempted_end = false;
+    xSemaphoreTake((SemaphoreHandle_t)ctx, portMAX_DELAY);
+}
 
-    if (!s_started || s_lifecycle_mu == NULL) {
-        ESP_LOGI(TAG, "OTA acoustic close: observation not started; nothing to close");
-        return ESP_OK;
-    }
+static void lifecycle_sem_give(void *ctx)
+{
+    xSemaphoreGive((SemaphoreHandle_t)ctx);
+}
 
-    xSemaphoreTake(s_lifecycle_mu, portMAX_DELAY);
+/*
+ * Runs only while s_lifecycle_mu is held by ear_obs_lifecycle_section.
+ * Must not take that mutex. END MQTT waits after the section returns.
+ */
+static void ota_close_locked(void *ctx)
+{
+    ota_close_args_t *args = (ota_close_args_t *)ctx;
+    ear_obs_end_snapshot_t *snaps = args->snaps;
     s_emit_gate = SP_OBS_GATE_CLOSING;
 
     /* Force detector / v2 idle; registry owns MQTT episode closure. */
@@ -2843,7 +2960,7 @@ static esp_err_t ear_observation_close_for_ota(void)
 
         ear_obs_end_snapshot_t *snap = &snaps[i];
         snap->should_publish = true;
-        attempted_end = true;
+        *args->attempted_end = true;
         strncpy(snap->observation_id, slot->observation_id, sizeof(snap->observation_id) - 1);
         strncpy(snap->emission_kind, "end", sizeof(snap->emission_kind) - 1);
         strncpy(snap->termination_reason, "ota_reboot", sizeof(snap->termination_reason) - 1);
@@ -2913,7 +3030,34 @@ static esp_err_t ear_observation_close_for_ota(void)
     l2_continuity_break(); /* OTA acoustic close */
 #endif
     s_emit_gate = SP_OBS_GATE_CLOSED;
-    xSemaphoreGive(s_lifecycle_mu);
+}
+
+static esp_err_t ear_observation_close_for_ota(void)
+{
+    /* Static: snapshots too large for the main/OTA call stack. */
+    static ear_obs_end_snapshot_t snaps[SP_OBS_EPISODE_SLOTS];
+    memset(snaps, 0, sizeof(snaps));
+    bool attempted_end = false;
+
+    if (!s_started || s_lifecycle_mu == NULL) {
+        ESP_LOGI(TAG, "OTA acoustic close: observation not started; nothing to close");
+        return ESP_OK;
+    }
+
+    ota_close_args_t args = {
+        .snaps = snaps,
+        .attempted_end = &attempted_end,
+    };
+    const ear_obs_lifecycle_lock_ops_t ops = {
+        .take = lifecycle_sem_take,
+        .give = lifecycle_sem_give,
+        .lock_ctx = s_lifecycle_mu,
+    };
+    /*
+     * gate NULL: close always runs. Snapshot, cleanup, and the accepted-START
+     * decision finish before the give inside ear_obs_lifecycle_section.
+     */
+    (void)ear_obs_lifecycle_section(&ops, NULL, ota_close_locked, &args);
 
     const bool mqtt_was_connected = sp_mqtt_is_connected();
     sp_obs_mqtt_wait_result_t wait_result = SP_OBS_MQTT_WAIT_FAILED;
@@ -3199,6 +3343,8 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg)
         mcfg.emit_periodic = mgr_emit_periodic;
         mcfg.emit_end = mgr_emit_end;
         mcfg.emit_ctx = NULL;
+        mcfg.on_binding_released = mgr_on_binding_released;
+        mcfg.mono_now_us = obs_mono_now;
         /* PERIODIC driven by RMS activity hints (L0 window cadence). */
         mcfg.enable_poll_periodic = false;
 #if defined(CONFIG_DBMAP_EAR_OBS_AS002_SIGNATURE_ABSENCE_HOLD_MS)

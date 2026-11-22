@@ -9,6 +9,7 @@
 
 #include "ae_engine.h"
 #include "ce_engine.h"
+#include "ear_obs_lifecycle_section.h"
 #include "ear_obs_manager.h"
 #include "ear_promotion_policy.h"
 
@@ -44,6 +45,26 @@ void ear_sig_product_on_ae_signature(const ae_signature_t *sig, void *user);
  * Does not poll Critical Path.
  */
 void ear_sig_product_poll(ear_sig_product_t *prod, int64_t now_mono_us);
+
+/**
+ * One lifecycle-mutex section. before_poll runs under the lock, then
+ * ear_sig_product_poll, then after_poll. START acceptance inside the poll
+ * finishes before the section gives the mutex. Critical Path is not called.
+ * The body must not take the same mutex.
+ */
+typedef struct ear_sig_product_section_args {
+    ear_sig_product_t *prod;
+    int64_t now_mono_us;
+    void (*before_poll)(struct ear_sig_product_section_args *args);
+    void (*after_poll)(struct ear_sig_product_section_args *args);
+    void *before_ctx;
+} ear_sig_product_section_args_t;
+
+ear_obs_lifecycle_section_result_t ear_sig_product_poll_in_section(
+    const ear_obs_lifecycle_lock_ops_t *lock,
+    sp_obs_emit_gate_t *gate,
+    ear_sig_product_section_args_t *args
+);
 
 #ifdef __cplusplus
 }
