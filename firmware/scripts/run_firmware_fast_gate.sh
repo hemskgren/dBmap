@@ -6,6 +6,7 @@
 #   ./firmware/scripts/run_firmware_fast_gate.sh --host-only
 #   ./firmware/scripts/run_firmware_fast_gate.sh --modularity-only
 #   ./firmware/scripts/run_firmware_fast_gate.sh --host-only --platform-dsp-only
+#   ./firmware/scripts/run_firmware_fast_gate.sh --with-hub-observation-contract
 #
 # Exit 0 on success; non-zero on any mandatory failure.
 set -euo pipefail
@@ -24,6 +25,10 @@ CC_BIN="${CC:-cc}"
 KEEP_GATE_BUILDS=0
 # Explicit opt-out of Package 1 mandatory EAR host suites (default: required).
 PLATFORM_DSP_ONLY=0
+# Cross-boundary Observation publish contract. Alone, this is the only work.
+WITH_HUB_OBSERVATION_CONTRACT=0
+EXPLICIT_MODE=0
+CONTRACT_TMP=""
 
 usage() {
   cat <<'EOF'
@@ -35,6 +40,12 @@ run_firmware_fast_gate.sh — Ear firmware fast test gate
   --platform-dsp-only   Skip Package 1 mandatory EAR suites
                         (ce_architecture, ear_critical_path, ear_critical_integration).
                         Default is false: those suites are required.
+  --with-hub-observation-contract
+                        Export seven production Observation JSON reports and run
+                        the Hub MQTT ingest contract test against them.
+                        Requires host cJSON and the Hub dev environment.
+                        When this is the only mode flag, the firmware host gate
+                        is not run.
   --keep-builds         Keep isolated gate build dirs under esp-ear/.gate-builds
   -h, --help            Show this help
 
@@ -46,9 +57,10 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --host-only) MODE="host-only"; shift ;;
-    --modularity-only) MODE="modularity-only"; shift ;;
+    --host-only) MODE="host-only"; EXPLICIT_MODE=1; shift ;;
+    --modularity-only) MODE="modularity-only"; EXPLICIT_MODE=1; shift ;;
     --platform-dsp-only) PLATFORM_DSP_ONLY=1; shift ;;
+    --with-hub-observation-contract) WITH_HUB_OBSERVATION_CONTRACT=1; shift ;;
     --keep-builds) KEEP_GATE_BUILDS=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *)
@@ -80,7 +92,19 @@ cleanup_host_gate_tmp() {
   HOST_GATE_TMP=""
 }
 
-trap cleanup_host_gate_tmp EXIT
+cleanup_contract_tmp() {
+  if [[ -n "${CONTRACT_TMP:-}" && -d "${CONTRACT_TMP}" ]]; then
+    rm -rf "${CONTRACT_TMP}"
+  fi
+  CONTRACT_TMP=""
+}
+
+cleanup_gate_tmp() {
+  cleanup_host_gate_tmp
+  cleanup_contract_tmp
+}
+
+trap cleanup_gate_tmp EXIT
 
 have_idf() {
   command -v idf.py >/dev/null 2>&1
@@ -812,8 +836,150 @@ run_modularity_checks() {
   return "${mod_fail}"
 }
 
+run_observation_publish_contract() {
+  section "Firmware-to-Hub observation publish contract"
+  local repo_root hub ear_obs ear_ae ear_ac ear_ce ear_ap ear_se plat_obs plat_audio nc
+  repo_root="$(cd "${FIRMWARE_ROOT}/.." && pwd)"
+  hub="${repo_root}/hub/bootstrap"
+  ear_obs="${FIRMWARE_ROOT}/products/dbmap/ear/ear_observation"
+  ear_ae="${FIRMWARE_ROOT}/products/dbmap/ear/audio_engine"
+  ear_ac="${FIRMWARE_ROOT}/products/dbmap/ear/ear_acoustic"
+  ear_ce="${FIRMWARE_ROOT}/products/dbmap/ear/candidate_engine"
+  ear_ap="${FIRMWARE_ROOT}/products/dbmap/ear/acoustic_profile"
+  ear_se="${FIRMWARE_ROOT}/products/dbmap/ear/signature_engine"
+  plat_obs="${FIRMWARE_ROOT}/platform/observation"
+  plat_audio="${FIRMWARE_ROOT}/platform/audio"
+  nc="${FIRMWARE_ROOT}/platform/node_common"
+
+  local missing=0
+  local required=(
+    "${ear_obs}/test_host/test_ear_critical_integration.c"
+    "${ear_obs}/observation_payload.c"
+    "${ear_obs}/ear_critical_path.c"
+    "${ear_obs}/ear_obs_manager.c"
+    "${ear_obs}/ear_cls_as001.c"
+    "${ear_obs}/ear_cls_progressive.c"
+    "${nc}/identity.c"
+    "${hub}/pyproject.toml"
+    "${hub}/tests/test_observation_publish_contract.py"
+  )
+  local path
+  for path in "${required[@]}"; do
+    if [[ ! -f "${path}" ]]; then
+      log "FAIL  contract missing ${path}"
+      missing=1
+    fi
+  done
+  if ! command -v uv >/dev/null 2>&1; then
+    log "FAIL  contract missing uv"
+    missing=1
+  fi
+  local cjson_inc=""
+  local cjson_src=""
+  local cjson_lib=""
+  if [[ -n "${IDF_PATH:-}" && -f "${IDF_PATH}/components/json/cJSON/cJSON.c" ]]; then
+    cjson_inc="-I${IDF_PATH}/components/json/cJSON"
+    cjson_src="${IDF_PATH}/components/json/cJSON/cJSON.c"
+  elif [[ -f /usr/include/cjson/cJSON.h ]]; then
+    cjson_inc="-I/usr/include/cjson"
+    cjson_lib="-lcjson"
+  elif [[ -f /usr/include/cJSON.h ]]; then
+    cjson_lib="-lcjson"
+  else
+    log "FAIL  contract missing cJSON (IDF_PATH or libcjson-dev)"
+    missing=1
+  fi
+  if [[ "${missing}" -ne 0 ]]; then
+    record_fail "contract/dependencies"
+    return 1
+  fi
+
+  cleanup_contract_tmp
+  CONTRACT_TMP="$(mktemp -d "${TMPDIR:-/tmp}/dbmap-obs-contract.XXXXXX")"
+  local reports="${CONTRACT_TMP}/reports"
+  mkdir -p "${reports}"
+  local bin="${CONTRACT_TMP}/export"
+  local inc=(
+    -I"${ear_ae}/include" -I"${plat_audio}/include" -I"${ear_ac}/include"
+    -I"${FIRMWARE_ROOT}/platform/mic/include" -I"${nc}/include" -I"${nc}/test_host"
+    -I"${ear_ce}/include" -I"${ear_ap}/include" -I"${ear_se}/include"
+    -I"${ear_obs}/include" -I"${plat_obs}/include"
+  )
+  # shellcheck disable=SC2086
+  if ! "${CC_BIN}" -std=c11 -Wall -Wextra -O2 \
+      -DDBMAP_OBS_PUBLISH_CONTRACT_EXPORT \
+      -DCONFIG_DBMAP_NODE_TYPE_EAR=1 \
+      "${inc[@]}" ${cjson_inc} \
+      "${ear_ae}/ae_signature.c" "${ear_ae}/ae_history.c" \
+      "${ear_ae}/ae_engine.c" "${ear_ae}/ae_time.c" \
+      "${ear_ap}/as_profile_as001.c" "${ear_ap}/as_profile_registry.c" \
+      "${ear_ap}/as_profile_match.c" \
+      "${ear_se}/sig_engine.c" "${ear_se}/ear_siren_se_public.c" \
+      "${ear_ce}/ce_decision.c" "${ear_ce}/ce_module.c" \
+      "${ear_ce}/ce_module_profile.c" "${ear_ce}/ce_workflow.c" \
+      "${ear_ce}/ce_manager.c" "${ear_ce}/ce_engine.c" \
+      "${plat_obs}/episode_registry.c" \
+      "${ear_obs}/ear_cls_progressive.c" "${ear_obs}/ear_cls_as001.c" \
+      "${ear_obs}/ear_obs_manager.c" "${ear_obs}/ear_promotion_policy.c" \
+      "${ear_obs}/ear_sig_product.c" "${ear_obs}/ear_critical_path.c" \
+      "${ear_obs}/ear_obs_ota_cleanup.c" "${ear_obs}/observation_payload.c" \
+      ${cjson_src} \
+      "${nc}/identity.c" \
+      "${ear_obs}/test_host/test_ear_critical_integration.c" \
+      ${cjson_lib} -lm -o "${bin}"; then
+    record_fail "contract/c_export_compile"
+    return 1
+  fi
+  if ! "${bin}" --export-publish-contract "${reports}"; then
+    record_fail "contract/c_export"
+    return 1
+  fi
+  local report_count
+  report_count="$(find "${reports}" -maxdepth 1 -name 'report-*.json' | wc -l | tr -d ' ')"
+  if [[ "${report_count}" != "7" || ! -f "${reports}/topic.txt" ]]; then
+    log "FAIL  contract report count=${report_count}"
+    record_fail "contract/report_count"
+    return 1
+  fi
+  # Each Hub command is checked on its own. A subshell under "if !" disables
+  # errexit, so a later successful Ruff run must not hide a failed sync or pytest.
+  local sync_rc=0
+  ( cd "${hub}" && uv sync --extra dev --frozen ) || sync_rc=$?
+  if [[ "${sync_rc}" -ne 0 ]]; then
+    log "FAIL  contract hub sync rc=${sync_rc}"
+    record_fail "contract/hub_sync"
+    return 1
+  fi
+  local pytest_rc=0
+  local pytest_tmp="${CONTRACT_TMP}/pytest"
+  mkdir -p "${pytest_tmp}"
+  (
+    cd "${hub}" && DBMAP_OBS_CONTRACT_DIR="${reports}" \
+      uv run pytest tests/test_observation_publish_contract.py -q \
+      --basetemp "${pytest_tmp}"
+  ) || pytest_rc=$?
+  if [[ "${pytest_rc}" -ne 0 ]]; then
+    log "FAIL  contract hub pytest rc=${pytest_rc}"
+    record_fail "contract/hub_pytest"
+    return 1
+  fi
+  local ruff_rc=0
+  ( cd "${hub}" && uv run ruff check tests/test_observation_publish_contract.py ) || ruff_rc=$?
+  if [[ "${ruff_rc}" -ne 0 ]]; then
+    log "FAIL  contract hub ruff rc=${ruff_rc}"
+    record_fail "contract/hub_ruff"
+    return 1
+  fi
+  record_pass "contract/observation_publish"
+  cleanup_contract_tmp
+  return 0
+}
+
 overall_fail=0
 
+if [[ "${WITH_HUB_OBSERVATION_CONTRACT}" -eq 1 && "${EXPLICIT_MODE}" -eq 0 ]]; then
+  run_observation_publish_contract || overall_fail=1
+else
 case "${MODE}" in
   host-only)
     assert_cmake_modularity_structure || overall_fail=1
@@ -835,6 +1001,10 @@ case "${MODE}" in
     fi
     ;;
 esac
+  if [[ "${WITH_HUB_OBSERVATION_CONTRACT}" -eq 1 ]]; then
+    run_observation_publish_contract || overall_fail=1
+  fi
+fi
 
 GATE_END="$(date +%s)"
 DURATION=$((GATE_END - GATE_START))
