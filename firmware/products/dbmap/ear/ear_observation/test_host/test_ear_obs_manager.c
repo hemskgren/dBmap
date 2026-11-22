@@ -3094,9 +3094,9 @@ static bool e2e_drive(
     return true;
 }
 
-static void test_p2_as001_ce_om_lifecycle_e2e(void)
+static void test_p2_as001_ce_om_lifecycle_e2e(bool valid_misses)
 {
-    printf("test_p2_as001_ce_om_lifecycle_e2e\n");
+    printf("test_p2_as001_ce_om_lifecycle_e2e valid_misses=%d\n", valid_misses);
     fixture_t f;
     memset(&f, 0, sizeof(f));
     memset(&g_emit, 0, sizeof(g_emit));
@@ -3114,9 +3114,10 @@ static void test_p2_as001_ce_om_lifecycle_e2e(void)
     uint32_t post_gap_evidence_updates = 0u;
     const float heli_rms = -40.0f;
     const float rematch_rms = -38.5f;
-    const uint32_t heli_seq = 17u;
-    const uint32_t gap_seq = 18u;
-    const uint32_t rematch_seq = 19u;
+    const uint32_t heli_seq = valid_misses ? 20u : 17u;
+    const uint32_t gap_seq = heli_seq + 1u;
+    const uint32_t rematch_seq = gap_seq + (valid_misses ? 2u : 1u);
+    const uint32_t expiry_seq = rematch_seq + (valid_misses ? 16u : 4u);
 
     ae_config_t acfg;
     ae_config_set_defaults(&acfg);
@@ -3156,11 +3157,29 @@ static void test_p2_as001_ce_om_lifecycle_e2e(void)
     ear_promotion_policy_init(&f.pol, &f.ce, &f.om);
 
     ae_signature_t sig;
+    ae_candidate_t cand;
 
-    /* Unmatched broadband must not open an Observation. */
-    for (uint32_t seq = 1u; seq <= 4u; seq++) {
+    /* Fill all slots with distinct, irrelevant fingerprints in the recovery case. */
+    const uint32_t warmup = valid_misses ? 19u : 4u;
+    for (uint32_t seq = 1u; seq <= warmup; seq++) {
         fill_broadband_sig(&sig, seq, -55.0f);
+        if (valid_misses) {
+            const uint32_t identity = seq <= 16u ? (seq - 1u) / 2u : 8u;
+            sig.dominant_hz += 500.0f * identity;
+            sig.centroid_hz += 500.0f * identity;
+        }
         E2E_REQUIRE(e2e_drive(&f, &sig, sig.window_end_mono_us));
+        if (valid_misses && seq == 16u) {
+            E2E_REQUIRE(ce_candidate_count(&f.ce) == 8u);
+        }
+    }
+    if (valid_misses) {
+        E2E_REQUIRE(f.ce.diag.create_dropped_full == 1u);
+        E2E_REQUIRE(f.ce.diag.expired == 1u);
+        E2E_REQUIRE(ce_find_candidate(&f.ce, 9u, &cand));
+        E2E_REQUIRE(cand.state == AE_CAND_ACTIVE);
+        E2E_REQUIRE(!cand.promotion_entered);
+        E2E_REQUIRE(f.pol.diag.reserve_ok == 0u);
     }
     E2E_REQUIRE(g_emit.starts == 0u);
     E2E_REQUIRE(g_emit.ends == 0u);
@@ -3187,7 +3206,6 @@ static void test_p2_as001_ce_om_lifecycle_e2e(void)
     memcpy(obs_id, g_emit.last_obs_id, sizeof(obs_id));
     cand_id = g_emit.last_start_cand;
 
-    ae_candidate_t cand;
     memset(&cand, 0, sizeof(cand));
     E2E_REQUIRE(ce_find_candidate(&f.ce, cand_id, &cand));
     E2E_REQUIRE(cand.state == AE_CAND_PROMOTED);
@@ -3237,8 +3255,14 @@ static void test_p2_as001_ce_om_lifecycle_e2e(void)
     E2E_REQUIRE(pd.promote_ok >= 1u);
     E2E_REQUIRE(pd.last_decision == EAR_PROMO_DECISION_PROMOTE);
 
-    /* Short GAP: previously owned evidence must not be overwritten by GAP. */
-    fill_gap_sig(&sig, gap_seq, heli_rms);
+    /* A short loss of support must leave the owned evidence and generation intact. */
+    if (valid_misses) {
+        fill_broadband_sig(&sig, gap_seq, -55.0f);
+        E2E_REQUIRE(e2e_drive(&f, &sig, sig.window_end_mono_us));
+        fill_broadband_sig(&sig, gap_seq + 1u, -55.0f);
+    } else {
+        fill_gap_sig(&sig, gap_seq, heli_rms);
+    }
     E2E_REQUIRE(e2e_drive(&f, &sig, sig.window_end_mono_us));
 
     E2E_REQUIRE(g_emit.starts == 1u);
@@ -3270,7 +3294,7 @@ static void test_p2_as001_ce_om_lifecycle_e2e(void)
         E2E_REQUIRE(post_gap_evidence_updates >= pre_gap_evidence_updates);
     }
 
-    /* Rematch: feed must install window-19 owned evidence on the same binding. */
+    /* Rematch must install fresh evidence on the same binding. */
     fill_heli_sig(&sig, rematch_seq, rematch_rms);
     E2E_REQUIRE(e2e_drive(&f, &sig, sig.window_end_mono_us));
 
@@ -3306,18 +3330,24 @@ static void test_p2_as001_ce_om_lifecycle_e2e(void)
         E2E_REQUIRE(f.om.bind[bi].last_owned_sig_window_seq != gap_seq);
     }
 
-    /* Coast past t_coast → natural CE EXIT detaches without END. */
-    for (uint32_t seq = 20u; seq <= 23u; seq++) {
-        fill_gap_sig(&sig, seq, heli_rms);
+    /* CE expiry detaches without closing the Observation. */
+    for (uint32_t seq = rematch_seq + 1u; seq <= expiry_seq; seq++) {
+        if (valid_misses) {
+            fill_broadband_sig(&sig, seq, -55.0f);
+        } else {
+            fill_gap_sig(&sig, seq, heli_rms);
+        }
         E2E_REQUIRE(e2e_drive(&f, &sig, sig.window_end_mono_us));
     }
+    E2E_REQUIRE(f.ce.diag.promotion_enter_events == 1u);
+    E2E_REQUIRE(f.ce.diag.promotion_exit_events == 1u);
 
     E2E_REQUIRE(!ce_find_candidate(&f.ce, cand_id, &cand));
     E2E_REQUIRE(g_emit.starts == 1u);
     E2E_REQUIRE(g_emit.ends == 0u);
     E2E_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
 
-    const int64_t detach_now = 23LL * 1000000LL;
+    const int64_t detach_now = (int64_t)expiry_seq * 1000000LL;
     {
         const int bi = find_bind_idx(&f, cand_id);
         E2E_REQUIRE(bi >= 0);
@@ -3357,6 +3387,11 @@ static void test_p2_as001_ce_om_lifecycle_e2e(void)
     E2E_REQUIRE(g_emit.ends == 1u);
     E2E_REQUIRE(g_emit.starts == 1u);
     E2E_REQUIRE(ear_obs_manager_n_open(&f.om) == 0u);
+    E2E_REQUIRE(!ce_reject(&f.ce, cand_id));
+    ce_stop(&f.ce);
+    host_obs_poll(&f.om, detach_now + 4000000LL);
+    E2E_REQUIRE(f.ce.diag.promotion_exit_events == 1u);
+    E2E_REQUIRE(g_emit.ends == 1u);
 
 e2e_cleanup:
     if (se_listener_bound) {
@@ -4618,7 +4653,8 @@ int main(void)
     test_p2_promote_with_reserve_bypasses_policy();
     test_p2_enter_queue_full_recovers();
     test_p2_unadmit_gen_protects_newer();
-    test_p2_as001_ce_om_lifecycle_e2e();
+    test_p2_as001_ce_om_lifecycle_e2e(false);
+    test_p2_as001_ce_om_lifecycle_e2e(true);
     test_p3b_fifo_handoff_rejects_old_generation();
     test_p7_start_retry_same_identity();
     test_p7_assessment_frozen_across_retry();

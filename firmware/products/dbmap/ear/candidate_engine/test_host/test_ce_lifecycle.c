@@ -480,8 +480,194 @@ static void test_slot_reuse_clears_promotion_entered(void)
     EXPECT(d.promotion_exit_events == 1u);
 }
 
+/* Only the spectral identity varies: 600 Hz spacing gives distance 18. */
+static ae_signature_t spectral_window(uint32_t seq, float hz, uint8_t quality)
+{
+    dbmap_l0_window_t l0;
+    fill_l0(&l0, -35.0f, (int64_t)seq * 1000000);
+    ae_signature_t sig = {0};
+    EXPECT(ae_signature_build(seq, &l0, NULL, NULL, NULL, false, &sig));
+    sig.quality = quality;
+    sig.spectral_valid = true;
+    sig.dominant_hz = hz;
+    sig.centroid_hz = hz;
+    sig.flatness = 0.1f;
+    return sig;
+}
+
+static void publish_spectral(ae_engine_t *ae, uint32_t seq, float hz)
+{
+    const ae_signature_t sig = spectral_window(seq, hz, AE_QUALITY_OK);
+    EXPECT(ae_publish_signature(ae, &sig));
+}
+
+static ae_candidate_t lookup(ce_engine_t *ce, uint64_t id)
+{
+    ae_candidate_t candidate = {0};
+    EXPECT(ce_find_candidate(ce, id, &candidate));
+    return candidate;
+}
+
+static void test_full_table_recovery(bool continue_last)
+{
+    ae_engine_t ae;
+    ce_engine_t ce;
+    setup_ae_ce(&ae, &ce, NULL, 3u);
+    EXPECT(ce.cfg.valid_miss_limit == 16u);
+    uint32_t seq = 0;
+    for (unsigned i = 0; i < 8; i++) {
+        const float hz = 300.0f + 600.0f * i;
+        publish_spectral(&ae, ++seq, hz);
+        publish_spectral(&ae, ++seq, hz);
+        EXPECT(lookup(&ce, i + 1u).state == AE_CAND_ACTIVE);
+    }
+    EXPECT(ce_candidate_count(&ce) == 8u);
+    const float new_hz = continue_last ? 4500.0f : 5100.0f;
+    publish_spectral(&ae, ++seq, new_hz);
+    EXPECT(ce.diag.expired == 0u);
+    EXPECT(ce.diag.create_dropped_full == (continue_last ? 0u : 1u));
+    publish_spectral(&ae, ++seq, new_hz);
+    EXPECT(ce.diag.expired == 1u);
+    if (!continue_last) {
+        EXPECT(lookup(&ce, 9u).state == AE_CAND_NASCENT);
+    }
+    for (unsigned i = 0; i < 14; i++) {
+        publish_spectral(&ae, ++seq, new_hz);
+    }
+    EXPECT(ce_candidate_count(&ce) == 1u);
+    EXPECT(ce.diag.expired == (continue_last ? 7u : 8u));
+    const ae_candidate_t current = lookup(&ce, continue_last ? 8u : 9u);
+    EXPECT(current.state == AE_CAND_ACTIVE);
+    EXPECT(current.gap_events == 0u);
+    EXPECT(current.evidence_count == (continue_last ? 18u : 15u));
+    ce_stop(&ce);
+}
+
+static void test_interleave_and_nascent_retention(void)
+{
+    ae_engine_t ae;
+    ce_engine_t ce;
+    setup_ae_ce(&ae, &ce, NULL, 3u);
+    ce.cfg.valid_miss_limit = 3u;
+    publish_spectral(&ae, 1u, 300.0f);
+    publish_spectral(&ae, 2u, 900.0f);
+    EXPECT(lookup(&ce, 1u).state == AE_CAND_NASCENT);
+    EXPECT(lookup(&ce, 1u).evidence_count == 1u);
+    for (uint32_t seq = 3u; seq <= 14u; seq++) {
+        publish_spectral(&ae, seq, seq % 2u ? 300.0f : 900.0f);
+    }
+    EXPECT(lookup(&ce, 1u).evidence_count == 7u);
+    EXPECT(lookup(&ce, 1u).state == AE_CAND_ACTIVE);
+    EXPECT(lookup(&ce, 2u).evidence_count == 7u);
+    EXPECT(lookup(&ce, 2u).state == AE_CAND_ACTIVE);
+    publish_spectral(&ae, 15u, 900.0f);
+    EXPECT(lookup(&ce, 1u).state == AE_CAND_COASTING);
+    publish_spectral(&ae, 16u, 300.0f);
+    EXPECT(lookup(&ce, 1u).state == AE_CAND_ACTIVE);
+    EXPECT(lookup(&ce, 1u).valid_miss_windows == 0u);
+    for (uint32_t seq = 17u; seq <= 19u; seq++) {
+        publish_spectral(&ae, seq, 300.0f);
+    }
+    EXPECT(ce_candidate_count(&ce) == 1u);
+    publish_spectral(&ae, 20u, 1500.0f);
+    EXPECT(lookup(&ce, 3u).state == AE_CAND_NASCENT);
+    for (uint32_t seq = 21u; seq <= 23u; seq++) {
+        publish_spectral(&ae, seq, 300.0f);
+    }
+    EXPECT(ce.diag.expired == 2u);
+    EXPECT(ce_candidate_count(&ce) == 1u);
+    ce_stop(&ce);
+}
+
+static void test_bounded_soft_support(bool ambiguous)
+{
+    ae_engine_t ae;
+    ce_engine_t ce;
+    setup_ae_ce(&ae, &ce, NULL, 3u);
+    ce.cfg.valid_miss_limit = 7u;
+    publish_spectral(&ae, 1u, 300.0f);
+    publish_spectral(&ae, 2u, 300.0f);
+    publish_spectral(&ae, 3u, 1000.0f);
+    publish_spectral(&ae, 4u, 1000.0f);
+    const float other = ambiguous ? 1500.0f : 1600.0f;
+    publish_spectral(&ae, 5u, other);
+    publish_spectral(&ae, 6u, other);
+    /* Refresh both immediately before presenting the midpoint. */
+    publish_spectral(&ae, 7u, 1000.0f);
+    publish_spectral(&ae, 8u, other);
+    /* Soft support keeps the runner through a second missed hard match. */
+    publish_spectral(&ae, 9u, (1000.0f + other) / 2.0f);
+    EXPECT(ce.diag.match_ambiguous == (ambiguous ? 1u : 0u));
+    EXPECT(ce.diag.match_hysteresis_hold == (ambiguous ? 0u : 1u));
+    const ae_candidate_t runner = lookup(&ce, 2u);
+    EXPECT(runner.state == AE_CAND_ACTIVE);
+    EXPECT(runner.evidence_count == 3u);
+    EXPECT(runner.last_window_seq == 7u);
+    EXPECT(runner.ema_dominant_hz == 1000.0f);
+    EXPECT(lookup(&ce, 3u).evidence_count == (ambiguous ? 4u : 3u));
+    EXPECT(lookup(&ce, 3u).state == AE_CAND_ACTIVE);
+    ae_candidate_t expired;
+    EXPECT(!ce_find_candidate(&ce, 1u, &expired));
+    if (!ambiguous) {
+        for (uint32_t seq = 10u; seq <= 15u; seq++) {
+            publish_spectral(&ae, seq, 1300.0f);
+        }
+        EXPECT(ce.diag.expired == 3u);
+        EXPECT(ce_candidate_count(&ce) == 1u);
+        EXPECT(lookup(&ce, 4u).state == AE_CAND_NASCENT);
+    }
+    ce_stop(&ce);
+}
+
+static void test_window_accounting(void)
+{
+    ae_engine_t ae;
+    ce_engine_t ce;
+    setup_ae_ce(&ae, &ce, NULL, 3u);
+    ce.cfg.valid_miss_limit = 3u;
+    publish_spectral(&ae, 1u, 300.0f);
+    publish_spectral(&ae, 2u, 300.0f);
+    publish_spectral(&ae, 3u, 900.0f);
+    const ae_signature_t duplicate = spectral_window(3u, 300.0f, AE_QUALITY_OK);
+    const ae_signature_t rewind = spectral_window(2u, 300.0f, AE_QUALITY_OK);
+    ae_signature_t zero = duplicate;
+    zero.window_seq = 0u;
+    const ae_signature_t invalid = spectral_window(4u, 300.0f, AE_QUALITY_INVALID);
+    ce_engine_on_signature(&ce, &duplicate);
+    ce_engine_on_signature(&ce, &rewind);
+    ce_engine_on_signature(&ce, &invalid);
+    EXPECT(ce.last_processed_seq == 3u);
+    EXPECT(lookup(&ce, 1u).valid_miss_windows == 1u);
+    EXPECT(lookup(&ce, 1u).evidence_count == 2u);
+    EXPECT(lookup(&ce, 1u).gap_events == 0u);
+
+    const ae_signature_t gap = spectral_window(5u, 300.0f, AE_QUALITY_GAP);
+    EXPECT(ae_publish_signature(&ae, &gap));
+    ce_engine_on_signature(&ce, &gap);
+    EXPECT(ce.diag.seq_discontinuities == 1u);
+    EXPECT(ce.diag.quality_gaps == 1u);
+    EXPECT(lookup(&ce, 1u).coast_windows == 1u);
+    EXPECT(lookup(&ce, 1u).gap_events == 1u);
+    EXPECT(lookup(&ce, 1u).valid_miss_windows == 1u);
+    publish_spectral(&ae, 11u, 300.0f);
+    EXPECT(lookup(&ce, 1u).gap_events == 2u);
+    EXPECT(lookup(&ce, 1u).valid_miss_windows == 0u);
+    EXPECT(lookup(&ce, 1u).state == AE_CAND_ACTIVE);
+    EXPECT(lookup(&ce, 1u).evidence_count == 3u);
+    ce_engine_on_signature(&ce, &zero);
+    EXPECT(ce.last_processed_seq == 11u);
+    EXPECT(lookup(&ce, 1u).evidence_count == 3u);
+    ce_stop(&ce);
+}
+
 int main(void)
 {
+    test_full_table_recovery(false);
+    test_full_table_recovery(true);
+    test_interleave_and_nascent_retention();
+    test_bounded_soft_support(true);
+    test_bounded_soft_support(false);
+    test_window_accounting();
     test_nascent_to_active();
     test_coast_and_expire();
     test_two_sources();

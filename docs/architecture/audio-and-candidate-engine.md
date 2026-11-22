@@ -553,41 +553,27 @@ typedef struct {
 
 ## 8. Candidate lifecycle and state transitions
 
-```mermaid
-stateDiagram-v2
-  [*] --> NASCENT: new signature unmatched
-  NASCENT --> ACTIVE: evidence_count >= N_enter AND quality ok
-  NASCENT --> REJECTED: timeout OR poor quality streak
-  ACTIVE --> ACTIVE: matching signature update
-  ACTIVE --> COASTING: missing/invalid windows < T_coast
-  COASTING --> ACTIVE: matching signature returns
-  COASTING --> EXPIRED: coast exceeded (EXIT if promotion_entered)
-  ACTIVE --> PROMOTED: promoter / workflow gate
-  PROMOTED --> COASTING: missing/invalid windows < T_coast
-  PROMOTED --> ACTIVE: still tracked locally optional
-  ACTIVE --> REJECTED: explicit reject policy
-  REJECTED --> [*]
-  EXPIRED --> [*]
-```
-
-| Transition | Condition (v1 heuristic — tunable, not ML) |
+| Transition | Condition |
 | --- | --- |
-| Create NASCENT | Signature `quality∈{ok,degraded}`, not associated to existing candidate (distance above threshold) |
-| NASCENT→ACTIVE | ≥ `N_enter` consecutive matching windows (e.g. 2–3) with usable energy |
-| Update ACTIVE | Signature distance below match threshold to candidate fingerprint |
-| ACTIVE→COASTING | Gap flag, invalid window, or mic quality loss while candidate young evidence remains |
-| COASTING→ACTIVE | Match returns within `T_coast` windows (e.g. 3–5 s) |
-| →EXPIRED | Coast timeout or max age without promotion interest |
-| →PROMOTED | External promoter (initially: adapt activity detector thresholds on candidate energy; later Workflow) |
-| →REJECTED | Persistent noise fingerprint / policy blacklist (optional; keep minimal in v1) |
+| Create NASCENT | An OK or DEGRADED signature has sufficient energy and no hard match or hysteresis hold. |
+| NASCENT → ACTIVE | The candidate accumulates `n_enter` hard matches, including its creation window. |
+| ACTIVE or PROMOTED → COASTING | A transport gap or an unsupported usable window after the one-window grace period. |
+| COASTING → ACTIVE or PROMOTED | A hard match restores the state indicated by `promotion_entered`. |
+| Live candidate → EXPIRED | Valid-window retention is exhausted, transport coast exceeds `t_coast`, or a gap invalidates a NASCENT candidate. |
+| ACTIVE or COASTING → PROMOTED | An explicit promotion is accepted. Production Promotion Policy selects ACTIVE candidates. |
+| Live candidate → REJECTED | An explicit rejection is accepted. |
 
-**Duplicate avoidance:** association before create; one signature updates at most one candidate per window (best match). Unmatched → new NASCENT (subject to capacity).
+Association precedes creation. Each signature can update only the best hard match, and valid-window expiry frees capacity before creation.
 
-**Multiple simultaneous:** separate fingerprints (band EMA + EMA RMS + optional delta_rms). Do not force a single global activity bit inside CE.
+### Implemented valid-window retention
 
-**Classification vs lifecycle:** lifecycle answers “is there a continuing acoustic thing?” Classification answers “what is it?” — future modules only.
+CE evaluates the whole live table against the aggregate window fingerprint. One hard-match winner receives evidence and resets its valid-window miss count. A candidate within the existing ambiguity margin, or a near match in the existing hysteresis band, can retain its state on that window without adding evidence or refreshing its classification. With a hard winner present, a near match must also be within the ambiguity margin of that winner. An existing COASTING candidate requires a hard match to recover.
 
----
+`ce_config_t.valid_miss_limit` is independent of the transport-gap `t_coast`. The provisional EAR default is **16 distinct contiguous usable windows without a hard match**, including soft-support windows. Zero disables valid-window aging for callers that explicitly select it. ACTIVE and PROMOTED tolerate one missed hard match so regularly alternating fingerprints can both remain eligible. A subsequent unsupported window moves the candidate to COASTING. NASCENT stays NASCENT until it earns `n_enter` or expires. On the limit window, CE frees the slot before attempting creation. A promoted rematch preserves its generation, and expiry issues one EXIT while Observation Manager owns END.
+
+A sequence jump and GAP quality on the same input consume one transport coast step and retain both diagnostic reasons. A usable jump window can rematch, with its aging charged only to the transport path. Duplicates, rewinds, zero sequence numbers, and invalid windows contribute no evidence or valid-window misses. Ordinary misses leave `gap_events` unchanged.
+
+The 16-window budget was approved as provisional. At the nominal one-second cadence it provides roughly 16 seconds of usable input, with no wall-clock deadline. Deterministic host tests cover alternating fingerprints, short masking, soft-only retention, and full-table recovery. EAR-001 replay or bench capture is still needed to measure natural masking durations, fingerprint drift under mixtures, and the effect of detachment on long Observations before treating this value as tuned.
 
 ## 9. Audio Engine ↔ Candidate Engine interface
 

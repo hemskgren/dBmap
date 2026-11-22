@@ -62,6 +62,7 @@ typedef struct {
      */
     float match_ambiguity_delta;
     float min_rms_dbfs;         /* NASCENT create energy gate only — not identity */
+    uint32_t valid_miss_limit;  /* Distinct usable windows without hard evidence; 0 disables. */
 } ce_config_t;
 
 /** Aggregate lifecycle counters (not per-signature logs). */

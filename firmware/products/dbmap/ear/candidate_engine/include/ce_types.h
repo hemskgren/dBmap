@@ -30,7 +30,8 @@ typedef struct {
     int64_t last_evidence_mono_us;
     int64_t last_update_mono_us;
     uint32_t evidence_count;
-    uint32_t coast_windows;
+    uint32_t coast_windows;      /* Transport/quality gap steps only. */
+    uint32_t valid_miss_windows; /* Usable windows since the last hard match. */
     float confidence;
     uint8_t quality_summary;
     uint32_t last_window_seq;
