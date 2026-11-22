@@ -2457,6 +2457,163 @@ static void fill_lifecycle_v2_window(
 }
 #endif
 
+static int64_t obs_mono_now(void *ctx)
+{
+    (void)ctx;
+    return esp_timer_get_time();
+}
+
+static void lifecycle_sem_take(void *ctx);
+static void lifecycle_sem_give(void *ctx);
+
+typedef struct {
+    const sp_mic_levels_t *levels;
+    bool levels_ok;
+    dbmap_activity_emission_t *emission;
+    int64_t poll_t0;
+} activity_cycle_t;
+
+static void activity_cycle_before_poll(ear_sig_product_section_args_t *args)
+{
+    activity_cycle_t *cycle = args->before_ctx;
+    const sp_mic_levels_t levels = *cycle->levels;
+    const bool levels_ok = cycle->levels_ok;
+    dbmap_activity_emission_t emission = *cycle->emission;
+
+    /* Detector and handle_emission run under the lifecycle section. */
+#if defined(CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2) && CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2
+    /*
+     * v2: analyze first so L0/L1/L2 scalars are available for the score,
+     * then feed lifecycle. Baseline (v2 off) keeps detector-before-L0 order.
+     */
+#if CONFIG_DBMAP_EAR_OBS_L0
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    ear_obs_stack_hwm_checkpoint(
+        "pre_analyze",
+        "none",
+        &s_stack_hwm_bytes_pre_analyze,
+        &s_stack_hwm_have_pre_analyze
+    );
+#endif
+    l0_on_new_window(&levels, levels_ok);
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    ear_obs_stack_hwm_checkpoint(
+        "post_analyze",
+        "none",
+        &s_stack_hwm_bytes_post_analyze,
+        &s_stack_hwm_have_post_analyze
+    );
+#endif
+#endif
+    if (levels_ok && levels.valid) {
+        dbmap_lifecycle_v2_window_t win;
+        fill_lifecycle_v2_window(&win, &levels);
+        const int64_t t0 = esp_timer_get_time();
+        emission = dbmap_lifecycle_v2_feed(&s_lifecycle_v2, &win);
+        const uint32_t dt = (uint32_t)(esp_timer_get_time() - t0);
+        s_lc_v2_feed_count++;
+        s_lc_v2_feed_us_last = dt;
+        if (dt > s_lc_v2_feed_us_max) {
+            s_lc_v2_feed_us_max = dt;
+        }
+    }
+#else
+    if (levels_ok && levels.valid) {
+        dbmap_activity_sample_t sample = {
+            .has_measurement = true,
+            .rms_dbfs = levels.rms_dbfs,
+            .peak_dbfs = levels.peak_dbfs,
+            .window_ms = levels.window_ms,
+            .measured_at_us = levels.measured_at_us,
+            .window_seq = levels.window_seq,
+            .ms_since_i2s_enable = levels.ms_since_i2s_enable,
+            .transport_status = levels.transport_status,
+            .microphone_status = levels.microphone_status,
+        };
+        /* Detector first — L0 must not affect enter/exit decisions. */
+        emission = dbmap_activity_detector_feed(&s_detector, &sample);
+    }
+#if CONFIG_DBMAP_EAR_OBS_L0
+    /* Push before finalize so the closing window is in the ring. Membership
+     * is start < window_end <= end, so that closing window is associated
+     * with this emission (not the next). Still after feed — L0 is not on
+     * the detector decision path. */
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    {
+        const char *ek = emit_kind_name(emission.kind);
+        ear_obs_stack_hwm_checkpoint(
+            "pre_analyze",
+            ek,
+            &s_stack_hwm_bytes_pre_analyze,
+            &s_stack_hwm_have_pre_analyze
+        );
+    }
+#endif
+    l0_on_new_window(&levels, levels_ok);
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    {
+        const char *ek = emit_kind_name(emission.kind);
+        ear_obs_stack_hwm_checkpoint(
+            "post_analyze",
+            ek,
+            &s_stack_hwm_bytes_post_analyze,
+            &s_stack_hwm_have_post_analyze
+        );
+    }
+#endif
+#endif
+#endif /* LIFECYCLE_V2 */
+    handle_emission(&emission);
+#if defined(CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2) && CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2
+    if (dbmap_lifecycle_v2_state(&s_lifecycle_v2) == DBMAP_LC_V2_IDLE) {
+        s_mqtt_episode_rearm_required = false;
+    }
+#else
+    if (dbmap_activity_detector_state(&s_detector) == DBMAP_ACTIVITY_IDLE) {
+        s_mqtt_episode_rearm_required = false;
+    }
+#endif
+
+    *cycle->emission = emission;
+#if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
+    if (args->prod != NULL) {
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+        ear_obs_stack_hwm_checkpoint(
+            "pre_promo",
+            "none",
+            &s_stack_hwm_bytes_pre_promo,
+            &s_stack_hwm_have_pre_promo
+        );
+#endif
+        args->now_mono_us = esp_timer_get_time();
+        cycle->poll_t0 = args->now_mono_us;
+    }
+#endif
+}
+
+static void activity_cycle_after_poll(ear_sig_product_section_args_t *args)
+{
+    activity_cycle_t *cycle = args->before_ctx;
+    if (cycle->poll_t0 == 0) {
+        return;
+    }
+    const uint32_t dt = (uint32_t)(esp_timer_get_time() - cycle->poll_t0);
+    s_r0_promo_mgr_n++;
+    s_r0_promo_mgr_us_last = dt;
+    s_r0_promo_mgr_us_sum += dt;
+    if (dt > s_r0_promo_mgr_us_max) {
+        s_r0_promo_mgr_us_max = dt;
+    }
+#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
+    ear_obs_stack_hwm_checkpoint(
+        "post_promo",
+        "none",
+        &s_stack_hwm_bytes_post_promo,
+        &s_stack_hwm_have_post_promo
+    );
+#endif
+}
+
 static void activity_task(void *arg)
 {
     (void)arg;
@@ -2486,153 +2643,44 @@ static void activity_task(void *arg)
         memset(&emission, 0, sizeof(emission));
         emission.kind = DBMAP_ACTIVITY_EMIT_NONE;
 
-        if (s_lifecycle_mu != NULL) {
-            xSemaphoreTake(s_lifecycle_mu, portMAX_DELAY);
+        activity_cycle_t cycle = {
+            .levels = &levels,
+            .levels_ok = levels_ok,
+            .emission = &emission,
+            .poll_t0 = 0,
+        };
+        ear_sig_product_section_args_t section_args = {
+            .prod = NULL,
+            .now_mono_us = 0,
+            .before_poll = activity_cycle_before_poll,
+            .after_poll = activity_cycle_after_poll,
+            .before_ctx = &cycle,
+        };
+#if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
+        if (s_obs_mgr_ready) {
+            section_args.prod = &s_sig_product;
         }
-        /* Recheck after lock: OTA may have entered CLOSING/CLOSED. */
-        if (!sp_obs_gate_allows_feed(s_emit_gate)) {
-            if (s_lifecycle_mu != NULL) {
-                xSemaphoreGive(s_lifecycle_mu);
-            }
+#endif
+        const ear_obs_lifecycle_lock_ops_t lock_ops = {
+            .take = lifecycle_sem_take,
+            .give = lifecycle_sem_give,
+            .lock_ctx = s_lifecycle_mu,
+        };
+        /*
+         * Detector, START publication, and registry acceptance share this
+         * section. Critical Path polling stays after it returns.
+         */
+        const ear_obs_lifecycle_section_result_t section =
+            ear_sig_product_poll_in_section(
+                s_lifecycle_mu != NULL ? &lock_ops : NULL,
+                &s_emit_gate,
+                &section_args
+            );
+        if (section == EAR_OBS_LIFECYCLE_SECTION_SKIPPED_GATE) {
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
-#if defined(CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2) && CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2
-        /*
-         * v2: analyze first so L0/L1/L2 scalars are available for the score,
-         * then feed lifecycle. Baseline (v2 off) keeps detector-before-L0 order.
-         */
-#if CONFIG_DBMAP_EAR_OBS_L0
-#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
-        ear_obs_stack_hwm_checkpoint(
-            "pre_analyze",
-            "none",
-            &s_stack_hwm_bytes_pre_analyze,
-            &s_stack_hwm_have_pre_analyze
-        );
-#endif
-        l0_on_new_window(&levels, levels_ok);
-#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
-        ear_obs_stack_hwm_checkpoint(
-            "post_analyze",
-            "none",
-            &s_stack_hwm_bytes_post_analyze,
-            &s_stack_hwm_have_post_analyze
-        );
-#endif
-#endif
-        if (levels_ok && levels.valid) {
-            dbmap_lifecycle_v2_window_t win;
-            fill_lifecycle_v2_window(&win, &levels);
-            const int64_t t0 = esp_timer_get_time();
-            emission = dbmap_lifecycle_v2_feed(&s_lifecycle_v2, &win);
-            const uint32_t dt = (uint32_t)(esp_timer_get_time() - t0);
-            s_lc_v2_feed_count++;
-            s_lc_v2_feed_us_last = dt;
-            if (dt > s_lc_v2_feed_us_max) {
-                s_lc_v2_feed_us_max = dt;
-            }
-        }
-#else
-        if (levels_ok && levels.valid) {
-            dbmap_activity_sample_t sample = {
-                .has_measurement = true,
-                .rms_dbfs = levels.rms_dbfs,
-                .peak_dbfs = levels.peak_dbfs,
-                .window_ms = levels.window_ms,
-                .measured_at_us = levels.measured_at_us,
-                .window_seq = levels.window_seq,
-                .ms_since_i2s_enable = levels.ms_since_i2s_enable,
-                .transport_status = levels.transport_status,
-                .microphone_status = levels.microphone_status,
-            };
-            /* Detector first — L0 must not affect enter/exit decisions. */
-            emission = dbmap_activity_detector_feed(&s_detector, &sample);
-        }
-#if CONFIG_DBMAP_EAR_OBS_L0
-        /* Push before finalize so the closing window is in the ring. Membership
-         * is start < window_end <= end, so that closing window is associated
-         * with this emission (not the next). Still after feed — L0 is not on
-         * the detector decision path. */
-#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
-        {
-            const char *ek = emit_kind_name(emission.kind);
-            ear_obs_stack_hwm_checkpoint(
-                "pre_analyze",
-                ek,
-                &s_stack_hwm_bytes_pre_analyze,
-                &s_stack_hwm_have_pre_analyze
-            );
-        }
-#endif
-        l0_on_new_window(&levels, levels_ok);
-#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
-        {
-            const char *ek = emit_kind_name(emission.kind);
-            ear_obs_stack_hwm_checkpoint(
-                "post_analyze",
-                ek,
-                &s_stack_hwm_bytes_post_analyze,
-                &s_stack_hwm_have_post_analyze
-            );
-        }
-#endif
-#endif
-#endif /* LIFECYCLE_V2 */
-        handle_emission(&emission);
-#if defined(CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2) && CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2
-        if (dbmap_lifecycle_v2_state(&s_lifecycle_v2) == DBMAP_LC_V2_IDLE) {
-            s_mqtt_episode_rearm_required = false;
-        }
-#else
-        if (dbmap_activity_detector_state(&s_detector) == DBMAP_ACTIVITY_IDLE) {
-            s_mqtt_episode_rearm_required = false;
-        }
-#endif
-#if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
-        /*
-         * s_lifecycle_mu is still held. START publish and registry acceptance
-         * happen inside ear_sig_product_poll, before the give below.
-         * This mutex is not recursive: poll callbacks must not take it.
-         * The hold blocks OTA close until acceptance is decided.
-         */
-        if (sp_obs_gate_allows_feed(s_emit_gate) && s_obs_mgr_ready) {
-#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
-            ear_obs_stack_hwm_checkpoint(
-                "pre_promo",
-                "none",
-                &s_stack_hwm_bytes_pre_promo,
-                &s_stack_hwm_have_pre_promo
-            );
-#endif
-            const int64_t now_us = esp_timer_get_time();
-            const int64_t t_pm0 = now_us;
-            /* Siren evidence was updated in AE listeners during ae_device_poll. */
-            ear_sig_product_poll(&s_sig_product, now_us);
-            {
-                const uint32_t dt =
-                    (uint32_t)(esp_timer_get_time() - t_pm0);
-                s_r0_promo_mgr_n++;
-                s_r0_promo_mgr_us_last = dt;
-                s_r0_promo_mgr_us_sum += dt;
-                if (dt > s_r0_promo_mgr_us_max) {
-                    s_r0_promo_mgr_us_max = dt;
-                }
-            }
-#if CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG
-            ear_obs_stack_hwm_checkpoint(
-                "post_promo",
-                "none",
-                &s_stack_hwm_bytes_post_promo,
-                &s_stack_hwm_have_post_promo
-            );
-#endif
-        }
-#endif /* AUDIO_ENGINE product poll */
-        if (s_lifecycle_mu != NULL) {
-            xSemaphoreGive(s_lifecycle_mu);
-        }
 #if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
 #if defined(CONFIG_DBMAP_EAR_OBS_CRITICAL_PATH) && CONFIG_DBMAP_EAR_OBS_CRITICAL_PATH
         if (s_critical_ready) {
@@ -3296,6 +3344,7 @@ esp_err_t dbmap_ear_observation_start(const sp_effective_t *cfg)
         mcfg.emit_end = mgr_emit_end;
         mcfg.emit_ctx = NULL;
         mcfg.on_binding_released = mgr_on_binding_released;
+        mcfg.mono_now_us = obs_mono_now;
         /* PERIODIC driven by RMS activity hints (L0 window cadence). */
         mcfg.enable_poll_periodic = false;
 #if defined(CONFIG_DBMAP_EAR_OBS_AS002_SIGNATURE_ABSENCE_HOLD_MS)

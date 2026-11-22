@@ -4,6 +4,7 @@
  */
 #include "ear_sig_product.h"
 
+#include "ear_obs_lifecycle_section.h"
 #include "sig_engine.h"
 
 static void forward_as002_absence(ear_obs_manager_t *om)
@@ -67,6 +68,32 @@ void ear_sig_product_on_ae_signature(const ae_signature_t *sig, void *user)
         return;
     }
     forward_as002_absence(prod->om);
+}
+
+static void product_poll_section_body(void *ctx)
+{
+    ear_sig_product_section_args_t *args = ctx;
+    if (args == NULL) {
+        return;
+    }
+    if (args->before_poll != NULL) {
+        args->before_poll(args);
+    }
+    if (args->prod != NULL) {
+        ear_sig_product_poll(args->prod, args->now_mono_us);
+    }
+    if (args->after_poll != NULL) {
+        args->after_poll(args);
+    }
+}
+
+ear_obs_lifecycle_section_result_t ear_sig_product_poll_in_section(
+    const ear_obs_lifecycle_lock_ops_t *lock,
+    sp_obs_emit_gate_t *gate,
+    ear_sig_product_section_args_t *args
+)
+{
+    return ear_obs_lifecycle_section(lock, gate, product_poll_section_body, args);
 }
 
 void ear_sig_product_poll(ear_sig_product_t *prod, int64_t now_mono_us)

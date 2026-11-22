@@ -20,9 +20,11 @@
 #include "as_profile.h"
 #include "ce_engine.h"
 #include "ear_cls_as001.h"
+#include "ear_obs_lifecycle_section.h"
 #include "ear_obs_manager.h"
 #include "ear_obs_start_retain.h"
 #include "ear_promotion_policy.h"
+#include "ear_sig_product.h"
 #include "sig_engine.h"
 #include "sp_episode_registry.h"
 
@@ -138,6 +140,8 @@ static void p3b_record(void *ctx, const ear_obs_binding_view_t *binding, bool st
     }
 }
 
+static int64_t g_mono_now;
+static bool g_mono_pinned;
 static int64_t g_start_callback_consume_us;
 static int64_t g_clock_after_start_callback;
 static bool g_use_start_prepare;
@@ -185,6 +189,7 @@ static bool emit_start(
             sizeof(g_emit.last_start_assessment_path)
         );
     }
+    g_mono_now += g_start_callback_consume_us;
     g_clock_after_start_callback = now_mono_us + g_start_callback_consume_us;
     if (g_use_start_prepare && binding != NULL) {
         bool built = false;
@@ -400,11 +405,27 @@ typedef struct {
     ear_promotion_policy_t pol;
 } fixture_t;
 
+static int64_t host_mono_now(void *ctx)
+{
+    (void)ctx;
+    return g_mono_now;
+}
+
+static void host_obs_poll(ear_obs_manager_t *om, int64_t now_us)
+{
+    if (!g_mono_pinned) {
+        g_mono_now = now_us;
+    }
+    ear_obs_manager_poll(om, now_us);
+}
+
 static void fixture_init(fixture_t *f, bool bind_policy)
 {
     memset(f, 0, sizeof(*f));
     memset(&g_emit, 0, sizeof(g_emit));
     g_uuid_n = 1;
+    g_mono_now = 0;
+    g_mono_pinned = false;
 
     ce_config_t ccfg;
     ce_config_set_defaults(&ccfg);
@@ -431,6 +452,8 @@ static void fixture_init(fixture_t *f, bool bind_policy)
     mcfg.emit_periodic = emit_periodic;
     mcfg.emit_end = emit_end;
     mcfg.enable_poll_periodic = true;
+    mcfg.mono_now_us = host_mono_now;
+    mcfg.mono_now_ctx = NULL;
     g_start_callback_consume_us = 0;
     g_clock_after_start_callback = 0;
     g_use_start_prepare = false;
@@ -495,7 +518,7 @@ static bool promote_with_reserve(fixture_t *f, uint64_t cid, int64_t now_us)
         ear_obs_manager_release_reservation(&f->om, h);
         return false;
     }
-    ear_obs_manager_poll(&f->om, now_us);
+    host_obs_poll(&f->om, now_us);
     return true;
 }
 
@@ -505,7 +528,7 @@ static void test_no_promote_no_obs(void)
     fixture_t f;
     fixture_init(&f, true);
     plant(&f.ce, 10u, AE_CAND_ACTIVE, 5u, -40.0f);
-    ear_obs_manager_poll(&f.om, 1000);
+    host_obs_poll(&f.om, 1000);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(g_emit.starts == 0u);
     fixture_fini(&f);
@@ -598,7 +621,7 @@ static void test_dup_enter(void)
     ae_candidate_t c;
     EXPECT(ce_find_candidate(&f.ce, 8u, &c));
     ear_obs_manager_on_promotion(&c, CE_PROMOTION_ENTER, &f.om);
-    ear_obs_manager_poll(&f.om, 6000);
+    host_obs_poll(&f.om, 6000);
     EXPECT(g_emit.starts == 1u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     fixture_fini(&f);
@@ -686,7 +709,7 @@ static void test_engine_stop(void)
     (void)ear_obs_manager_reserve(&f.om, &h); /* may fail if pool full */
 
     ce_stop(&f.ce);
-    ear_obs_manager_poll(&f.om, 9000); /* drain EXIT */
+    host_obs_poll(&f.om, 9000); /* drain EXIT */
     ear_obs_manager_on_engine_stop(&f.om, 9000);
     EXPECT(ear_obs_manager_n_held(&f.om) == 0u);
     EXPECT(ear_obs_manager_n_pending(&f.om) == 0u);
@@ -765,7 +788,7 @@ static void test_fifo_before_new_promote(void)
 
     /* Free only candidate 50 so FIFO drain can admit 52 without global END. */
     free_binding_for_candidate(&f, 50u);
-    ear_obs_manager_poll(&f.om, 3500);
+    host_obs_poll(&f.om, 3500);
     EXPECT(ear_obs_manager_n_open(&f.om) == 2u); /* 51 + drained 52 */
     EXPECT(ear_obs_manager_n_pending(&f.om) == 0u);
     bool have52 = false;
@@ -822,7 +845,7 @@ static void test_fifo_no_skip_on_alloc_fail(void)
     EXPECT(f.om.pending[f.om.pending_order[0]].candidate_id == 63u);
 
     /* Drain attempts: registry full → fail, do not skip to 64. */
-    ear_obs_manager_poll(&f.om, 5000);
+    host_obs_poll(&f.om, 5000);
     EXPECT(ear_obs_manager_n_pending(&f.om) == 2u);
     EXPECT(f.om.pending[f.om.pending_order[0]].candidate_id == 63u);
     ear_obs_manager_diag_t d;
@@ -850,13 +873,13 @@ static void test_pending_cancel_advances(void)
     ae_candidate_t c;
     EXPECT(ce_find_candidate(&f.ce, 72u, &c));
     EXPECT(ce_reject(&f.ce, 72u)); /* emits EXIT */
-    ear_obs_manager_poll(&f.om, 4500);
+    host_obs_poll(&f.om, 4500);
     EXPECT(ear_obs_manager_n_pending(&f.om) == 1u);
     EXPECT(f.om.pending[f.om.pending_order[0]].candidate_id == 73u);
 
     /* Free one slot → 73 advances (activity END would close both). */
     free_binding_for_candidate(&f, 70u);
-    ear_obs_manager_poll(&f.om, 5000);
+    host_obs_poll(&f.om, 5000);
     bool have73 = false;
     for (uint8_t i = 0; i < 2; i++) {
         if (f.om.bind[i].in_use && f.om.bind[i].candidate_id == 73u) {
@@ -888,7 +911,7 @@ static void test_poll_recovers_fifo(void)
     }
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     EXPECT(ear_obs_manager_n_pending(&f.om) == 1u);
-    ear_obs_manager_poll(&f.om, 4000); /* recovery drain */
+    host_obs_poll(&f.om, 4000); /* recovery drain */
     EXPECT(ear_obs_manager_n_pending(&f.om) == 0u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 2u);
     fixture_fini(&f);
@@ -904,7 +927,7 @@ static void test_exit_detach_no_end(void)
     EXPECT(ear_obs_manager_binding_ce_live(&f.om, 90u));
 
     EXPECT(ce_reject(&f.ce, 90u));
-    ear_obs_manager_poll(&f.om, 2000);
+    host_obs_poll(&f.om, 2000);
     EXPECT(!ear_obs_manager_binding_ce_live(&f.om, 90u));
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     EXPECT(g_emit.ends == 0u);
@@ -939,17 +962,17 @@ static void test_pending_timeout_and_sync_exit(void)
     EXPECT(ear_obs_manager_n_pending(&f.om) == 1u);
 
     /* Timeout → cancel then ce_reject → sync EXIT must not double-free */
-    ear_obs_manager_poll(&f.om, 2000000); /* 2s > 1s timeout */
+    host_obs_poll(&f.om, 2000000); /* 2s > 1s timeout */
     EXPECT(ear_obs_manager_n_pending(&f.om) == 0u);
     ear_obs_manager_diag_t d;
     ear_obs_manager_get_diag(&f.om, &d);
     EXPECT(d.pending_timeout >= 1u);
 
     /* Duplicate timeout/poll harmless */
-    ear_obs_manager_poll(&f.om, 3000000);
+    host_obs_poll(&f.om, 3000000);
     ear_obs_manager_get_diag(&f.om, &d);
     const uint32_t t1 = d.pending_timeout;
-    ear_obs_manager_poll(&f.om, 4000000);
+    host_obs_poll(&f.om, 4000000);
     ear_obs_manager_get_diag(&f.om, &d);
     EXPECT(d.pending_timeout == t1);
 
@@ -958,7 +981,7 @@ static void test_pending_timeout_and_sync_exit(void)
     memset(&c, 0, sizeof(c));
     c.candidate_id = 102u;
     ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, 5000000);
+    host_obs_poll(&f.om, 5000000);
     EXPECT(ear_obs_manager_n_pending(&f.om) == 0u);
     fixture_fini(&f);
 }
@@ -1010,7 +1033,7 @@ static void test_end_order_a_end_before_exit(void)
 
     /* EXIT after END: detach-only no-op (binding already gone). */
     EXPECT(ce_reject(&f.ce, 400u));
-    ear_obs_manager_poll(&f.om, 2200);
+    host_obs_poll(&f.om, 2200);
     EXPECT(g_emit.ends == 1u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
 
@@ -1018,7 +1041,7 @@ static void test_end_order_a_end_before_exit(void)
     memset(&c, 0, sizeof(c));
     c.candidate_id = 400u;
     ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, 2300);
+    host_obs_poll(&f.om, 2300);
     EXPECT(g_emit.ends == 1u);
     fixture_fini(&f);
 }
@@ -1031,7 +1054,7 @@ static void test_end_order_b_exit_before_end(void)
     plant(&f.ce, 401u, AE_CAND_ACTIVE, 4u, -30.0f);
     EXPECT(promote_with_reserve(&f, 401u, 1000));
     EXPECT(ce_reject(&f.ce, 401u));
-    ear_obs_manager_poll(&f.om, 1500);
+    host_obs_poll(&f.om, 1500);
     EXPECT(!ear_obs_manager_binding_ce_live(&f.om, 401u));
     EXPECT(g_emit.ends == 0u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
@@ -1056,7 +1079,7 @@ static void test_exit_alone_no_end(void)
     plant(&f.ce, 402u, AE_CAND_ACTIVE, 4u, -30.0f);
     EXPECT(promote_with_reserve(&f, 402u, 1000));
     EXPECT(ce_reject(&f.ce, 402u));
-    ear_obs_manager_poll(&f.om, 1500);
+    host_obs_poll(&f.om, 1500);
     EXPECT(g_emit.ends == 0u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     EXPECT(sp_episode_registry_in_use_count(&f.reg) == 1u);
@@ -1097,7 +1120,7 @@ static void test_two_open_mixed_ce_live_shared_end(void)
 
     /* Detach only 420 (CE EXIT without END). */
     EXPECT(ce_reject(&f.ce, 420u));
-    ear_obs_manager_poll(&f.om, 2500);
+    host_obs_poll(&f.om, 2500);
     EXPECT(!ear_obs_manager_binding_ce_live(&f.om, 420u));
     EXPECT(ear_obs_manager_binding_ce_live(&f.om, 421u));
     EXPECT(g_emit.ends == 0u);
@@ -1111,7 +1134,7 @@ static void test_two_open_mixed_ce_live_shared_end(void)
 
     /* Later EXIT for 421: no extra END. */
     EXPECT(ce_reject(&f.ce, 421u));
-    ear_obs_manager_poll(&f.om, 2800);
+    host_obs_poll(&f.om, 2800);
     EXPECT(g_emit.ends == 2u);
     fixture_fini(&f);
 }
@@ -1161,9 +1184,9 @@ static void test_two_open_both_live_end_latches_both(void)
     EXPECT(g_emit.end_obs_n == 2u);
 
     EXPECT(ce_reject(&f.ce, 440u));
-    ear_obs_manager_poll(&f.om, 3200);
+    host_obs_poll(&f.om, 3200);
     EXPECT(ce_reject(&f.ce, 441u));
-    ear_obs_manager_poll(&f.om, 3300);
+    host_obs_poll(&f.om, 3300);
     EXPECT(g_emit.ends == 2u);
     fixture_fini(&f);
 }
@@ -1186,7 +1209,7 @@ static void test_rematch_after_end_no_revive(void)
     ae_candidate_t live;
     EXPECT(ce_find_candidate(&f.ce, 450u, &live));
     EXPECT(live.promotion_entered);
-    ear_obs_manager_poll(&f.om, 2200);
+    host_obs_poll(&f.om, 2200);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(g_emit.starts == 1u);
     EXPECT(g_emit.ends == 1u);
@@ -1212,7 +1235,7 @@ static void test_new_promote_after_end_stale_exit_safe(void)
 
     /* Reject old candidate so a fresh candidate can be promoted. */
     EXPECT(ce_reject(&f.ce, 460u));
-    ear_obs_manager_poll(&f.om, 2200);
+    host_obs_poll(&f.om, 2200);
 
     plant(&f.ce, 461u, AE_CAND_ACTIVE, 5u, -28.0f);
     EXPECT(promote_with_reserve(&f, 461u, 3000));
@@ -1228,7 +1251,7 @@ static void test_new_promote_after_end_stale_exit_safe(void)
     memset(&stale, 0, sizeof(stale));
     stale.candidate_id = 460u;
     ear_obs_manager_on_promotion(&stale, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, 3100);
+    host_obs_poll(&f.om, 3100);
     EXPECT(g_emit.ends == 1u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     EXPECT(ear_obs_manager_binding_ce_live(&f.om, 461u));
@@ -1303,7 +1326,7 @@ static void test_end_without_exit_unsticks_bindings(void)
     plant(&f.ce, 482u, AE_CAND_ACTIVE, 6u, -28.0f);
     mark_as001_relevant(&f.ce, 482u);
     ear_promotion_policy_poll(&f.pol, 4000);
-    ear_obs_manager_poll(&f.om, 4000);
+    host_obs_poll(&f.om, 4000);
     EXPECT(ear_obs_manager_n_open(&f.om) >= 1u);
     fixture_fini(&f);
 }
@@ -1590,7 +1613,7 @@ static void test_s2_stale_promotion_gen_dropped(void)
     /* Detached (!ce_live): evidence dropped entirely. */
     EXPECT(ce_find_candidate(&f.ce, cid, &c));
     ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, 2000);
+    host_obs_poll(&f.om, 2000);
     EXPECT(!f.om.bind[bi].ce_live);
 
     ear_obs_manager_diag_t d0;
@@ -1712,7 +1735,7 @@ static bool promote_as002_with_reserve(fixture_t *f, uint64_t cid, int64_t now_u
         ear_obs_manager_release_reservation(&f->om, h);
         return false;
     }
-    ear_obs_manager_poll(&f->om, now_us);
+    host_obs_poll(&f->om, now_us);
     return true;
 }
 
@@ -1731,7 +1754,7 @@ static void test_s3_detached_ends_after_timeout(void)
     ae_candidate_t c;
     EXPECT(ce_find_candidate(&f.ce, 900u, &c));
     ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, 1500);
+    host_obs_poll(&f.om, 1500);
     const int bi = find_bind_idx(&f, 900u);
     EXPECT(bi >= 0);
     EXPECT(!f.om.bind[bi].ce_live);
@@ -1739,11 +1762,11 @@ static void test_s3_detached_ends_after_timeout(void)
     EXPECT(g_emit.ends == 0u);
 
     /* timeout_ms=1000 → 1_000_000 us; expire at since + timeout. */
-    ear_obs_manager_poll(&f.om, 1500 + 999999);
+    host_obs_poll(&f.om, 1500 + 999999);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     EXPECT(g_emit.ends == 0u);
 
-    ear_obs_manager_poll(&f.om, 1500 + 1000000);
+    host_obs_poll(&f.om, 1500 + 1000000);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(g_emit.ends == 1u);
     EXPECT(g_emit.last_end_reason == EAR_OBS_END_EXPLICIT);
@@ -1768,11 +1791,11 @@ static void test_s3_idle_rms_path_ends_after_detach_timeout(void)
     ae_candidate_t c;
     EXPECT(ce_find_candidate(&f.ce, 901u, &c));
     ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, 1000);
+    host_obs_poll(&f.om, 1000);
     /* No activity_end_hint — only watchdog. timeout_ms=500 → 500_000 us. */
-    ear_obs_manager_poll(&f.om, 1000 + 499999);
+    host_obs_poll(&f.om, 1000 + 499999);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
-    ear_obs_manager_poll(&f.om, 1000 + 500000);
+    host_obs_poll(&f.om, 1000 + 500000);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(g_emit.last_end_reason == EAR_OBS_END_EXPLICIT);
     fixture_fini(&f);
@@ -1791,7 +1814,7 @@ static void test_s3_reattach_cancels_timer(void)
     EXPECT(ce_find_candidate(&f.ce, 902u, &c));
     const uint32_t gen1 = c.promotion_gen;
     ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, 1100);
+    host_obs_poll(&f.om, 1100);
     const int bi = find_bind_idx(&f, 902u);
     EXPECT(bi >= 0);
     EXPECT(f.om.bind[bi].detached_since_mono_us == 1100);
@@ -1815,7 +1838,7 @@ static void test_s3_reattach_cancels_timer(void)
     EXPECT(d.detached_watchdog_cancelled >= 1u);
 
     /* Past original since+timeout: cancelled timer must not END. */
-    ear_obs_manager_poll(&f.om, 1100 + 1000000);
+    host_obs_poll(&f.om, 1100 + 1000000);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     EXPECT(g_emit.ends == 0u);
     fixture_fini(&f);
@@ -1837,12 +1860,12 @@ static void test_s3_two_obs_only_detached_ends(void)
     ae_candidate_t c;
     EXPECT(ce_find_candidate(&f.ce, 910u, &c));
     ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, 2100);
+    host_obs_poll(&f.om, 2100);
     EXPECT(!ear_obs_manager_binding_ce_live(&f.om, 910u));
     EXPECT(ear_obs_manager_binding_ce_live(&f.om, 911u));
 
     /* timeout_ms=1000 → expire detached 910 only at 2100 + 1_000_000. */
-    ear_obs_manager_poll(&f.om, 2100 + 1000000);
+    host_obs_poll(&f.om, 2100 + 1000000);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     EXPECT(find_bind_idx(&f, 911u) >= 0);
     EXPECT(find_bind_idx(&f, 910u) < 0);
@@ -1881,7 +1904,7 @@ static void test_s3_exit_alone_no_immediate_end(void)
     ae_candidate_t c;
     EXPECT(ce_find_candidate(&f.ce, 921u, &c));
     ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, 1000);
+    host_obs_poll(&f.om, 1000);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     EXPECT(!ear_obs_manager_binding_ce_live(&f.om, 921u));
     EXPECT(g_emit.ends == 0u);
@@ -1905,11 +1928,11 @@ static void test_s3_as002_excluded_from_watchdog(void)
     ae_candidate_t c;
     EXPECT(ce_find_candidate(&f.ce, 930u, &c));
     ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, 1100);
+    host_obs_poll(&f.om, 1100);
     EXPECT(!f.om.bind[bi].ce_live);
     EXPECT(f.om.bind[bi].detached_since_mono_us == 0);
 
-    ear_obs_manager_poll(&f.om, 5000);
+    host_obs_poll(&f.om, 5000);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     EXPECT(g_emit.ends == 0u);
 
@@ -1942,7 +1965,7 @@ static void test_s3_stale_gen_no_timer(void)
     EXPECT(ce_find_candidate(&f.ce, 940u, &stale));
     stale.promotion_gen = live_gen + 99u;
     ear_obs_manager_on_promotion(&stale, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, 1100);
+    host_obs_poll(&f.om, 1100);
     EXPECT(f.om.bind[bi].ce_live);
     EXPECT(f.om.bind[bi].detached_since_mono_us == 0);
     ear_obs_manager_diag_t d;
@@ -1950,7 +1973,7 @@ static void test_s3_stale_gen_no_timer(void)
     EXPECT(d.exit_stale >= 1u);
     EXPECT(d.detached_watchdog_armed == 0u);
 
-    ear_obs_manager_poll(&f.om, 10000);
+    host_obs_poll(&f.om, 10000);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     fixture_fini(&f);
 }
@@ -1967,7 +1990,7 @@ static void test_s3_reused_binding_no_inherited_detach(void)
     ae_candidate_t c;
     EXPECT(ce_find_candidate(&f.ce, 950u, &c));
     ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, 1100);
+    host_obs_poll(&f.om, 1100);
     const int bi0 = find_bind_idx(&f, 950u);
     EXPECT(bi0 >= 0);
     EXPECT(f.om.bind[bi0].detached_since_mono_us == 1100);
@@ -1983,7 +2006,7 @@ static void test_s3_reused_binding_no_inherited_detach(void)
     EXPECT(f.om.bind[bi1].detached_since_mono_us == 0);
 
     /* Even if same slot index as before, no inherited timer. */
-    ear_obs_manager_poll(&f.om, 5000);
+    host_obs_poll(&f.om, 5000);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     fixture_fini(&f);
 }
@@ -2000,19 +2023,19 @@ static void test_s3_timeout_boundary_monotonic(void)
     ae_candidate_t c;
     EXPECT(ce_find_candidate(&f.ce, 960u, &c));
     ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, 2000000); /* detach at 2_000_000 us */
+    host_obs_poll(&f.om, 2000000); /* detach at 2_000_000 us */
     const int bi = find_bind_idx(&f, 960u);
     EXPECT(bi >= 0);
     EXPECT(f.om.bind[bi].detached_since_mono_us == 2000000);
 
-    ear_obs_manager_poll(&f.om, 2999999);
+    host_obs_poll(&f.om, 2999999);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
 
     /* Non-monotonic (rewind): must not END. */
-    ear_obs_manager_poll(&f.om, 1000000);
+    host_obs_poll(&f.om, 1000000);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
 
-    ear_obs_manager_poll(&f.om, 3000000); /* exactly +1000 ms */
+    host_obs_poll(&f.om, 3000000); /* exactly +1000 ms */
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(g_emit.last_end_reason == EAR_OBS_END_EXPLICIT);
     fixture_fini(&f);
@@ -2031,7 +2054,7 @@ static void test_s3_periodic_does_not_touch_detached_timer(void)
     ae_candidate_t c;
     EXPECT(ce_find_candidate(&f.ce, 970u, &c));
     ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, 2000000);
+    host_obs_poll(&f.om, 2000000);
     const int bi = find_bind_idx(&f, 970u);
     EXPECT(bi >= 0);
     EXPECT(f.om.bind[bi].detached_since_mono_us == 2000000);
@@ -2046,9 +2069,9 @@ static void test_s3_periodic_does_not_touch_detached_timer(void)
     EXPECT(g_emit.ends == 0u);
 
     /* Still expires from original since, not from PERIODIC time. */
-    ear_obs_manager_poll(&f.om, since + 999999);
+    host_obs_poll(&f.om, since + 999999);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
-    ear_obs_manager_poll(&f.om, since + 1000000);
+    host_obs_poll(&f.om, since + 1000000);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(g_emit.ends == 1u);
     EXPECT(g_emit.last_end_reason == EAR_OBS_END_EXPLICIT);
@@ -2071,7 +2094,7 @@ static void test_s3_engine_stop_then_watchdog_end(void)
     EXPECT(g_emit.ends == 0u);
 
     ce_stop(&f.ce);
-    ear_obs_manager_poll(&f.om, 2000000); /* drain EXIT from stop */
+    host_obs_poll(&f.om, 2000000); /* drain EXIT from stop */
     ear_obs_manager_on_engine_stop(&f.om, 2000000);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     EXPECT(g_emit.ends == 0u);
@@ -2080,11 +2103,11 @@ static void test_s3_engine_stop_then_watchdog_end(void)
     EXPECT(!f.om.bind[bi].ce_live);
     EXPECT(f.om.bind[bi].detached_since_mono_us == 2000000);
 
-    ear_obs_manager_poll(&f.om, 2000000 + 999999);
+    host_obs_poll(&f.om, 2000000 + 999999);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     EXPECT(g_emit.ends == 0u);
 
-    ear_obs_manager_poll(&f.om, 2000000 + 1000000);
+    host_obs_poll(&f.om, 2000000 + 1000000);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(g_emit.ends == 1u);
     EXPECT(g_emit.last_end_reason == EAR_OBS_END_EXPLICIT);
@@ -2093,7 +2116,7 @@ static void test_s3_engine_stop_then_watchdog_end(void)
     EXPECT(d.detached_watchdog_end == 1u);
 
     /* Further polls must not emit a second END. */
-    ear_obs_manager_poll(&f.om, 2000000 + 2000000);
+    host_obs_poll(&f.om, 2000000 + 2000000);
     EXPECT(g_emit.ends == 1u);
     fixture_fini(&f);
 }
@@ -2140,7 +2163,7 @@ static void test_evidence_owned(void)
 
     /* Clear CE slot */
     EXPECT(ce_reject(&f.ce, cid));
-    ear_obs_manager_poll(&f.om, 6000);
+    host_obs_poll(&f.om, 6000);
 
     /* Snapshot remains in binding after EXIT */
     bool ok = false;
@@ -2172,7 +2195,7 @@ static void test_policy_reserve_gates(void)
 
     for (int i = 0; i < 6; i++) {
         ear_promotion_policy_poll(&f.pol, (int64_t)(i + 1) * 1000);
-        ear_obs_manager_poll(&f.om, (int64_t)(i + 1) * 1000);
+        host_obs_poll(&f.om, (int64_t)(i + 1) * 1000);
     }
     EXPECT(ear_obs_manager_n_open(&f.om) <= 2u);
     EXPECT(ear_obs_manager_n_held(&f.om) + ear_obs_manager_n_pending(&f.om) <= 2u);
@@ -2191,7 +2214,7 @@ static void test_orphan_enter(void)
     c.state = AE_CAND_PROMOTED;
     c.in_use = true;
     ear_obs_manager_on_promotion(&c, CE_PROMOTION_ENTER, &f.om);
-    ear_obs_manager_poll(&f.om, 1000);
+    host_obs_poll(&f.om, 1000);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(g_emit.starts == 0u);
     ear_obs_manager_diag_t d;
@@ -2261,7 +2284,7 @@ static void test_ce_exit_payload_gen_propagates_stale_safe(void)
 
     /* Real CE EXIT: capture payload gen at callback time, then drain. */
     EXPECT(ce_reject(&f.ce, 500u));
-    ear_obs_manager_poll(&f.om, 2200);
+    host_obs_poll(&f.om, 2200);
     EXPECT(g_emit.ends == 1u);
     EXPECT(g_captured_exit_n >= 1u);
     EXPECT(g_captured_exit.candidate_id == 500u);
@@ -2289,7 +2312,7 @@ static void test_ce_exit_payload_gen_propagates_stale_safe(void)
     ear_obs_manager_diag_t d0;
     ear_obs_manager_get_diag(&f.om, &d0);
     ear_obs_manager_on_promotion(&g_captured_exit, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, 3100);
+    host_obs_poll(&f.om, 3100);
     ear_obs_manager_diag_t d1;
     ear_obs_manager_get_diag(&f.om, &d1);
     EXPECT(d1.exit_stale == d0.exit_stale + 1u);
@@ -2300,7 +2323,7 @@ static void test_ce_exit_payload_gen_propagates_stale_safe(void)
 
     /* Valid EXIT for G2 (live CE reject): detach-only. */
     EXPECT(ce_reject(&f.ce, 500u));
-    ear_obs_manager_poll(&f.om, 3200);
+    host_obs_poll(&f.om, 3200);
     EXPECT(!ear_obs_manager_binding_ce_live(&f.om, 500u));
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     EXPECT(g_emit.ends == 1u);
@@ -2346,7 +2369,7 @@ static void test_zero_gen_exit_rejected_on_live_binding(void)
     zero.candidate_id = 540u;
     /* promotion_gen == 0: public production callback API. */
     ear_obs_manager_on_promotion(&zero, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, 1500);
+    host_obs_poll(&f.om, 1500);
 
     ear_obs_manager_diag_t d1;
     ear_obs_manager_get_diag(&f.om, &d1);
@@ -2360,7 +2383,7 @@ static void test_zero_gen_exit_rejected_on_live_binding(void)
 
     /* Valid matching EXIT still detach-only; activity END remains terminator. */
     EXPECT(ce_reject(&f.ce, 540u));
-    ear_obs_manager_poll(&f.om, 1600);
+    host_obs_poll(&f.om, 1600);
     EXPECT(!ear_obs_manager_binding_ce_live(&f.om, 540u));
     EXPECT(g_emit.ends == ends0);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
@@ -2480,7 +2503,7 @@ static void test_p2_ambient_active_no_obs(void)
     plant(&f.ce, 700u, AE_CAND_ACTIVE, 20u, -10.0f); /* loud ambient */
     for (int i = 0; i < 4; i++) {
         ear_promotion_policy_poll(&f.pol, (int64_t)(i + 1) * 1000);
-        ear_obs_manager_poll(&f.om, (int64_t)(i + 1) * 1000);
+        host_obs_poll(&f.om, (int64_t)(i + 1) * 1000);
     }
     EXPECT(g_emit.starts == 0u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
@@ -2505,7 +2528,7 @@ static void test_p2_as001_can_promote(void)
     plant(&f.ce, 710u, AE_CAND_ACTIVE, 5u, -30.0f);
     mark_as001_relevant(&f.ce, 710u);
     ear_promotion_policy_poll(&f.pol, 1000);
-    ear_obs_manager_poll(&f.om, 1000);
+    host_obs_poll(&f.om, 1000);
     EXPECT(g_emit.starts == 1u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     EXPECT(g_emit.last_start_cand == 710u);
@@ -2563,7 +2586,7 @@ static void test_p2_loud_unmatched_not_promoted(void)
         }
     }
     ear_promotion_policy_poll(&f.pol, 1000);
-    ear_obs_manager_poll(&f.om, 1000);
+    host_obs_poll(&f.om, 1000);
     EXPECT(g_emit.starts == 0u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(ear_obs_manager_n_pending(&f.om) == 0u);
@@ -2584,7 +2607,7 @@ static void test_p2_held_irrelevant_consumes_no_capacity(void)
     /* No AS-001 stamps. */
     for (int i = 0; i < 3; i++) {
         ear_promotion_policy_poll(&f.pol, (int64_t)(i + 1) * 1000);
-        ear_obs_manager_poll(&f.om, (int64_t)(i + 1) * 1000);
+        host_obs_poll(&f.om, (int64_t)(i + 1) * 1000);
     }
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(ear_obs_manager_n_pending(&f.om) == 0u);
@@ -2656,7 +2679,7 @@ static void test_p2_same_signature_one_observation(void)
 
     for (int i = 0; i < 6; i++) {
         ear_promotion_policy_poll(&f.pol, (int64_t)(i + 1) * 1000);
-        ear_obs_manager_poll(&f.om, (int64_t)(i + 1) * 1000);
+        host_obs_poll(&f.om, (int64_t)(i + 1) * 1000);
     }
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
     EXPECT(find_binding_like(&f, 761u));
@@ -2679,7 +2702,7 @@ static void test_p2_no_repeat_while_promoted(void)
     plant(&f.ce, 770u, AE_CAND_ACTIVE, 5u, -30.0f);
     mark_as001_relevant(&f.ce, 770u);
     ear_promotion_policy_poll(&f.pol, 1000);
-    ear_obs_manager_poll(&f.om, 1000);
+    host_obs_poll(&f.om, 1000);
     EXPECT(g_emit.starts == 1u);
     const uint32_t starts = g_emit.starts;
     ear_promotion_policy_diag_t pd0;
@@ -2687,7 +2710,7 @@ static void test_p2_no_repeat_while_promoted(void)
     const uint32_t promote_ok0 = pd0.promote_ok;
     for (int i = 0; i < 4; i++) {
         ear_promotion_policy_poll(&f.pol, (int64_t)(i + 2) * 1000);
-        ear_obs_manager_poll(&f.om, (int64_t)(i + 2) * 1000);
+        host_obs_poll(&f.om, (int64_t)(i + 2) * 1000);
     }
     EXPECT(g_emit.starts == starts);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
@@ -2725,7 +2748,7 @@ static void test_p2_commit_rejects_unapproved_snapshot(void)
     const uint32_t gen = mid.promotion_gen;
     EXPECT(gen != 0u);
 
-    ear_obs_manager_poll(&f.om, 1000);
+    host_obs_poll(&f.om, 1000);
     EXPECT(g_emit.starts == 0u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(ear_obs_manager_n_pending(&f.om) == 0u);
@@ -2739,14 +2762,14 @@ static void test_p2_commit_rejects_unapproved_snapshot(void)
     EXPECT(ce_find_candidate(&f.ce, 780u, &after));
     EXPECT(after.state == AE_CAND_ACTIVE);
     EXPECT(!after.promotion_entered);
-    ear_obs_manager_poll(&f.om, 1500); /* drain EXIT from unadmit */
+    host_obs_poll(&f.om, 1500); /* drain EXIT from unadmit */
 
     ear_promotion_policy_diag_t pd0;
     ear_promotion_policy_get_diag(&f.pol, &pd0);
     const uint32_t promote_ok0 = pd0.promote_ok;
     for (int i = 0; i < 3; i++) {
         ear_promotion_policy_poll(&f.pol, (int64_t)(2000 + i * 1000));
-        ear_obs_manager_poll(&f.om, (int64_t)(2000 + i * 1000));
+        host_obs_poll(&f.om, (int64_t)(2000 + i * 1000));
     }
     ear_promotion_policy_diag_t pd1;
     ear_promotion_policy_get_diag(&f.pol, &pd1);
@@ -2791,7 +2814,7 @@ static void test_p2_classification_cleared_before_enter(void)
     clear_classification(&f.ce, 790u);
     EXPECT(!ce_get_classification(&f.ce, 790u, &cls0));
 
-    ear_obs_manager_poll(&f.om, 2000);
+    host_obs_poll(&f.om, 2000);
     EXPECT(g_emit.starts == 1u);
     EXPECT(g_emit.last_start_cand == 790u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 1u);
@@ -2849,7 +2872,7 @@ static void test_p2_stale_as001_across_gap(void)
     ear_promotion_policy_get_diag(&f.pol, &pd0);
     const uint32_t promote_ok0 = pd0.promote_ok;
     ear_promotion_policy_poll(&f.pol, 1000);
-    ear_obs_manager_poll(&f.om, 1000);
+    host_obs_poll(&f.om, 1000);
     ear_promotion_policy_diag_t pd1;
     ear_promotion_policy_get_diag(&f.pol, &pd1);
     EXPECT(pd1.promote_ok == promote_ok0);
@@ -2940,7 +2963,7 @@ static void test_p2_unadmit_gen_protects_newer(void)
     ear_obs_manager_on_activity_end_hint(&f.om, EAR_OBS_ACT_END_AMBIENT, 2000, 2100, true, -50.0f);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(ce_unadmit_promotion(&f.ce, 830u, gen1));
-    ear_obs_manager_poll(&f.om, 2200);
+    host_obs_poll(&f.om, 2200);
 
     EXPECT(ce_find_candidate(&f.ce, 830u, &c));
     EXPECT(!c.promotion_entered);
@@ -3065,7 +3088,7 @@ static bool e2e_drive(
         return false;
     }
     ear_promotion_policy_poll(&f->pol, now_mono_us);
-    ear_obs_manager_poll(&f->om, now_mono_us);
+    host_obs_poll(&f->om, now_mono_us);
     /* Observable CE → OM live-evidence path (must not be a no-op for rematch). */
     ear_obs_manager_feed_from_ce(&f->om, &f->ce);
     return true;
@@ -3312,11 +3335,11 @@ static void test_p2_as001_ce_om_lifecycle_e2e(void)
     E2E_REQUIRE(d0.detached_watchdog_end == 0u);
 
     /* Detached watchdog deadline → exactly one END; no duplicate. */
-    ear_obs_manager_poll(&f.om, detach_now + 999999LL);
+    host_obs_poll(&f.om, detach_now + 999999LL);
     E2E_REQUIRE(g_emit.ends == 0u);
     E2E_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
 
-    ear_obs_manager_poll(&f.om, detach_now + 1000000LL);
+    host_obs_poll(&f.om, detach_now + 1000000LL);
     E2E_REQUIRE(g_emit.ends == 1u);
     E2E_REQUIRE(ear_obs_manager_n_open(&f.om) == 0u);
     E2E_REQUIRE(sp_episode_registry_in_use_count(&f.reg) == 0u);
@@ -3329,8 +3352,8 @@ static void test_p2_as001_ce_om_lifecycle_e2e(void)
     E2E_REQUIRE(d1.detached_watchdog_end == 1u);
     E2E_REQUIRE(d1.end_done == 1u);
 
-    ear_obs_manager_poll(&f.om, detach_now + 2000000LL);
-    ear_obs_manager_poll(&f.om, detach_now + 3000000LL);
+    host_obs_poll(&f.om, detach_now + 2000000LL);
+    host_obs_poll(&f.om, detach_now + 3000000LL);
     E2E_REQUIRE(g_emit.ends == 1u);
     E2E_REQUIRE(g_emit.starts == 1u);
     E2E_REQUIRE(ear_obs_manager_n_open(&f.om) == 0u);
@@ -3447,7 +3470,7 @@ static void test_p3b_fifo_handoff_rejects_old_generation(void)
     E2E_REQUIRE(ce_unadmit_promotion(&f.ce, x, g1));
     E2E_REQUIRE(g_captured_exit_n == 1u);
     E2E_REQUIRE(g_captured_exit.candidate_id == x && g_captured_exit.promotion_gen == g1);
-    ear_obs_manager_poll(&f.om, detach_time);
+    host_obs_poll(&f.om, detach_time);
     E2E_REQUIRE(events.count == 2u && p3b_capacity_is(&f, 2u, 1u));
     E2E_REQUIRE(!f.om.bind[old_slot].ce_live);
     E2E_REQUIRE(f.om.bind[old_slot].detached_since_mono_us == detach_time);
@@ -3456,9 +3479,9 @@ static void test_p3b_fifo_handoff_rejects_old_generation(void)
     E2E_REQUIRE(e2e_drive(&f, &sig, sig.window_end_mono_us));
     E2E_REQUIRE(ce_find_candidate(&f.ce, x, &live));
     E2E_REQUIRE(live.state == AE_CAND_ACTIVE && !live.promotion_entered);
-    ear_obs_manager_poll(&f.om, deadline - 1);
+    host_obs_poll(&f.om, deadline - 1);
     E2E_REQUIRE(events.count == 2u && p3b_capacity_is(&f, 2u, 1u));
-    ear_obs_manager_poll(&f.om, deadline);
+    host_obs_poll(&f.om, deadline);
     E2E_REQUIRE(events.count == 4u);
     E2E_REQUIRE(!events.entries[2].start && events.entries[2].candidate_id == x);
     E2E_REQUIRE(strcmp(events.entries[2].id, events.entries[0].id) == 0);
@@ -3468,7 +3491,7 @@ static void test_p3b_fifo_handoff_rejects_old_generation(void)
     E2E_REQUIRE(p3b_capacity_is(&f, 2u, 0u));
 
     ear_promotion_policy_poll(&f.pol, 18500000);
-    ear_obs_manager_poll(&f.om, 18500000);
+    host_obs_poll(&f.om, 18500000);
     E2E_REQUIRE(ce_find_candidate(&f.ce, x, &live));
     const uint32_t g2 = live.promotion_gen;
     E2E_REQUIRE(live.state == AE_CAND_PROMOTED && g2 != 0u && g2 != g1);
@@ -3498,7 +3521,7 @@ static void test_p3b_fifo_handoff_rejects_old_generation(void)
     E2E_REQUIRE(f.om.bind[slot].last_owned_sig_window_seq == 18u);
 
     ear_obs_manager_on_promotion(&g_captured_exit, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, replay_time);
+    host_obs_poll(&f.om, replay_time);
     E2E_REQUIRE(events.count == 6u && p3b_capacity_is(&f, 2u, 0u));
     E2E_REQUIRE(find_bind_idx(&f, x) == slot && f.om.bind[slot].ce_live);
     E2E_REQUIRE(f.om.bind[slot].detached_since_mono_us == 0);
@@ -3525,7 +3548,7 @@ static void test_p3b_fifo_handoff_rejects_old_generation(void)
     E2E_REQUIRE(f.om.bind[slot].snap.sigs[0].window_seq == 19u);
     E2E_REQUIRE(f.om.bind[slot].snap.sigs[0].rms_dbfs == sig.rms_dbfs);
     E2E_REQUIRE(f.om.bind[slot].evidence_updates > updates);
-    ear_obs_manager_poll(&f.om, replay_time + 1000001);
+    host_obs_poll(&f.om, replay_time + 1000001);
     E2E_REQUIRE(events.count == 6u && g_emit.starts == 4u && g_emit.ends == 2u);
     E2E_REQUIRE(p3b_capacity_is(&f, 2u, 0u) && find_bind_idx(&f, c) == old_slot);
     E2E_REQUIRE(find_bind_idx(&f, x) == slot && f.om.bind[slot].ce_live);
@@ -3576,10 +3599,10 @@ static void test_p7_start_retry_same_identity(void)
     f.om.bind[bi].cls_wire.n_nodes = 1u;
     snprintf(f.om.bind[bi].cls_wire.nodes[0].id, EAR_CLS_NODE_ID_MAX, "SIREN");
 
-    ear_obs_manager_poll(&f.om, t0 + 999999);
+    host_obs_poll(&f.om, t0 + 999999);
     EXPECT(g_emit.starts == 1u);
 
-    ear_obs_manager_poll(&f.om, t0 + 1000000);
+    host_obs_poll(&f.om, t0 + 1000000);
     EXPECT(g_emit.starts == 2u);
     EXPECT(g_emit.sample_n == 2u);
     EXPECT(strcmp(g_emit.sample[0].id, g_emit.sample[1].id) == 0);
@@ -3616,7 +3639,7 @@ static void test_p7_assessment_frozen_across_retry(void)
     as2.om.bind[bi].cls_wire.present = true;
     as2.om.bind[bi].cls_wire.n_nodes = 1u;
     snprintf(as2.om.bind[bi].cls_wire.nodes[0].id, EAR_CLS_NODE_ID_MAX, "SIREN");
-    ear_obs_manager_poll(&as2.om, t0 + 1000000);
+    host_obs_poll(&as2.om, t0 + 1000000);
     EXPECT(g_emit.starts == 2u);
     EXPECT(!g_emit.sample[1].assess_present);
     EXPECT(g_emit.sample[1].assess[0] == '\0');
@@ -3633,14 +3656,14 @@ static void test_p7_retry_spacing_and_no_duplicate(void)
     const int64_t t0 = 7003LL * 1000;
     EXPECT(promote_with_reserve(&f, 7003u, t0));
     for (int64_t t = t0 + 100000; t < t0 + 1000000; t += 100000) {
-        ear_obs_manager_poll(&f.om, t);
+        host_obs_poll(&f.om, t);
     }
     EXPECT(g_emit.starts == 1u);
-    ear_obs_manager_poll(&f.om, t0 + 1000000);
+    host_obs_poll(&f.om, t0 + 1000000);
     EXPECT(g_emit.starts == 2u);
     const uint32_t accepted = g_emit.starts;
     for (int i = 0; i < 20; i++) {
-        ear_obs_manager_poll(&f.om, t0 + 1000000 + (int64_t)i * 100000);
+        host_obs_poll(&f.om, t0 + 1000000 + (int64_t)i * 100000);
     }
     EXPECT(g_emit.starts == accepted);
     fixture_fini(&f);
@@ -3657,10 +3680,10 @@ static void test_p7_periodic_suppressed_both_paths(void)
     ear_obs_manager_on_activity_periodic_hint(&f.om, t0 - 1000000, t0, true, -36.0f);
     EXPECT(g_emit.periodics == 0u);
     f.om.cfg.observation_interval_ms = 100u;
-    ear_obs_manager_poll(&f.om, t0 + 100000);
+    host_obs_poll(&f.om, t0 + 100000);
     EXPECT(g_emit.periodics == 0u);
     EXPECT(g_emit.starts == 1u);
-    ear_obs_manager_poll(&f.om, t0 + 1000000);
+    host_obs_poll(&f.om, t0 + 1000000);
     EXPECT(g_emit.starts == 2u);
     EXPECT(g_emit.periodics == 0u);
     ear_obs_manager_on_activity_periodic_hint(&f.om, 3000000, 4000000, true, -36.0f);
@@ -3682,7 +3705,7 @@ static void test_p7_silent_end_before_accept(void)
     EXPECT(g_emit.ends == 0u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(sp_episode_registry_in_use_count(&f.reg) == 0u);
-    ear_obs_manager_poll(&f.om, t0 + 5000000);
+    host_obs_poll(&f.om, t0 + 5000000);
     EXPECT(g_emit.starts == 1u);
     EXPECT(g_emit.ends == 0u);
 
@@ -3712,13 +3735,13 @@ static void test_p7_exit_and_watchdog_before_accept(void)
     EXPECT(ce_find_candidate(&stale.ce, 7010u, &c));
     c.promotion_gen = stale.om.bind[bi].ce_promotion_gen + 99u;
     ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &stale.om);
-    ear_obs_manager_poll(&stale.om, ts + 100000);
+    host_obs_poll(&stale.om, ts + 100000);
     EXPECT(stale.om.bind[bi].ce_live);
     EXPECT(g_emit.ends == 0u);
     ear_obs_manager_diag_t ds;
     ear_obs_manager_get_diag(&stale.om, &ds);
     EXPECT(ds.exit_stale >= 1u);
-    ear_obs_manager_poll(&stale.om, ts + 1000000);
+    host_obs_poll(&stale.om, ts + 1000000);
     EXPECT(g_emit.starts == 2u);
     EXPECT(g_emit.ends == 0u);
     EXPECT(ear_obs_manager_n_open(&stale.om) == 1u);
@@ -3733,14 +3756,14 @@ static void test_p7_exit_and_watchdog_before_accept(void)
     EXPECT(promote_with_reserve(&f, 7011u, t0));
     EXPECT(ce_find_candidate(&f.ce, 7011u, &c));
     ear_obs_manager_on_promotion(&c, CE_PROMOTION_EXIT, &f.om);
-    ear_obs_manager_poll(&f.om, t0);
+    host_obs_poll(&f.om, t0);
     const int live = find_bind_idx(&f, 7011u);
     EXPECT(live >= 0);
     EXPECT(!f.om.bind[live].ce_live);
     EXPECT(f.om.bind[live].detached_since_mono_us == t0);
     EXPECT(g_emit.ends == 0u);
     EXPECT(g_emit.starts == 1u);
-    ear_obs_manager_poll(&f.om, t0 + 1000000);
+    host_obs_poll(&f.om, t0 + 1000000);
     EXPECT(g_emit.ends == 0u);
     EXPECT(g_emit.starts == 1u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
@@ -3805,9 +3828,9 @@ static void test_p7_two_slots_independent(void)
     ear_obs_manager_on_activity_periodic_hint(&f.om, t_a, t_b, true, -34.0f);
     EXPECT(g_emit.periodics == 1u);
     EXPECT(g_emit.last_periodic_cand == 7031u);
-    ear_obs_manager_poll(&f.om, t_a + 999999);
+    host_obs_poll(&f.om, t_a + 999999);
     EXPECT(g_emit.starts == 2u);
-    ear_obs_manager_poll(&f.om, t_a + 1000000);
+    host_obs_poll(&f.om, t_a + 1000000);
     EXPECT(g_emit.starts == 3u);
     EXPECT(strcmp(g_emit.sample[2].id, g_emit.sample[0].id) == 0);
     EXPECT(g_emit.sample[2].gen == g_emit.sample[0].gen);
@@ -3829,7 +3852,7 @@ static void test_p7_stale_handle_and_fifo(void)
     char kept_id[SP_OBS_EPISODE_ID_LEN];
     memcpy(kept_id, stale.reg.slots[stale.om.bind[bi].ep.index].observation_id, sizeof(kept_id));
     stale.om.bind[bi].ep.generation = (uint16_t)(stale.om.bind[bi].ep.generation + 50u);
-    ear_obs_manager_poll(&stale.om, t_stale + 1000000);
+    host_obs_poll(&stale.om, t_stale + 1000000);
     EXPECT(g_emit.starts == 1u);
     EXPECT(stale.reg.slots[0].in_use || stale.reg.slots[1].in_use);
     EXPECT(sp_episode_registry_in_use_count(&stale.reg) == 1u);
@@ -3861,7 +3884,7 @@ static void test_p7_stale_handle_and_fifo(void)
     char neu_id[SP_OBS_EPISODE_ID_LEN];
     memcpy(neu_id, reuse.reg.slots[neu.index].observation_id, sizeof(neu_id));
     EXPECT(neu.generation != old_ep.generation);
-    ear_obs_manager_poll(&reuse.om, t_reuse + 1000000);
+    host_obs_poll(&reuse.om, t_reuse + 1000000);
     EXPECT(g_emit.starts == 1u);
     EXPECT(reuse.reg.slots[neu.index].in_use);
     EXPECT(strcmp(reuse.reg.slots[neu.index].observation_id, neu_id) == 0);
@@ -3906,7 +3929,7 @@ static void test_p7_ota_and_lock_and_corrupt_retry(void)
     plant(&before.ce, 7050u, AE_CAND_ACTIVE, 4u, -30.0f);
     EXPECT(promote_with_reserve(&before, 7050u, 1000000));
     ear_obs_manager_forget_bindings(&before.om);
-    ear_obs_manager_poll(&before.om, 1000000 + 10000000);
+    host_obs_poll(&before.om, 1000000 + 10000000);
     EXPECT(g_emit.starts == 1u);
     EXPECT(g_emit.ends == 0u);
     EXPECT(ear_obs_manager_n_open(&before.om) == 0u);
@@ -3924,7 +3947,7 @@ static void test_p7_ota_and_lock_and_corrupt_retry(void)
     EXPECT(g_emit.ends == 0u);
     EXPECT(after.reg.slots[accepted_index].in_use);
     EXPECT(after.reg.slots[accepted_index].start_publish_accepted);
-    ear_obs_manager_poll(&after.om, 1000000 + 10000000);
+    host_obs_poll(&after.om, 1000000 + 10000000);
     EXPECT(g_emit.starts == 1u);
     fixture_fini(&after);
 
@@ -3940,7 +3963,7 @@ static void test_p7_ota_and_lock_and_corrupt_retry(void)
     const int zi = find_bind_idx(&zero, 7052u);
     EXPECT(zi >= 0);
     zero.om.bind[zi].start_retry_not_before_mono_us = 0;
-    ear_obs_manager_poll(&zero.om, 1000000 + 10000000);
+    host_obs_poll(&zero.om, 1000000 + 10000000);
     EXPECT(g_emit.starts == 1u);
     ear_obs_manager_diag_t zd;
     ear_obs_manager_get_diag(&zero.om, &zd);
@@ -3957,7 +3980,7 @@ static void test_p7_ota_and_lock_and_corrupt_retry(void)
     const int ai = find_bind_idx(&ancient, 7053u);
     EXPECT(ai >= 0);
     ancient.om.bind[ai].start_retry_not_before_mono_us = 1;
-    ear_obs_manager_poll(&ancient.om, 1000000 + 10000000);
+    host_obs_poll(&ancient.om, 1000000 + 10000000);
     EXPECT(g_emit.starts == 2u);
     EXPECT(g_emit.fail_start_remaining == 3u);
     fixture_fini(&ancient);
@@ -4047,15 +4070,15 @@ static void test_p7_attempt_clock(void)
     EXPECT(f.om.bind[bi].start_retry_not_before_mono_us
            != g_clock_after_start_callback + 1000000);
 
-    ear_obs_manager_poll(&f.om, poll0 + 999999);
+    host_obs_poll(&f.om, poll0 + 999999);
     EXPECT(g_emit.starts == 1u);
-    ear_obs_manager_poll(&f.om, poll0 + 1000000);
+    host_obs_poll(&f.om, poll0 + 1000000);
     EXPECT(g_emit.starts == 2u);
     EXPECT(f.om.bind[bi].start_capture_mono_us == capture);
     EXPECT(g_emit.sample[1].capture == capture);
     EXPECT(f.om.bind[bi].start_last_attempt_mono_us == poll0 + 1000000);
     EXPECT(f.om.bind[bi].start_retry_not_before_mono_us == poll0 + 2000000);
-    ear_obs_manager_poll(&f.om, poll0 + 1999999);
+    host_obs_poll(&f.om, poll0 + 1999999);
     EXPECT(g_emit.starts == 2u);
     fixture_fini(&f);
 
@@ -4066,7 +4089,7 @@ static void test_p7_attempt_clock(void)
     age_evidence(&late.ce, 7101u, poll0 - 8000000);
     EXPECT(promote_with_reserve(&late, 7101u, poll0));
     EXPECT(g_emit.starts == 1u);
-    ear_obs_manager_poll(&late.om, poll0 + 10000000);
+    host_obs_poll(&late.om, poll0 + 10000000);
     EXPECT(g_emit.starts == 2u);
     const int li = find_bind_idx(&late, 7101u);
     EXPECT(li >= 0);
@@ -4101,7 +4124,7 @@ static void test_p7_prepare_reuses_after_failed_publish(void)
     f.om.bind[bi].cls_wire.present = true;
     f.om.bind[bi].cls_wire.n_nodes = 1u;
     snprintf(f.om.bind[bi].cls_wire.nodes[0].id, EAR_CLS_NODE_ID_MAX, "SIREN");
-    ear_obs_manager_poll(&f.om, t0 + 1000000);
+    host_obs_poll(&f.om, t0 + 1000000);
     EXPECT(g_emit.starts == 2u);
     EXPECT(g_prepare_builds == 1);
     EXPECT(g_prepared.l0.rms_mean_dbfs == -22.5f);
@@ -4127,10 +4150,393 @@ static void test_p7_accepted_start_failed_end_still_releases(void)
     EXPECT(g_emit.ends == 1u);
     EXPECT(ear_obs_manager_n_open(&f.om) == 0u);
     EXPECT(sp_episode_registry_in_use_count(&f.reg) == 0u);
-    ear_obs_manager_poll(&f.om, 10000000);
+    host_obs_poll(&f.om, 10000000);
     EXPECT(g_emit.starts == 1u);
     EXPECT(g_emit.ends == 1u);
     fixture_fini(&f);
+}
+
+static int64_t pending_promote_us(const fixture_t *f, uint64_t cid)
+{
+    for (uint8_t i = 0; i < EAR_OBS_MGR_PENDING_CAP; i++) {
+        if (f->om.pending[i].in_use && !f->om.pending[i].cancelled
+            && f->om.pending[i].candidate_id == cid) {
+            return f->om.pending[i].snap.promote_mono_us;
+        }
+    }
+    return -1;
+}
+
+/**
+ * Aged activity END, then FIFO handoff. Capture stays the END anchor.
+ * Attempt time is the pinned monotonic clock, not the END report and not
+ * the queued promotion snapshot.
+ */
+static void test_p7_fifo_end_anchor_and_attempt_clock(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    g_emit.fail_start_remaining = 8u;
+    g_mono_pinned = true;
+    g_mono_now = 25000000;
+    plant(&f.ce, 7201u, AE_CAND_ACTIVE, 4u, -30.0f);
+    plant(&f.ce, 7202u, AE_CAND_ACTIVE, 4u, -31.0f);
+    plant(&f.ce, 7203u, AE_CAND_ACTIVE, 4u, -32.0f);
+    age_evidence(&f.ce, 7203u, 1000000);
+    EXPECT(promote_with_reserve(&f, 7201u, 7201000));
+    EXPECT(promote_with_reserve(&f, 7202u, 7202000));
+    EXPECT(promote_with_reserve(&f, 7203u, 1000000));
+    EXPECT(ear_obs_manager_n_open(&f.om) == 2u);
+    EXPECT(ear_obs_manager_n_pending(&f.om) == 1u);
+    const int direct = find_bind_idx(&f, 7201u);
+    EXPECT(direct >= 0);
+    EXPECT(f.om.bind[direct].start_mono_us == 7201LL * 1000);
+    EXPECT(f.om.bind[direct].start_capture_mono_us == 7201LL * 1000);
+    EXPECT(f.om.bind[direct].start_last_attempt_mono_us == 25000000);
+    const int64_t promo = pending_promote_us(&f, 7203u);
+    EXPECT(promo == 1000000);
+    const int64_t handoff = 9000000;
+    EXPECT(promo != handoff);
+    g_mono_now = 25000000;
+    ear_obs_manager_on_activity_end_hint(
+        &f.om, EAR_OBS_ACT_END_AMBIENT, handoff - 1000000, handoff, true, -50.0f
+    );
+    EXPECT(g_emit.starts == 3u);
+    EXPECT(g_emit.ends == 0u);
+    const int bi = find_bind_idx(&f, 7203u);
+    EXPECT(bi >= 0);
+    EXPECT(f.om.bind[bi].start_mono_us == handoff);
+    EXPECT(f.om.bind[bi].start_capture_mono_us == handoff);
+    EXPECT(f.om.bind[bi].start_capture_mono_us != promo);
+    EXPECT(g_emit.sample[2].capture == handoff);
+    EXPECT(g_emit.sample[2].capture != promo);
+    const sp_episode_slot_t *slot = &f.reg.slots[f.om.bind[bi].ep.index];
+    EXPECT(slot->episode_start_mono_us == handoff);
+    EXPECT(slot->episode_start_mono_us != promo);
+    EXPECT(slot->observation_interval_ms == 1000u);
+    EXPECT(f.om.bind[bi].start_last_attempt_mono_us == 25000000);
+    EXPECT(f.om.bind[bi].start_last_attempt_mono_us != handoff);
+    EXPECT(f.om.bind[bi].start_retry_not_before_mono_us == 26000000);
+    g_mono_pinned = false;
+    host_obs_poll(&f.om, 25999999);
+    EXPECT(g_emit.starts == 3u);
+    host_obs_poll(&f.om, 26000000);
+    EXPECT(g_emit.starts == 4u);
+    EXPECT(f.om.bind[bi].start_capture_mono_us == handoff);
+    EXPECT(g_emit.sample[3].capture == handoff);
+    EXPECT(f.om.bind[bi].start_last_attempt_mono_us == 26000000);
+    fixture_fini(&f);
+}
+
+/** Aged AS-002 absence window, then FIFO handoff. Same three-way split. */
+static void test_p7_fifo_absence_anchor_and_attempt_clock(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    f.om.cfg.as002_signature_absence_hold_ms = 1000u;
+    g_emit.fail_start_remaining = 8u;
+    g_mono_pinned = true;
+    g_mono_now = 30000000;
+    plant(&f.ce, 7301u, AE_CAND_ACTIVE, 4u, -30.0f);
+    plant(&f.ce, 7302u, AE_CAND_ACTIVE, 4u, -31.0f);
+    plant(&f.ce, 7303u, AE_CAND_ACTIVE, 4u, -32.0f);
+    age_evidence(&f.ce, 7303u, 1500000);
+    EXPECT(promote_as002_with_reserve(&f, 7301u, 7301000));
+    EXPECT(promote_with_reserve(&f, 7302u, 7302000));
+    EXPECT(promote_with_reserve(&f, 7303u, 1500000));
+    EXPECT(ear_obs_manager_n_pending(&f.om) == 1u);
+    const int64_t promo = pending_promote_us(&f, 7303u);
+    EXPECT(promo == 1500000);
+    const int64_t handoff = 8000000;
+    g_mono_now = 30000000;
+    ear_obs_manager_on_as002_siren_window(
+        &f.om, true, false, 1000u, handoff, true, -40.0f
+    );
+    EXPECT(g_emit.starts == 3u);
+    EXPECT(g_emit.ends == 0u);
+    const int bi = find_bind_idx(&f, 7303u);
+    EXPECT(bi >= 0);
+    EXPECT(f.om.bind[bi].start_mono_us == handoff);
+    EXPECT(f.om.bind[bi].start_capture_mono_us == handoff);
+    EXPECT(f.om.bind[bi].start_capture_mono_us != promo);
+    EXPECT(g_emit.sample[2].capture == handoff);
+    const sp_episode_slot_t *slot = &f.reg.slots[f.om.bind[bi].ep.index];
+    EXPECT(slot->episode_start_mono_us == handoff);
+    EXPECT(slot->observation_interval_ms == 1000u);
+    EXPECT(f.om.bind[bi].start_last_attempt_mono_us == 30000000);
+    EXPECT(f.om.bind[bi].start_last_attempt_mono_us != handoff);
+    EXPECT(f.om.bind[bi].start_retry_not_before_mono_us == 31000000);
+    fixture_fini(&f);
+}
+
+/**
+ * Two due bindings in one poll. The first callback blocks past one second.
+ * Each binding is attempted once. The second deadline follows its own sample.
+ */
+static void test_p7_two_due_bindings_blocking_callback(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    g_emit.fail_start_remaining = 10u;
+    g_mono_pinned = true;
+    g_mono_now = 40000000;
+    plant(&f.ce, 7401u, AE_CAND_ACTIVE, 4u, -30.0f);
+    plant(&f.ce, 7402u, AE_CAND_ACTIVE, 4u, -31.0f);
+    EXPECT(promote_with_reserve(&f, 7401u, 7401000));
+    EXPECT(promote_with_reserve(&f, 7402u, 7402000));
+    EXPECT(g_emit.starts == 2u);
+    const int a = find_bind_idx(&f, 7401u);
+    const int b = find_bind_idx(&f, 7402u);
+    EXPECT(a == 0 && b == 1);
+    EXPECT(f.om.bind[a].start_last_attempt_mono_us == 40000000);
+    EXPECT(f.om.bind[b].start_last_attempt_mono_us == 40000000);
+    g_start_callback_consume_us = 1500000;
+    g_mono_pinned = false;
+    const int64_t retry_at = 41000000;
+    host_obs_poll(&f.om, retry_at);
+    EXPECT(g_emit.starts == 4u);
+    EXPECT(f.om.bind[a].start_last_attempt_mono_us == retry_at);
+    EXPECT(f.om.bind[a].start_retry_not_before_mono_us == retry_at + 1000000);
+    EXPECT(f.om.bind[b].start_last_attempt_mono_us == retry_at + 1500000);
+    EXPECT(f.om.bind[b].start_retry_not_before_mono_us == retry_at + 2500000);
+    EXPECT(f.om.bind[a].start_capture_mono_us == 7401LL * 1000);
+    EXPECT(f.om.bind[b].start_capture_mono_us == 7402LL * 1000);
+    g_start_callback_consume_us = 0;
+    host_obs_poll(&f.om, retry_at + 1000000);
+    EXPECT(g_emit.starts == 5u);
+    EXPECT(f.om.bind[b].start_last_attempt_mono_us == retry_at + 1500000);
+    fixture_fini(&f);
+}
+
+/** One poll both admits and is already past the retry deadline. Still one START. */
+static void test_p7_same_poll_admits_without_retry(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    g_emit.fail_start_remaining = 1u;
+    g_start_callback_consume_us = 2000000;
+    g_mono_pinned = true;
+    g_mono_now = 50000000;
+    plant(&f.ce, 7501u, AE_CAND_ACTIVE, 4u, -30.0f);
+    const int64_t capture = 45000000;
+    age_evidence(&f.ce, 7501u, capture);
+    EXPECT(promote_with_reserve(&f, 7501u, 50000000));
+    EXPECT(g_emit.starts == 1u);
+    const int bi = find_bind_idx(&f, 7501u);
+    EXPECT(bi >= 0);
+    EXPECT(f.om.bind[bi].start_capture_mono_us == capture);
+    EXPECT(f.om.bind[bi].start_last_attempt_mono_us == 50000000);
+    EXPECT(f.om.bind[bi].start_retry_not_before_mono_us == 51000000);
+    EXPECT(f.om.bind[bi].start_retry_not_before_mono_us != capture + 1000000);
+    EXPECT(g_mono_now == 52000000);
+    fixture_fini(&f);
+}
+
+/** A poll ten seconds late retries once and arms the next deadline from that sample. */
+static void test_p7_late_poll_one_retry(void)
+{
+    fixture_t f;
+    fixture_init(&f, false);
+    g_emit.fail_start_remaining = 4u;
+    g_mono_pinned = true;
+    g_mono_now = 60000000;
+    plant(&f.ce, 7601u, AE_CAND_ACTIVE, 4u, -30.0f);
+    age_evidence(&f.ce, 7601u, 1000000);
+    EXPECT(promote_with_reserve(&f, 7601u, 60000000));
+    EXPECT(g_emit.starts == 1u);
+    g_mono_pinned = false;
+    host_obs_poll(&f.om, 70000000);
+    EXPECT(g_emit.starts == 2u);
+    const int bi = find_bind_idx(&f, 7601u);
+    EXPECT(bi >= 0);
+    EXPECT(f.om.bind[bi].start_last_attempt_mono_us == 70000000);
+    EXPECT(f.om.bind[bi].start_retry_not_before_mono_us == 71000000);
+    EXPECT(f.om.bind[bi].start_capture_mono_us == 1000000);
+    host_obs_poll(&f.om, 70999999);
+    EXPECT(g_emit.starts == 2u);
+    fixture_fini(&f);
+}
+
+static fixture_t *g_lock_fx;
+static int g_lock_depth;
+static int g_lock_takes;
+static int g_lock_gives;
+static int g_lock_max_depth;
+static bool g_accepted_at_first_give;
+static bool g_ota_saw_accepted;
+static sp_obs_emit_gate_t g_section_gate;
+
+static bool registry_has_accepted_start(const fixture_t *f)
+{
+    for (uint8_t i = 0; i < SP_OBS_EPISODE_SLOTS; i++) {
+        if (f->reg.slots[i].in_use && f->reg.slots[i].start_publish_accepted) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void lock_reset(fixture_t *f)
+{
+    g_lock_fx = f;
+    g_lock_depth = 0;
+    g_lock_takes = 0;
+    g_lock_gives = 0;
+    g_lock_max_depth = 0;
+    g_accepted_at_first_give = false;
+    g_ota_saw_accepted = false;
+    g_section_gate = SP_OBS_GATE_RUN;
+}
+
+static void section_lock_take(void *ctx)
+{
+    (void)ctx;
+    g_lock_takes++;
+    g_lock_depth++;
+    if (g_lock_depth > g_lock_max_depth) {
+        g_lock_max_depth = g_lock_depth;
+    }
+    EXPECT(g_lock_depth == 1);
+}
+
+static void section_lock_give(void *ctx)
+{
+    (void)ctx;
+    if (g_lock_gives == 0 && g_lock_fx != NULL) {
+        g_accepted_at_first_give = registry_has_accepted_start(g_lock_fx);
+    }
+    EXPECT(g_lock_depth == 1);
+    g_lock_gives++;
+    g_lock_depth--;
+}
+
+static void ota_close_body(void *ctx)
+{
+    (void)ctx;
+    if (g_lock_fx != NULL) {
+        g_ota_saw_accepted = registry_has_accepted_start(g_lock_fx);
+        ear_obs_manager_forget_bindings(&g_lock_fx->om);
+    }
+    g_section_gate = SP_OBS_GATE_CLOSED;
+}
+
+static bool queue_as001_without_poll(fixture_t *f, uint64_t cid)
+{
+    mark_as001_relevant(&f->ce, cid);
+    ear_obs_rsv_handle_t h;
+    if (ear_obs_manager_reserve(&f->om, &h) != EAR_OBS_RSV_OK) {
+        return false;
+    }
+    if (!ear_obs_manager_bind_reservation_candidate(&f->om, h, cid)) {
+        ear_obs_manager_release_reservation(&f->om, h);
+        return false;
+    }
+    if (!ear_obs_manager_stamp_reservation_relevance(
+            &f->om, h, cid, AS_PROFILE_ID_AS001, 1.0f
+        )) {
+        ear_obs_manager_release_reservation(&f->om, h);
+        return false;
+    }
+    if (!ce_promote(&f->ce, cid)) {
+        ear_obs_manager_release_reservation(&f->om, h);
+        return false;
+    }
+    return true;
+}
+
+/**
+ * Production section: ear_sig_product_poll_in_section runs a real Observation
+ * Manager START. Acceptance is visible at the first give. OTA uses
+ * ear_obs_lifecycle_section on the same lock.
+ */
+static void test_p7_product_section_start_before_unlock(void)
+{
+    ear_obs_lifecycle_lock_ops_t lock = {
+        .take = section_lock_take,
+        .give = section_lock_give,
+        .lock_ctx = NULL,
+    };
+
+    fixture_t win;
+    fixture_init(&win, true);
+    lock_reset(&win);
+    g_mono_now = 80000000;
+    plant(&win.ce, 7701u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(queue_as001_without_poll(&win, 7701u));
+    ear_sig_product_t prod = {
+        .om = &win.om,
+        .policy = &win.pol,
+        .ce = &win.ce,
+        .ready = true,
+    };
+    ear_sig_product_section_args_t args = {
+        .prod = &prod,
+        .now_mono_us = 80000000,
+        .before_poll = NULL,
+        .after_poll = NULL,
+        .before_ctx = NULL,
+    };
+    EXPECT(
+        ear_sig_product_poll_in_section(&lock, &g_section_gate, &args)
+        == EAR_OBS_LIFECYCLE_SECTION_RAN
+    );
+    EXPECT(g_emit.starts == 1u);
+    EXPECT(g_accepted_at_first_give);
+    EXPECT(registry_has_accepted_start(&win));
+    EXPECT(g_lock_takes == 1);
+    EXPECT(g_lock_gives == 1);
+    EXPECT(g_lock_depth == 0);
+    EXPECT(g_lock_max_depth == 1);
+    EXPECT(
+        ear_obs_lifecycle_section(&lock, NULL, ota_close_body, NULL)
+        == EAR_OBS_LIFECYCLE_SECTION_RAN
+    );
+    EXPECT(g_ota_saw_accepted);
+    EXPECT(g_section_gate == SP_OBS_GATE_CLOSED);
+    EXPECT(ear_obs_manager_n_open(&win.om) == 0u);
+    const uint32_t starts_after_ota = g_emit.starts;
+    EXPECT(
+        ear_sig_product_poll_in_section(&lock, &g_section_gate, &args)
+        == EAR_OBS_LIFECYCLE_SECTION_SKIPPED_GATE
+    );
+    EXPECT(g_emit.starts == starts_after_ota);
+    EXPECT(g_lock_takes == g_lock_gives);
+    EXPECT(g_lock_depth == 0);
+    EXPECT(g_lock_max_depth == 1);
+    fixture_fini(&win);
+
+    fixture_t ota_first;
+    fixture_init(&ota_first, true);
+    lock_reset(&ota_first);
+    g_mono_now = 81000000;
+    plant(&ota_first.ce, 7702u, AE_CAND_ACTIVE, 4u, -30.0f);
+    EXPECT(queue_as001_without_poll(&ota_first, 7702u));
+    ear_sig_product_t prod_b = {
+        .om = &ota_first.om,
+        .policy = &ota_first.pol,
+        .ce = &ota_first.ce,
+        .ready = true,
+    };
+    ear_sig_product_section_args_t args_b = {
+        .prod = &prod_b,
+        .now_mono_us = 81000000,
+    };
+    EXPECT(
+        ear_obs_lifecycle_section(&lock, NULL, ota_close_body, NULL)
+        == EAR_OBS_LIFECYCLE_SECTION_RAN
+    );
+    EXPECT(!g_ota_saw_accepted);
+    EXPECT(g_section_gate == SP_OBS_GATE_CLOSED);
+    EXPECT(
+        ear_sig_product_poll_in_section(&lock, &g_section_gate, &args_b)
+        == EAR_OBS_LIFECYCLE_SECTION_SKIPPED_GATE
+    );
+    EXPECT(g_emit.starts == 0u);
+    EXPECT(!registry_has_accepted_start(&ota_first));
+    EXPECT(g_lock_takes == g_lock_gives);
+    EXPECT(g_lock_depth == 0);
+    EXPECT(g_lock_max_depth == 1);
+    fixture_fini(&ota_first);
 }
 
 int main(void)
@@ -4221,6 +4627,12 @@ int main(void)
     test_p7_attempt_clock();
     test_p7_prepare_reuses_after_failed_publish();
     test_p7_accepted_start_failed_end_still_releases();
+    test_p7_fifo_end_anchor_and_attempt_clock();
+    test_p7_fifo_absence_anchor_and_attempt_clock();
+    test_p7_two_due_bindings_blocking_callback();
+    test_p7_same_poll_admits_without_retry();
+    test_p7_late_poll_one_retry();
+    test_p7_product_section_start_before_unlock();
 
     if (g_failures != 0) {
         fprintf(stderr, "%d failure(s)\n", g_failures);

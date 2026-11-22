@@ -226,6 +226,14 @@ typedef struct {
      */
     uint32_t detached_end_timeout_ms;
     ear_obs_binding_released_fn on_binding_released;
+    /**
+     * Monotonic clock sampled immediately before each START publication
+     * attempt. Independent of the capture anchor and of any poll or END
+     * timestamp the caller passed in. NULL keeps the caller's fallback,
+     * which device code does not use.
+     */
+    int64_t (*mono_now_us)(void *ctx);
+    void *mono_now_ctx;
 } ear_obs_manager_config_t;
 
 typedef struct {
@@ -318,12 +326,16 @@ bool ear_obs_manager_stamp_reservation_relevance(
     float match_distance
 );
 
+/**
+ * Direct admission uses the snapshot promotion/evidence time as the START
+ * capture anchor. attempt_fallback_us is used only when mono_now_us is NULL.
+ */
 bool ear_obs_manager_commit_reservation(
     ear_obs_manager_t *om,
     ear_obs_rsv_handle_t h,
     uint64_t candidate_id,
     const ear_obs_promote_snapshot_t *snapshot,
-    int64_t attempt_mono_us
+    int64_t attempt_fallback_us
 );
 
 void ear_obs_manager_release_reservation(
