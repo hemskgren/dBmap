@@ -225,6 +225,71 @@ def _assert_same_measurement_interval(left: dict, right: dict) -> None:
     assert left["acoustic"]["dynamics"] == right["acoustic"]["dynamics"]
     assert left["acoustic"]["measurements"]["window_count"] > 0, "window_count must be populated"
     assert left["acoustic"]["measurements"]["rms"]["mean_dbfs"] not in (None, 0)
+    _assert_populated_scene(left["acoustic"])
+    _assert_populated_scene(right["acoustic"])
+
+
+def _near(expect: float):
+    # Firmware statistics are float32. Compare the JSON number, not the text.
+    return pytest.approx(expect, rel=1e-5, abs=1e-5)
+
+
+def _assert_populated_scene(acoustic: dict) -> None:
+    """Require the shared scene fixture on one report, independent of its pair."""
+    measurements = acoustic["measurements"]
+    assert isinstance(measurements, dict)
+    assert measurements["schema"] == "l0"
+    assert measurements["version"] == 1
+    assert measurements["window_count"] == 4, "L0 window_count must match the scene fixture"
+    assert measurements["rms"]["mean_dbfs"] == _near(-31.5), (
+        "L0 rms mean must match the scene fixture"
+    )
+    assert measurements["bands"]["mean_dbfs"][0] == _near(-33.0)
+    signature = acoustic.get("signature")
+    assert isinstance(signature, dict), "L1 signature must be present"
+    assert signature["schema"] == "l1"
+    assert signature["version"] == 1
+    assert signature["window_count"] == 4, "L1 window_count must match the scene fixture"
+    assert signature["centroid_hz"]["mean"] == _near(812.5), (
+        "L1 centroid mean must match the scene fixture"
+    )
+    assert signature["flatness"]["mean"] == _near(0.25)
+    dynamics = acoustic.get("dynamics")
+    assert isinstance(dynamics, dict), "L2 dynamics must be present"
+    assert dynamics["schema"] == "l2"
+    assert dynamics["version"] == 1
+    assert dynamics["window_count"] == 4, "L2 window_count must match the scene fixture"
+    assert dynamics["spectral_flux"]["mean"] == _near(0.375), (
+        "L2 spectral flux mean must match the scene fixture"
+    )
+    assert dynamics["dominant_delta_hz"]["mean"] == _near(15.625)
+
+
+def _assert_semantic(got: object, expect: object, label: str) -> None:
+    if expect is None or got is None:
+        assert got is None and expect is None, f"{label} must match the wire"
+        return
+    if isinstance(expect, dict):
+        assert isinstance(got, dict), f"{label} must match the wire"
+        assert set(got) == set(expect), f"{label} keys must match the wire"
+        for key, value in expect.items():
+            _assert_semantic(got[key], value, f"{label}.{key}")
+        return
+    if isinstance(expect, list):
+        assert isinstance(got, list) and len(got) == len(expect), f"{label} must match the wire"
+        for index, value in enumerate(expect):
+            _assert_semantic(got[index], value, f"{label}[{index}]")
+        return
+    if isinstance(expect, bool):
+        assert got == expect, f"{label} must match the wire"
+        return
+    if isinstance(expect, (int, float)):
+        assert isinstance(got, (int, float)) and not isinstance(got, bool), (
+            f"{label} must match the wire"
+        )
+        assert got == _near(float(expect)), f"{label} must match the wire"
+        return
+    assert got == expect, f"{label} must match the wire"
 
 
 def _assert_critical_timeline(found: dict[int, dict]) -> None:
@@ -372,9 +437,21 @@ def assert_readback_contract(
         else:
             assert item.context.origin == "critical_path", "list readback lost critical origin"
             assert item.acoustic.assessment is None
+            assert item.acoustic.signature is None
+            assert item.acoustic.dynamics is None
         assert dumped[seq]["context"]["termination_reason"] == doc["context"].get(
             "termination_reason"
         )
+        listed_acoustic = dumped[seq]["acoustic"]
+        wire_acoustic = doc["acoustic"]
+        _assert_semantic(
+            listed_acoustic.get("assessment"),
+            wire_acoustic.get("assessment"),
+            "assessment",
+        )
+        _assert_semantic(listed_acoustic["measurements"], wire_acoustic["measurements"], "L0")
+        _assert_semantic(listed_acoustic.get("signature"), wire_acoustic.get("signature"), "L1")
+        _assert_semantic(listed_acoustic.get("dynamics"), wire_acoustic.get("dynamics"), "L2")
     _assert_same_measurement_interval(dumped[3], dumped[4])
     _assert_critical_timeline(dumped)
     for seq in (5, 6, 7):
@@ -574,6 +651,41 @@ def test_empty_scene_fails_contract() -> None:
         assert_wire_contract(docs)
 
 
+def _zero_l1(signature: dict) -> None:
+    signature["window_count"] = 0
+    signature["invalid_window_count"] = 0
+    for name in ("centroid_hz", "bandwidth_hz", "dominant_hz", "flatness"):
+        signature[name]["mean"] = None
+        signature[name]["stdev"] = None
+
+
+def _zero_l2(dynamics: dict) -> None:
+    dynamics["window_count"] = 0
+    dynamics["invalid_window_count"] = 0
+    for name in ("spectral_flux", "envelope_cv", "dominant_delta_hz"):
+        dynamics[name]["valid_count"] = 0
+        dynamics[name]["mean"] = None
+        dynamics[name]["stdev"] = None
+
+
+def test_zero_periodic_l1_fails_contract() -> None:
+    _topic, loaded = _load_corpus()
+    docs = [copy.deepcopy(doc) for _raw, doc in loaded]
+    for seq in (3, 4):
+        _zero_l1(_at(_by_sequence(docs), seq)["acoustic"]["signature"])
+    with pytest.raises(AssertionError, match="L1 window_count must match the scene fixture"):
+        assert_wire_contract(docs)
+
+
+def test_zero_periodic_l2_fails_contract() -> None:
+    _topic, loaded = _load_corpus()
+    docs = [copy.deepcopy(doc) for _raw, doc in loaded]
+    for seq in (3, 4):
+        _zero_l2(_at(_by_sequence(docs), seq)["acoustic"]["dynamics"])
+    with pytest.raises(AssertionError, match="L2 window_count must match the scene fixture"):
+        assert_wire_contract(docs)
+
+
 def test_missing_critical_origin_fails_contract() -> None:
     _topic, loaded = _load_corpus()
     docs = [copy.deepcopy(doc) for _raw, doc in loaded]
@@ -712,6 +824,68 @@ def test_readback_missing_origin_fails_contract() -> None:
     ]
     with pytest.raises(AssertionError, match="list readback lost critical origin"):
         assert_readback_contract(docs, items, node_id)
+
+
+def _listed_items() -> tuple[str, list[dict], list[ObservationView]]:
+    topic, loaded = _load_corpus()
+    docs = [doc for _raw, doc in loaded]
+    node_id = parse_observation_topic(topic)
+    assert node_id is not None
+    with _session() as db:
+        page = list_observations_page(db, node_id, page=1, page_size=50, order="oldest")
+    return node_id, docs, list(page.items)
+
+
+def _replace_listed(items: list[ObservationView], seq: int, mutate) -> list[ObservationView]:
+    target = next(item for item in items if item.identity.sequence_number == seq)
+    damaged = _view_payload(target)
+    mutate(damaged)
+    damaged["received_time_utc"] = target.received_time_utc
+    replacement = ObservationView.model_validate(damaged)
+    return [replacement if item.identity.sequence_number == seq else item for item in items]
+
+
+def test_readback_removed_l1_l2_fails_contract() -> None:
+    node_id, docs, items = _listed_items()
+
+    def clear_scene(payload: dict) -> None:
+        payload["acoustic"]["signature"] = None
+        payload["acoustic"]["dynamics"] = None
+
+    for seq in (3, 4):
+        items = _replace_listed(items, seq, clear_scene)
+    with pytest.raises(AssertionError, match="L1 must match the wire"):
+        assert_readback_contract(docs, items, node_id)
+
+
+def test_readback_confidence_change_fails_contract() -> None:
+    node_id, docs, items = _listed_items()
+
+    def change_confidence(payload: dict) -> None:
+        payload["acoustic"]["assessment"]["path"][0]["confidence"] = 0.1
+
+    items = _replace_listed(items, 3, change_confidence)
+    with pytest.raises(AssertionError, match="confidence must match the wire"):
+        assert_readback_contract(docs, items, node_id)
+
+
+def test_readback_l1_statistic_change_fails_contract() -> None:
+    node_id, docs, items = _listed_items()
+
+    def change_centroid(payload: dict) -> None:
+        payload["acoustic"]["signature"]["centroid_hz"]["mean"] = 1.0
+
+    items = _replace_listed(items, 3, change_centroid)
+    with pytest.raises(AssertionError, match=r"L1\.centroid_hz\.mean must match the wire"):
+        assert_readback_contract(docs, items, node_id)
+
+
+def test_contract_database_is_under_pytest_basetemp(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    assert _ContractDb.path is not None
+    base = tmp_path_factory.getbasetemp().resolve()
+    assert _ContractDb.path.resolve().is_relative_to(base)
 
 
 def _fresh_sequence_copy(doc: dict, sequence: int) -> dict:

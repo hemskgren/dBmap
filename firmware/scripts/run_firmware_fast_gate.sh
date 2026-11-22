@@ -951,9 +951,12 @@ run_observation_publish_contract() {
     return 1
   fi
   local pytest_rc=0
+  local pytest_tmp="${CONTRACT_TMP}/pytest"
+  mkdir -p "${pytest_tmp}"
   (
     cd "${hub}" && DBMAP_OBS_CONTRACT_DIR="${reports}" \
-      uv run pytest tests/test_observation_publish_contract.py -q
+      uv run pytest tests/test_observation_publish_contract.py -q \
+      --basetemp "${pytest_tmp}"
   ) || pytest_rc=$?
   if [[ "${pytest_rc}" -ne 0 ]]; then
     log "FAIL  contract hub pytest rc=${pytest_rc}"
