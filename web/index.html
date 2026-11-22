@@ -607,6 +607,10 @@
             </div>
             <p id="hub-monitoring-warning" class="notice" hidden></p>
             <dl id="hub-monitor-meta" class="meta"></dl>
+            <section id="hub-public-monitoring" hidden>
+              <h4>Public endpoints from this Hub</h4>
+              <div id="hub-public-components" class="overview-grid"></div>
+            </section>
             <h4>Monitored components</h4>
             <div id="component-list" class="component-list" aria-live="polite"><p class="notice">Checking Hub components…</p></div>
             <div id="component-details" hidden></div>
@@ -2151,7 +2155,46 @@
         return `Hub was not running for ${formatDurationSeconds(seconds)}${latestBit}. A stopped Hub container is recorded the same way as the computer being off, and that time is left out of the percentage.`;
       }
 
+      function renderPublicMonitoring(components) {
+        const section = document.getElementById('hub-public-monitoring');
+        const container = document.getElementById('hub-public-components');
+        const open = new Set(Array.from(container.querySelectorAll('details[open]'), (item) => item.dataset.component));
+        container.replaceChildren();
+        const entries = Object.entries(components || {});
+        section.hidden = entries.length === 0;
+        for (const [id, component] of entries) {
+          const card = el('article', null, 'overview-card');
+          card.append(el('h5', component.label));
+          const meta = el('dl', null, 'meta');
+          const states = { ok: 'Available', offline: 'Unavailable', unknown: 'Unobserved' };
+          addDetailField(meta, 'Status', states[component.state] || 'Unobserved');
+          if (component.reason) addDetailField(meta, 'Reason', component.reason);
+          addDetailField(meta, 'Last check', component.checked_at ? formatSeen(component.checked_at) : 'None yet');
+          for (const name of ['24h', '7d', '30d']) {
+            const window = component.windows?.[name];
+            addDetailField(meta, name, formatAvailabilityWindow(window));
+            if (window) addDetailField(meta, `${name} eligible`, formatDurationSeconds(window.eligible_seconds));
+          }
+          card.append(meta);
+          if (component.recent_events?.length) {
+            const events = el('details');
+            events.dataset.component = id;
+            events.open = open.has(id);
+            events.append(el('summary', 'Recent transitions'));
+            const list = el('ul');
+            for (const event of component.recent_events) {
+              const state = states[event.new_state] || 'Unobserved';
+              list.append(el('li', `${formatSeen(event.occurred_at)} · ${state}${event.reason ? ` · ${event.reason}` : ''}`));
+            }
+            events.append(list);
+            card.append(events);
+          }
+          container.append(card);
+        }
+      }
+
       function renderHubMonitoring(monitoring) {
+        renderPublicMonitoring(monitoring?.public_components);
         const health = monitoring?.health || {};
         const availability = monitoring?.availability || {};
         const windows = availability.windows || {};
@@ -2524,6 +2567,7 @@
           document.getElementById('hub-api-availability-24h').textContent = '—';
           document.getElementById('hub-web-availability-24h').textContent = '—';
           document.getElementById('hub-monitoring-warning').hidden = true;
+          renderPublicMonitoring();
           document.getElementById('hub-monitor-meta').replaceChildren();
           document.getElementById('hub-monitor-events-panel').open = false;
           document.getElementById('hub-monitor-events').replaceChildren();

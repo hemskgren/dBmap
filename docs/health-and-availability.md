@@ -28,10 +28,12 @@ Every `DBMAP_HUB_MONITOR_INTERVAL_S` seconds (default **60**), a background thre
 1. Probes API/database, Nginx, Web, MQTT, and OPA.
 2. Optionally reads Docker runtime diagnostics for monitored Compose services (not Firmware Builder).
 3. Persists a compact Hub sample **only on state transitions** (and after monitoring gaps), marked with `sample_mode: sparse`. Payload stores `states`, `last_success`, and `reasons` only — Docker inspect is not persisted in new samples; restart detection uses in-memory signatures and events.
-4. On a monitoring gap (> 2× interval since the previous sample), records `monitoring_resumed` and inserts an explicit `unobserved` sample so hold attribution excludes Hub-down / PC-off time from availability percentages.
+4. On a monitoring gap (more than 120 seconds by default since the previous successful Hub check), records `monitoring_resumed` and inserts an explicit `unobserved` sample so hold attribution excludes Hub-down / PC-off time from availability percentages. Successful Hub checks keep this clock current even when no sample is written.
 5. Records events on state transitions, monitoring gaps, and detected restarts.
-6. Samples **device** connectivity from `last_seen` (transition-sparse).
-7. Periodically deletes monitor rows older than retention (default **30** days for Hub samples, configurable **30–90**).
+6. Propagates a detected gap to Device Monitor. A device-only check that is due at the same time normally runs in this cycle.
+7. Periodically deletes monitor rows older than retention (default **30** days for Hub samples, configurable **30–90**). A sparse timeline keeps its last boundary before the cutoff so a long-lived state can still be attributed inside the reporting windows.
+
+The background cycle persists samples and events. Status requests calculate the full availability history on demand.
 
 **Attribution compatibility:** sparse-era samples hold state until the next sample (including a pre-window carry-in sample so a stable state can cover a window with no interior samples). Legacy dense samples (no `sample_mode`) keep interval confirmation for long inter-sample gaps so historical Hub-down periods stay unobserved without rewriting rows. Older samples may still contain a `docker` blob in `components_json`; readers must tolerate its presence or absence.
 
@@ -133,7 +135,7 @@ Unknown or missing component states are **unobserved** for that component and ar
 
 ### Gaps after restart
 
-A Local Hub cannot continuously record its own availability while it is fully offline. A stopped Hub container and a powered-off computer are the same situation: the monitor is not running. When monitoring resumes and the previous sample is older than two intervals, the Hub records a `monitoring_resumed` event with `certainty: inferred` and treats the intervening wall-clock time as unobserved (`kind: not_running`). Exact outage start/end times inside that gap are not invented. The Hub tab and `hub_summary` show that duration as “hub not running” and leave it out of the percentage.
+The monitor updates one checkpoint per successful Core check in the same transaction as any sample and event writes. This checkpoint is separate from availability history. After either a graceful restart or a crash, the next Core check uses the checkpoint, when valid, as the last confirmed observation. The interval before the next check is unobserved, even for a brief restart. The existing monitoring-resumed event threshold stays in effect. A missing or invalid checkpoint, including one older than the latest Hub sample, falls back to the latest sparse sample and the existing gap threshold. The fallback can include time when successful checks wrote no samples. Before the next successful check, the Core and public availability summaries stop crediting sparse coverage at the last confirmed check if the worker is stale or has yet to check after startup. This read-time gap is not written to history.
 
 A detected `service_restart_detected` event (Docker `StartedAt` / `RestartCount` change) is diagnostic only. It does **not** invent an unavailable duration. Confirmed outage duration comes only from probe-based sample states. Restart event `previous_state` / `new_state` use `running` → `restart_detected` so they are not confused with health scores or availability enums.
 
@@ -180,10 +182,39 @@ The Hub tab and `scripts/hub_summary.py` both use those shared calculations. The
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `DBMAP_HUB_MONITOR_ENABLED` | `true` | Set `false` to disable the background thread |
-| `DBMAP_HUB_MONITOR_INTERVAL_S` | `60` | Sample interval in seconds |
+| `DBMAP_HUB_MONITOR_INTERVAL_S` | `60` | Full probe interval in seconds |
+| `DBMAP_HUB_MONITOR_GAP_THRESHOLD_S` | `120` | Infer a gap when elapsed time between successful Hub observations exceeds this threshold |
 | `DBMAP_HUB_MONITOR_RETENTION_DAYS` | `30` | Clamped to 30–90; raise via env if longer Hub sample history is needed |
+| `DBMAP_PUBLIC_API_MONITOR_ENABLED` | `false` | Probe the public Hub HTTPS health endpoint |
+| `DBMAP_PUBLIC_MQTT_MONITOR_ENABLED` | `false` | Probe an authenticated MQTT session through the public endpoint |
+
+### Public API and Public MQTT
+
+These optional checks run independently every 60 seconds in the Hub process. The Hub tab displays their state, last check, reason, transitions, and 24h, 7d, and 30d availability with eligible observation time. API clients can read `monitoring.public_components` in `GET /api/v1/hub/status`. Public checks are informational. Core Hub, Web, and Device Monitor continue using their existing inputs and schedules.
+
+- Public API appends `/health` to `DBMAP_PUBLIC_HUB_URL`, verifies the configured hostname with the existing CA, and requires a successful response identifying `hub-bootstrap`. It sends no API credentials.
+- Public MQTT uses `DBMAP_PUBLIC_MQTT_HOST`, `DBMAP_PUBLIC_MQTT_PORT`, the existing MQTT CA and regular Hub login, and verified TLS. It requires a successful MQTT 3.1.1 CONNACK for a unique, clean client session. It disconnects without subscribing, publishing, or reconnecting. DynSec client-ID restrictions or rejected credentials can block this check and are surfaced as failure reasons.
+
+Public probes use the same sparse observation store as Core Hub. The separate
+`public_monitor_samples`, `public_monitor_events` and
+`public_monitor_checkpoints` tables mirror the `hub_monitor_*` tables.
+Public checkpoints are keyed by Hub and component, so a completed API check
+cannot advance MQTT coverage. A stable cycle updates only its checkpoint.
+Both families retain the last sparse boundary before the cutoff, and use
+committed observations to exclude gaps and restart downtime. A short restart
+with an unchanged state creates gap boundaries without a resume event.
+A delayed public probe stays on its own worker.
+
+Upgrades create the new public tables empty. The former
+`public_monitor_transitions` table, if present, stays intact and is unused by
+the new build. Public availability accumulates from the first new observation.
+Core and Device Monitor history carry through the upgrade.
+
+These results describe reachability from the Hub's network. Router NAT loopback and split DNS can make the result differ from what an internet client sees. The probes use the Hub resolver and do not compare DNS answers to an independently measured WAN address. Use an off-LAN client to validate externally visible reachability.
 
 ## Limitations (Hub)
+
+For a separately approved history reset, see [Monitoring history recovery](monitoring-history-recovery.md).
 
 - Local monitoring cannot prove external client reachability beyond the Hub’s own probes.
 - Complete Hub outages appear as unobserved gaps after recovery, not as precisely timed downtime.
@@ -206,7 +237,9 @@ Online means `last_seen_at` is within `DBMAP_DEVICE_ONLINE_WINDOW_S` (default **
 
 ### D0 — Hub-observed availability
 
-Each Hub monitor cycle:
+Device Monitor runs every 30 seconds by default on the same background thread. A due full Hub check takes priority. Device-only checks pause after a failed full cycle or when the last successful Hub check is older than the gap threshold. These checks sample connectivity from reported state. They do not run Hub probes or update Hub continuity.
+
+Each Device Monitor check:
 
 1. For every **active** node that has been seen at least once, compute `available` or `unavailable` from `last_seen_at`.
 2. Persist a sample only on **state transitions** (and when a Hub monitoring gap is detected).
@@ -352,7 +385,8 @@ A later phase may correlate device-reported MQTT disconnect/reconnect diag event
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `DBMAP_DEVICE_ONLINE_WINDOW_S` | `90` | Seconds; clamped 30–600 |
-| `DBMAP_DEVICE_MONITOR_ENABLED` | `true` | Skip device sampling inside the Hub monitor cycle when `false` |
+| `DBMAP_DEVICE_MONITOR_ENABLED` | `true` | Enable Device Monitor sampling and gap recording |
+| `DBMAP_DEVICE_MONITOR_INTERVAL_S` | `30` | Device connectivity sampling interval in seconds (5–3600) |
 | `DBMAP_DEVICE_MONITOR_RETENTION_DAYS` | `90` | Clamped to 30–90 |
 | `DBMAP_DEVICE_MONITOR_MAX_SAMPLES_PER_DEVICE` | `500` | Soft cap for availability samples |
 | `DBMAP_DEVICE_MONITOR_MAX_EVENTS_PER_DEVICE` | `500` | Soft cap for Hub-observed monitor events |

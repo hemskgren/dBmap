@@ -25,6 +25,7 @@ from app.models import (
     Node,
     ReportedState,
 )
+from app.monitoring_math import attribute_hold, ensure_aware
 
 log = logging.getLogger("hub-bootstrap.device-monitor")
 
@@ -42,12 +43,6 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def _ensure_aware(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
-
-
 def online_window() -> timedelta:
     return timedelta(seconds=settings.device_online_window_s)
 
@@ -55,8 +50,8 @@ def online_window() -> timedelta:
 def is_online(last_seen_at: datetime | None, *, now: datetime | None = None) -> bool:
     if last_seen_at is None:
         return False
-    now = _ensure_aware(now or _utcnow())
-    return now - _ensure_aware(last_seen_at) <= online_window()
+    now = ensure_aware(now or _utcnow())
+    return now - ensure_aware(last_seen_at) <= online_window()
 
 
 def connectivity_state(
@@ -239,7 +234,7 @@ def sample_devices(
     if not settings.device_monitor_enabled:
         return {"enabled": False, "sampled": 0, "transitions": 0}
 
-    now = _ensure_aware(observed_at or _utcnow())
+    now = ensure_aware(observed_at or _utcnow())
     sampled = 0
     transitions = 0
     touched: set[str] = set()
@@ -262,13 +257,13 @@ def sample_devices(
         previous_state = previous.overall_availability if previous is not None else None
 
         if hub_gap is not None and previous is not None:
-            gap_start, gap_end = (_ensure_aware(hub_gap[0]), _ensure_aware(hub_gap[1]))
+            gap_start, gap_end = (ensure_aware(hub_gap[0]), ensure_aware(hub_gap[1]))
             if gap_end > gap_start and previous_state != "unobserved":
                 # Stamp slightly after the last confirmed sample when needed
                 # so ordering keeps previous state until the gap.
                 unobserved_at = max(
                     gap_start,
-                    _ensure_aware(previous.observed_at) + timedelta(microseconds=1),
+                    ensure_aware(previous.observed_at) + timedelta(microseconds=1),
                 )
                 if unobserved_at < now:
                     _add_sample(
@@ -323,7 +318,7 @@ def sample_devices(
 
 def cleanup_history(db: Session, now: datetime | None = None) -> dict[str, int]:
     """Delete device monitor rows older than retention. Does not touch other tables."""
-    now = _ensure_aware(now or _utcnow())
+    now = ensure_aware(now or _utcnow())
     days = settings.device_monitor_retention_days
     cutoff = now - timedelta(days=days)
     samples = db.execute(
@@ -346,20 +341,6 @@ def cleanup_history(db: Session, now: datetime | None = None) -> dict[str, int]:
         "cutoff": cutoff.isoformat(),
         "retention_days": days,
     }
-
-
-def _attribute_hold(
-    state: str, start: datetime, end: datetime
-) -> tuple[float, float, float]:
-    """Attribute the full interval to the sample state (transition-sparse model)."""
-    total = max((end - start).total_seconds(), 0.0)
-    if total <= 0:
-        return 0.0, 0.0, 0.0
-    if state in {"available", "degraded"}:
-        return total, 0.0, 0.0
-    if state == "unavailable":
-        return 0.0, total, 0.0
-    return 0.0, 0.0, total
 
 
 def compute_availability_window(
@@ -389,7 +370,7 @@ def compute_availability_window(
             "gaps": [],
         }
 
-    ordered = sorted(samples, key=lambda item: _ensure_aware(item.observed_at))
+    ordered = sorted(samples, key=lambda item: ensure_aware(item.observed_at))
     available = 0.0
     unavailable = 0.0
     unobserved = 0.0
@@ -405,7 +386,7 @@ def compute_availability_window(
             }
         )
     else:
-        first_at = _ensure_aware(ordered[0].observed_at)
+        first_at = ensure_aware(ordered[0].observed_at)
         if first_at > window_start:
             leading = (first_at - window_start).total_seconds()
             unobserved += leading
@@ -417,14 +398,14 @@ def compute_availability_window(
                 }
             )
         for index, sample in enumerate(ordered):
-            start = max(_ensure_aware(sample.observed_at), window_start)
+            start = max(ensure_aware(sample.observed_at), window_start)
             if index + 1 < len(ordered):
-                end = min(_ensure_aware(ordered[index + 1].observed_at), window_end)
+                end = min(ensure_aware(ordered[index + 1].observed_at), window_end)
             else:
                 end = window_end
             if end <= start:
                 continue
-            avail, unavail, unobs = _attribute_hold(
+            avail, unavail, unobs = attribute_hold(
                 sample.overall_availability, start, end
             )
             available += avail
@@ -495,7 +476,7 @@ def build_monitoring_summary(db: Session, node_id: str) -> dict[str, Any]:
     reported = db.get(ReportedState, node_id)
     last_seen = reported.last_seen_at if reported else None
     if last_seen is not None:
-        last_seen = _ensure_aware(last_seen)
+        last_seen = ensure_aware(last_seen)
 
     excluded = node.lifecycle_state != "active"
     current = connectivity_state(last_seen, now=now)
@@ -615,6 +596,7 @@ def build_monitoring_summary(db: Session, node_id: str) -> dict[str, Any]:
             "diag_max_events_per_device": settings.device_diag_max_events_per_device,
             "diag_rssi_degraded_dbm": settings.device_diag_rssi_degraded_dbm,
             "hub_monitor_interval_seconds": settings.hub_monitor_interval_s,
+            "device_monitor_interval_seconds": settings.device_monitor_interval_s,
         },
         "notes": notes,
     }
@@ -624,8 +606,8 @@ def _event_view(event: DeviceMonitorEvent) -> dict[str, Any]:
     return {
         "event_id": event.event_id,
         "node_id": event.node_id,
-        "occurred_at": _ensure_aware(event.occurred_at).isoformat(),
-        "observed_at": _ensure_aware(event.observed_at).isoformat(),
+        "occurred_at": ensure_aware(event.occurred_at).isoformat(),
+        "observed_at": ensure_aware(event.observed_at).isoformat(),
         "event_type": event.event_type,
         "previous_state": event.previous_state,
         "new_state": event.new_state,

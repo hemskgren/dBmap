@@ -877,7 +877,7 @@ EXTRA_SCHEMAS = {
     },
     "HubMonitoring": {
         "type": "object",
-        "description": "Local Hub health and availability. See docs/health-and-availability.md.",
+        "description": "Local Hub health and availability, with optional informational public checks. See docs/health-and-availability.md.",
         "properties": {
             "health": {
                 "type": "object",
@@ -949,6 +949,29 @@ EXTRA_SCHEMAS = {
                 },
             },
             "last_checks": {"type": "object", "additionalProperties": True},
+            "public_components": {
+                "type": "object",
+                "description": "Enabled public checks from the Hub's network. Keys are public_api and public_mqtt.",
+                "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "state": {"type": "string", "enum": ["ok", "offline", "unknown"]},
+                        "reason": {"type": "string", "nullable": True},
+                        "checked_at": {"type": "string", "format": "date-time", "nullable": True},
+                        "last_success_at": {"type": "string", "format": "date-time", "nullable": True},
+                        "interval_seconds": {"type": "integer", "example": 60},
+                        "windows": {
+                            "type": "object",
+                            "additionalProperties": {"$ref": "#/components/schemas/HubAvailabilityWindow"},
+                        },
+                        "recent_events": {
+                            "type": "array",
+                            "items": {"$ref": "#/components/schemas/HubMonitorEvent"},
+                        },
+                    },
+                },
+            },
             "last_state_change": {
                 "type": "object",
                 "additionalProperties": True,

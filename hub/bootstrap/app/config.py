@@ -28,11 +28,15 @@ class Settings(BaseSettings):
     mosquitto_log_path: str = "/mosquitto/log/mosquitto.log"
     hub_monitor_enabled: bool = True
     hub_monitor_interval_s: float = Field(default=60.0, ge=5.0, le=3600.0)
+    hub_monitor_gap_threshold_s: float = Field(default=120.0, ge=5.0)
     hub_monitor_retention_days: int = Field(default=30, ge=30, le=90)
+    public_api_monitor_enabled: bool = False
+    public_mqtt_monitor_enabled: bool = False
 
     # Device connectivity / Hub-observed availability (D0). Tunable via .env.
     device_online_window_s: float = Field(default=90.0, ge=30.0, le=600.0)
     device_monitor_enabled: bool = True
+    device_monitor_interval_s: float = Field(default=30.0, ge=5.0, le=3600.0)
     device_monitor_retention_days: int = Field(default=90, ge=30, le=90)
     device_monitor_max_samples_per_device: int = Field(default=500, ge=50, le=5000)
     device_monitor_max_events_per_device: int = Field(default=500, ge=50, le=5000)
