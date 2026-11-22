@@ -53,6 +53,12 @@
  *     -lm -o /tmp/test_ear_critical_integration && /tmp/test_ear_critical_integration
  *
  * Host / source-level only — not physical reboot or Hub MQTT verification.
+ *
+ * Publish-contract export (separate link: observation_payload.c, cJSON,
+ * identity.c, -DDBMAP_OBS_PUBLISH_CONTRACT_EXPORT):
+ *   ./test_ear_critical_integration --export-publish-contract /tmp/dir
+ * Writes report-01.json .. report-07.json and topic.txt. Without that
+ * flag, or without the define, main runs the existing host tests.
  */
 #include "ae_engine.h"
 #include "ae_signature.h"
@@ -66,10 +72,39 @@
 #include "sig_engine.h"
 #include "sp_episode_registry.h"
 
+#ifdef DBMAP_OBS_PUBLISH_CONTRACT_EXPORT
+#include "dbmap_observation_payload.h"
+#include "sp_types.h"
+
+#include <stdlib.h>
+#endif
+
 #include <stdio.h>
 #include <string.h>
 
 static int g_failures = 0;
+
+#ifdef DBMAP_OBS_PUBLISH_CONTRACT_EXPORT
+static void contract_note_normal(
+    const char *kind,
+    const ear_obs_binding_view_t *binding,
+    const ear_obs_promote_snapshot_t *snap,
+    int64_t interval_start_mono_us,
+    int64_t capture_mono_us,
+    bool has_level,
+    float level_dbfs
+);
+static void contract_note_critical(
+    const char *observation_id,
+    const char *emission_kind,
+    const char *termination_reason,
+    const char *origin,
+    int64_t interval_start_mono_us,
+    int64_t capture_mono_us,
+    double interval_duration_ms,
+    double episode_duration_ms
+);
+#endif
 
 #define EXPECT(cond)                                                           \
     do {                                                                       \
@@ -212,8 +247,12 @@ static bool norm_emit_start(
 )
 {
     (void)ctx;
-    (void)snap;
     g_norm.starts++;
+#ifdef DBMAP_OBS_PUBLISH_CONTRACT_EXPORT
+    contract_note_normal("start", binding, snap, now_mono_us, now_mono_us, false, 0.0f);
+#else
+    (void)snap;
+#endif
     g_norm.last_start_mono_us = now_mono_us;
     g_norm.have_start_ts = true;
     if (binding == NULL) {
@@ -243,12 +282,16 @@ static bool norm_emit_periodic(
 )
 {
     (void)ctx;
+    g_norm.periodics++;
+#ifdef DBMAP_OBS_PUBLISH_CONTRACT_EXPORT
+    contract_note_normal("periodic", binding, NULL, a, b, has_lvl, lvl);
+#else
     (void)binding;
     (void)a;
     (void)b;
     (void)has_lvl;
     (void)lvl;
-    g_norm.periodics++;
+#endif
     p4_note_emit(binding, false, true);
     return true;
 }
@@ -332,10 +375,23 @@ static bool crit_publish(
 )
 {
     (void)user;
+    (void)evidence_or_null;
+#ifdef DBMAP_OBS_PUBLISH_CONTRACT_EXPORT
+    contract_note_critical(
+        observation_id,
+        emission_kind,
+        termination_reason,
+        origin,
+        interval_start_mono_us,
+        capture_mono_us,
+        interval_duration_ms,
+        episode_duration_ms
+    );
+#else
     (void)interval_start_mono_us;
     (void)interval_duration_ms;
     (void)episode_duration_ms;
-    (void)evidence_or_null;
+#endif
     /*
      * Count every START/PERIODIC/END. Keep the first id and capture time.
      * A later event must not replace that record; the count still shows it.
@@ -1824,7 +1880,7 @@ p4_cleanup:
 }
 #undef P4_REQUIRE
 
-int main(void)
+static int run_existing_host_tests(void)
 {
     test4_critical_with_both_normal_slots_occupied();
     test5_ota_cleanup_while_critical_active();
@@ -1837,3 +1893,531 @@ int main(void)
     printf("OK\n");
     return 0;
 }
+
+#ifdef DBMAP_OBS_PUBLISH_CONTRACT_EXPORT
+
+#define CONTRACT_REPORTS 7
+#define CONTRACT_CAP 8
+
+typedef struct {
+    char observation_id[64];
+    char kind[16];
+    char origin[32];
+    char termination[32];
+    int64_t interval_start_us;
+    int64_t capture_us;
+    double interval_ms;
+    double episode_ms;
+    bool has_level;
+    double level_dbfs;
+    bool has_assessment;
+    ear_cls_assessment_wire_t assessment;
+} contract_rec_t;
+
+static bool g_contract_capture;
+static bool g_contract_overflow;
+static uint32_t g_contract_n;
+static contract_rec_t g_contract[CONTRACT_CAP];
+
+static void contract_copy(char *dst, size_t dst_len, const char *src)
+{
+    if (dst == NULL || dst_len == 0u) {
+        return;
+    }
+    if (src == NULL) {
+        dst[0] = '\0';
+        return;
+    }
+    snprintf(dst, dst_len, "%s", src);
+}
+
+static void contract_push(const contract_rec_t *rec)
+{
+    if (!g_contract_capture || rec == NULL) {
+        return;
+    }
+    if (g_contract_n >= CONTRACT_CAP) {
+        g_contract_overflow = true;
+        return;
+    }
+    g_contract[g_contract_n++] = *rec;
+}
+
+static void contract_note_normal(
+    const char *kind,
+    const ear_obs_binding_view_t *binding,
+    const ear_obs_promote_snapshot_t *snap,
+    int64_t interval_start_mono_us,
+    int64_t capture_mono_us,
+    bool has_level,
+    float level_dbfs
+)
+{
+    contract_rec_t rec;
+    double level = (double)level_dbfs;
+    if (!g_contract_capture || binding == NULL || kind == NULL) {
+        return;
+    }
+    memset(&rec, 0, sizeof(rec));
+    contract_copy(rec.observation_id, sizeof(rec.observation_id), binding->observation_id);
+    contract_copy(rec.kind, sizeof(rec.kind), kind);
+    rec.interval_start_us = interval_start_mono_us;
+    rec.capture_us = capture_mono_us;
+    if (capture_mono_us > interval_start_mono_us) {
+        rec.interval_ms = (double)(capture_mono_us - interval_start_mono_us) / 1000.0;
+    }
+    if (capture_mono_us > binding->start_mono_us) {
+        rec.episode_ms = (double)(capture_mono_us - binding->start_mono_us) / 1000.0;
+    }
+    if (snap != NULL) {
+        rec.has_level = true;
+        level = (double)snap->ema_rms_dbfs;
+    } else {
+        rec.has_level = has_level;
+    }
+    rec.level_dbfs = level;
+    if (binding->assessment.present && binding->assessment.n_nodes > 0u) {
+        rec.has_assessment = true;
+        rec.assessment = binding->assessment;
+    }
+    contract_push(&rec);
+}
+
+static void contract_note_critical(
+    const char *observation_id,
+    const char *emission_kind,
+    const char *termination_reason,
+    const char *origin,
+    int64_t interval_start_mono_us,
+    int64_t capture_mono_us,
+    double interval_duration_ms,
+    double episode_duration_ms
+)
+{
+    contract_rec_t rec;
+    if (!g_contract_capture || observation_id == NULL || emission_kind == NULL) {
+        return;
+    }
+    memset(&rec, 0, sizeof(rec));
+    contract_copy(rec.observation_id, sizeof(rec.observation_id), observation_id);
+    contract_copy(rec.kind, sizeof(rec.kind), emission_kind);
+    contract_copy(rec.origin, sizeof(rec.origin), origin);
+    contract_copy(rec.termination, sizeof(rec.termination), termination_reason);
+    rec.interval_start_us = interval_start_mono_us;
+    rec.capture_us = capture_mono_us;
+    rec.interval_ms = interval_duration_ms;
+    rec.episode_ms = episode_duration_ms;
+    contract_push(&rec);
+}
+
+static void format_fixed_utc(int64_t mono_us, char *out, size_t out_len)
+{
+    int64_t usec;
+    int64_t total_sec;
+    int64_t sec;
+    int64_t min;
+    int64_t hour;
+    if (mono_us < 0) {
+        mono_us = 0;
+    }
+    usec = mono_us % 1000000LL;
+    total_sec = mono_us / 1000000LL;
+    sec = total_sec % 60LL;
+    total_sec /= 60LL;
+    min = total_sec % 60LL;
+    hour = total_sec / 60LL;
+    snprintf(
+        out,
+        out_len,
+        "2026-01-01T%02lld:%02lld:%02lld.%06lldZ",
+        (long long)hour,
+        (long long)min,
+        (long long)sec,
+        (long long)usec
+    );
+}
+
+static void fill_empty_l0(dbmap_l0_interval_t *iv)
+{
+    memset(iv, 0, sizeof(*iv));
+    iv->sample_rate_hz = 16000u;
+    iv->analysis_window_ms = 1000u;
+}
+
+static void fill_scene_l0(dbmap_l0_interval_t *iv)
+{
+    fill_empty_l0(iv);
+    iv->window_count = 4u;
+    iv->clipped_window_count = 1u;
+    iv->n_crest = 3u;
+    iv->has_rms_stats = true;
+    iv->rms_mean_dbfs = -31.5f;
+    iv->rms_min_dbfs = -40.0f;
+    iv->rms_max_dbfs = -28.0f;
+    iv->has_band_means = true;
+    iv->band_mean_dbfs[0] = -33.0f;
+    iv->band_mean_dbfs[1] = -32.0f;
+    iv->band_mean_dbfs[2] = -36.0f;
+    iv->band_mean_dbfs[3] = -42.0f;
+    iv->has_band_fractions = true;
+    iv->band_fraction[0] = 0.5f;
+    iv->band_fraction[1] = 0.25f;
+    iv->band_fraction[2] = 0.125f;
+    iv->band_fraction[3] = 0.125f;
+    iv->has_hl_mean = true;
+    iv->hl_mean_db = -3.5f;
+    iv->has_t1 = true;
+    iv->rms_stdev_db = 1.5f;
+    iv->rms_range_db = 12.0f;
+    iv->has_t2 = true;
+    iv->rms_slope_db_per_s = 0.25f;
+    iv->has_t3 = true;
+    iv->crest_max_db = 11.0f;
+    iv->high_crest_count = 2u;
+    iv->high_crest_rate = 0.5f;
+    iv->has_t6 = true;
+    iv->hl_slope_db_per_s = -0.125f;
+}
+
+static void fill_scene_l1(dbmap_l1_interval_t *iv)
+{
+    memset(iv, 0, sizeof(*iv));
+    iv->sample_rate_hz = 16000u;
+    iv->analysis_window_ms = 1000u;
+    iv->fft_size = DBMAP_L1_FFT_SIZE;
+    iv->freq_min_hz = DBMAP_L1_FREQ_MIN_HZ;
+    iv->freq_max_hz = DBMAP_L1_FREQ_MAX_HZ;
+    iv->window_count = 4u;
+    iv->invalid_window_count = 1u;
+    iv->has_centroid = true;
+    iv->centroid_mean_hz = 812.5f;
+    iv->centroid_stdev_hz = 16.0f;
+    iv->has_bandwidth = true;
+    iv->bandwidth_mean_hz = 920.0f;
+    iv->bandwidth_stdev_hz = 8.0f;
+    iv->has_dominant = true;
+    iv->dominant_mean_hz = 230.0f;
+    iv->dominant_stdev_hz = 4.0f;
+    iv->has_flatness = true;
+    iv->flatness_mean = 0.25f;
+    iv->flatness_stdev = 0.0625f;
+    iv->has_stdev = true;
+}
+
+static void fill_scene_l2(dbmap_l2_interval_t *iv)
+{
+    memset(iv, 0, sizeof(*iv));
+    iv->sample_rate_hz = 16000u;
+    iv->analysis_window_ms = 1000u;
+    iv->fft_size = DBMAP_L1_FFT_SIZE;
+    iv->freq_min_hz = DBMAP_L1_FREQ_MIN_HZ;
+    iv->freq_max_hz = DBMAP_L1_FREQ_MAX_HZ;
+    iv->frame_hop_samples = DBMAP_L1_FFT_SIZE;
+    iv->window_count = 4u;
+    iv->invalid_window_count = 0u;
+    iv->history_overflow = false;
+    iv->spectral_flux_valid_count = 4u;
+    iv->has_spectral_flux_mean = true;
+    iv->spectral_flux_mean = 0.375f;
+    iv->has_spectral_flux_stdev = true;
+    iv->spectral_flux_stdev = 0.125f;
+    iv->envelope_cv_valid_count = 4u;
+    iv->has_envelope_cv_mean = true;
+    iv->envelope_cv_mean = 0.25f;
+    iv->has_envelope_cv_stdev = true;
+    iv->envelope_cv_stdev = 0.0625f;
+    iv->dominant_delta_valid_count = 3u;
+    iv->has_dominant_delta_mean = true;
+    iv->dominant_delta_mean_hz = 15.625f;
+    iv->has_dominant_delta_stdev = true;
+    iv->dominant_delta_stdev_hz = 0.5f;
+}
+
+static bool contract_write_reports(const char *dir, const char *node_id, const char *topic)
+{
+    dbmap_l0_interval_t empty_l0;
+    dbmap_l0_interval_t scene_l0;
+    dbmap_l1_interval_t scene_l1;
+    dbmap_l2_interval_t scene_l2;
+    char topic_path[512];
+    FILE *topic_fp;
+    uint32_t i;
+
+    fill_empty_l0(&empty_l0);
+    fill_scene_l0(&scene_l0);
+    fill_scene_l1(&scene_l1);
+    fill_scene_l2(&scene_l2);
+
+    snprintf(topic_path, sizeof(topic_path), "%s/topic.txt", dir);
+    topic_fp = fopen(topic_path, "w");
+    if (topic_fp == NULL) {
+        fprintf(stderr, "contract export: cannot write %s\n", topic_path);
+        return false;
+    }
+    if (fprintf(topic_fp, "%s\n", topic) < 0) {
+        fclose(topic_fp);
+        return false;
+    }
+    fclose(topic_fp);
+
+    for (i = 0u; i < g_contract_n; i++) {
+        const contract_rec_t *rec = &g_contract[i];
+        const bool critical = rec->origin[0] != '\0';
+        const bool scene = !critical && strcmp(rec->kind, "periodic") == 0;
+        char event_time[40];
+        char path[512];
+        dbmap_observation_fields_t fields;
+        char *json;
+        FILE *fp;
+        memset(&fields, 0, sizeof(fields));
+        format_fixed_utc(rec->interval_start_us, event_time, sizeof(event_time));
+        fields.observation_id = rec->observation_id;
+        fields.node_id = node_id;
+        fields.hub_id = "";
+        fields.sequence_number = i + 1u;
+        fields.event_time_utc = event_time;
+        fields.capture_timestamp_monotonic_us = rec->capture_us;
+        fields.timing_quality = "estimated";
+        fields.timestamp_uncertainty_ms = 10.0;
+        fields.interval_duration_ms = rec->interval_ms;
+        fields.episode_duration_ms = rec->episode_ms;
+        fields.emission_kind = rec->kind;
+        fields.termination_reason = rec->termination[0] != '\0' ? rec->termination : NULL;
+        fields.origin = critical ? rec->origin : NULL;
+        fields.has_signal_level_dbfs = rec->has_level && rec->level_dbfs <= 0.0;
+        fields.signal_level_dbfs = rec->level_dbfs;
+        fields.measurements = scene ? &scene_l0 : &empty_l0;
+        fields.signature = scene ? &scene_l1 : NULL;
+        fields.dynamics = scene ? &scene_l2 : NULL;
+        fields.assessment =
+            (!critical && rec->has_assessment) ? &rec->assessment : NULL;
+        json = dbmap_observation_build_json(&fields);
+        if (json == NULL) {
+            fprintf(
+                stderr,
+                "contract export: JSON build failed for report %u kind=%s\n",
+                i + 1u,
+                rec->kind
+            );
+            return false;
+        }
+        snprintf(path, sizeof(path), "%s/report-%02u.json", dir, i + 1u);
+        fp = fopen(path, "wb");
+        if (fp == NULL) {
+            fprintf(stderr, "contract export: cannot write %s\n", path);
+            free(json);
+            return false;
+        }
+        if (fputs(json, fp) == EOF) {
+            fclose(fp);
+            free(json);
+            return false;
+        }
+        fclose(fp);
+        free(json);
+    }
+    return true;
+}
+
+static int contract_export_main(const char *dir)
+{
+    integ_t f;
+    ear_promotion_policy_t pol;
+    ear_sig_product_t prod;
+    ae_signature_t sig;
+    sp_effective_t topics;
+    bool se_bound = false;
+    bool crit_bound = false;
+    bool ce_started = false;
+    bool sig_started = false;
+    bool om_ready = false;
+    int rc = 1;
+    const char *node_id = "EAR-CONTRACT";
+    const int64_t crit_start_us = 12000000;
+    const int64_t crit_periodic_us = 17000000;
+    const int64_t crit_end_us = 18000000;
+
+    if (dir == NULL || dir[0] == '\0') {
+        fprintf(stderr, "contract export: missing directory\n");
+        return 1;
+    }
+
+    memset(&f, 0, sizeof(f));
+    memset(&pol, 0, sizeof(pol));
+    memset(&prod, 0, sizeof(prod));
+    memset(&g_norm, 0, sizeof(g_norm));
+    memset(&g_crit, 0, sizeof(g_crit));
+    memset(g_contract, 0, sizeof(g_contract));
+    g_contract_n = 0u;
+    g_contract_overflow = false;
+    g_contract_capture = false;
+    g_p4_capture = false;
+    g_uuid_n = 1u;
+
+    {
+        ae_config_t acfg;
+        ce_config_t ccfg;
+        ear_obs_manager_config_t mcfg;
+        ear_critical_config_t ccrit;
+        ae_config_set_defaults(&acfg);
+        if (!ae_start(&f.ae, &acfg) || !sig_engine_start()) {
+            fprintf(stderr, "contract export: engine start failed\n");
+            goto export_cleanup;
+        }
+        sig_started = true;
+        ce_config_set_defaults(&ccfg);
+        ccfg.n_enter = 1u;
+        ccfg.t_coast = 64u;
+        if (!ce_start(&f.ce, &ccfg)) {
+            fprintf(stderr, "contract export: candidate engine start failed\n");
+            goto export_cleanup;
+        }
+        ce_started = true;
+        sp_episode_registry_init(&f.reg);
+        memset(&mcfg, 0, sizeof(mcfg));
+        mcfg.registry = &f.reg;
+        mcfg.ce = &f.ce;
+        mcfg.ae = &f.ae;
+        mcfg.uuid_fn = fake_uuid;
+        mcfg.observation_interval_ms = 5000u;
+        mcfg.pending_timeout_ms = 30000u;
+        mcfg.detached_end_timeout_ms = 60000u;
+        mcfg.as002_signature_absence_hold_ms = 3000u;
+        mcfg.producer_tag = 2u;
+        mcfg.emit_start = norm_emit_start;
+        mcfg.emit_periodic = norm_emit_periodic;
+        mcfg.emit_end = norm_emit_end;
+        mcfg.enable_poll_periodic = false;
+        ear_obs_manager_init(&f.om, &mcfg);
+        om_ready = true;
+        ce_set_promotion_cb(&f.ce, ear_obs_manager_on_promotion, &f.om);
+        ear_promotion_policy_init(&pol, &f.ce, &f.om);
+        ear_promotion_policy_use_sig_engine_as002(&pol, true);
+        prod.om = &f.om;
+        prod.policy = &pol;
+        prod.ce = &f.ce;
+        prod.ready = true;
+        if (!ae_add_signature_listener(&f.ae, ear_sig_product_on_ae_signature, &prod)) {
+            fprintf(stderr, "contract export: product listener failed\n");
+            goto export_cleanup;
+        }
+        se_bound = true;
+        if (!ce_bind_audio_engine(&f.ce, &f.ae)) {
+            fprintf(stderr, "contract export: CE bind failed\n");
+            goto export_cleanup;
+        }
+        ear_critical_config_set_defaults(&ccrit);
+        ccrit.auto_detect_enabled = false;
+        ccrit.lab_impulse_enabled = false;
+        ccrit.publish = crit_publish;
+        ccrit.uuid_fn = crit_uuid;
+        ccrit.periodic_ms = 5000u;
+        ccrit.idle_timeout_ms = 15000u;
+        ccrit.max_active_ms = 30000u;
+        if (!ear_critical_init(&f.crit, &ccrit)
+            || !ae_add_signature_listener(&f.ae, critical_ae_listener, &f.crit)) {
+            fprintf(stderr, "contract export: critical listener failed\n");
+            goto export_cleanup;
+        }
+        crit_bound = true;
+    }
+
+    g_contract_capture = true;
+    for (uint32_t seq = 1u; seq <= 4u; seq++) {
+        p4_fill_broadband(&sig, seq, -55.0f);
+        if (!p4_publish(&f, &prod, &sig)) {
+            fprintf(stderr, "contract export: broadband publish failed\n");
+            goto export_cleanup;
+        }
+    }
+    p4_fill_heli(&sig, 5u, -40.0f);
+    if (!p4_publish(&f, &prod, &sig)) {
+        fprintf(stderr, "contract export: helicopter publish failed\n");
+        goto export_cleanup;
+    }
+    for (uint32_t seq = 6u; seq <= 10u; seq++) {
+        p4_fill_siren(&sig, seq, -31.0f);
+        if (!p4_publish(&f, &prod, &sig)) {
+            fprintf(stderr, "contract export: siren publish failed\n");
+            goto export_cleanup;
+        }
+    }
+    ear_obs_manager_on_activity_periodic_hint(&f.om, 5000000, 10000000, true, -31.0f);
+
+    sig = make_impulse_sig(12u);
+    if (!ear_critical_force_start(&f.crit, &sig, crit_start_us)) {
+        fprintf(stderr, "contract export: critical start failed\n");
+        goto export_cleanup;
+    }
+    ear_critical_poll(&f.crit, crit_periodic_us);
+    ear_critical_force_end(&f.crit, crit_end_us, EAR_CRITICAL_END_EXPLICIT);
+    g_contract_capture = false;
+
+    if (g_contract_overflow || g_contract_n != CONTRACT_REPORTS) {
+        fprintf(
+            stderr,
+            "contract export: expected %d reports, captured %u overflow=%d\n",
+            CONTRACT_REPORTS,
+            g_contract_n,
+            g_contract_overflow ? 1 : 0
+        );
+        goto export_cleanup;
+    }
+
+    memset(&topics, 0, sizeof(topics));
+    snprintf(topics.identity.node_id, sizeof(topics.identity.node_id), "%s", node_id);
+    sp_rebuild_topics(&topics);
+    if (strcmp(sp_mqtt_topic_kind(), "esp-ear") != 0 || topics.topics.observation[0] == '\0') {
+        fprintf(stderr, "contract export: topic builder did not produce an Ear observation topic\n");
+        goto export_cleanup;
+    }
+    if (!contract_write_reports(dir, topics.identity.node_id, topics.topics.observation)) {
+        goto export_cleanup;
+    }
+    printf("contract export: %u reports -> %s\n", g_contract_n, dir);
+    rc = 0;
+
+export_cleanup:
+    g_contract_capture = false;
+    if (om_ready && (ear_obs_manager_n_open(&f.om) > 0u || ear_obs_manager_n_pending(&f.om) > 0u)) {
+        ear_obs_manager_force_end_all(&f.om, EAR_OBS_END_EXPLICIT, 20000000);
+        ear_obs_manager_poll(&f.om, 21000000);
+    }
+    if (ear_critical_is_active(&f.crit)) {
+        ear_critical_force_end(&f.crit, 22000000, EAR_CRITICAL_END_EXPLICIT);
+    }
+    if (crit_bound) {
+        (void)ae_remove_signature_listener(&f.ae, critical_ae_listener, &f.crit);
+    }
+    if (ce_started) {
+        ce_set_promotion_cb(&f.ce, NULL, NULL);
+        ce_stop(&f.ce);
+        if (om_ready) {
+            ear_obs_manager_poll(&f.om, 23000000);
+        }
+    }
+    if (se_bound) {
+        (void)ae_remove_signature_listener(&f.ae, ear_sig_product_on_ae_signature, &prod);
+    }
+    if (sig_started) {
+        sig_engine_stop();
+    }
+    return rc;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 3 && strcmp(argv[1], "--export-publish-contract") == 0) {
+        return contract_export_main(argv[2]);
+    }
+    return run_existing_host_tests();
+}
+
+#else
+
+int main(void)
+{
+    return run_existing_host_tests();
+}
+
+#endif
