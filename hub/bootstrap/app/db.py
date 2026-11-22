@@ -16,7 +16,6 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
-    _migrate_public_monitor_checkpoint()
     _migrate_bootstrap_token_active_index()
     _migrate_device_ownership_to_user_or_group()
     _migrate_desired_state_firmware_id()
@@ -43,18 +42,6 @@ def init_db() -> None:
     _migrate_device_diag_pending_ota()
     _migrate_node_chip_identity()
     _migrate_observations_report_identity()
-
-
-def _migrate_public_monitor_checkpoint() -> None:
-    columns = {
-        column["name"]
-        for column in inspect(engine).get_columns("public_monitor_transitions")
-    }
-    if "last_check_at" not in columns:
-        with engine.begin() as connection:
-            connection.execute(text(
-                "ALTER TABLE public_monitor_transitions ADD COLUMN last_check_at VARCHAR(40)"
-            ))
 
 
 def _migrate_observations_report_identity() -> None:

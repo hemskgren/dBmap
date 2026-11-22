@@ -8,15 +8,13 @@ recorded as unobserved gaps after monitoring resumes.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 from typing import Any
-from uuid import uuid4
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app import (
@@ -52,7 +50,7 @@ RECENT_EVENT_LIMIT = 15
 CLEANUP_EVERY_CYCLES = 10
 # New Hub samples are transition-sparse and hold-attributed. Legacy dense rows
 # omit this marker and keep interval attribution for long inter-sample gaps.
-SAMPLE_MODE_SPARSE = "sparse"
+SAMPLE_MODE_SPARSE = monitoring_cycle.SAMPLE_MODE_SPARSE
 
 _thread: threading.Thread | None = None
 _stop = threading.Event()
@@ -238,75 +236,11 @@ def _probe_components(db: Session) -> dict[str, Any]:
     }
 
 
-def _record_event(
-    db: Session,
-    *,
-    component: str,
-    event_type: str,
-    previous_state: str | None,
-    new_state: str | None,
-    reason: str | None,
-    occurred_at: datetime,
-    observed_at: datetime,
-    certainty: str = "confirmed",
-) -> None:
-    db.add(
-        HubMonitorEvent(
-            event_id=str(uuid4()),
-            hub_id=settings.hub_id,
-            occurred_at=occurred_at,
-            observed_at=observed_at,
-            component=component,
-            event_type=event_type,
-            previous_state=previous_state,
-            new_state=new_state,
-            reason=(reason or "")[:256] or None,
-            source="local_monitor",
-            certainty=certainty,
-        )
+def _store() -> monitoring_cycle.MonitorStore:
+    return monitoring_cycle.MonitorStore(
+        HubMonitorSample, HubMonitorEvent, HubMonitorCheckpoint,
+        hub_id=settings.hub_id, source="local_monitor", legacy_components=COMPONENT_IDS,
     )
-
-
-def _latest_sample(db: Session) -> HubMonitorSample | None:
-    return db.scalar(
-        select(HubMonitorSample)
-        .where(HubMonitorSample.hub_id == settings.hub_id)
-        .order_by(HubMonitorSample.observed_at.desc())
-        .limit(1)
-    )
-
-
-def _record_monitor_boundary(
-    db: Session, observed_at: datetime, previous: HubMonitorSample | None,
-    gap: monitoring_cycle.ObservationGap | None,
-) -> None:
-    if previous is None and gap is None and _last_check_at is None:
-        _record_event(
-            db,
-            component="monitor",
-            event_type="monitoring_resumed",
-            previous_state=None,
-            new_state="running",
-            reason="monitoring started with no prior samples",
-            occurred_at=observed_at,
-            observed_at=observed_at,
-            certainty="confirmed",
-        )
-    if gap is not None and gap.exceeds_threshold:
-        _record_event(
-            db,
-            component="monitor",
-            event_type="monitoring_resumed",
-            previous_state="unobserved",
-            new_state="running",
-            reason=(
-                f"monitoring resumed after an unobserved gap of "
-                f"{int((gap.end - gap.start).total_seconds())}s starting {gap.start.isoformat()}"
-            ),
-            occurred_at=observed_at,
-            observed_at=observed_at,
-            certainty="inferred",
-        )
 
 
 def _detect_docker_restarts(
@@ -337,7 +271,7 @@ def _detect_docker_restarts(
             continue
         # previous_state/new_state describe the runtime transition, not a
         # confirmed availability duration. Restart counts belong in reason.
-        _record_event(
+        _store().record_event(
             db,
             component=mapped,
             event_type="service_restart_detected",
@@ -350,43 +284,25 @@ def _detect_docker_restarts(
         )
 
 
-def _emit_transitions(
+def _emit_hub_transitions(
     db: Session,
     previous: HubMonitorSample | None,
     *,
-    components: dict[str, str],
     health: str,
     availability: str,
-    reasons: dict[str, str],
     observed_at: datetime,
 ) -> None:
-    previous_components: dict[str, str] = {}
-    previous_health = None
-    previous_availability = None
-    if previous is not None:
-        previous_components = _parse_sample_payload(previous)["states"]
-        previous_health = previous.overall_health
-        previous_availability = previous.overall_availability
-
-    for name in COMPONENT_IDS:
-        old = previous_components.get(name)
-        new = components.get(name)
-        if old == new or new is None:
-            continue
-        _record_event(
-            db,
-            component=name,
-            event_type="state_changed",
-            previous_state=old,
-            new_state=new,
-            reason=reasons.get(name),
-            occurred_at=observed_at,
-            observed_at=observed_at,
-            certainty="confirmed",
+    if previous is None and _last_check_at is None:
+        _store().record_event(
+            db, component="monitor", event_type="monitoring_resumed",
+            previous_state=None, new_state="running",
+            reason="monitoring started with no prior samples",
+            occurred_at=observed_at, observed_at=observed_at,
         )
-
+    previous_health = previous.overall_health if previous else None
+    previous_availability = previous.overall_availability if previous else None
     if previous_health != health:
-        _record_event(
+        _store().record_event(
             db,
             component="hub",
             event_type="health_changed",
@@ -398,7 +314,7 @@ def _emit_transitions(
             certainty="confirmed",
         )
     if previous_availability != availability:
-        _record_event(
+        _store().record_event(
             db,
             component="hub",
             event_type="availability_changed",
@@ -411,89 +327,10 @@ def _emit_transitions(
         )
 
 
-def _retention_anchor(db: Session, cutoff: datetime) -> HubMonitorSample | None:
-    """Carry forward the last sparse boundary without extending dense history."""
-    sample = db.scalar(
-        select(HubMonitorSample)
-        .where(
-            HubMonitorSample.hub_id == settings.hub_id,
-            HubMonitorSample.observed_at < cutoff,
-        )
-        .order_by(HubMonitorSample.observed_at.desc())
-        .limit(1)
-    )
-    if sample is not None and _is_sparse_sample(sample, _parse_sample_payload(sample)):
-        return sample
-    return None
-
-
 def cleanup_history(db: Session, now: datetime | None = None) -> dict[str, int]:
-    """Delete monitor rows older than retention. Does not touch other tables."""
-    now = ensure_aware(now or _utcnow())
-    days = settings.hub_monitor_retention_days
-    cutoff = monitoring_cycle.retention_cutoff(now, days)
-    # SQLite returns naive datetimes into the ORM identity map. Evaluating the
-    # DELETE against those objects with an aware cutoff raises TypeError, so skip
-    # synchronize_session and let SQL perform the filter.
-    anchor = _retention_anchor(db, cutoff)
-    expired = delete(HubMonitorSample).where(
-        HubMonitorSample.hub_id == settings.hub_id,
-        HubMonitorSample.observed_at < cutoff,
-    )
-    if anchor is not None:
-        expired = expired.where(HubMonitorSample.sample_id != anchor.sample_id)
-    samples = db.execute(
-        expired,
-        execution_options={"synchronize_session": False},
-    )
-    events = db.execute(
-        delete(HubMonitorEvent).where(
-            HubMonitorEvent.hub_id == settings.hub_id,
-            HubMonitorEvent.occurred_at < cutoff,
-        ),
-        execution_options={"synchronize_session": False},
-    )
-    return {
-        "samples_deleted": samples.rowcount or 0,
-        "events_deleted": events.rowcount or 0,
-        "cutoff": cutoff.isoformat(),
-        "retention_days": days,
-    }
-
-
-def _add_unobserved_gap_sample(
-    db: Session, *, previous: HubMonitorSample, gap: monitoring_cycle.ObservationGap
-) -> HubMonitorSample:
-    """Insert an explicit unobserved marker so hold attribution excludes Hub-down time."""
-    sample = HubMonitorSample(
-        sample_id=str(uuid4()),
-        hub_id=settings.hub_id,
-        observed_at=gap.marker_at(previous.observed_at),
-        overall_availability="unobserved",
-        overall_health="unknown",
-        components_json=json.dumps(
-            {
-                "states": {},
-                "last_success": {},
-                "reasons": {"monitor": "unobserved monitoring gap"},
-                "sample_mode": SAMPLE_MODE_SPARSE,
-                "gap": True,
-            },
-            separators=(",", ":"),
-            sort_keys=True,
-        ),
-        source="local_monitor",
-    )
-    db.add(sample)
-    return sample
-
-
-def _sample_state(sample: HubMonitorSample) -> tuple:
-    states = _parse_sample_payload(sample)["states"]
-    return (
-        sample.overall_health,
-        sample.overall_availability,
-        tuple(states.get(name) for name in COMPONENT_IDS),
+    """Delete expired Core Hub history, retaining one sparse carry-in sample."""
+    return _store().prune(
+        db, ensure_aware(now or _utcnow()), settings.hub_monitor_retention_days
     )
 
 
@@ -510,51 +347,12 @@ def run_check(
         observed_at: datetime = probe["observed_at"]
         components: dict[str, str] = probe["components"]
         health, availability = assess_states(components)
-        previous = _latest_sample(db)
-        checkpoint = (
-            db.get(HubMonitorCheckpoint, settings.hub_id)
-            if _last_check_at is None and previous is not None
-            else None
-        )
-        gap = monitoring_cycle.plan_gap(
-            observed_at,
-            anchor_at=previous.observed_at if previous is not None else None,
-            previous_check_at=_last_check_at,
-            persisted_checkpoint=checkpoint.last_check_at if checkpoint else None,
-            threshold=timedelta(seconds=settings.hub_monitor_gap_threshold_s),
-        )
-
-        def record_history() -> HubMonitorSample | None:
-            _record_monitor_boundary(db, observed_at, previous, gap)
-            if gap is not None and previous is not None and previous.overall_availability != "unobserved":
-                _add_unobserved_gap_sample(db, previous=previous, gap=gap)
-            _emit_transitions(
-                db, previous, components=components, health=health,
-                availability=availability, reasons=probe["reasons"], observed_at=observed_at,
+        def after_observation(previous, gap):
+            _emit_hub_transitions(
+                db, previous, health=health, availability=availability,
+                observed_at=observed_at,
             )
             _detect_docker_restarts(db, probe["docker"], observed_at)
-
-            prior_state = (
-                _sample_state(previous)
-                if previous is not None and previous.overall_availability != "unobserved"
-                else None
-            )
-            current_state = (health, availability, tuple(components.get(name) for name in COMPONENT_IDS))
-            sample = previous
-            if monitoring_cycle.needs_sample(prior_state, current_state, gap=gap is not None):
-                payload = {
-                    "states": components,
-                    "last_success": probe["last_success"],
-                    "reasons": probe["reasons"],
-                    "sample_mode": SAMPLE_MODE_SPARSE,
-                }
-                sample = HubMonitorSample(
-                    sample_id=str(uuid4()), hub_id=settings.hub_id, observed_at=observed_at,
-                    overall_availability=availability, overall_health=health,
-                    components_json=json.dumps(payload, separators=(",", ":"), sort_keys=True),
-                    source="local_monitor",
-                )
-                db.add(sample)
             # Device sampling stays on the existing Core cycle and cadence.
             from app import device_monitor
 
@@ -566,13 +364,13 @@ def run_check(
                     )
                 except Exception:
                     log.exception("device monitor cycle failed")
-            return sample
 
-        def save_checkpoint(_sample: HubMonitorSample | None, value: str) -> None:
-            db.merge(HubMonitorCheckpoint(hub_id=settings.hub_id, last_check_at=value))
-
-        sample = monitoring_cycle.commit_cycle(
-            db, observed_at, record_history=record_history, save_checkpoint=save_checkpoint,
+        sample = _store().record_check(
+            db, observed_at, states=components, reasons=probe["reasons"],
+            health=health, availability=availability, last_success=probe["last_success"],
+            previous_check_at=_last_check_at,
+            threshold=timedelta(seconds=settings.hub_monitor_gap_threshold_s),
+            after_observation=after_observation,
         )
         _last_check_at = observed_at
         # Retention cleanup must not block or roll back a successful sample.
@@ -599,49 +397,7 @@ def run_check(
 
 
 def _parse_sample_payload(sample: HubMonitorSample) -> dict[str, Any]:
-    empty = {
-        "states": {},
-        "last_success": {},
-        "reasons": {},
-        "docker": {},
-        "sample_mode": None,
-    }
-    try:
-        payload = json.loads(sample.components_json)
-    except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
-        return empty
-    if not isinstance(payload, dict):
-        return empty
-    states = payload.get("states")
-    if not isinstance(states, dict):
-        # Back-compat if a test stored a flat map.
-        states = {
-            key: value
-            for key, value in payload.items()
-            if key in COMPONENT_IDS and isinstance(value, str)
-        }
-    return {
-        "states": {str(k): str(v) for k, v in states.items()},
-        "last_success": payload.get("last_success")
-        if isinstance(payload.get("last_success"), dict)
-        else {},
-        "reasons": payload.get("reasons")
-        if isinstance(payload.get("reasons"), dict)
-        else {},
-        "docker": payload.get("docker")
-        if isinstance(payload.get("docker"), dict)
-        else {},
-        "sample_mode": payload.get("sample_mode")
-        if isinstance(payload.get("sample_mode"), str)
-        else None,
-    }
-
-
-def _is_sparse_sample(sample: HubMonitorSample, payload: dict[str, Any]) -> bool:
-    return (
-        sample.overall_availability == "unobserved"
-        or payload.get("sample_mode") == SAMPLE_MODE_SPARSE
-    )
+    return monitoring_cycle.sample_payload(sample, COMPONENT_IDS)
 
 
 def _observations(
@@ -650,21 +406,10 @@ def _observations(
     *,
     component_id: str | None = None,
 ) -> list[monitoring_availability.Observation]:
-    observations = []
-    for sample in samples:
-        payload = payloads_by_sample_id.get(sample.sample_id) if payloads_by_sample_id else None
-        if payload is None:
-            payload = _parse_sample_payload(sample)
-        state = sample.overall_availability
-        if component_id is not None:
-            states = payload.get("states")
-            raw = states.get(component_id) if isinstance(states, dict) else None
-            state = monitoring_availability.component_state(str(raw) if raw is not None else None)
-        observations.append(monitoring_availability.Observation(
-            sample.observed_at, state,
-            sparse=_is_sparse_sample(sample, payload),
-        ))
-    return observations
+    payloads = payloads_by_sample_id
+    if payloads is None:
+        payloads = {sample.sample_id: _parse_sample_payload(sample) for sample in samples}
+    return monitoring_cycle.observations(samples, payloads, component_id=component_id)
 
 
 def compute_availability_window(
@@ -752,7 +497,8 @@ def build_monitoring_summary(
     current_sample: HubMonitorSample | None = None,
 ) -> dict[str, Any]:
     now = _utcnow()
-    sample = current_sample or _latest_sample(db)
+    store = _store()
+    sample = current_sample or store.latest_sample(db)
     if current_probe is not None:
         states = current_probe["components"]
         last_success = current_probe["last_success"]
@@ -778,39 +524,19 @@ def build_monitoring_summary(
         availability = "unobserved"
         calculated_at = now
 
-    history_start = monitoring_cycle.retention_cutoff(now, settings.hub_monitor_retention_days)
-    history = list(
-        db.scalars(
-            select(HubMonitorSample)
-            .where(
-                HubMonitorSample.hub_id == settings.hub_id,
-                HubMonitorSample.observed_at >= history_start,
-            )
-            .order_by(HubMonitorSample.observed_at.asc())
-        )
-    )
-    anchor = _retention_anchor(db, history_start)
-    if anchor is not None:
-        history.insert(0, anchor)
+    history = store.history(db, now, settings.hub_monitor_retention_days)
     # Parse each sample payload once for all windows (P0). Pass the full
     # retention history so hold can carry the latest pre-window sample in.
     payloads_by_sample_id = {
         sample.sample_id: _parse_sample_payload(sample) for sample in history
     }
     overall_observations = _observations(history, payloads_by_sample_id)
-    stale_boundary = None
-    if overall_observations and overall_observations[-1].sparse:
-        checkpoint = db.get(HubMonitorCheckpoint, settings.hub_id)
-        gap_at = monitoring_cycle.coverage_end_if_stale(
-            now,
-            anchor_at=overall_observations[-1].observed_at,
-            previous_check_at=_last_check_at,
-            persisted_checkpoint=checkpoint.last_check_at if checkpoint else None,
-            threshold=timedelta(seconds=settings.hub_monitor_gap_threshold_s),
-        )
-        if gap_at is not None:
-            stale_boundary = monitoring_availability.Observation(gap_at, "unobserved")
-            overall_observations.append(stale_boundary)
+    stale_boundary = store.stale_boundary(
+        db, overall_observations, now, previous_check_at=_last_check_at,
+        threshold=timedelta(seconds=settings.hub_monitor_gap_threshold_s),
+    )
+    if stale_boundary is not None:
+        overall_observations.append(stale_boundary)
     windows: dict[str, Any] = {}
     # Report gaps once from the widest window so the UI does not repeat the same
     # unobserved interval under 24h/7d/30d.
@@ -843,23 +569,13 @@ def build_monitoring_summary(
 
     # Avoid loading the event list on every Hub status refresh; callers that need
     # the timeline use list_recent_events() / GET /api/v1/hub/monitoring/events.
-    last_event = db.scalar(
-        select(HubMonitorEvent)
-        .where(
-            HubMonitorEvent.hub_id == settings.hub_id,
-            HubMonitorEvent.event_type.in_(
-                (
-                    "state_changed",
-                    "health_changed",
-                    "availability_changed",
-                    "monitoring_resumed",
-                    "service_restart_detected",
-                )
-            ),
-        )
-        .order_by(HubMonitorEvent.occurred_at.desc())
-        .limit(1)
+    events = store.recent_events(
+        db, 1, event_types=(
+            "state_changed", "health_changed", "availability_changed",
+            "monitoring_resumed", "service_restart_detected",
+        ),
     )
+    last_event = events[0] if events else None
     last_change = None
     if last_event is not None:
         last_change = {
@@ -878,13 +594,10 @@ def build_monitoring_summary(
         observations = _observations(history, payloads_by_sample_id, component_id=component_id)
         if stale_boundary is not None:
             observations.append(stale_boundary)
-        component_windows[component_id] = {
-            name: monitoring_availability.component_window(
-                observations, component_id=component_id, window_start=now - delta,
-                window_end=now, interval_s=settings.hub_monitor_interval_s,
-            )
-            for name, delta in WINDOW_SPECS
-        }
+        component_windows[component_id] = monitoring_availability.component_windows(
+            observations, component_id=component_id, now=now,
+            interval_s=settings.hub_monitor_interval_s,
+        )
 
     insufficient = any(window.get("insufficient_data") for window in windows.values())
     failure_reason = health_failure_reason(states)
@@ -967,16 +680,6 @@ def build_monitoring_summary(
     return result
 
 
-def _event_view(event: HubMonitorEvent) -> dict[str, Any]:
-    return monitoring_cycle.event_view(
-        event_id=event.event_id, occurred_at=event.occurred_at,
-        observed_at=event.observed_at, component=event.component,
-        event_type=event.event_type, previous_state=event.previous_state,
-        new_state=event.new_state, reason=event.reason,
-        source=event.source, certainty=event.certainty,
-    )
-
-
 def list_recent_events(
     db: Session, *, limit: int = RECENT_EVENT_LIMIT
 ) -> dict[str, Any]:
@@ -985,16 +688,11 @@ def list_recent_events(
     # Fetch a little extra then drop excluded components (e.g. historical noise).
     events = [
         event
-        for event in db.scalars(
-            select(HubMonitorEvent)
-            .where(HubMonitorEvent.hub_id == settings.hub_id)
-            .order_by(HubMonitorEvent.occurred_at.desc())
-            .limit(bounded * 2)
-        )
+        for event in _store().recent_events(db, bounded * 2)
         if event.component not in EXCLUDED_FROM_MONITORING
     ][:bounded]
     return {
-        "events": [_event_view(event) for event in events],
+        "events": [monitoring_cycle.event_view(event) for event in events],
         "limit": bounded,
         "count": len(events),
     }

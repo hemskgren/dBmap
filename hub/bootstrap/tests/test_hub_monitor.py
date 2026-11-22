@@ -1462,7 +1462,7 @@ def test_new_samples_omit_docker_but_legacy_docker_payloads_still_parse(
 
         summary = hub_monitor.run_check(db)
         assert summary["health"]["state"] == "healthy"
-        sample = hub_monitor._latest_sample(db)
+        sample = hub_monitor._store().latest_sample(db)
         assert sample is not None
         stored = json.loads(sample.components_json)
         assert "docker" not in stored

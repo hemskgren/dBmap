@@ -195,7 +195,20 @@ These optional checks run independently every 60 seconds in the Hub process. The
 - Public API appends `/health` to `DBMAP_PUBLIC_HUB_URL`, verifies the configured hostname with the existing CA, and requires a successful response identifying `hub-bootstrap`. It sends no API credentials.
 - Public MQTT uses `DBMAP_PUBLIC_MQTT_HOST`, `DBMAP_PUBLIC_MQTT_PORT`, the existing MQTT CA and regular Hub login, and verified TLS. It requires a successful MQTT 3.1.1 CONNACK for a unique, clean client session. It disconnects without subscribing, publishing, or reconnecting. DynSec client-ID restrictions or rejected credentials can block this check and are surfaced as failure reasons.
 
-A separate public history table stores one row per transition or gap boundary. It uses the Hub retention period and keeps one carry-in row per enabled timeline. Existing Core Hub history stays isolated, including when rolling back to a build without public checks. Time before the first observation and gaps without fresh checks are excluded from public availability. Core and public checks use the same continuity and availability rules. Each public timeline checkpoints its last committed check on its latest transition row without changing the transition timestamp. After a restart, exclude only the time after that checkpoint. Missing and invalid checkpoints use the latest sparse boundary as a conservative fallback. A short restart with an unchanged probe state creates gap boundaries without a redundant recent event. A delayed probe stays on its own worker and can skip a scheduled check without delaying local monitoring.
+Public probes use the same sparse observation store as Core Hub. The separate
+`public_monitor_samples`, `public_monitor_events` and
+`public_monitor_checkpoints` tables mirror the `hub_monitor_*` tables.
+Public checkpoints are keyed by Hub and component, so a completed API check
+cannot advance MQTT coverage. A stable cycle updates only its checkpoint.
+Both families retain the last sparse boundary before the cutoff, and use
+committed observations to exclude gaps and restart downtime. A short restart
+with an unchanged state creates gap boundaries without a resume event.
+A delayed public probe stays on its own worker.
+
+Upgrades create the new public tables empty. The former
+`public_monitor_transitions` table, if present, stays intact and is unused by
+the new build. Public availability accumulates from the first new observation.
+Core and Device Monitor history carry through the upgrade.
 
 These results describe reachability from the Hub's network. Router NAT loopback and split DNS can make the result differ from what an internet client sees. The probes use the Hub resolver and do not compare DNS answers to an independently measured WAN address. Use an off-LAN client to validate externally visible reachability.
 

@@ -233,6 +233,22 @@ def component_window(
     ) | {"component": component_id}
 
 
+def component_windows(
+    observations: list[Observation],
+    *,
+    component_id: str,
+    now: datetime,
+    interval_s: float,
+) -> dict[str, Any]:
+    return {
+        name: component_window(
+            observations, component_id=component_id, window_start=now - delta,
+            window_end=now, interval_s=interval_s,
+        )
+        for name, delta in WINDOW_SPECS
+    }
+
+
 def core_window(
     observations: list[Observation],
     *,

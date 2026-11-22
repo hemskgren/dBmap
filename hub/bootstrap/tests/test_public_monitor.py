@@ -9,8 +9,11 @@ from app.config import settings
 from app.models import (
     Base,
     HubMonitorCheckpoint,
+    HubMonitorEvent,
     HubMonitorSample,
-    PublicMonitorTransition,
+    PublicMonitorCheckpoint,
+    PublicMonitorEvent,
+    PublicMonitorSample,
 )
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
@@ -78,7 +81,7 @@ def test_worker_uses_60_second_schedule_and_keeps_runtime_status(monkeypatch, db
     )
     public_monitor._loop("public_api", probe, Stop())
     assert calls == [0, 60, 120]
-    assert len(db.scalars(select(PublicMonitorTransition)).all()) == 1
+    assert len(db.scalars(select(PublicMonitorSample)).all()) == 1
     assert db.scalar(select(HubMonitorCheckpoint.last_check_at)) is None
     assert public_monitor._current["public_api"][0] == START + timedelta(seconds=122)
 
@@ -211,7 +214,7 @@ def test_public_windows_and_events_do_not_change_existing_hub_history(monkeypatc
     assert recovery["previous_state"] == "offline"
     assert len(public["public_api"]["recent_events"]) == 1
     assert len(db.scalars(select(HubMonitorSample)).all()) == 1
-    assert len(db.scalars(select(PublicMonitorTransition)).all()) == 4
+    assert len(db.scalars(select(PublicMonitorSample)).all()) == 4
 
 
 @pytest.mark.parametrize("restart", [False, True])
@@ -253,7 +256,7 @@ def test_public_restart_preserves_hour_of_stable_observation(monkeypatch, db, do
     public_monitor.record_check(
         db, "public_mqtt", START, ("offline", "TLS failed"), None
     )
-    assert len(db.scalars(select(PublicMonitorTransition)).all()) == 2
+    assert len(db.scalars(select(PublicMonitorSample)).all()) == 2
 
     engine = db.get_bind()
     db.close()
@@ -263,7 +266,7 @@ def test_public_restart_preserves_hour_of_stable_observation(monkeypatch, db, do
         before_resume = public_monitor.summary(restarted, now)["public_api"]
         for name in ("24h", "7d", "30d"):
             assert before_resume["windows"][name]["eligible_seconds"] == 3600
-        assert len(restarted.scalars(select(PublicMonitorTransition)).all()) == 2
+        assert len(restarted.scalars(select(PublicMonitorSample)).all()) == 2
 
         public_monitor.record_check(restarted, "public_api", now, ok, None)
         public_monitor._current["public_api"] = now, ok, now
@@ -277,16 +280,18 @@ def test_public_restart_preserves_hour_of_stable_observation(monkeypatch, db, do
             else ["monitoring_resumed", "state_changed"]
         )
         rows = restarted.scalars(
-            select(PublicMonitorTransition)
-            .where(PublicMonitorTransition.component == "public_api")
-            .order_by(PublicMonitorTransition.observed_at)
+            select(PublicMonitorSample)
+            .where(PublicMonitorSample.component == "public_api")
+            .order_by(PublicMonitorSample.observed_at)
         ).all()
-        assert [r.state for r in rows] == ["ok", "unknown", "ok"]
+        assert [r.overall_availability for r in rows] == ["available", "unobserved", "available"]
         assert rows[1].observed_at == last.replace(tzinfo=None)
-        assert rows[-1].last_check_at == now.isoformat()
+        assert restarted.get(
+            PublicMonitorCheckpoint, (settings.hub_id, "public_api")
+        ).last_check_at == now.isoformat()
         mqtt = restarted.scalar(
-            select(PublicMonitorTransition).where(
-                PublicMonitorTransition.component == "public_mqtt"
+            select(PublicMonitorCheckpoint).where(
+                PublicMonitorCheckpoint.component == "public_mqtt"
             )
         )
         assert mqtt.last_check_at == START.isoformat()
@@ -305,11 +310,13 @@ def test_public_failed_commit_does_not_advance_checkpoint_or_transition(
     def fail():
         db.flush()
         points = db.scalars(
-            select(PublicMonitorTransition).order_by(
-                PublicMonitorTransition.observed_at
+            select(PublicMonitorSample).order_by(
+                PublicMonitorSample.observed_at
             )
         ).all()
-        assert len(points) == 2 and points[-1].last_check_at == attempt.isoformat()
+        assert len(points) == 2
+        assert db.get(PublicMonitorCheckpoint, (settings.hub_id, "public_api")).last_check_at == attempt.isoformat()
+        assert len(db.scalars(select(PublicMonitorEvent)).all()) == 2
         raise RuntimeError("commit failed")
 
     with monkeypatch.context() as patch:
@@ -319,9 +326,10 @@ def test_public_failed_commit_does_not_advance_checkpoint_or_transition(
                 db, "public_api", attempt, ("offline", "TLS failed"), START
             )
     db.rollback()
-    rows = db.scalars(select(PublicMonitorTransition)).all()
-    assert len(rows) == 1 and rows[0].last_check_at == START.isoformat()
-    assert rows[0].state == "ok"
+    rows = db.scalars(select(PublicMonitorSample)).all()
+    assert len(rows) == 1 and rows[0].overall_availability == "available"
+    assert db.get(PublicMonitorCheckpoint, (settings.hub_id, "public_api")).last_check_at == START.isoformat()
+    assert len(db.scalars(select(PublicMonitorEvent)).all()) == 1
     summary = public_monitor.summary(db, START + timedelta(minutes=5))["public_api"]
     assert summary["windows"]["24h"]["eligible_seconds"] == 0
     assert summary["state"] == "unknown"
@@ -334,8 +342,11 @@ def test_public_legacy_checkpoint_falls_back_without_fabricating_history(
 ):
     monkeypatch.setattr(settings, "public_api_monitor_enabled", True)
     public_monitor.record_check(db, "public_api", START, ("ok", None), None)
-    row = db.scalar(select(PublicMonitorTransition))
-    row.last_check_at = legacy_value
+    row = db.scalar(select(PublicMonitorCheckpoint))
+    if legacy_value is None:
+        db.delete(row)
+    else:
+        row.last_check_at = legacy_value
     db.commit()
     now = START + timedelta(hours=1)
     public_monitor.record_check(db, "public_api", now, ("ok", None), None)
@@ -345,24 +356,34 @@ def test_public_legacy_checkpoint_falls_back_without_fabricating_history(
     assert window["recent_events"][0]["event_type"] == "monitoring_resumed"
 
 
-def test_public_checkpoint_migration_preserves_existing_rows(monkeypatch):
+def test_upgrade_creates_parallel_tables_without_using_legacy_public_history(monkeypatch):
     engine = create_engine("sqlite://")
     monkeypatch.setattr(database, "engine", engine)
     with engine.begin() as connection:
-        connection.execute(
-            text(
-                "CREATE TABLE public_monitor_transitions (transition_id VARCHAR PRIMARY KEY, state VARCHAR)"
+        connection.execute(text(
+            "CREATE TABLE public_monitor_transitions (transition_id VARCHAR PRIMARY KEY, state VARCHAR)"
+        ))
+        connection.execute(text("INSERT INTO public_monitor_transitions VALUES ('old', 'ok')"))
+    database.init_db()
+    database.init_db()
+
+    for core, public, extra in (
+        (HubMonitorSample, PublicMonitorSample, {"component"}),
+        (HubMonitorEvent, PublicMonitorEvent, set()),
+        (HubMonitorCheckpoint, PublicMonitorCheckpoint, {"component"}),
+    ):
+        assert set(public.__table__.columns.keys()) == set(core.__table__.columns.keys()) | extra
+        for name, column in core.__table__.columns.items():
+            other = public.__table__.columns[name]
+            assert (str(other.type), other.nullable, other.primary_key) == (
+                str(column.type), column.nullable, column.primary_key,
             )
-        )
-        connection.execute(
-            text("INSERT INTO public_monitor_transitions VALUES ('old', 'ok')")
-        )
-    database._migrate_public_monitor_checkpoint()
-    database._migrate_public_monitor_checkpoint()
-    with engine.connect() as connection:
-        assert connection.execute(
-            text("SELECT * FROM public_monitor_transitions")
-        ).all() == [("old", "ok", None)]
+    with Session(engine) as session:
+        assert session.execute(text("SELECT * FROM public_monitor_transitions")).all() == [
+            ("old", "ok"),
+        ]
+        for model in (PublicMonitorSample, PublicMonitorEvent, PublicMonitorCheckpoint):
+            assert session.scalars(select(model)).all() == []
     engine.dispose()
 
 
@@ -376,19 +397,22 @@ def test_public_latest_anchor_survives_cleanup_without_stable_state_writes(
     public_monitor.record_check(db, "public_api", START, ok, None)
     older = START - timedelta(minutes=1)
     db.add(
-        PublicMonitorTransition(
+        PublicMonitorSample(
             hub_id=settings.hub_id,
             component="public_api",
             observed_at=older,
-            state="offline",
+            overall_availability="unavailable",
+            overall_health="unhealthy",
+            components_json='{"sample_mode":"sparse","states":{"public_api":"offline"}}',
         )
     )
     db.commit()
-    public_monitor.prune_history(db, "public_api", now)
-    db.commit()
-    public_monitor.record_check(db, "public_api", now, ok, now - timedelta(seconds=60))
-    assert len(db.scalars(select(PublicMonitorTransition)).all()) == 1
+    public_monitor.record_check(
+        db, "public_api", now, ok, now - timedelta(seconds=60), prune=True
+    )
+    assert len(db.scalars(select(PublicMonitorSample)).all()) == 1
     assert db.scalars(select(HubMonitorSample)).all() == []
+    assert db.scalars(select(PublicMonitorEvent)).all() == []
     public_monitor._current["public_api"] = now, ok, now
     assert (
         public_monitor.summary(db, now)["public_api"]["windows"]["30d"]["percent"]
