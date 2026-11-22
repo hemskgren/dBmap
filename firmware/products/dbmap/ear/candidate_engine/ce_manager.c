@@ -208,7 +208,8 @@ static void find_match_ranks(
     const ae_signature_t *sig,
     ae_candidate_t **best_out,
     float *best_d_out,
-    float *second_d_out
+    float *second_d_out,
+    float distances[CE_MAX_CANDIDATES]
 )
 {
     ae_candidate_t *best = NULL;
@@ -217,13 +218,12 @@ static void find_match_ranks(
 
     for (uint8_t i = 0; i < CE_MAX_CANDIDATES; i++) {
         ae_candidate_t *c = &eng->slots[i];
-        if (!c->in_use) {
-            continue;
-        }
-        if (c->state == AE_CAND_REJECTED || c->state == AE_CAND_EXPIRED) {
+        distances[i] = CE_ID_DIST_INF;
+        if (!c->in_use || c->state == AE_CAND_REJECTED || c->state == AE_CAND_EXPIRED) {
             continue;
         }
         const float d = identity_distance(c, sig);
+        distances[i] = d;
         if (d <= best_d) {
             if (best != NULL) {
                 second_d = best_d;
@@ -238,6 +238,42 @@ static void find_match_ranks(
     *best_out = best;
     *best_d_out = best_d;
     *second_d_out = second_d;
+}
+
+static void age_unmatched(
+    ce_engine_t *eng,
+    const ae_signature_t *sig,
+    const ae_candidate_t *winner,
+    const float distances[CE_MAX_CANDIDATES],
+    float best_d,
+    float match_max,
+    float hyst,
+    float amb_delta
+)
+{
+    if (eng->cfg.valid_miss_limit == 0u) {
+        return;
+    }
+
+    for (uint8_t i = 0; i < CE_MAX_CANDIDATES; i++) {
+        ae_candidate_t *c = &eng->slots[i];
+        if (!c->in_use || c == winner) {
+            continue;
+        }
+        const float distance = distances[i];
+        const bool ambiguous = distance <= match_max
+            && distance - best_d < amb_delta;
+        const bool near = distance > match_max && distance <= match_max + hyst
+            && (winner == NULL || distance - best_d < amb_delta);
+        c->valid_miss_windows++;
+        c->last_update_mono_us = sig->window_end_mono_us;
+        if (c->valid_miss_windows >= eng->cfg.valid_miss_limit) {
+            expire_slot(eng, c);
+        } else if (c->valid_miss_windows > 1u && !ambiguous && !near
+                   && (c->state == AE_CAND_ACTIVE || c->state == AE_CAND_PROMOTED)) {
+            c->state = AE_CAND_COASTING;
+        }
+    }
 }
 
 static void apply_gap(ce_engine_t *eng, const ae_signature_t *sig)
@@ -267,6 +303,7 @@ static void apply_gap(ce_engine_t *eng, const ae_signature_t *sig)
 
 static void update_matched(ce_engine_t *eng, ae_candidate_t *c, const ae_signature_t *sig)
 {
+    c->valid_miss_windows = 0u;
     c->last_evidence_mono_us = sig->window_end_mono_us;
     c->last_update_mono_us = sig->window_end_mono_us;
     c->last_window_seq = sig->window_seq;
@@ -369,23 +406,24 @@ ce_ingest_t ce_manager_ingest(ce_engine_t *eng, const ae_signature_t *sig)
         return r;
     }
 
-    /* Ignore duplicate / rewound seq for the global stream. */
-    if (sig->window_seq != 0u && sig->window_seq <= eng->last_processed_seq) {
+    /* Zero has no window identity. Ignore duplicates and rewinds as well. */
+    if (sig->window_seq <= eng->last_processed_seq) {
         eng->diag.ignored_duplicate++;
         r.action = CE_INGEST_DUPLICATE;
         return r;
     }
 
-    if (sig->window_seq > eng->last_processed_seq + 1u && eng->last_processed_seq != 0u) {
-        apply_gap(eng, sig);
+    r.seq_gap = eng->last_processed_seq != 0u
+        && sig->window_seq - eng->last_processed_seq > 1u;
+    if (r.seq_gap) {
         eng->diag.seq_discontinuities++;
-        r.seq_gap = true;
     }
-
     eng->last_processed_seq = sig->window_seq;
 
-    if (sig->quality == AE_QUALITY_GAP) {
+    if (r.seq_gap || sig->quality == AE_QUALITY_GAP) {
         apply_gap(eng, sig);
+    }
+    if (sig->quality == AE_QUALITY_GAP) {
         eng->diag.quality_gaps++;
         r.action = CE_INGEST_GAP;
         return r;
@@ -394,7 +432,8 @@ ce_ingest_t ce_manager_ingest(ce_engine_t *eng, const ae_signature_t *sig)
     ae_candidate_t *best = NULL;
     float best_d = CE_ID_DIST_INF;
     float second_d = CE_ID_DIST_INF;
-    find_match_ranks(eng, sig, &best, &best_d, &second_d);
+    float distances[CE_MAX_CANDIDATES];
+    find_match_ranks(eng, sig, &best, &best_d, &second_d, distances);
 
     const float match_max = eng->cfg.match_distance_max;
     float hyst = eng->cfg.match_hysteresis;
@@ -406,7 +445,12 @@ ce_ingest_t ce_manager_ingest(ce_engine_t *eng, const ae_signature_t *sig)
         amb_delta = 0.0f;
     }
 
-    if (best != NULL && best_d <= match_max) {
+    ae_candidate_t *winner = best_d <= match_max ? best : NULL;
+    if (!r.seq_gap) {
+        age_unmatched(eng, sig, winner, distances, best_d, match_max, hyst, amb_delta);
+    }
+
+    if (winner != NULL) {
         if (second_d <= match_max && (second_d - best_d) < amb_delta) {
             eng->diag.match_ambiguous++;
         }
@@ -417,6 +461,10 @@ ce_ingest_t ce_manager_ingest(ce_engine_t *eng, const ae_signature_t *sig)
         return r;
     }
 
+    /* An expired near-match cannot suppress birth. Other surviving tracks can. */
+    if (best != NULL && !best->in_use) {
+        find_match_ranks(eng, sig, &best, &best_d, &second_d, distances);
+    }
     if (best != NULL && best_d <= match_max + hyst) {
         eng->diag.match_hysteresis_hold++;
         r.action = CE_INGEST_HYSTERESIS;

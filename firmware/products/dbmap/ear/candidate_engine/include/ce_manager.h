@@ -10,15 +10,13 @@
  * 2. Signatures that fail ae_signature_usable_for_tracking (including
  *    AE_QUALITY_INVALID) are ignored. CE does not re-validate AE time or
  *    history; publish rejection stays in the Audio Engine.
- * 3. window_seq != 0 && window_seq <= last processed seq is a duplicate or
- *    rewind and is ignored. The AE timestamp is not replaced.
- * 4. If window_seq > last+1 and last != 0, one coast step is applied first
- *    (missed windows are not continuous evidence). The arrived signature is
- *    then processed. gap_events increments on each coast step.
- * 5. AE_QUALITY_GAP applies a coast step and returns. It does not match or
- *    create. quality_summary is left at the last matched signature so a
- *    coasting candidate does not lose the quality the bridge already uses
- *    for ACTIVE selection; the gap itself is gap_events plus COASTING.
+ * 3. Zero, duplicate and rewound window sequence numbers are ignored.
+ * 4. A forward sequence discontinuity or AE_QUALITY_GAP applies one
+ *    transport coast step and increments gap_events once, even if both
+ *    reasons apply. A usable arriving signature can still rematch.
+ * 5. AE_QUALITY_GAP never matches or creates. quality_summary stays at the
+ *    last matched signature. A discontinuous input uses the transport coast
+ *    path only, so it cannot also spend the valid-window retention budget.
  * 6. Identity distance (CE-local, not ae_signature_distance):
  *      w_rms * |ΔRMS|  (low weight — RMS is not the primary identity cue)
  *    + w_band * Σ |Δ(band − RMS)|  (relative band shape)
@@ -41,11 +39,17 @@
  *    an energy/eligibility gate only — not an identity or promotion threshold.
  * 10. NASCENT becomes ACTIVE when evidence_count >= cfg.n_enter (default 2,
  *     minimum 1) and quality is OK or DEGRADED.
- * 11. Coast: ACTIVE and PROMOTED move to COASTING (coast_windows = 1).
+ * 11. Transport coast: ACTIVE and PROMOTED move to COASTING (coast_windows = 1).
  *     COASTING increments; when coast_windows > cfg.t_coast (default 3,
  *     minimum 1) the slot expires. NASCENT expires on the first coast step.
  *     Expiry sets EXPIRED, in_use false. If promotion_entered, one
  *     CE_PROMOTION_EXIT is emitted and the flag is cleared.
+ *     Valid-window retention uses a separate count (valid_miss_limit).
+ *     A single missed hard match is tolerated before unsupported ACTIVE
+ *     and PROMOTED candidates coast. Plausible ambiguous or hysteresis
+ *     matches can defer coasting, but only a hard match resets the count
+ *     and recovers a coasting candidate. NASCENT keeps its evidence state
+ *     until it reaches n_enter or expires. Expiry is before allocation.
  * 12. Capacity is CE_MAX_CANDIDATES (8). A free slot is used first. Otherwise
  *     the NASCENT with the lowest evidence_count is evicted (equal counts
  *     keep the earlier slot). If none are NASCENT, the create is dropped.

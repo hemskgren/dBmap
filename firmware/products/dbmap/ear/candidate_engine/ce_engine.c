@@ -87,6 +87,7 @@ void ce_config_set_defaults(ce_config_t *cfg)
     cfg->match_hysteresis = 2.0f;
     cfg->match_ambiguity_delta = 1.5f;
     cfg->min_rms_dbfs = -80.0f;
+    cfg->valid_miss_limit = 16u;
 }
 
 bool ce_start(ce_engine_t *eng, const ce_config_t *cfg)
