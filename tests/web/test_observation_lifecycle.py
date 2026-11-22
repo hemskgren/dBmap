@@ -399,7 +399,7 @@ def test_nginx_allows_observation_lifecycle_js_when_base_path_empty() -> None:
     assert asset_route < only_base
 
 
-def test_observation_view_wires_statistics_separately_from_recent_100() -> None:
+def test_observation_view_wires_statistics_separately_from_recent_200() -> None:
     html = HUB_INDEX.read_text(encoding="utf-8")
     js = JS_HELPER.read_text(encoding="utf-8")
 
@@ -410,9 +410,9 @@ def test_observation_view_wires_statistics_separately_from_recent_100() -> None:
     assert "Observation Statistics" in html
     assert "Complete retained Observation history" in html
     assert "Loads only when you expand this panel" in html
-    assert "recent-100" in html or "recent 100" in html
-    assert "in recent 100" in html
-    assert "page_size=100&order=newest" in html
+    assert "recent-200" in html or "recent 200" in html
+    assert "newest 200 reports globally" in html
+    assert "page_size=200&order=newest" in html
     assert "fetchAllObservationReportsSnapshot" in html
     assert "refreshObservationStatistics" in html
     assert "observationStatsState" in html
@@ -434,7 +434,7 @@ def test_observation_view_wires_statistics_separately_from_recent_100() -> None:
         "async function formatCounts", 1
     )[0]
     assert "fetchAllObservationReportsSnapshot" not in timeline_refresh
-    assert "page_size=100" in timeline_refresh
+    assert "page_size=200" in timeline_refresh
 
     assert "function summarizeObservationLifecycles" in js
     assert "function finalizeObservationSnapshot" in js
