@@ -29,6 +29,17 @@ Start here, then go deeper only as needed:
 Do not invent endpoints, auth, or DB paths. Discover them from the docs and code.
 Do not weaken existing security, authorization, or secret-handling requirements.
 
+## Local checks before pushing
+
+- All code changes must pass local linting before they are committed or pushed.
+  From the repository root, run `uv sync --group dev` to install the pinned
+  toolchain, then run the same repository-wide Ruff check as CI,
+  `uv run ruff check`.
+- Run any additional lint, format, or type checks required for the affected
+  components, along with their relevant tests. Fix failures introduced by the
+  change and rerun the checks. If a required check cannot run or an unrelated
+  failure remains, report it explicitly before pushing.
+
 ## Secrets and configuration
 
 - Load local Hub settings from the project `.env` via established helpers

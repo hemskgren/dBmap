@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import paho.mqtt.client as mqtt
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import monitoring_availability, monitoring_cycle
@@ -191,7 +192,7 @@ def record_check(
         try:
             store.prune(db, observed_at, settings.hub_monitor_retention_days)
             db.commit()
-        except Exception:
+        except SQLAlchemyError:
             db.rollback()
             log.warning("Could not prune the %s history", component)
 
