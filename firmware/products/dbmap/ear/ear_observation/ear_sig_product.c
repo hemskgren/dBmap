@@ -33,25 +33,33 @@ static void forward_as002_absence(ear_obs_manager_t *om)
     );
 }
 
-static void apply_siren_cls_evidence(ear_obs_manager_t *om)
+static void apply_siren_cls_evidence(ear_sig_product_t *prod)
 {
-    ear_cls_evidence_t ev;
-    if (!sig_engine_copy_as002_evidence(&ev)) {
+    ear_obs_manager_t *om = prod->om;
+    sig_as002_snapshot_t snap;
+    if (!sig_engine_copy_as002_snapshot(&snap) || !snap.evidence_ok
+        || snap.last_window.kind != EAR_SIREN_LAST_USABLE
+        || !snap.last_window.tonal_vote) {
+        ear_obs_manager_arm_cls_evidence(om, NULL);
         return;
     }
-    ear_obs_manager_arm_cls_evidence(om, &ev);
+    ear_obs_manager_arm_cls_evidence(om, &snap.evidence);
     /*
-     * Attempt every open binding. Observation Manager accepts the write
-     * only for an approved AS-002 binding.
+     * Refine only the track that consumed the tonal window. Observation
+     * Manager also requires an approved AS-002 binding.
      */
     for (uint8_t i = 0u; i < EAR_OBS_MGR_BINDING_CAP; i++) {
-        if (!om->bind[i].in_use) {
+        ae_candidate_t candidate;
+        if (!om->bind[i].in_use || !om->bind[i].ce_live
+            || !ce_find_candidate(prod->ce, om->bind[i].candidate_id, &candidate)
+            || candidate.promotion_gen != om->bind[i].ce_promotion_gen
+            || candidate.last_window_seq != snap.window_seq) {
             continue;
         }
         (void)ear_obs_manager_feed_cls_evidence(
             om,
             om->bind[i].candidate_id,
-            &ev,
+            &snap.evidence,
             EAR_CLS_PHASE_PERIODIC
         );
     }
@@ -102,11 +110,11 @@ void ear_sig_product_poll(ear_sig_product_t *prod, int64_t now_mono_us)
         return;
     }
     /* Siren evidence was updated by the AE listener during publish. */
-    apply_siren_cls_evidence(prod->om);
+    apply_siren_cls_evidence(prod);
     ear_promotion_policy_poll(prod->policy, now_mono_us);
     ear_obs_manager_poll(prod->om, now_mono_us);
     /* Re-apply after ENTER so a START-armed binding can refine same cycle. */
-    apply_siren_cls_evidence(prod->om);
+    apply_siren_cls_evidence(prod);
     if (prod->ce != NULL) {
         ear_obs_manager_feed_from_ce(prod->om, prod->ce);
     }

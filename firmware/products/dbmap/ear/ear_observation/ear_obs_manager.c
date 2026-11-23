@@ -674,10 +674,8 @@ static bool allocate_and_bind(
     om->bind[free_bi].as002_absent_ms = 0u;
     /*
      * Assessment stamp at START (ear_hyp_v2 via cls_wire):
-     *   - AS-001: parent-only AIRCRAFT (leaf Helicopter on first PERIODIC/END).
-     *     Armed siren evidence is discarded, not applied.
-     *   - AS-002: progressive path from armed siren evidence when present.
-     * Armed progressive evidence is consumed only by an approved AS-002 binding.
+     * AS-001 starts at AIRCRAFT and adds Helicopter on PERIODIC/END.
+     * AS-002 starts with the siren evidence captured at admission.
      */
     if (snap->relevance_profile_id == AS_PROFILE_ID_AS001) {
         (void)ear_cls_as001_apply(
@@ -685,19 +683,14 @@ static bool allocate_and_bind(
             snap->relevance_match_distance,
             EAR_CLS_PHASE_START
         );
-        if (om->cls_arm_valid) {
-            om->cls_arm_valid = false;
-            ear_cls_evidence_clear(&om->cls_arm);
-        }
-    } else if (binding_is_as002(om, (uint8_t)free_bi) && om->cls_arm_valid) {
+    } else if (binding_is_as002(om, (uint8_t)free_bi)
+               && snap->siren_start_evidence.alarm_ok) {
         (void)ear_cls_apply(
             &om->bind[free_bi].cls,
-            &om->cls_arm,
+            &snap->siren_start_evidence,
             EAR_CLS_PHASE_START,
             &om->bind[free_bi].cls_wire
         );
-        om->cls_arm_valid = false;
-        ear_cls_evidence_clear(&om->cls_arm);
     }
 
     attempt_start_publish(om, (uint8_t)free_bi, attempt_fallback_us);
@@ -868,6 +861,14 @@ bool ear_obs_manager_commit_reservation(
     owned.candidate_id = candidate_id;
     owned.product_relevance_approved = true;
     owned.relevance_ticket = snapshot->relevance_ticket;
+    ear_cls_evidence_clear(&owned.siren_start_evidence);
+    if (om->cls_arm_valid && owned.relevance_profile_id == AS_PROFILE_ID_AS002) {
+        owned.siren_start_evidence = om->cls_arm;
+    }
+    if (owned.relevance_profile_id == AS_PROFILE_ID_AS001
+        || owned.relevance_profile_id == AS_PROFILE_ID_AS002) {
+        ear_obs_manager_arm_cls_evidence(om, NULL);
+    }
 
     /* Consume HELD before open/pending transition. */
     clear_rsv_slot(om, (uint8_t)h.index);
@@ -1129,6 +1130,13 @@ static void handle_enter(
     int64_t attempt_mono_us
 )
 {
+    if (om->cfg.ce != NULL && c != NULL && c->promotion_gen != 0u) {
+        ae_candidate_t live;
+        if (!ce_find_candidate(om->cfg.ce, candidate_id, &live)
+            || !live.promotion_entered || live.promotion_gen != c->promotion_gen) {
+            return;
+        }
+    }
     const int existing_bi = find_binding(om, candidate_id);
     if (existing_bi >= 0) {
         /*
@@ -1136,7 +1144,10 @@ static void handle_enter(
          * (e.g. unadmit then re-promote), re-attach ce_live and cancel the
          * Stage 3 watchdog — do not open a second episode.
          */
-        if (!om->bind[existing_bi].ce_live) {
+        if (!om->bind[existing_bi].ce_live
+            && (om->bind[existing_bi].ce_promotion_gen == 0u
+                || (c != NULL && c->promotion_gen != 0u
+                    && c->promotion_gen != om->bind[existing_bi].ce_promotion_gen))) {
             om->bind[existing_bi].ce_live = true;
             if (c != NULL && c->promotion_gen != 0u) {
                 om->bind[existing_bi].ce_promotion_gen = c->promotion_gen;
@@ -1273,6 +1284,16 @@ static void handle_exit(
             om->diag.exit_detach++;
             /* Stage 3: arm detached watchdog (non-AS002 only). */
             arm_detached_watchdog(om, (uint8_t)bi, now_mono_us);
+        }
+    }
+
+    const int pi = find_pending(om, candidate_id);
+    if (pi >= 0) {
+        const uint32_t pending_gen = om->pending[pi].snap.promotion_gen;
+        if (pending_gen != 0u
+            && (!have_promotion_gen || pending_gen != promotion_gen)) {
+            om->diag.exit_stale++;
+            return;
         }
     }
 

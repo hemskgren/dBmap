@@ -49,7 +49,11 @@ void ear_promotion_policy_use_sig_engine_as002(
     }
 }
 
-static bool as002_promote_ok(const ear_promotion_policy_t *pol, float *out_consec)
+static bool as002_promote_ok(
+    const ear_promotion_policy_t *pol,
+    const ae_candidate_t *candidate,
+    float *out_consec
+)
 {
     if (pol == NULL) {
         return false;
@@ -63,7 +67,10 @@ static bool as002_promote_ok(const ear_promotion_policy_t *pol, float *out_conse
         if (!sig_engine_copy_as002_snapshot(&snap) || !snap.valid) {
             return false;
         }
-        if (snap.allows_promote == 0u) {
+        if (snap.allows_promote == 0u
+            || snap.last_window.kind != EAR_SIREN_LAST_USABLE
+            || !snap.last_window.tonal_vote
+            || (candidate != NULL && candidate->last_window_seq != snap.window_seq)) {
             return false;
         }
         if (out_consec != NULL) {
@@ -144,11 +151,10 @@ bool ear_promotion_candidate_promote_relevant(
     }
     {
         float consec = 0.0f;
-        if (as002_promote_ok(pol, &consec)) {
-            ae_candidate_t cand;
-            if (!ce_find_candidate(pol->ce, candidate_id, &cand)) {
-                return false;
-            }
+        ae_candidate_t cand;
+        /* Only the CE track that consumed this tonal window can claim it. */
+        if (ce_find_candidate(pol->ce, candidate_id, &cand)
+            && as002_promote_ok(pol, &cand, &consec)) {
             if (cand.quality_summary != AE_QUALITY_OK
                 && cand.quality_summary != AE_QUALITY_DEGRADED) {
                 return false;
@@ -259,7 +265,7 @@ void ear_promotion_policy_poll(ear_promotion_policy_t *pol, int64_t now_mono_us)
     bool any_active = false;
     bool any_active_no_class = false;
     bool any_active_irrelevant = false;
-    const bool siren_ok = as002_promote_ok(pol, NULL);
+    const bool siren_ok = as002_promote_ok(pol, NULL, NULL);
     for (uint8_t i = 0; i < CE_MAX_CANDIDATES; i++) {
         const ae_candidate_t *c = &pol->ce->slots[i];
         if (!c->in_use || c->state != AE_CAND_ACTIVE || c->promotion_entered) {
@@ -271,7 +277,7 @@ void ear_promotion_policy_poll(ear_promotion_policy_t *pol, int64_t now_mono_us)
         }
         any_active = true;
         if (siren_ok) {
-            /* Siren allow treats ACTIVE OK candidates as promote-eligible. */
+            /* The selection pass checks which candidate owns the tonal window. */
             continue;
         }
         ce_classification_t cls;
