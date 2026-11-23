@@ -87,12 +87,25 @@ def test_format_cycle_timestamp_local_format() -> None:
     assert stamp == "2026-11-08 10:15:00"
 
 
+def _credentials_for_path(path: Path) -> dict:
+    slug = "sim-ear-001" if path.name.endswith("a.json") else "sim-ear-002"
+    return {
+        "node_id": slug.upper(),
+        "mqtt": {
+            "host": "mqtt.ear-test.invalid", "port": 8883, "use_tls": True,
+            "username": slug, "password": "isolated-test-password",
+        },
+        "topics": {"keepalive": f"esp-ear/local/{slug}/keepalive"},
+    }
+
+
 def test_one_cycle_prints_single_grouped_report(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     published: list[str] = []
 
-    def fake_publish(credentials: dict, ca_file: str, payload: dict) -> None:
+    def fake_publish(credentials: dict, ca_file: str, payload: dict, *, live: bool) -> None:
+        assert live
         published.append(credentials["node_id"])
 
     monkeypatch.setattr(keepalive, "publish_keepalive", fake_publish)
@@ -107,20 +120,7 @@ def test_one_cycle_prints_single_grouped_report(
     monkeypatch.setattr(
         keepalive,
         "load_credentials",
-        lambda path: {
-            "node_id": (
-                "SIM-EAR-001"
-                if path.name.endswith("a.json")
-                else "SIM-EAR-002"
-            ),
-            "firmware_version": "0.1.0-simulator",
-            "hardware_revision": "SIM-EAR-V1",
-        },
-    )
-    monkeypatch.setattr(
-        keepalive,
-        "load_project_env",
-        lambda: None,
+        _credentials_for_path,
     )
     monkeypatch.setattr(
         keepalive.Path,
@@ -130,13 +130,13 @@ def test_one_cycle_prints_single_grouped_report(
     monkeypatch.setattr(
         keepalive.sys,
         "argv",
-        ["simulate_keepalive.py", "once", "--ear", "all"],
+        ["simulate_keepalive.py", "once", "--ear", "all", "--live-mqtt"],
     )
-    # Path("shared/trust/ca.crt").is_file() check in main — force true.
+    # The isolated CA is represented by a stubbed filesystem check.
     real_is_file = Path.is_file
 
     def ca_ok(self: Path) -> bool:
-        if self.name == "ca.crt":
+        if self.name == "test-ca.crt":
             return True
         return real_is_file(self)
 
@@ -155,7 +155,8 @@ def test_one_cycle_prints_single_grouped_report(
 def test_cycle_with_failure_reports_and_exits_nonzero(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    def fake_publish(credentials: dict, ca_file: str, payload: dict) -> None:
+    def fake_publish(credentials: dict, ca_file: str, payload: dict, *, live: bool) -> None:
+        assert live
         if credentials["node_id"] == "SIM-EAR-002":
             raise RuntimeError("timed out publishing the keepalive")
 
@@ -171,21 +172,12 @@ def test_cycle_with_failure_reports_and_exits_nonzero(
     monkeypatch.setattr(
         keepalive,
         "load_credentials",
-        lambda path: {
-            "node_id": (
-                "SIM-EAR-001"
-                if "a.json" in str(path)
-                else "SIM-EAR-002"
-            ),
-            "firmware_version": "0.1.0-simulator",
-            "hardware_revision": "SIM-EAR-V1",
-        },
+        _credentials_for_path,
     )
-    monkeypatch.setattr(keepalive, "load_project_env", lambda: None)
     real_is_file = Path.is_file
 
     def ca_ok(self: Path) -> bool:
-        if self.name == "ca.crt":
+        if self.name == "test-ca.crt":
             return True
         return real_is_file(self)
 
@@ -193,7 +185,7 @@ def test_cycle_with_failure_reports_and_exits_nonzero(
     monkeypatch.setattr(
         keepalive.sys,
         "argv",
-        ["simulate_keepalive.py", "once", "--ear", "all"],
+        ["simulate_keepalive.py", "once", "--ear", "all", "--live-mqtt"],
     )
 
     assert keepalive.main() == 1

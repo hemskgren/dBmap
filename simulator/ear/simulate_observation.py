@@ -18,11 +18,19 @@ for _path in (_EAR_DIR, _SCRIPTS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 from lib.hub_cli import (
-    add_hub_connection_arguments,
     format_hub_http_error,
-    load_project_env,
     print_help_without_arguments,
-    validate_hub_connection,
+)
+from publish_safety import (
+    HUB_HOST,
+    HUB_PORT,
+    TEST_CA,
+    NoRedirect,
+    add_live_mqtt_argument,
+    require_identity,
+    require_live,
+    validate_api_destination,
+    validate_publish,
 )
 from sim_ear_slots import (
     DEFAULT_EAR,
@@ -69,9 +77,11 @@ def _keepalive_helpers():
     return module.make_keepalive, module.publish_keepalive
 
 
-def publish_ear_keepalive(credentials: dict, ca_file: str, *, uptime_s: int = 0) -> None:
+def publish_ear_keepalive(
+    credentials: dict, ca_file: str, *, uptime_s: int = 0, live: bool = False
+) -> None:
     make_keepalive, publish_keepalive = _keepalive_helpers()
-    publish_keepalive(credentials, ca_file, make_keepalive(credentials, uptime_s))
+    publish_keepalive(credentials, ca_file, make_keepalive(credentials, uptime_s), live=live)
 
 
 class UnsupportedSimulatorIdentity(RuntimeError):
@@ -79,7 +89,9 @@ class UnsupportedSimulatorIdentity(RuntimeError):
 
 
 def require_simulator_identity(node_id: str) -> None:
-    if not node_id.startswith("SIM-EAR-"):
+    try:
+        require_identity(node_id)
+    except ValueError:
         raise UnsupportedSimulatorIdentity(
             f"hub assigned {node_id!r} instead of a SIM-EAR-* ID. "
             "The hub must be rebuilt and redeployed before simulator provisioning; "
@@ -94,7 +106,17 @@ def api_request(
     path: str,
     payload: dict,
     admin_token: str,
+    *,
+    live: bool = False,
+    node_id: str | None = None,
 ) -> dict:
+    validate_api_destination(base_url, live=live)
+    if method != "POST" or path not in {"/api/v1/nodes", "/api/v1/provision"}:
+        raise ValueError("unsupported simulator provisioning request")
+    if path == "/api/v1/provision":
+        require_identity(node_id)
+    elif payload.get("simulated") is not True or payload.get("node_type") != "ear":
+        raise ValueError("only simulator Ear registration is permitted")
     request = urllib.request.Request(
         f"{base_url}{path}",
         data=json.dumps(payload).encode(),
@@ -105,8 +127,11 @@ def api_request(
         method=method,
     )
     context = ssl.create_default_context(cafile=ca_file)
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context), NoRedirect()
+    )
     try:
-        with urllib.request.urlopen(request, context=context, timeout=15) as response:
+        with opener.open(request, timeout=15) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
         raise RuntimeError(
@@ -214,6 +239,8 @@ def finish_provisioning(
             "firmware_version": "0.3.0-simulator",
         },
         admin_token,
+        live=args.live_mqtt,
+        node_id=record["node_id"],
     )
     mqtt_endpoint = provisioned.get("mqtt")
     expected_topic = f"esp-ear/local/{provisioned['node_id'].lower()}/observation"
@@ -246,11 +273,14 @@ def finish_provisioning(
         "next_sequence_number": 1,
         "pending_observation": observation,
     }
+    validate_publish(result, observation, "observation", live=args.live_mqtt)
+    validate_publish(result, {"node_id": result["node_id"]}, "keepalive", live=args.live_mqtt)
     save_credentials(Path(args.credentials_file), result)
     return result
 
 
 def load_or_provision(args: argparse.Namespace, admin_token: str) -> dict:
+    require_live(args.live_mqtt)
     credentials_path = Path(args.credentials_file)
     if args.reuse_credentials:
         if credentials_path.stat().st_mode & 0o077:
@@ -262,6 +292,11 @@ def load_or_provision(args: argparse.Namespace, admin_token: str) -> dict:
         if record.get("state") == "pending":
             return finish_provisioning(args, record, admin_token)
         if record.get("state") == "provisioned":
+            validate_publish(record, record["observation"], "observation", live=args.live_mqtt)
+            pending = record.get("pending_observation")
+            if pending is not None:
+                validate_publish(record, pending, "observation", live=args.live_mqtt)
+            validate_publish(record, {"node_id": record["node_id"]}, "keepalive", live=args.live_mqtt)
             record.setdefault(
                 "next_sequence_number",
                 record["observation"]["identity"]["sequence_number"] + 1,
@@ -275,6 +310,7 @@ def load_or_provision(args: argparse.Namespace, admin_token: str) -> dict:
             f"{credentials_path} already exists; use publish (or choose another --ear / --credentials-file)"
         )
 
+    validate_api_destination(args.api_url, live=args.live_mqtt)
     save_credentials(credentials_path, {"state": "creating"}, create=True)
     created = api_request(
         args.api_url,
@@ -287,14 +323,15 @@ def load_or_provision(args: argparse.Namespace, admin_token: str) -> dict:
             "simulated": True,
         },
         admin_token,
+        live=args.live_mqtt,
     )
     pending = {
         "state": "pending",
         "node_id": created["node_id"],
         "bootstrap_token": created["bootstrap_token"],
     }
-    save_credentials(credentials_path, pending)
     require_simulator_identity(pending["node_id"])
+    save_credentials(credentials_path, pending)
     # Slot letters conventionally map to SIM-EAR-001…007. Refuse unexpected ids
     # so we never silently bind e.g. slot d to an unrelated device.
     ear_slot = getattr(args, "ear", None)
@@ -303,11 +340,17 @@ def load_or_provision(args: argparse.Namespace, admin_token: str) -> dict:
     return finish_provisioning(args, pending, admin_token)
 
 
-def publish_observation(credentials: dict, ca_file: str) -> str:
-    return publish_payload(credentials, credentials["observation"], ca_file)
+def publish_observation(credentials: dict, ca_file: str, *, live: bool = False) -> str:
+    return publish_payload(credentials, credentials["observation"], ca_file, live=live)
 
 
-def publish_payload(credentials: dict, payload: dict, ca_file: str) -> str:
+def publish_payload(
+    credentials: dict, payload: dict, ca_file: str, *,
+    live: bool = False, test_context: bool = False,
+) -> str:
+    client_id = validate_publish(
+        credentials, payload, "observation", live=live, test_context=test_context
+    )
     endpoint = credentials["mqtt"]
     topic = credentials["topics"]["observation"]
     _observation_body().model_validate(payload)
@@ -315,7 +358,7 @@ def publish_payload(credentials: dict, payload: dict, ca_file: str) -> str:
     mqtt = _mqtt_client()
     client = mqtt.Client(
         mqtt.CallbackAPIVersion.VERSION2,
-        client_id=f"dbmap-ear-sim-{uuid4().hex[:12]}",
+        client_id=client_id,
         protocol=mqtt.MQTTv311,
     )
     client.username_pw_set(endpoint["username"], endpoint["password"])
@@ -345,6 +388,7 @@ def publish_observation_batch(
     ear: str = DEFAULT_EAR,
     include_l0: bool = False,
     l0_scenario: str = "quiet_ambient",
+    live: bool = False,
 ) -> list[str]:
     published_ids = []
     for index in range(count):
@@ -363,10 +407,11 @@ def publish_observation_batch(
         pending["acoustic"]["classification"]["hints"]["simulated_source_id"] = (
             vehicle_id
         )
+        validate_publish(credentials, pending, "observation", live=live)
         credentials["pending_observation"] = pending
         save_credentials(credentials_path, credentials)
 
-        observation_id = publish_payload(credentials, pending, ca_file)
+        observation_id = publish_payload(credentials, pending, ca_file, live=live)
         published_ids.append(observation_id)
         credentials["next_sequence_number"] = max(
             credentials["next_sequence_number"],
@@ -444,7 +489,10 @@ def build_parser() -> argparse.ArgumentParser:
             "Use add for a new SIM-EAR-* device, publish to reuse credentials."
         )
     )
-    add_hub_connection_arguments(parser)
+    parser.add_argument("--hub-host", default=HUB_HOST)
+    parser.add_argument("--hub-port", type=int, default=HUB_PORT)
+    parser.add_argument("--base-path", default="")
+    parser.add_argument("--ca", default=TEST_CA, help="Path to the isolated test CA")
     commands = parser.add_subparsers(dest="command", required=True)
 
     add_cmd = commands.add_parser(
@@ -453,6 +501,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ear_selection_args(add_cmd)
     _add_publish_options(add_cmd)
+    add_live_mqtt_argument(add_cmd)
 
     publish_cmd = commands.add_parser(
         "publish",
@@ -460,15 +509,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ear_selection_args(publish_cmd)
     _add_publish_options(publish_cmd)
+    add_live_mqtt_argument(publish_cmd)
     return parser
 
 
 def main() -> int:
-    try:
-        load_project_env()
-    except ValueError as exc:
-        print(f"Hub configuration failed: {exc}", file=sys.stderr)
-        return 1
     parser = build_parser()
     if print_help_without_arguments(parser):
         return 0
@@ -482,7 +527,14 @@ def main() -> int:
 
     args.reuse_credentials = args.command == "publish"
     args.credentials_file = resolve_credentials_file(args)
-    args.api_url, admin_token = validate_hub_connection(args, parser)
+    if not args.live_mqtt:
+        parser.error("publishing requires --live-mqtt")
+    args.api_url = f"https://{args.hub_host}:{args.hub_port}{args.base_path}"
+    try:
+        validate_api_destination(args.api_url, live=args.live_mqtt)
+    except ValueError as exc:
+        parser.error(str(exc))
+    admin_token = os.environ.get("DBMAP_TEST_HUB_ADMIN_TOKEN", "")
     credentials_path = Path(args.credentials_file)
     try:
         credentials = load_or_provision(args, admin_token)
@@ -491,7 +543,7 @@ def main() -> int:
             f"Publishing {args.count} observation(s) from {node_id} (--ear {args.ear}):",
             flush=True,
         )
-        publish_ear_keepalive(credentials, args.ca, uptime_s=0)
+        publish_ear_keepalive(credentials, args.ca, uptime_s=0, live=args.live_mqtt)
         print(f"  keepalive  {args.ear}  {node_id}", flush=True)
         if args.count == 1:
             if args.include_l0:
@@ -504,9 +556,9 @@ def main() -> int:
                 credentials["pending_observation"] = pending
                 credentials["observation"] = pending
                 save_credentials(credentials_path, credentials)
-                observation_id = publish_payload(credentials, pending, args.ca)
+                observation_id = publish_payload(credentials, pending, args.ca, live=args.live_mqtt)
             else:
-                observation_id = publish_observation(credentials, args.ca)
+                observation_id = publish_observation(credentials, args.ca, live=args.live_mqtt)
             credentials["next_sequence_number"] = max(
                 credentials.get("next_sequence_number", 1),
                 credentials["observation"]["identity"]["sequence_number"] + 1,
@@ -528,6 +580,7 @@ def main() -> int:
                 ear=args.ear,
                 include_l0=args.include_l0,
                 l0_scenario=args.l0_scenario,
+                live=args.live_mqtt,
             )
     except UnsupportedSimulatorIdentity as exc:
         print(f"Simulator setup failed: {exc}", file=sys.stderr)

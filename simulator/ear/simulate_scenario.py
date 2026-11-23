@@ -8,6 +8,7 @@ import time
 from collections import defaultdict
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from typing import Any
@@ -35,10 +36,7 @@ from independent_detection import (
     format_independent_detection_diagnostics,
     generate_independent_detection_events,
 )
-from lib.hub_cli import (
-    load_project_env,
-    print_help_without_arguments,
-)
+from lib.hub_cli import print_help_without_arguments
 from lib.scenario_movement import (
     MovementError,
     normalize_movement,
@@ -52,6 +50,7 @@ from lib.scenario_movement import (
 from lib.scenario_movement import (
     position_on_route as _shared_position_on_route,
 )
+from publish_safety import TEST_CA, add_live_mqtt_argument, validate_publish
 from scripted_cadence_profile import (
     ScriptedCadenceProfileError,
     apply_scripted_cadence_profile,
@@ -167,13 +166,16 @@ def publish_keepalives_for_ears(
     | None = None,
     make_keepalive: Callable[[dict[str, Any], int], dict[str, Any]] | None = None,
     uptime_s: int = 0,
+    live: bool = False,
 ) -> None:
+    if publish_keepalive is None:
+        _validate_live_ears(credentials_by_alias, observation=False, keepalive=True, live=live)
     if publish_keepalive is None or make_keepalive is None:
         default_make, default_publish = _keepalive_helpers()
         if make_keepalive is None:
             make_keepalive = default_make
         if publish_keepalive is None:
-            publish_keepalive = default_publish
+            publish_keepalive = partial(default_publish, live=live)
     print(f"  keepalive ({label}):", flush=True)
     for alias in sorted(credentials_by_alias):
         credentials = credentials_by_alias[alias]
@@ -896,6 +898,22 @@ def apply_named_scripted_cadence_profile(
         raise ScenarioError(str(exc)) from exc
 
 
+def _validate_live_ears(
+    credentials_by_alias: dict[str, dict[str, Any]], *,
+    observation: bool, keepalive: bool, live: bool,
+) -> None:
+    for credentials in credentials_by_alias.values():
+        if keepalive:
+            validate_publish(
+                credentials, {"node_id": credentials["node_id"]}, "keepalive", live=live
+            )
+        if observation:
+            payload = credentials.get("pending_observation")
+            if payload is None:
+                payload = {"identity": {"node_id": credentials["node_id"]}}
+            validate_publish(credentials, payload, "observation", live=live)
+
+
 def run_scenario(
     scenario: dict[str, Any],
     credentials_by_alias: dict[str, dict[str, Any]],
@@ -913,11 +931,16 @@ def run_scenario(
     | None = None,
     make_keepalive: Callable[[dict[str, Any], int], dict[str, Any]] | None = None,
     announce: bool = True,
+    live: bool = False,
 ) -> list[str]:
+    _validate_live_ears(
+        credentials_by_alias, observation=publish is None,
+        keepalive=publish_keepalive is None, live=live,
+    )
     if publish is None or save is None:
         default_publish, default_save = _observation_helpers()
         if publish is None:
-            publish = default_publish
+            publish = partial(default_publish, live=live)
         if save is None:
             save = default_save
     if not math.isfinite(time_scale) or time_scale <= 0:
@@ -930,6 +953,7 @@ def run_scenario(
         label="start",
         publish_keepalive=publish_keepalive,
         make_keepalive=make_keepalive,
+        live=live,
         uptime_s=0,
     )
     scenario_start = started_at_utc or datetime.now(UTC)
@@ -982,6 +1006,7 @@ def run_scenario(
         label="end",
         publish_keepalive=publish_keepalive,
         make_keepalive=make_keepalive,
+        live=live,
         uptime_s=elapsed_s,
     )
     return published_ids
@@ -1096,11 +1121,16 @@ def retry_pending_observations(
     | None = None,
     make_keepalive: Callable[[dict[str, Any], int], dict[str, Any]] | None = None,
     announce: bool = True,
+    live: bool = False,
 ) -> list[str]:
+    _validate_live_ears(
+        credentials_by_alias, observation=publish is None,
+        keepalive=publish_keepalive is None, live=live,
+    )
     if publish is None or save is None:
         default_publish, default_save = _observation_helpers()
         if publish is None:
-            publish = default_publish
+            publish = partial(default_publish, live=live)
         if save is None:
             save = default_save
     pending_aliases = [
@@ -1145,6 +1175,7 @@ def retry_pending_observations(
         label="start",
         publish_keepalive=publish_keepalive,
         make_keepalive=make_keepalive,
+        live=live,
         uptime_s=0,
     )
     ids = []
@@ -1170,6 +1201,7 @@ def retry_pending_observations(
         label="end",
         publish_keepalive=publish_keepalive,
         make_keepalive=make_keepalive,
+        live=live,
         uptime_s=0,
     )
     return ids
@@ -1202,7 +1234,7 @@ def _add_scenario_common_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
-        "--ca", default="shared/trust/ca.crt", help="Path to the local hub CA"
+        "--ca", default=TEST_CA, help="Path to the isolated test CA"
     )
     parser.add_argument(
         "--mode",
@@ -1318,6 +1350,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Publish keepalives, then scenario observations over MQTT, then keepalives",
     )
     _add_scenario_common_args(run)
+    add_live_mqtt_argument(run)
     run.add_argument(
         "--time-scale",
         type=float,
@@ -1330,15 +1363,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Retry a saved in-flight observation from this scenario, then exit",
     )
     _add_scenario_common_args(retry)
+    add_live_mqtt_argument(retry)
     return parser
 
 
 def main() -> int:
-    try:
-        load_project_env()
-    except ValueError as exc:
-        print(f"Hub configuration failed: {exc}", file=sys.stderr)
-        return 1
     parser = build_parser()
     if print_help_without_arguments(parser):
         return 0
@@ -1379,6 +1408,8 @@ def main() -> int:
             print_schedule(scenario, time_scale=args.time_scale)
             return 0
 
+        if not args.live_mqtt:
+            raise ScenarioError("publishing requires --live-mqtt")
         if not Path(args.ca).is_file():
             raise ScenarioError(f"CA file does not exist: {args.ca}")
         if args.command == "run":
@@ -1391,6 +1422,7 @@ def main() -> int:
                 ear_paths,
                 args.ca,
                 args.time_scale,
+                live=args.live_mqtt,
             )
             if diagnostics is not None:
                 for line in format_independent_detection_diagnostics(diagnostics):
@@ -1411,6 +1443,7 @@ def main() -> int:
                 credentials_by_alias,
                 ear_paths,
                 args.ca,
+                live=args.live_mqtt,
             )
             print(
                 f"Scenario {scenario['scenario_id']} finished: "

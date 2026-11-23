@@ -42,7 +42,7 @@ static char *build_json(const ear_cls_assessment_wire_t *assess)
     dbmap_observation_fields_t fields;
     memset(&fields, 0, sizeof(fields));
     fields.observation_id = "00000000-0000-4000-8000-000000000001";
-    fields.node_id = "EAR-001";
+    fields.node_id = "TST-EAR-001";
     fields.hub_id = "hub-test";
     fields.sequence_number = 1u;
     fields.event_time_utc = "2026-01-01T00:00:00Z";

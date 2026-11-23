@@ -79,7 +79,7 @@ static dbmap_observation_fields_t base_fields(const dbmap_l0_interval_t *iv)
 {
     dbmap_observation_fields_t fields = {
         .observation_id = "11111111-2222-4333-8444-555555555555",
-        .node_id = "EAR-001",
+        .node_id = "TST-EAR-001",
         .hub_id = "HUB-001",
         .sequence_number = 7,
         .event_time_utc = "2026-11-03T12:00:00Z",
@@ -165,7 +165,7 @@ static void test_complete_requires_termination(void)
     dbmap_l0_interval_t iv = empty_interval();
     dbmap_observation_fields_t fields = {
         .observation_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-        .node_id = "EAR-001",
+        .node_id = "TST-EAR-001",
         .hub_id = "HUB-001",
         .sequence_number = 1,
         .event_time_utc = "2026-11-03T12:00:00Z",
@@ -202,7 +202,7 @@ static void test_end_empty_l0(void)
     dbmap_l0_interval_t iv = empty_interval();
     dbmap_observation_fields_t fields = {
         .observation_id = "11111111-2222-4333-8444-555555555555",
-        .node_id = "EAR-001",
+        .node_id = "TST-EAR-001",
         .hub_id = "",
         .sequence_number = 3,
         .event_time_utc = "2026-11-03T12:00:00Z",

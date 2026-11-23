@@ -28,7 +28,8 @@ def test_slot_node_id_mismatch_stops_before_finish_provisioning(
 ) -> None:
     credentials_path = tmp_path / "sim-ear-d.json"
     args = SimpleNamespace(
-        api_url="https://hub.example",
+        api_url="https://hub.ear-test.invalid:8443",
+        live_mqtt=True,
         ca="ca.crt",
         credentials_file=str(credentials_path),
         ear="d",
@@ -82,8 +83,11 @@ def test_observation_batch_uses_unique_ids_and_monotonic_sequences(
     observation = simulate_observation.make_observation("SIM-EAR-001")
     credentials = {
         "node_id": "SIM-EAR-001",
-        "mqtt": {},
-        "topics": {},
+        "mqtt": {
+            "host": "mqtt.ear-test.invalid", "port": 8883, "use_tls": True,
+            "username": "sim-ear-001", "password": "isolated-test-password",
+        },
+        "topics": {"observation": "esp-ear/local/sim-ear-001/observation"},
         "observation": observation,
         "pending_observation": observation.copy(),
         "next_sequence_number": 1,
@@ -91,7 +95,8 @@ def test_observation_batch_uses_unique_ids_and_monotonic_sequences(
     published = []
     sleeps = []
 
-    def record_publish(current_credentials, payload, ca_file):
+    def record_publish(current_credentials, payload, ca_file, *, live):
+        assert live
         published.append(payload.copy())
         return payload["identity"]["observation_id"]
 
@@ -104,6 +109,7 @@ def test_observation_batch_uses_unique_ids_and_monotonic_sequences(
         count=3,
         interval_seconds=15,
         vehicle_id="SIM-VEHICLE-77",
+        live=True,
     )
 
     assert len(ids) == 3

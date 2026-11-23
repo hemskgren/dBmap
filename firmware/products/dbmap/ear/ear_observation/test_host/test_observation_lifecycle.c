@@ -109,8 +109,8 @@ static void test_detached_snapshot_owned_buffers(void)
     char topic[160];
     char emission_kind[8];
     char termination_reason[16];
-    strncpy(node_id, "EAR-001", sizeof(node_id) - 1);
-    strncpy(topic, "esp-ear/local/ear-001/observation", sizeof(topic) - 1);
+    strncpy(node_id, "TST-EAR-001", sizeof(node_id) - 1);
+    strncpy(topic, "esp-ear/local/tst-ear-001/observation", sizeof(topic) - 1);
     strncpy(emission_kind, "end", sizeof(emission_kind) - 1);
     strncpy(termination_reason, "ota_reboot", sizeof(termination_reason) - 1);
     node_id[sizeof(node_id) - 1] = '\0';
@@ -118,8 +118,8 @@ static void test_detached_snapshot_owned_buffers(void)
     emission_kind[sizeof(emission_kind) - 1] = '\0';
     termination_reason[sizeof(termination_reason) - 1] = '\0';
 
-    EXPECT(strcmp(node_id, "EAR-001") == 0);
-    EXPECT(strcmp(topic, "esp-ear/local/ear-001/observation") == 0);
+    EXPECT(strcmp(node_id, "TST-EAR-001") == 0);
+    EXPECT(strcmp(topic, "esp-ear/local/tst-ear-001/observation") == 0);
     EXPECT(strcmp(emission_kind, "end") == 0);
     EXPECT(strcmp(termination_reason, "ota_reboot") == 0);
 }

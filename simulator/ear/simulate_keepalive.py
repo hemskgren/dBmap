@@ -8,7 +8,6 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
 
 _EAR_DIR = Path(__file__).resolve().parent
 _SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
@@ -21,9 +20,12 @@ from ear_profile import (
     profile_summary,
     resolve_profile_keepalive_paths,
 )
-from lib.hub_cli import (
-    load_project_env,
-    print_help_without_arguments,
+from lib.hub_cli import print_help_without_arguments
+from publish_safety import (
+    TEST_CA,
+    add_live_mqtt_argument,
+    require_identity,
+    validate_publish,
 )
 from sim_ear_slots import (
     DEFAULT_EAR,
@@ -82,8 +84,7 @@ def load_credentials(path: Path) -> dict:
             "credentials file must contain an already provisioned simulator Ear"
         )
     node_id = credentials.get("node_id")
-    if not isinstance(node_id, str) or not node_id.startswith("SIM-EAR-"):
-        raise ValueError("credentials file does not identify a SIM-EAR-* device")
+    node_id = require_identity(node_id)
     endpoint = credentials.get("mqtt")
     topic = credentials.get("topics", {}).get("keepalive")
     expected_topic = f"esp-ear/local/{node_id.lower()}/keepalive"
@@ -142,14 +143,20 @@ def format_keepalive_cycle_report(
     return "\n".join(lines)
 
 
-def publish_keepalive(credentials: dict, ca_file: str, payload: dict) -> None:
+def publish_keepalive(
+    credentials: dict, ca_file: str, payload: dict, *,
+    live: bool = False, test_context: bool = False,
+) -> None:
+    client_id = validate_publish(
+        credentials, payload, "keepalive", live=live, test_context=test_context
+    )
     import paho.mqtt.client as mqtt
 
     endpoint = credentials["mqtt"]
     topic = credentials["topics"]["keepalive"]
     client = mqtt.Client(
         mqtt.CallbackAPIVersion.VERSION2,
-        client_id=f"dbmap-ear-sim-{uuid4().hex[:12]}",
+        client_id=client_id,
         protocol=mqtt.MQTTv311,
     )
     client.username_pw_set(endpoint["username"], endpoint["password"])
@@ -194,7 +201,7 @@ def _add_ear_selection_args(parser: argparse.ArgumentParser) -> None:
         help="Override credentials path (single Ear; cannot combine with --ear all)",
     )
     parser.add_argument(
-        "--ca", default="shared/trust/ca.crt", help="Path to the local hub CA"
+        "--ca", default=TEST_CA, help="Path to the isolated test CA"
     )
 
 
@@ -211,11 +218,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Publish one keepalive per selected Ear, then exit",
     )
     _add_ear_selection_args(once)
+    add_live_mqtt_argument(once)
     watch = commands.add_parser(
         "watch",
         help="Publish keepalives continuously until Ctrl+C (default every 30s)",
     )
     _add_ear_selection_args(watch)
+    add_live_mqtt_argument(watch)
     watch.add_argument(
         "--interval-seconds",
         type=float,
@@ -226,15 +235,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    try:
-        load_project_env()
-    except ValueError as exc:
-        print(f"Hub configuration failed: {exc}", file=sys.stderr)
-        return 1
     parser = build_parser()
     if print_help_without_arguments(parser):
         return 0
     args = parser.parse_args()
+    if not args.live_mqtt:
+        parser.error("publishing requires --live-mqtt")
     if args.command == "watch" and args.interval_seconds <= 0:
         parser.error("--interval-seconds must be greater than zero")
     if not Path(args.ca).is_file():
@@ -245,6 +251,10 @@ def main() -> int:
         loaded = [
             (path, load_credentials(Path(path))) for path in credential_paths
         ]
+        for _, credentials in loaded:
+            validate_publish(
+                credentials, make_keepalive(credentials, 0), "keepalive", live=args.live_mqtt
+            )
         started = time.monotonic()
         while True:
             successes: list[tuple[str, str]] = []
@@ -255,7 +265,7 @@ def main() -> int:
                     payload = make_keepalive(
                         credentials, int(time.monotonic() - started)
                     )
-                    publish_keepalive(credentials, args.ca, payload)
+                    publish_keepalive(credentials, args.ca, payload, live=args.live_mqtt)
                 except (OSError, ValueError, KeyError, RuntimeError) as exc:
                     failures.append((node_id, path, str(exc)))
                 else:

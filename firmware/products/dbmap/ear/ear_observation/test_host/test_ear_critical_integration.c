@@ -2305,7 +2305,7 @@ static int contract_export_main(const char *dir)
     bool sig_started = false;
     bool om_ready = false;
     int rc = 1;
-    const char *node_id = "EAR-CONTRACT";
+    const char *node_id = "TST-EAR-001";
     const int64_t crit_start_us = 12000000;
     const int64_t crit_periodic_us = 17000000;
     const int64_t crit_end_us = 18000000;
