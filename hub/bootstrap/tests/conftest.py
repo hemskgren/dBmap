@@ -1,6 +1,28 @@
+from tempfile import TemporaryDirectory
+
+import paho.mqtt.client as mqtt
 import pytest
 from app import policy
 from app.config import settings
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    # Apply before test modules can import app.main and initialize transports.
+    patch = pytest.MonkeyPatch()
+    directory = TemporaryDirectory(prefix="dbmap-hub-unit-")
+    config.add_cleanup(directory.cleanup)
+    config.add_cleanup(patch.undo)
+    patch.setattr(settings, "database_url", f"sqlite:///{directory.name}/bootstrap.db")
+    patch.setattr(settings, "mqtt_enabled", False)
+    patch.setattr(settings, "mqtt_password", "")
+    patch.setattr(settings, "mqtt_admin_password", "")
+    patch.setattr(settings, "public_mqtt_monitor_enabled", False)
+
+    def reject_live_mqtt(*_args, **_kwargs):
+        raise AssertionError("Hub unit tests cannot connect to an MQTT broker")
+
+    for method in ("connect", "connect_async", "reconnect"):
+        patch.setattr(mqtt.Client, method, reject_live_mqtt)
 
 
 def _test_policy(input_data: dict) -> bool:

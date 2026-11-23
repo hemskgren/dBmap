@@ -55,7 +55,7 @@ def _empty_l0() -> dict:
     }
 
 
-def _flat_legacy(node_id: str = "EAR-001") -> dict:
+def _flat_legacy(node_id: str = "TST-EAR-001") -> dict:
     return {
         "protocol_version": 1,
         "message_type": "observation",
@@ -107,7 +107,7 @@ def _measurements(**overrides) -> dict:
 
 
 def _hierarchical(
-    node_id: str = "EAR-001",
+    node_id: str = "TST-EAR-001",
     *,
     kind: str = "periodic",
     termination_reason: str | None = None,
@@ -149,7 +149,7 @@ def _hierarchical(
     }
 
 
-def _extended(node_id: str = "EAR-001", kind: str = "periodic") -> dict:
+def _extended(node_id: str = "TST-EAR-001", kind: str = "periodic") -> dict:
     return _hierarchical(node_id, kind=kind, measurements=_measurements())
 
 

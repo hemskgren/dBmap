@@ -116,7 +116,7 @@ def _overflow_dynamics() -> dict:
 
 
 def _hierarchical(
-    node_id: str = "EAR-001",
+    node_id: str = "TST-EAR-001",
     *,
     sequence_number: int = 1,
     kind: str = "periodic",

@@ -535,3 +535,23 @@ uv run python scripts/hub_observations_db.py prune --older-than-hours 1
 To wipe **all** Hub device data (including real `EAR-*` / `OUT-*` nodes), see [Local deployment — wipe device data](./local-deployment.md#wipe-hub-device-data-destructive).
 
 Related: [Local deployment](./local-deployment.md) · [Protocol](./protocol.md)
+
+## Test identities and live MQTT isolation
+
+| Prefix | Use |
+| --- | --- |
+| `EAR-00*` | Physical devices |
+| `SIM-EAR-00*` | Simulator devices, including the existing `SIM-EAR-001` |
+| `TST-EAR-00*` | Automated tests, fixtures, and acoustic replay. The first identity is `TST-EAR-001`. |
+
+Offline tests use callbacks and local fixtures. Simulator scenario `dry-run` works without MQTT. Simulator Observation, keepalive, and scenario publish commands require `--live-mqtt`. For example, add it after `publish`, `once`, or `run` respectively. The live publishers accept only TLS `mqtt.ear-test.invalid:8883` and canonical identity, username, client ID, topic, and payload combinations. Simulator provisioning accepts only `https://hub.ear-test.invalid:8443` and reads the isolated Hub token from `DBMAP_TEST_HUB_ADMIN_TOKEN`. Use `--ca` with the isolated stack's CA and use isolated credential files. The simulator commands no longer source the repository's production `.env`. Existing `SIM-EAR-001` payloads and slot mappings still work on the isolated stack. Reprovision saved credentials that point at a different broker.
+
+Run the disposable TLS integration test from the repository root:
+
+```sh
+tests/integration/ear_mqtt/run.sh --live-mqtt
+```
+
+The runner needs Docker with isolated bridge gateway support and the local `eclipse-mosquitto:latest` and `dbmap-hub-bootstrap:latest` images. The Hub image supplies Python dependencies, while the runner loads the current source checkout. Override the images with `DBMAP_TEST_MQTT_IMAGE` and `DBMAP_TEST_HUB_IMAGE` if needed. The runner launches only the broker and a Hub listener with temporary SQLite storage. It seeds `TST-EAR-001` and `SIM-EAR-001` in that database and verifies that both publish over TLS and are ingested by the Hub. This harness exercises real MQTT and ingestion without running the provisioning API or changing the production allocator.
+
+The runner generates a fresh TLS CA and credentials, uses exact per-device write ACLs, and exposes no host ports. Both containers are attached only to a disposable internal Docker network with an isolated bridge gateway. It removes the broker, network, and temporary files on exit. Its records cannot enter production health, availability, or Observation statistics.

@@ -77,6 +77,7 @@ def _load_corpus() -> tuple[str, list[tuple[bytes, dict]]]:
     if not topic_path.is_file():
         pytest.fail("topic.txt missing from contract export")
     topic = topic_path.read_text(encoding="utf-8").strip()
+    assert topic == "esp-ear/local/tst-ear-001/observation"
     paths = sorted(root.glob("report-*.json"))
     if len(paths) != 7:
         pytest.fail(f"expected 7 reports, found {len(paths)}")
