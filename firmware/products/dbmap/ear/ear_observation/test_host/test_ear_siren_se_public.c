@@ -823,6 +823,35 @@ static void setup_om_siren(
     ear_promotion_policy_set_siren(pol, siren);
 }
 
+static void test_pending_as002_keeps_start_assessment(void)
+{
+    ae_engine_t ae;
+    ce_engine_t ce;
+    sp_episode_registry_t reg;
+    ear_obs_manager_t om;
+    ear_promotion_policy_t pol;
+    ear_siren_se_public_t siren;
+    setup_om_siren(&ae, &ce, &reg, &om, &pol, &siren, 5000u);
+
+    sp_ep_handle_t occupied[SP_OBS_EPISODE_SLOTS];
+    for (uint8_t i = 0u; i < SP_OBS_EPISODE_SLOTS; i++) {
+        EXPECT(sp_episode_registry_allocate(
+            &reg, &occupied[i], 500, 5000u, 0u, fake_uuid, false
+        ));
+    }
+
+    (void)promote_as002(&ce, &om, &pol, &siren, 204u, 1000);
+    EXPECT(ear_obs_manager_n_pending(&om) == 1u);
+    EXPECT(g_emit.starts == 0u);
+    ear_obs_manager_arm_cls_evidence(&om, NULL);
+    sp_episode_registry_release(&reg, occupied[0]);
+    ear_obs_manager_poll(&om, 2000);
+    EXPECT(ear_obs_manager_n_pending(&om) == 0u);
+    EXPECT(g_emit.starts == 1u);
+    EXPECT(strcmp(g_emit.last_family, "ALARM") == 0);
+    ce_stop(&ce);
+}
+
 static void test_as002_signature_absence_end(void)
 {
     ae_engine_t ae;
@@ -1044,6 +1073,7 @@ int main(void)
     test_same_profile_repromote_after_end();
     test_pending_same_profile_blocks_policy();
     test_policy_without_siren_unchanged();
+    test_pending_as002_keeps_start_assessment();
     test_as002_signature_absence_end();
     test_as002_invalid_pauses_and_invalid_hold_ends();
     test_as002_sig_end_spares_as001();

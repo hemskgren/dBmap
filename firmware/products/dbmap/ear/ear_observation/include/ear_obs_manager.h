@@ -89,6 +89,8 @@ typedef struct {
     float relevance_match_distance;
     /** Non-zero ticket from reservation stamp (Policy / explicit test stamp). */
     uint32_t relevance_ticket;
+    /** AS-002 START evidence captured at admission, including pending handoff. */
+    ear_cls_evidence_t siren_start_evidence;
     uint8_t sig_count;
     ae_signature_t sigs[EAR_OBS_PROMOTE_SIG_CAP];
 } ear_obs_promote_snapshot_t;

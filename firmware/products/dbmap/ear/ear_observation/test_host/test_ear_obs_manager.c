@@ -648,6 +648,16 @@ static void test_capacity_pending(void)
 
     ear_obs_rsv_handle_t h;
     EXPECT(ear_obs_manager_reserve(&f.om, &h) == EAR_OBS_RSV_FULL);
+    ae_candidate_t pending;
+    EXPECT(ce_find_candidate(&f.ce, 13u, &pending));
+    ae_candidate_t stale = pending;
+    stale.promotion_gen = pending.promotion_gen - 1u;
+    ear_obs_manager_on_promotion(&stale, CE_PROMOTION_EXIT, &f.om);
+    host_obs_poll(&f.om, 5000);
+    EXPECT(ear_obs_manager_n_pending(&f.om) == 2u);
+    EXPECT(ce_unadmit_promotion(&f.ce, 13u, pending.promotion_gen));
+    host_obs_poll(&f.om, 6000);
+    EXPECT(ear_obs_manager_n_pending(&f.om) == 1u);
     fixture_fini(&f);
 }
 

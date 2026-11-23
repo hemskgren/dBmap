@@ -137,7 +137,7 @@ typedef struct {
 static normal_emit_t g_norm;
 
 /* Package 4 emit capture. Inactive unless the coexistence test turns it on. */
-#define P4_EMIT_CAP 8u
+#define P4_EMIT_CAP 16u
 
 typedef struct {
     char id[SP_OBS_EPISODE_ID_LEN];
@@ -1613,8 +1613,7 @@ static void test_p4_as001_as002_production_coexist(void)
     ce_config_t ccfg;
     ce_config_set_defaults(&ccfg);
     ccfg.n_enter = 1u;
-    /* Stay live across the siren and absence windows. Not a planted slot. */
-    ccfg.t_coast = 64u;
+    P4_REQUIRE(ccfg.valid_miss_limit == 16u);
     P4_REQUIRE(ce_start(&f.ce, &ccfg));
     ce_started = true;
 
@@ -1627,7 +1626,7 @@ static void test_p4_as001_as002_production_coexist(void)
     mcfg.uuid_fn = fake_uuid;
     mcfg.observation_interval_ms = 5000u;
     mcfg.pending_timeout_ms = 30000u;
-    mcfg.detached_end_timeout_ms = 60000u;
+    mcfg.detached_end_timeout_ms = 2000u;
     mcfg.as002_signature_absence_hold_ms = 3000u;
     mcfg.producer_tag = 2u;
     mcfg.emit_start = norm_emit_start;
@@ -1674,8 +1673,19 @@ static void test_p4_as001_as002_production_coexist(void)
     P4_REQUIRE(g_norm.starts == 0u);
     P4_REQUIRE(!ear_critical_is_active(&f.crit));
 
-    p4_fill_heli(&sig, 5u, -40.0f);
+    /* The same shape at background level fails AS-001 RMS eligibility. */
+    p4_fill_heli(&sig, 5u, -55.0f);
     P4_REQUIRE(p4_publish(&f, &prod, &sig));
+    sig_primary_distance_t primary;
+    P4_REQUIRE(!sig_engine_get_primary_distance_match(&primary) || !primary.valid);
+    P4_REQUIRE(g_norm.starts == 0u);
+
+    p4_fill_heli(&sig, 6u, -40.0f);
+    P4_REQUIRE(p4_publish(&f, &prod, &sig));
+    P4_REQUIRE(sig_engine_get_primary_distance_match(&primary) && primary.valid);
+    P4_REQUIRE(primary.profile_id == AS_PROFILE_ID_AS001);
+    P4_REQUIRE(primary.window_seq == sig.window_seq);
+    P4_REQUIRE(!sig_engine_allows_promote(AS_PROFILE_ID_AS002));
     P4_REQUIRE(g_norm.starts == 1u);
     P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
     P4_REQUIRE(p4_find_as001_candidate(&f.ce, &as001_cand));
@@ -1698,18 +1708,19 @@ static void test_p4_as001_as002_production_coexist(void)
     }
 
     /* Two tonal windows stay under the three-window ALARM gate. */
-    for (uint32_t seq = 6u; seq <= 7u; seq++) {
+    for (uint32_t seq = 7u; seq <= 8u; seq++) {
         p4_fill_siren(&sig, seq, -31.0f);
         P4_REQUIRE(p4_publish(&f, &prod, &sig));
         P4_REQUIRE(g_norm.starts == 1u);
         P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
-        P4_REQUIRE(sig_engine_as002_consecutive() == (seq - 5u));
+        P4_REQUIRE(sig_engine_as002_consecutive() == (seq - 6u));
         P4_REQUIRE(!sig_engine_allows_promote(AS_PROFILE_ID_AS002));
     }
 
-    p4_fill_siren(&sig, 8u, -31.0f);
+    p4_fill_siren(&sig, 9u, -31.0f);
     P4_REQUIRE(p4_publish(&f, &prod, &sig));
     P4_REQUIRE(sig_engine_allows_promote(AS_PROFILE_ID_AS002));
+    P4_REQUIRE(!sig_engine_get_primary_distance_match(&primary) || !primary.valid);
     P4_REQUIRE(g_norm.starts == 2u);
     P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 2u);
     P4_REQUIRE(strcmp(g_norm.ids[0], g_norm.ids[1]) != 0);
@@ -1729,6 +1740,10 @@ static void test_p4_as001_as002_production_coexist(void)
             found_other = true;
         }
         P4_REQUIRE(found_other && as002_cand != 0u && as002_cand != as001_cand);
+        ae_candidate_t siren;
+        P4_REQUIRE(ce_find_candidate(&f.ce, as002_cand, &siren));
+        P4_REQUIRE(siren.last_window_seq == sig.window_seq);
+        P4_REQUIRE(siren.evidence_count == EAR_SIREN_ALARM_MIN_STREAK);
     }
     /*
      * Stored AS-001 assessment, read before any AS-001 PERIODIC/END emit
@@ -1740,9 +1755,9 @@ static void test_p4_as001_as002_production_coexist(void)
         P4_REQUIRE(p4_path_is(&stored, "AIRCRAFT"));
     }
 
-    p4_fill_siren(&sig, 9u, -31.0f);
-    P4_REQUIRE(p4_publish(&f, &prod, &sig));
     p4_fill_siren(&sig, 10u, -31.0f);
+    P4_REQUIRE(p4_publish(&f, &prod, &sig));
+    p4_fill_siren(&sig, 11u, -31.0f);
     P4_REQUIRE(p4_publish(&f, &prod, &sig));
     P4_REQUIRE(sig_engine_as002_consecutive() == EAR_SIREN_SE_MIN_STREAK);
     {
@@ -1773,7 +1788,7 @@ static void test_p4_as001_as002_production_coexist(void)
         const uint32_t reset0 = d0.as002_sig_support_reset;
         const uint32_t ends0 = g_norm.ends;
 
-        p4_fill_broadband(&sig, 11u, -55.0f);
+        p4_fill_broadband(&sig, 12u, -55.0f);
         P4_REQUIRE(p4_publish(&f, &prod, &sig));
         ear_obs_manager_diag_t d;
         ear_obs_manager_get_diag(&f.om, &d);
@@ -1785,7 +1800,7 @@ static void test_p4_as001_as002_production_coexist(void)
         P4_REQUIRE(absent_ms != 0u);
         const uint32_t accumulated_ms = absent_ms;
 
-        p4_fill_broadband(&sig, 12u, -55.0f);
+        p4_fill_broadband(&sig, 13u, -55.0f);
         sig.quality = AE_QUALITY_GAP;
         P4_REQUIRE(p4_publish(&f, &prod, &sig));
         ear_obs_manager_get_diag(&f.om, &d);
@@ -1795,7 +1810,7 @@ static void test_p4_as001_as002_production_coexist(void)
         P4_REQUIRE(absent_ms == accumulated_ms);
         P4_REQUIRE(g_norm.ends == ends0);
 
-        p4_fill_broadband(&sig, 13u, -55.0f);
+        p4_fill_broadband(&sig, 14u, -55.0f);
         sig.quality = AE_QUALITY_INVALID;
         P4_REQUIRE(p4_publish(&f, &prod, &sig));
         ear_obs_manager_get_diag(&f.om, &d);
@@ -1805,7 +1820,7 @@ static void test_p4_as001_as002_production_coexist(void)
         P4_REQUIRE(absent_ms == accumulated_ms);
         P4_REQUIRE(g_norm.ends == ends0);
 
-        p4_fill_siren(&sig, 14u, -31.0f);
+        p4_fill_siren(&sig, 15u, -31.0f);
         P4_REQUIRE(p4_publish(&f, &prod, &sig));
         ear_obs_manager_get_diag(&f.om, &d);
         P4_REQUIRE(d.as002_sig_support_reset == reset0 + 1u);
@@ -1814,16 +1829,16 @@ static void test_p4_as001_as002_production_coexist(void)
         P4_REQUIRE(g_norm.ends == ends0);
         P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 2u);
 
-        p4_fill_broadband(&sig, 15u, -55.0f);
+        p4_fill_broadband(&sig, 16u, -55.0f);
         P4_REQUIRE(p4_publish(&f, &prod, &sig));
         P4_REQUIRE(p4_as002_absent_ms(&f.om, &absent_ms));
         P4_REQUIRE(absent_ms == accumulated_ms);
-        p4_fill_broadband(&sig, 16u, -55.0f);
+        p4_fill_broadband(&sig, 17u, -55.0f);
         P4_REQUIRE(p4_publish(&f, &prod, &sig));
         P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 2u);
         P4_REQUIRE(g_norm.ends == ends0);
 
-        p4_fill_broadband(&sig, 17u, -55.0f);
+        p4_fill_broadband(&sig, 18u, -55.0f);
         const int64_t cross_capture_mono_us = sig.window_end_mono_us;
         P4_REQUIRE(p4_publish(&f, &prod, &sig));
         P4_REQUIRE(g_norm.ends == ends0 + 1u);
@@ -1839,6 +1854,64 @@ static void test_p4_as001_as002_production_coexist(void)
         ));
         P4_REQUIRE(find_open_bind_idx(&f.om, as001_cand) >= 0);
     }
+
+    /* Recover the promoted helicopter track before the valid-miss budget. */
+    ae_candidate_t before_rematch;
+    P4_REQUIRE(ce_find_candidate(&f.ce, as001_cand, &before_rematch));
+    P4_REQUIRE(before_rematch.state == AE_CAND_COASTING);
+    p4_fill_heli(&sig, 19u, -40.0f);
+    P4_REQUIRE(p4_publish(&f, &prod, &sig));
+    ae_candidate_t helicopter;
+    P4_REQUIRE(ce_find_candidate(&f.ce, as001_cand, &helicopter));
+    P4_REQUIRE(helicopter.state == AE_CAND_PROMOTED);
+    P4_REQUIRE(helicopter.promotion_gen == before_rematch.promotion_gen);
+    P4_REQUIRE(helicopter.valid_miss_windows == 0u);
+    P4_REQUIRE(g_norm.starts == 2u);
+
+    for (uint32_t seq = 20u; seq < 36u; seq++) {
+        p4_fill_broadband(&sig, seq, -55.0f);
+        P4_REQUIRE(p4_publish(&f, &prod, &sig));
+        P4_REQUIRE(g_norm.ends == 1u);
+    }
+    P4_REQUIRE(!ce_find_candidate(&f.ce, as001_cand, &before_rematch));
+    const int detached = find_open_bind_idx(&f.om, as001_cand);
+    P4_REQUIRE(detached >= 0 && !f.om.bind[detached].ce_live);
+
+    ear_obs_manager_on_promotion(&helicopter, CE_PROMOTION_ENTER, &f.om);
+    ear_sig_product_poll(&prod, 36000000);
+    P4_REQUIRE(!f.om.bind[detached].ce_live);
+    P4_REQUIRE(g_norm.ends == 1u);
+    ear_sig_product_poll(&prod, 37000000);
+    P4_REQUIRE(g_norm.ends == 2u);
+    P4_REQUIRE(strcmp(g_p4_last_end_id, as001_obs) == 0);
+    ear_obs_manager_on_promotion(&helicopter, CE_PROMOTION_ENTER, &f.om);
+    ear_obs_manager_on_promotion(&helicopter, CE_PROMOTION_EXIT, &f.om);
+    ear_obs_manager_on_candidate_evidence(&f.om, as001_cand, NULL, &helicopter);
+    ear_sig_product_poll(&prod, 38000000);
+    P4_REQUIRE(g_norm.starts == 2u && g_norm.ends == 2u);
+    P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 0u);
+    P4_REQUIRE(ear_obs_manager_n_held(&f.om) == 0u);
+    P4_REQUIRE(ear_obs_manager_n_pending(&f.om) == 0u);
+    P4_REQUIRE(sp_episode_registry_in_use_count(&f.reg) == 0u);
+
+    /* Siren alone can admit again after both earlier Observations have ended. */
+    for (uint32_t seq = 39u; seq <= 43u; seq++) {
+        p4_fill_siren(&sig, seq, -31.0f);
+        P4_REQUIRE(p4_publish(&f, &prod, &sig));
+        P4_REQUIRE(!sig_engine_get_primary_distance_match(&primary) || !primary.valid);
+        P4_REQUIRE(g_norm.starts == (seq < 41u ? 2u : 3u));
+    }
+    P4_REQUIRE(ear_obs_manager_n_open(&f.om) == 1u);
+    P4_REQUIRE(ear_obs_manager_has_signature_observation(&f.om, AS_PROFILE_ID_AS002));
+    const char *new_siren_id = NULL;
+    for (uint8_t i = 0u; i < EAR_OBS_MGR_BINDING_CAP; i++) {
+        if (f.om.bind[i].in_use) {
+            new_siren_id = f.om.bind[i].observation_id;
+        }
+    }
+    P4_REQUIRE(new_siren_id != NULL);
+    P4_REQUIRE(strcmp(new_siren_id, as002_obs) != 0);
+    P4_REQUIRE(p4_emit_path_is(new_siren_id, true, "ALARM"));
 
     P4_REQUIRE(!ear_critical_is_active(&f.crit));
     P4_REQUIRE(g_crit.starts == 0u);
