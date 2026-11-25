@@ -3,6 +3,7 @@ import sys
 from datetime import UTC, datetime
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "scripts"))
 
@@ -856,7 +857,7 @@ def test_filter_observations_matches_web_node_and_observation_id_semantics() -> 
     )
     assert [item["observation_id"] for item in by_both] == ["obs-a", "obs-c"]
 
-    assert hub_event_track.unique_observation_count(observations) == 3
+    assert hub_event_track.unique_observation_count(observations) == 4
     status = hub_event_track.format_filter_status(
         node_ids={"EAR-001"},
         observation_ids={"obs-a"},
@@ -866,6 +867,234 @@ def test_filter_observations_matches_web_node_and_observation_id_semantics() -> 
     assert status[0].startswith("Filters applied (of 4 fetched reports → 1 match)")
     assert "Node ID: EAR-001" in status[1]
     assert "Observation ID: obs-a" in status[2]
+
+
+def test_unique_observation_count_uses_node_and_observation_identity() -> None:
+    observations = [
+        {"observation_id": "shared", "node_id": "EAR-001"},
+        {"observation_id": "shared", "node_id": "EAR-002"},
+        {"observation_id": "shared", "node_id": "EAR-001"},
+        {"observation_id": "missing-node"},
+    ]
+
+    assert hub_event_track.unique_observation_count(observations) == 2
+
+
+def test_unique_observation_count_matches_brief_and_detailed_presentations() -> None:
+    reports = [
+        _hierarchical_report(
+            observation_id="shared",
+            node_id=node_id,
+            sequence_number=1,
+            event_time_utc="2026-11-07T10:00:00Z",
+            emission_kind="start",
+        )
+        for node_id in ("EAR-001", "EAR-002")
+    ]
+
+    for presentation in ("brief", "list"):
+        snapshot = hub_event_track.AnalysisSnapshot(
+            reports=reports,
+            nodes={},
+            config=hub_event_track.AnalysisConfig(
+                include_cross_ear_correlation=False,
+                presentation=presentation,
+            ),
+            fetch_meta={"complete_snapshot": True},
+        )
+        result = hub_event_track.analyze(snapshot)
+
+        assert result.unique_observation_count == 2
+        assert any("Unique observations: 2" in line for line in result.lines)
+
+
+def test_utc_time_range_parsing_normalizes_and_allows_equal_bounds() -> None:
+    since, until = hub_event_track.parse_utc_time_range(
+        "2026-11-07T12:00:00+02:00",
+        "2026-11-07T10:00:00Z",
+    )
+
+    assert since == until == datetime(2026, 11, 7, 10, 0, tzinfo=UTC)
+    with pytest.raises(ValueError, match="include a timezone"):
+        hub_event_track.parse_utc_datetime(
+            "2026-11-07T10:00:00",
+            label="--since",
+        )
+    with pytest.raises(ValueError, match="--since must be <="):
+        hub_event_track.parse_utc_time_range(
+            "2026-11-07T10:00:01Z",
+            "2026-11-07T10:00:00Z",
+        )
+
+
+def test_time_filter_is_inclusive_and_combines_with_id_filters() -> None:
+    reports = [
+        _hierarchical_report(
+            observation_id="keep",
+            node_id="EAR-001",
+            sequence_number=1,
+            event_time_utc="2026-11-07T10:00:00Z",
+            emission_kind="start",
+        ),
+        _hierarchical_report(
+            observation_id="drop-time",
+            node_id="EAR-001",
+            sequence_number=2,
+            event_time_utc="2026-11-07T10:00:01Z",
+            emission_kind="periodic",
+        ),
+        _hierarchical_report(
+            observation_id="drop-node",
+            node_id="EAR-002",
+            sequence_number=3,
+            event_time_utc="2026-11-07T10:00:00Z",
+            emission_kind="start",
+        ),
+        _hierarchical_report(
+            observation_id="drop-id",
+            node_id="EAR-001",
+            sequence_number=4,
+            event_time_utc="2026-11-07T10:00:00Z",
+            emission_kind="start",
+        ),
+    ]
+    id_filtered = hub_event_track.filter_observations(
+        reports,
+        node_ids={"EAR-001"},
+        observation_ids={"keep", "drop-time"},
+    )
+    since, until = hub_event_track.parse_utc_time_range(
+        "2026-11-07T10:00:00Z",
+        "2026-11-07T10:00:00Z",
+    )
+
+    result = hub_event_track.filter_reports_by_event_time(
+        id_filtered,
+        since=since,
+        until=until,
+    )
+
+    assert [item["identity"]["observation_id"] for item in result] == ["keep"]
+
+
+def test_brief_time_filter_reports_scope_and_partial_lifecycle_warning(
+    monkeypatch,
+    capsys,
+) -> None:
+    reports = [
+        _hierarchical_report(
+            observation_id="in-window",
+            node_id="EAR-001",
+            sequence_number=1,
+            event_time_utc="2026-11-07T10:00:00Z",
+            emission_kind="periodic",
+        ),
+        _hierarchical_report(
+            observation_id="outside",
+            node_id="EAR-001",
+            sequence_number=2,
+            event_time_utc="2026-11-07T11:00:00Z",
+            emission_kind="end",
+        ),
+        {
+            "identity": {
+                "observation_id": "invalid-time",
+                "node_id": "EAR-001",
+                "sequence_number": 3,
+            },
+            "context": {"event_time_utc": "not-a-time"},
+        },
+    ]
+    monkeypatch.setattr(hub_event_track, "load_project_env", lambda: None)
+    monkeypatch.setattr(
+        hub_event_track,
+        "validate_hub_connection",
+        lambda args, parser: ("https://hub.test", "token"),
+    )
+    monkeypatch.setattr(
+        hub_event_track,
+        "fetch_all_observation_reports",
+        lambda *args, **kwargs: (
+            reports,
+            {
+                "complete_snapshot": True,
+                "fetched_report_count": len(reports),
+                "total_count": len(reports),
+                "total_pages": 1,
+                "snapshot_id": 12,
+            },
+        ),
+    )
+    monkeypatch.setattr(hub_event_track, "fetch_nodes", lambda *args: {})
+    monkeypatch.setattr(hub_event_track.sys, "argv", [
+        "hub_event_track.py",
+        "brief",
+        "--since",
+        "2026-11-07T10:00:00Z",
+        "--until",
+        "2026-11-07T10:00:00Z",
+    ])
+
+    assert hub_event_track.main() == 0
+    output = capsys.readouterr().out
+    assert "3 fetched reports → 1 match" in output
+    assert "Event time (UTC, inclusive): 2026-11-07T10:00:00Z to 2026-11-07T10:00:00Z" in output
+    assert "Matched report event_time_utc span: 2026-11-07T10:00:00Z to 2026-11-07T10:00:00Z" in output
+    assert "Reports excluded for missing/invalid event_time_utc: 1" in output
+    assert "partial observation lifecycles" in output
+    assert "Open observations: 1" in output
+
+
+def test_time_filtered_brief_rejects_incomplete_snapshot_before_fetching_nodes(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(hub_event_track, "load_project_env", lambda: None)
+    monkeypatch.setattr(
+        hub_event_track,
+        "validate_hub_connection",
+        lambda args, parser: ("https://hub.test", "token"),
+    )
+    monkeypatch.setattr(
+        hub_event_track,
+        "fetch_all_observation_reports",
+        lambda *args, **kwargs: (
+            [],
+            {"complete_snapshot": False, "fetched_report_count": 0, "total_count": 1},
+        ),
+    )
+    monkeypatch.setattr(
+        hub_event_track,
+        "fetch_nodes",
+        lambda *args: pytest.fail("nodes should not be fetched"),
+    )
+    monkeypatch.setattr(hub_event_track.sys, "argv", [
+        "hub_event_track.py",
+        "brief",
+        "--since",
+        "2026-11-07T10:00:00Z",
+    ])
+
+    assert hub_event_track.main() == 1
+    assert "requires a complete paginated snapshot" in capsys.readouterr().err
+
+
+def test_brief_invalid_time_range_fails_before_api_request(monkeypatch) -> None:
+    monkeypatch.setattr(hub_event_track, "load_project_env", lambda: None)
+    monkeypatch.setattr(
+        hub_event_track,
+        "fetch_all_observation_reports",
+        lambda *args, **kwargs: pytest.fail("API must not be called"),
+    )
+    monkeypatch.setattr(hub_event_track.sys, "argv", [
+        "hub_event_track.py",
+        "brief",
+        "--since",
+        "2026-11-07T10:00:00",
+    ])
+
+    with pytest.raises(SystemExit):
+        hub_event_track.main()
 
 
 def test_fetch_observation_count_parses_hub_totals(monkeypatch) -> None:
@@ -2589,6 +2818,60 @@ def test_brief_and_list_share_analysis_and_counts() -> None:
     assert "Assembled Observations" in list_text
     assert "Ear activity episode A1" in list_text
     assert "Track is not implemented" in list_text
+
+
+def test_compact_map_brief_groups_unresolved_and_rejected_diagnostics() -> None:
+    correlation = SimpleNamespace(
+        observations=[],
+        candidates=[],
+        events=[],
+        rejected=[
+            SimpleNamespace(reason="same rejection", observation_id="report-secret"),
+            SimpleNamespace(reason="same rejection", observation_id="report-secret-2"),
+        ],
+        unresolved=[
+            SimpleNamespace(
+                node_id="EAR-001",
+                reason="ambiguous match",
+                compatible_candidate_ids=["cand-secret"],
+                compatible_event_ids=[],
+            ),
+            SimpleNamespace(
+                node_id="EAR-002",
+                reason="ambiguous match",
+                compatible_candidate_ids=["cand-secret-2"],
+                compatible_event_ids=[],
+            ),
+        ],
+        parameters={
+            "association_temporal_gap_seconds": 15,
+            "max_association_distance_m": 500,
+            "min_ears_for_event": 2,
+            "min_promote_score": 3,
+        },
+    )
+    snapshot = hub_event_track.AnalysisSnapshot(
+        reports=[],
+        nodes={},
+        config=hub_event_track.AnalysisConfig(presentation="brief"),
+        fetch_meta={"complete_snapshot": True},
+    )
+
+    text = "\n".join(
+        hub_event_track.format_brief_report(
+            snapshot,
+            correlation,
+            compact_summary_lines=["Hub Map Analysis compact summary"],
+        )
+    )
+
+    assert "Unresolved associations: 2" in text
+    assert "2× ambiguous match" in text
+    assert "2 rejected association attempt(s)" in text
+    assert "2× same rejection" in text
+    assert "report-secret" not in text
+    assert "cand-secret" not in text
+    assert "Observation on EAR-" not in text
 
 
 def test_brief_activity_windows_merge_overlapping_episodes() -> None:

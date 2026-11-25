@@ -540,6 +540,67 @@ def observation_time(observation: dict[str, Any]) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+def parse_utc_datetime(value: str, *, label: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{label} must be an ISO-8601 datetime") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{label} must include a timezone (e.g. ...Z or +00:00)")
+    return parsed.astimezone(UTC)
+
+
+def parse_utc_time_range(
+    since_value: str | None,
+    until_value: str | None,
+) -> tuple[datetime | None, datetime | None]:
+    since = (
+        parse_utc_datetime(since_value, label="--since")
+        if since_value is not None
+        else None
+    )
+    until = (
+        parse_utc_datetime(until_value, label="--until")
+        if until_value is not None
+        else None
+    )
+    if since is not None and until is not None and since > until:
+        raise ValueError("--since must be <= --until")
+    return since, until
+
+
+def filter_reports_by_event_time(
+    reports: list[dict[str, Any]],
+    *,
+    since: datetime | None,
+    until: datetime | None,
+) -> list[dict[str, Any]]:
+    """Apply inclusive bounds to report event_time_utc, excluding invalid times."""
+    if since is None and until is None:
+        return reports
+    filtered: list[dict[str, Any]] = []
+    for report in reports:
+        event_time = observation_time(report)
+        if event_time is None:
+            continue
+        if since is not None and event_time < since:
+            continue
+        if until is not None and event_time > until:
+            continue
+        filtered.append(report)
+    return filtered
+
+
+def report_time_span(
+    reports: list[dict[str, Any]],
+) -> tuple[datetime | None, datetime | None, int]:
+    times = [observation_time(item) for item in reports]
+    valid_times = [item for item in times if item is not None]
+    if not valid_times:
+        return None, None, len(times)
+    return min(valid_times), max(valid_times), len(times) - len(valid_times)
+
+
 def format_local_datetime(value: datetime | None) -> str:
     return format_display_datetime(value, empty="unknown")
 
@@ -561,12 +622,19 @@ def candidate_groups(
 
 
 def unique_observation_count(observations: list[dict[str, Any]]) -> int:
-    ids: set[str] = set()
+    identities: set[tuple[str, str]] = set()
     for item in observations:
-        observation_id = observation_fields(item).get("observation_id")
-        if isinstance(observation_id, str) and observation_id:
-            ids.add(observation_id)
-    return len(ids)
+        fields = observation_fields(item)
+        node_id = fields.get("node_id")
+        observation_id = fields.get("observation_id")
+        if (
+            isinstance(node_id, str)
+            and node_id
+            and isinstance(observation_id, str)
+            and observation_id
+        ):
+            identities.add((node_id, observation_id))
+    return len(identities)
 
 
 def _emission_kind_token(value: Any) -> str:
@@ -1084,10 +1152,14 @@ def format_filter_status(
     observation_ids: set[str] | None = None,
     fetched_count: int,
     filtered_count: int,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    retained_time_span: tuple[datetime | None, datetime | None] | None = None,
+    missing_event_time_count: int | None = None,
 ) -> list[str]:
     node_filter = sorted(item for item in (node_ids or set()) if item)
     observation_filter = sorted(item for item in (observation_ids or set()) if item)
-    if not node_filter and not observation_filter:
+    if not node_filter and not observation_filter and since is None and until is None:
         return []
     lines = [
         f"Filters applied (of {fetched_count} fetched reports → {filtered_count} match):"
@@ -1096,6 +1168,29 @@ def format_filter_status(
         lines.append(f"  Node ID: {', '.join(node_filter)}")
     if observation_filter:
         lines.append(f"  Observation ID: {', '.join(observation_filter)}")
+    if since is not None or until is not None:
+        lower = since.isoformat().replace("+00:00", "Z") if since else "unbounded"
+        upper = until.isoformat().replace("+00:00", "Z") if until else "unbounded"
+        lines.append(f"  Event time (UTC, inclusive): {lower} to {upper}")
+        if retained_time_span is not None:
+            start, end = retained_time_span
+            if start is None or end is None:
+                span = "none (no matched report has a valid event_time_utc)"
+            else:
+                span = (
+                    f"{start.isoformat().replace('+00:00', 'Z')} to "
+                    f"{end.isoformat().replace('+00:00', 'Z')}"
+                )
+            lines.append(f"  Matched report event_time_utc span: {span}")
+        if missing_event_time_count is not None:
+            lines.append(
+                "  Reports excluded for missing/invalid event_time_utc: "
+                f"{missing_event_time_count}"
+            )
+        lines.append(
+            "  Note: report-level time filtering can leave partial observation "
+            "lifecycles and affect association/promotion."
+        )
     return lines
 
 
@@ -2052,11 +2147,57 @@ def _association_evidence_headline(
     return "; ".join(bits)
 
 
+def _format_per_ear_activity_episodes(
+    reports: list[dict[str, Any]],
+    episodes: list[dict[str, Any]],
+) -> list[str]:
+    episodes_by_ear: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    reports_by_ear: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for episode in episodes:
+        episodes_by_ear[episode["node_id"]].append(episode)
+    for report in reports:
+        node_id = observation_fields(report).get("node_id")
+        if isinstance(node_id, str) and node_id:
+            reports_by_ear[node_id].append(report)
+
+    lines = ["  Per-Ear activity episodes (not Events):"]
+    if not episodes_by_ear:
+        lines.append("    none")
+        return lines
+    for node_id, ear_episodes in sorted(episodes_by_ear.items()):
+        starts = [item["start"] for item in ear_episodes if item["start"] is not None]
+        ends = [item["end"] for item in ear_episodes if item["end"] is not None]
+        span = (
+            f"{format_local_datetime(min(starts))} to "
+            f"{format_local_datetime(max(ends))}"
+            if starts and ends
+            else "unknown"
+        )
+        ear_reports = reports_by_ear[node_id]
+        lines.append(
+            f"    {node_id}: {len(ear_episodes)} episode(s); "
+            f"{unique_observation_count(ear_reports)} unique observation(s); "
+            f"{len(ear_reports)} report(s); activity span={span}"
+        )
+        for index, episode in enumerate(ear_episodes, start=1):
+            lines.append(
+                f"      Episode {index}: "
+                f"{episode['unique_observations']} observation(s), "
+                f"{episode['report_count']} report(s); "
+                f"{format_local_datetime(episode['start'])} to "
+                f"{format_local_datetime(episode['end'])}; "
+                f"{_strip_internal_ids(episode['reason'])}"
+            )
+    return lines
+
+
 def format_brief_report(
     snapshot: AnalysisSnapshot,
     correlation: CorrelationResult | None,
     *,
     lifecycle: ObservationLifecycleSummary | None = None,
+    include_per_ear_episodes: bool = False,
+    compact_summary_lines: list[str] | None = None,
 ) -> list[str]:
     """Analytical findings presentation (intermediate between summary and list)."""
     config = snapshot.config
@@ -2071,7 +2212,8 @@ def format_brief_report(
     if snapshot.snapshot_id is not None:
         fetch_note += f"; hub_snapshot_id={snapshot.snapshot_id}"
 
-    lines = [
+    compact_map_output = compact_summary_lines is not None
+    lines = list(compact_summary_lines) if compact_summary_lines is not None else [
         (
             f"Cross-EAR brief analysis at "
             f"{format_local_datetime(datetime.now(tz=UTC))} (Europe/Stockholm)"
@@ -2084,7 +2226,7 @@ def format_brief_report(
         f"Unique observations: {lifecycle.combined.unique_observations}",
         f"Devices: {len(lifecycle.devices)}",
     ]
-    if snapshot.filter_status_lines:
+    if snapshot.filter_status_lines and not compact_map_output:
         lines.extend(snapshot.filter_status_lines)
     if fetch_meta.get("complete_snapshot") is False:
         warning = fetch_meta.get("completeness_warning") or (
@@ -2104,6 +2246,8 @@ def format_brief_report(
     episodes = _collect_activity_episodes(
         snapshot.reports, config.event_gap_seconds
     )
+    if include_per_ear_episodes:
+        lines.extend(_format_per_ear_activity_episodes(snapshot.reports, episodes))
     windows = _group_activity_windows(episodes)
     # Presentation filter only: keep original window indices, hide single-EAR
     # windows. Underlying episodes/analysis still include every EAR.
@@ -2238,13 +2382,20 @@ def format_brief_report(
         )
         lines.append(f"    Unresolved associations: {len(unresolved)}")
         if unresolved:
-            for item in unresolved:
-                lines.append(
-                    f"      - Observation on {item.node_id}: "
-                    f"{_strip_internal_ids(item.reason)} "
-                    f"(compatible candidates={len(item.compatible_candidate_ids)}, "
-                    f"compatible events={len(item.compatible_event_ids)})"
-                )
+            if compact_map_output:
+                reason_counts: dict[str, int] = defaultdict(int)
+                for item in unresolved:
+                    reason_counts[_strip_internal_ids(item.reason)] += 1
+                for reason, count in sorted(reason_counts.items()):
+                    lines.append(f"      {count}× {reason}")
+            else:
+                for item in unresolved:
+                    lines.append(
+                        f"      - Observation on {item.node_id}: "
+                        f"{_strip_internal_ids(item.reason)} "
+                        f"(compatible candidates={len(item.compatible_candidate_ids)}, "
+                        f"compatible events={len(item.compatible_event_ids)})"
+                    )
         else:
             lines.append("      none")
     else:
@@ -2271,6 +2422,9 @@ def format_brief_report(
         lines.append(f"    {len(rejected)} rejected association attempt(s):")
         for reason, count in sorted(reason_counts.items()):
             lines.append(f"      - {count}× {reason}")
+
+    if compact_map_output:
+        return lines
 
     # E. Key findings — analytical, avoid repeating A–D counters
     lines.append("")
@@ -3171,6 +3325,22 @@ def main() -> int:
                 "Observations filter)"
             ),
         )
+    brief_command.add_argument(
+        "--since",
+        metavar="ISO_DATETIME",
+        help=(
+            "Inclusive lower bound on report event_time_utc "
+            "(ISO datetime with timezone; requires a complete snapshot)"
+        ),
+    )
+    brief_command.add_argument(
+        "--until",
+        metavar="ISO_DATETIME",
+        help=(
+            "Inclusive upper bound on report event_time_utc "
+            "(ISO datetime with timezone; requires a complete snapshot)"
+        ),
+    )
     list_command.add_argument(
         "--json",
         action="store_true",
@@ -3224,6 +3394,13 @@ def main() -> int:
     if print_help_without_arguments(parser):
         return 0
     args = parser.parse_args()
+    since: datetime | None = None
+    until: datetime | None = None
+    if args.command == "brief":
+        try:
+            since, until = parse_utc_time_range(args.since, args.until)
+        except ValueError as exc:
+            parser.error(str(exc))
     base_url, admin_token = validate_hub_connection(args, parser)
     if args.command == "summary":
         try:
@@ -3400,6 +3577,12 @@ def main() -> int:
             page_size=MAX_OBSERVATION_PAGE_SIZE,
             order="oldest",
         )
+        time_filtering = briefing and (since is not None or until is not None)
+        if time_filtering and fetch_meta.get("complete_snapshot") is not True:
+            raise HubApiError(
+                "time-filtered brief requires a complete paginated snapshot; "
+                f"Hub reported complete_snapshot={fetch_meta.get('complete_snapshot')!r}"
+            )
         total_count = int(fetch_meta.get("total_count") or len(fetched))
         print(
             format_pagination_summary(
@@ -3420,16 +3603,33 @@ def main() -> int:
         if watching:
             observations = fetched
         else:
-            observations = filter_observations(
+            id_filtered = filter_observations(
                 fetched,
                 node_ids=list_node_ids,
                 observation_ids=list_observation_ids,
             )
+            missing_event_time_count = (
+                sum(observation_time(item) is None for item in id_filtered)
+                if time_filtering
+                else None
+            )
+            observations = filter_reports_by_event_time(
+                id_filtered,
+                since=since if time_filtering else None,
+                until=until if time_filtering else None,
+            )
+            span_start, span_end, _ = report_time_span(observations)
             filter_status = format_filter_status(
                 node_ids=list_node_ids,
                 observation_ids=list_observation_ids,
                 fetched_count=len(fetched),
                 filtered_count=len(observations),
+                since=since if time_filtering else None,
+                until=until if time_filtering else None,
+                retained_time_span=(
+                    (span_start, span_end) if time_filtering else None
+                ),
+                missing_event_time_count=missing_event_time_count,
             )
         nodes = fetch_nodes(base_url, args.ca, admin_token)
         reference_times = [

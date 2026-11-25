@@ -12,33 +12,37 @@ Scratch data is **temporary** (TTL-bound). It is not durable Event history.
 - Analysis Compose profile enabled (`COMPOSE_PROFILES=analysis`) for `publish`.
 - Ears (or SIM-EAR) must have already ingested Observation reports into Hub.
 
-## Analyze only (no scratch write)
+## Read-only analysis
 
 ```bash
 uv run python scripts/hub_map_analysis.py analyze
+uv run python scripts/hub_map_analysis.py analyze --detailed
+uv run python scripts/hub_event_track.py brief
 ```
 
-Optional client filters (applied **after** the complete snapshot is fetched):
+`analyze` is compact by default; `--detailed` retains the full diagnostic
+report. Both commands use the same inclusive, timezone-required ISO datetime
+format and filter report `event_time_utc` after fetching a complete Hub snapshot:
 
 ```bash
 uv run python scripts/hub_map_analysis.py analyze \
   --node-id EAR-001 --node-id EAR-002 \
   --since 2026-11-07T10:00:00+00:00 \
   --until 2026-11-07T12:00:00+00:00
+
+uv run python scripts/hub_event_track.py brief \
+  --node-id EAR-001 --observation-id 11111111-1111-4111-8111-111111111111 \
+  --since 2026-11-07T10:00:00+00:00 \
+  --until 2026-11-07T12:00:00+00:00
 ```
 
-The command refuses to run when Hub pagination reports an incomplete snapshot
-(`complete_snapshot=false`). There is no silent partial-data path in this version.
-
-Printed counts include:
-
-- `reports_fetched`
-- `reports_after_filter`
-- `observations_assembled`
-- `observations_after_filter`
-- `events`
-- `localizations_published`
-- `localizations_withheld`
+Time-filtered Event Track briefs require complete pagination. Filtering is
+report-level: the selected window may contain partial observation lifecycles,
+which can affect association and promotion. Output shows fetched/matched counts,
+the retained event-time span, and reports excluded for missing or invalid event
+times. Map analysis also refuses incomplete snapshots and summarizes lifecycle,
+association, localization, site, and weather context without listing every
+assembled observation or rejected association.
 
 ## Publish to the map
 

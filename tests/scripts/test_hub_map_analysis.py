@@ -38,6 +38,8 @@ def _args(**overrides):
         "dataset": "live-run",
         "dataset_title": None,
         "ttl_seconds": 3600,
+        "command": "analyze",
+        "detailed": False,
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -57,8 +59,18 @@ def test_parser_allow_long_range_sim_ears_defaults_false() -> None:
     parser = hma.build_parser()
     args = parser.parse_args(["analyze"])
     assert args.allow_long_range_sim_ears is False
+    assert args.detailed is False
     publish_args = parser.parse_args(["publish", "--dataset", "x"])
     assert publish_args.allow_long_range_sim_ears is False
+    assert not hasattr(publish_args, "detailed")
+
+
+def test_parser_detailed_selects_diagnostic_presentation() -> None:
+    parser = hma.build_parser()
+    args = parser.parse_args(["analyze", "--detailed"])
+    assert args.detailed is True
+    assert hma.build_analysis_config(args).presentation == "list"
+    assert hma.build_analysis_config(_args()).presentation == "brief"
 
 
 def test_filter_reports_by_event_time_after_fetch() -> None:
@@ -84,6 +96,129 @@ def test_filter_reports_by_event_time_after_fetch() -> None:
     filtered = hma.filter_reports_by_event_time(reports, since=since, until=None)
     assert len(filtered) == 1
     assert filtered[0]["identity"]["observation_id"] == "b"
+
+
+def test_fetch_and_analyze_rejects_invalid_time_before_api_request() -> None:
+    args = _args(since="2026-11-07T10:00:00")
+    with (
+        patch.object(
+            hma,
+            "fetch_all_observation_reports",
+            side_effect=AssertionError("API must not be called"),
+        ),
+        pytest.raises(ValueError, match="include a timezone"),
+    ):
+        hma.fetch_and_analyze("https://hub.test", "ca.crt", "token", args)
+
+
+def _analysis_reports() -> list[dict]:
+    return [
+        {
+            "observation_id": f"obs-{index}",
+            "node_id": f"SIM-EAR-{index:03d}",
+            "event_time_utc": f"2026-11-07T10:00:0{index}Z",
+            "duration_ms": 10000,
+            "classification": {
+                "source_family": "vehicle",
+                "confidence": 0.7,
+            },
+            "bearing": {
+                "deg": bearing,
+                "reference": "node",
+                "confidence": 0.8,
+            },
+        }
+        for index, bearing in enumerate((150.0, 210.0, 0.0), start=1)
+    ]
+
+
+def _analysis_nodes() -> dict:
+    return {
+        "SIM-EAR-001": {
+            "installation": {"latitude": 59.3400, "longitude": 18.0500}
+        },
+        "SIM-EAR-002": {
+            "installation": {"latitude": 59.3400, "longitude": 18.0600}
+        },
+        "SIM-EAR-003": {
+            "installation": {"latitude": 59.3480, "longitude": 18.0550}
+        },
+    }
+
+
+def test_compact_and_detailed_analysis_have_identical_results(capsys) -> None:
+    reports = _analysis_reports()
+    fetch_meta = {
+        "complete_snapshot": True,
+        "fetched_report_count": len(reports),
+        "total_count": len(reports),
+        "snapshot_id": 12,
+    }
+    compact_args = _args(
+        allow_long_range_sim_ears=True,
+        max_association_distance_m=100.0,
+        min_ears_for_event=3,
+    )
+    detailed_args = _args(
+        detailed=True,
+        allow_long_range_sim_ears=True,
+        max_association_distance_m=100.0,
+        min_ears_for_event=3,
+    )
+    with (
+        patch.object(
+            hma,
+            "fetch_all_observation_reports",
+            return_value=(reports, fetch_meta),
+        ),
+        patch.object(hma, "fetch_nodes", return_value=_analysis_nodes()),
+        patch.object(
+            hma,
+            "fetch_environmental_context",
+            return_value={
+                "availability": "available",
+                "region_id": "test",
+                "provider": "fixture",
+                "temperature_c": 12,
+                "wind_speed_ms": 3,
+            },
+        ),
+    ):
+        compact_result, _, _ = hma.fetch_and_analyze(
+            "https://hub.test", "ca.crt", "token", compact_args
+        )
+        detailed_result, _, _ = hma.fetch_and_analyze(
+            "https://hub.test", "ca.crt", "token", detailed_args
+        )
+
+    assert compact_result.snapshot.reports == detailed_result.snapshot.reports
+    assert compact_result.correlation == detailed_result.correlation
+    assert compact_result.unique_observation_count == detailed_result.unique_observation_count
+
+    with patch.object(
+        hma,
+        "fetch_and_analyze",
+        return_value=(compact_result, fetch_meta, []),
+    ):
+        assert hma.cmd_analyze("https://hub.test", "ca.crt", "token", compact_args) == 0
+    compact_output = capsys.readouterr().out
+    assert "Per-Ear activity episodes (not Events)" in compact_output
+    assert "Site context:" in compact_output
+    assert "Weather context (informational" in compact_output
+    assert "Warning: long-range SIM-EAR pairs remain eligible" in compact_output
+    assert "Assembled Observations (analysis objects)" not in compact_output
+    assert "Join attempt diagnostics" not in compact_output
+    assert "Membership stage trace" not in compact_output
+
+    with patch.object(
+        hma,
+        "fetch_and_analyze",
+        return_value=(detailed_result, fetch_meta, ["reports_fetched=3"]),
+    ):
+        assert hma.cmd_analyze("https://hub.test", "ca.crt", "token", detailed_args) == 0
+    detailed_output = capsys.readouterr().out
+    assert "Assembled Observations (analysis objects)" in detailed_output
+    assert "Ear activity episode A1" in detailed_output
 
 
 def test_fetch_and_analyze_refuses_incomplete_snapshot() -> None:
