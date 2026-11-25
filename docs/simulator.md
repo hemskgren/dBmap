@@ -289,6 +289,45 @@ Fixtures live in `simulator/ear/l0_measurements.py` and match
 [L0 measurement contract](./ear-l0-measurement-contract.md).
 `protocol_version` stays `1`. Combined-scene only — no per-source measurements.
 
+## Simulated assessments
+
+Observation simulators preserve the existing `acoustic.classification` object
+and also emit `acoustic.assessment` (`ear_hyp_v2`, version 1). Both use the
+same existing `source_family`. The legacy classification confidence remains
+unchanged and is used for the deepest emitted assessment node; each ancestor
+adds 0.05, capped at 1.0. No extra acoustic measurements or simulated source
+families are added.
+
+| Existing `source_family` | Simulated assessment path | Firmware status |
+| --- | --- | --- |
+| `aircraft` | `AIRCRAFT` → `Plane` | `Plane` is a simulator-only forward-looking hypothesis. |
+| `helicopter` | `AIRCRAFT` → `Helicopter` | Currently implemented in EAR firmware. |
+| `vehicle` | `VEHICLE` → `Light` → `Petrol` | Simulator-only forward-looking hypotheses; not implemented in EAR firmware. |
+
+These are simulator mappings, not a change to the EAR firmware taxonomy or
+Hub validation. The Hub validates the `ear_hyp_v2` structure, not whether an
+identifier or parent-child relationship exists in firmware.
+
+Scenario reports progress by lifecycle: START emits the root; each PERIODIC
+report can deepen by one level; END retains the deepest level already reached.
+A COMPLETE single-point scenario remains root-only. Therefore short episodes
+can end at the root, while a longer vehicle episode can emit:
+
+```text
+START:   VEHICLE
+UPDATE:  VEHICLE / Light
+UPDATE:  VEHICLE / Light / Petrol
+END:     VEHICLE / Light / Petrol
+```
+
+The one-observation simulator uses its existing periodic report as the first
+update (for `vehicle`, `VEHICLE / Light`). An L0 fixture that emits START uses
+the root-only path, including when L0 is attached to a saved periodic report.
+Assessment paths and confidence values are deterministic from the source
+family, report phase, and existing classification confidence; assessment
+generation consumes no random seed. Confidence offsets are simulator output
+behavior, not additional protocol validation constraints.
+
 ---
 
 ## Scenarios (optional)

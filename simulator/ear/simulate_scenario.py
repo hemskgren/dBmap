@@ -19,6 +19,13 @@ _SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 for _path in (_EAR_DIR, _SCRIPTS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
+from assessment import (
+    AssessmentGenerationError,
+    annotate_assessment_progression,
+    assessment_path_depth,
+    build_assessment,
+    source_assessment_path,
+)
 from ear_profile import (
     EarProfileError,
     load_ear_profile,
@@ -321,6 +328,10 @@ def load_scenario(path: Path) -> dict[str, Any]:
         raise ScenarioError(
             "source.source_family must be a non-empty string of at most 64 characters"
         )
+    try:
+        source_assessment_path(source_family)
+    except AssessmentGenerationError as exc:
+        raise ScenarioError(str(exc)) from exc
     try:
         movement = normalize_movement(source["movement"], field="source.movement")
     except MovementError as exc:
@@ -805,6 +816,11 @@ def make_scenario_observation(
     observation_id = (
         str(raw_observation_id) if raw_observation_id else str(uuid4())
     )
+    source_family = event.get("source_family", "vehicle")
+    classification_confidence = event["classification_confidence"]
+    path_depth = event.get("_assessment_path_depth")
+    if path_depth is None:
+        path_depth = assessment_path_depth(source_family, emission_kind)
     payload: dict[str, Any] = {
         "protocol_version": 1,
         "message_type": "observation",
@@ -822,10 +838,15 @@ def make_scenario_observation(
             "classification": {
                 "schema": "l2",
                 "version": 1,
-                "source_family": event.get("source_family", "vehicle"),
-                "confidence": event["classification_confidence"],
+                "source_family": source_family,
+                "confidence": classification_confidence,
                 "hints": {"simulated_source_id": source_id},
             },
+            "assessment": build_assessment(
+                source_family,
+                classification_confidence,
+                path_depth=path_depth,
+            ),
         },
         "spatial": {
             "bearing": bearing,
@@ -1040,7 +1061,9 @@ def run_scenario(
     )
     wall_start = monotonic()
     published_ids = []
-    timed_events = assign_scripted_ear_observation_lifecycles(scenario["observations"])
+    timed_events = annotate_assessment_progression(
+        assign_scripted_ear_observation_lifecycles(scenario["observations"])
+    )
     for index, event in enumerate(timed_events, start=1):
         target_elapsed = event["at_seconds"] * time_scale
         delay = target_elapsed - (monotonic() - wall_start)
@@ -1094,7 +1117,9 @@ def print_schedule(scenario: dict[str, Any], *, time_scale: float = 1.0) -> None
     started_at = datetime.now(UTC)
     started_at_monotonic_us = time.monotonic_ns() // 1000
     sequences: dict[str, int] = {}
-    timed_events = assign_scripted_ear_observation_lifecycles(scenario["observations"])
+    timed_events = annotate_assessment_progression(
+        assign_scripted_ear_observation_lifecycles(scenario["observations"])
+    )
     for event in timed_events:
         alias = event["ear"]
         sequence = sequences.get(alias, 1)
@@ -1549,12 +1574,19 @@ def main() -> int:
                     "retry-pending applies to saved payloads; use --mode scripted"
                 )
             credentials_by_alias = load_ear_credentials(ear_paths, allow_pending=True)
+            mqtt_host, mqtt_port = resolve_common_mqtt_destination(
+                list(credentials_by_alias.values()),
+                live=args.live_mqtt,
+                **mqtt_options,
+            )
+            print(f"MQTT destination: TLS {mqtt_host}:{mqtt_port}", flush=True)
             ids = retry_pending_observations(
                 scenario,
                 credentials_by_alias,
                 ear_paths,
-                args.ca,
+                str(ca_file),
                 live=args.live_mqtt,
+                **mqtt_options,
             )
             print(
                 f"Scenario {scenario['scenario_id']} finished: "

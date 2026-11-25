@@ -17,6 +17,7 @@ _SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 for _path in (_EAR_DIR, _SCRIPTS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
+from assessment import assessment_path_depth, build_assessment
 from lib.hub_cli import (
     format_hub_http_error,
     print_help_without_arguments,
@@ -200,6 +201,8 @@ def make_observation(
     from l0_measurements import attach_l0_extension, empty_l0_measurements
 
     now = datetime.now(UTC)
+    source_family = "vehicle"
+    classification_confidence = 0.72
     observation: dict[str, Any] = {
         "protocol_version": 1,
         "message_type": "observation",
@@ -226,8 +229,8 @@ def make_observation(
             "classification": {
                 "schema": "l2",
                 "version": 1,
-                "source_family": "vehicle",
-                "confidence": 0.72,
+                "source_family": source_family,
+                "confidence": classification_confidence,
                 "hints": {"simulated_source_id": vehicle_id},
             },
         },
@@ -246,7 +249,36 @@ def make_observation(
             scenario=l0_scenario,
             emission_kind=emission_kind,  # type: ignore[arg-type]
         )
+    return refresh_assessment(observation)
+
+
+def refresh_assessment(observation: dict[str, Any]) -> dict[str, Any]:
+    classification = observation["acoustic"]["classification"]
+    report_kind = observation["context"].get("emission_kind", "complete")
+    observation["acoustic"]["assessment"] = build_assessment(
+        classification["source_family"],
+        classification["confidence"],
+        path_depth=assessment_path_depth(
+            classification["source_family"], report_kind
+        ),
+    )
     return observation
+
+
+def attach_l0_with_assessment(
+    observation: dict[str, Any],
+    *,
+    scenario: str,
+    emission_kind: str | None = None,
+) -> dict[str, Any]:
+    from l0_measurements import attach_l0_extension
+
+    updated = attach_l0_extension(
+        observation,
+        scenario=scenario,
+        emission_kind=emission_kind,  # type: ignore[arg-type]
+    )
+    return refresh_assessment(updated)
 
 
 def finish_provisioning(
@@ -729,12 +761,12 @@ def main() -> int:
         print(f"  keepalive  {args.ear}  {node_id}", flush=True)
         if args.count == 1:
             if args.include_l0:
-                from l0_measurements import attach_l0_extension
-
                 pending = credentials.get("pending_observation") or credentials[
                     "observation"
                 ]
-                pending = attach_l0_extension(pending, scenario=args.l0_scenario)
+                pending = attach_l0_with_assessment(
+                    pending, scenario=args.l0_scenario
+                )
                 credentials["pending_observation"] = pending
                 credentials["observation"] = pending
                 save_credentials(credentials_path, credentials)
