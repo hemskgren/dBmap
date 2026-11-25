@@ -99,6 +99,8 @@ def test_provisioning_token_matches_destination(monkeypatch) -> None:
 def test_observation_batch_uses_unique_ids_and_monotonic_sequences(
     monkeypatch, tmp_path
 ) -> None:
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_HOST", "local-hub.example")
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_PORT", "8883")
     observation = simulate_observation.make_observation("SIM-EAR-001")
     credentials = {
         "node_id": "SIM-EAR-001",

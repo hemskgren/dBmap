@@ -25,7 +25,6 @@ def load_simulator_environment() -> None:
         load_project_env(REPO_ROOT)
     except HubCliError as exc:
         raise ValueError(f"simulator configuration failed: {exc}") from exc
-    configured_mqtt_destination()
     try:
         https_port = int(os.environ.get("DBMAP_HTTPS_PORT", "8443"))
     except ValueError as exc:
@@ -64,14 +63,16 @@ def add_mqtt_arguments(
     )
 
 
-def configured_mqtt_destination() -> tuple[str, int]:
-    host = os.environ.get("DBMAP_LOCAL_MQTT_HOST", "hub.local")
+def configured_mqtt_destination() -> tuple[str | None, int]:
+    host = os.environ.get("DBMAP_LOCAL_MQTT_HOST")
+    if host is not None:
+        host = host.strip() or None
     try:
         port = int(os.environ.get("DBMAP_LOCAL_MQTT_PORT", "8883"))
     except ValueError as exc:
         raise ValueError("DBMAP_LOCAL_MQTT_PORT must be an integer") from exc
-    if not host or not 1 <= port <= 65535:
-        raise ValueError("configured local MQTT destination is invalid")
+    if not 1 <= port <= 65535:
+        raise ValueError("DBMAP_LOCAL_MQTT_PORT must be between 1 and 65535")
     return host, port
 
 
@@ -82,9 +83,21 @@ def resolve_mqtt_destination(
     mqtt_port: int | None = None,
     live: bool = False,
 ) -> tuple[str, int]:
+    if endpoint.get("use_tls") is not True:
+        raise ValueError("simulator publishing requires TLS MQTT")
+    if (mqtt_host, mqtt_port) == (BROKER_HOST, BROKER_PORT):
+        require_live(live)
+        return BROKER_HOST, BROKER_PORT
+
     configured_host, configured_port = configured_mqtt_destination()
-    host = mqtt_host if mqtt_host is not None else endpoint.get("host")
-    port = mqtt_port if mqtt_port is not None else endpoint.get("port")
+    host = mqtt_host if mqtt_host is not None else configured_host
+    port = mqtt_port if mqtt_port is not None else configured_port
+    if host is None:
+        raise ValueError(
+            "DBMAP_LOCAL_MQTT_HOST is required for local publishing; set it in the "
+            "project .env or process environment, or explicitly select the isolated "
+            f"TLS test broker ({BROKER_HOST}:{BROKER_PORT}) with --live-mqtt"
+        )
     if (
         not isinstance(host, str)
         or not host
@@ -93,13 +106,18 @@ def resolve_mqtt_destination(
         or not 1 <= port <= 65535
     ):
         raise ValueError("MQTT destination host and port are invalid")
-    if endpoint.get("use_tls") is not True:
-        raise ValueError("simulator publishing requires TLS MQTT")
     if (host, port) == (BROKER_HOST, BROKER_PORT):
         require_live(live)
         return host, port
-    if (host, port) == (configured_host, configured_port):
+    if configured_host is not None and (host, port) == (
+        configured_host,
+        configured_port,
+    ):
         return host, port
+    if configured_host is None:
+        raise ValueError(
+            "DBMAP_LOCAL_MQTT_HOST is required to authorize a local MQTT destination"
+        )
     raise ValueError(
         "MQTT destination is not authorized; it must match the configured "
         "DBMAP_LOCAL_MQTT_HOST/DBMAP_LOCAL_MQTT_PORT or the isolated TLS test broker "

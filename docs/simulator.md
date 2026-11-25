@@ -2,22 +2,33 @@
 
 Laptop tools that register `SIM-EAR-*` devices on your Hub and publish MQTT observations. Credentials stay in `shared/simulator/` so you can reuse the same Ears.
 
-The three EAR simulator commands share the project configuration: they load the
-repository `.env` automatically, with explicit CLI options taking precedence
-over process environment, `.env`, and built-in defaults. Relative configuration
-paths (including the CA, scenario, profile, and credentials paths) resolve from
-the repository root. No arguments → help.
+## Normal usage
 
-`DBMAP_LOCAL_MQTT_HOST` / `DBMAP_LOCAL_MQTT_PORT` authorize the normal local
-TLS broker (defaults: `hub.local:8883`); existing provisioned credentials must
-match that destination. Observation provisioning uses `DBMAP_LAN_IP`,
-`DBMAP_HTTPS_PORT`, `DBMAP_PUBLIC_BASE_PATH`, and `DBMAP_ADMIN_TOKEN`. The CA
-defaults to `shared/trust/ca.crt` (or `DBMAP_CA_FILE`). CLI `--hub-*`,
-`--base-path`, `--mqtt-*`, and `--ca` options override these values. Credentials
-and tokens are never printed. The configured local broker is treated as an
-authorized live destination, so verify that `.env` points to the intended
-development Hub before starting a simulator; the tool cannot infer whether a
-configured Hub is production or disposable.
+With the simulator Ears already provisioned:
+
+```bash
+./scripts/sim-ear-keepalive watch --ear all
+./scripts/sim-ear-observation publish --ear a
+./scripts/sim-ear-scenario run \
+  --scenario-file simulator/ear/scenarios/helicopter_east_west.json \
+  --ear-profile shared/simulator/ear-profiles/abc.json
+```
+
+All three commands load the repository `.env` automatically. The configured
+`DBMAP_LOCAL_MQTT_HOST` is the default destination; `DBMAP_LOCAL_MQTT_PORT`
+defaults to `8883` if unset. The local host must be configured—simulators do
+not silently fall back to a broker saved in credentials or the isolated test
+broker. The default CA is `shared/trust/ca.crt` (overridable with
+`DBMAP_CA_FILE`). Configuration precedence is explicit CLI options, process
+environment, project `.env`, then safe built-in defaults; relative paths resolve
+from the repository root.
+
+Normal local TLS publishing does not need `--live-mqtt`. The flag is required
+for the isolated TLS test broker. Observation provisioning uses `DBMAP_LAN_IP`,
+`DBMAP_HTTPS_PORT`, `DBMAP_PUBLIC_BASE_PATH`, and `DBMAP_ADMIN_TOKEN`. Credentials
+and tokens are never printed. The configured local broker is authorized, so
+verify that `.env` points to the intended development Hub before publishing;
+the tool cannot infer whether a configured Hub is production or disposable.
 
 ## Do this first (Ear A)
 
@@ -176,26 +187,21 @@ Keepalive / publish:
 ./scripts/sim-ear-keepalive once --ear-profile shared/simulator/ear-profiles/ade.json
 ```
 
-For an already provisioned slot, these are the minimal normal local startup
-commands:
-
-```bash
-./scripts/sim-ear-keepalive watch --ear all
-./scripts/sim-ear-observation publish --ear a
-./scripts/sim-ear-scenario run \
-  --scenario-file simulator/ear/scenarios/helicopter_east_west.json \
-  --ear-profile shared/simulator/ear-profiles/abc.json
-```
-
 `add` is the Observation simulator's first-time provisioning command. Scenario
 `dry-run --scenario-file ... --ear ALIAS=CREDENTIALS_FILE` validates and prints a
-timeline without opening the credentials files or publishing. Normal local TLS
-publishing to the configured `DBMAP_LOCAL_MQTT_*`
-destination does not need `--live-mqtt`. The flag is required for the isolated
-`mqtt.ear-test.invalid:8883` / `hub.ear-test.invalid:8443` test stack. A destination
-that matches neither the configured local broker nor that isolated test broker
-is rejected. Use `--mqtt-host` / `--mqtt-port` only to select one of those authorized
-destinations; TLS certificate verification remains enabled.
+timeline without opening the credentials files or publishing.
+
+### Advanced MQTT overrides
+
+Use `--mqtt-host` / `--mqtt-port` to select an explicitly authorized destination;
+TLS certificate verification remains enabled. An isolated test-broker publish
+requires explicit destination options and opt-in:
+
+```bash
+./scripts/sim-ear-observation publish --ear a \
+  --mqtt-host mqtt.ear-test.invalid --mqtt-port 8883 --live-mqtt \
+  --ca path/to/isolated-test-ca.crt
+```
 
 ### EAR profiles (preferred for scenarios)
 
