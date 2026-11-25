@@ -2652,6 +2652,18 @@ paths:
       description: "Returns {pagination, reports}. pagination includes total_count, page, page_size, total_pages, order, snapshot_id. Query: page (default 1), page_size (default 200, max 500), order=newest|oldest, node_id, observation_id, optional snapshot_id, deprecated limit alias for page_size."
       operationId: listObservations
       parameters:
+        - name: received_from
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Inclusive Hub reception time with timezone.
+        - name: received_before
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Exclusive Hub reception time with timezone. Must follow received_from if both are supplied.
         - name: node_id
           in: query
           required: false

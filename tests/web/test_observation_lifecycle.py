@@ -410,8 +410,7 @@ def test_observation_view_wires_statistics_separately_from_recent_200() -> None:
     assert "Observation Statistics" in html
     assert "Complete retained Observation history" in html
     assert "Loads only when you expand this panel" in html
-    assert "recent-200" in html or "recent 200" in html
-    assert "newest 200 reports globally" in html
+    assert "Initially shows the newest 200 reports" in html
     assert "page_size=200&order=newest" in html
     assert "fetchAllObservationReportsSnapshot" in html
     assert "refreshObservationStatistics" in html

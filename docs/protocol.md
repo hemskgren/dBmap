@@ -534,6 +534,10 @@ The current relevant HTTPS API endpoints are:
 
 ### Hub list pagination
 
+Observation listing optionally accepts timezone-aware `received_from` (inclusive)
+and `received_before` (exclusive). These filter by Hub reception time before
+pagination. Keep them unchanged when following a snapshot across pages.
+
 `GET /api/v1/observations`, `GET /api/v1/users`, and `GET /api/v1/groups` share one JSON envelope shape:
 
 ```json

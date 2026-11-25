@@ -16,6 +16,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import FileResponse, Response
+from pydantic import AwareDatetime
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -1481,6 +1482,8 @@ def list_observations(
             "from a prior page to avoid duplicates when new reports arrive."
         ),
     ),
+    received_from: AwareDatetime | None = None,
+    received_before: AwareDatetime | None = None,
     db: Session = Depends(get_db),
 ) -> ObservationListEnvelope:
     """List observation reports with a JSON pagination envelope."""
@@ -1493,6 +1496,8 @@ def list_observations(
             page_size=_list_query_page_size(page_size, limit),
             order=order,
             snapshot_id=snapshot_id,
+            received_from=received_from,
+            received_before=received_before,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
