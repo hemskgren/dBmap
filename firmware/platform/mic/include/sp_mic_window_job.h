@@ -18,13 +18,40 @@
 extern "C" {
 #endif
 
+typedef enum {
+    SP_MIC_SPAN_COMPLETE,
+    SP_MIC_SPAN_STALLED,
+    SP_MIC_SPAN_DEADLINE,
+} sp_mic_span_end_t;
+
 typedef struct {
     sp_mic_pcm_job_t pcm;
+    /** Software collection start, in the same monotonic clock as pcm.window_end_mono_us. */
+    int64_t collection_start_mono_us;
+    uint32_t nominal_sample_rate_hz;
+    /** Incomplete trailing stereo frames discarded during this collection, summed across DINs. */
+    uint32_t incomplete_stereo_frames;
+    /** Known ordinal skips at/before consumed groups since the prior group (saturating). */
+    uint32_t software_missing_frames;
+    /** Initial complete groups consumed from prior reads (not a hardware timestamp). */
+    uint16_t carried_frames;
+    /** sp_mic_span_end_t, stored compactly. */
+    uint8_t span_end;
     uint8_t live_mic_count;
     /** Bit i set when channels[i] was filled for this window (live index). */
     uint8_t channel_mask;
     sp_mic_channel_t channels[SP_MIC_COUNT_MAX];
 } sp_mic_window_job_t;
+
+/**
+ * Derive the cap discard for a channel with both a captured view and retained PCM.
+ * Returns false if that comparison is unavailable; leaves out untouched.
+ * Transport faults are reported separately in the channel view and the window's
+ * incomplete stereo count. Absence of those faults does not verify continuity.
+ */
+bool sp_mic_window_job_cap_discarded(
+    const sp_mic_window_job_t *job, uint8_t channel, uint32_t *out
+);
 
 /**
  * Host-testable: fill job.channels[] from window views that belong to job.pcm.
@@ -47,7 +74,8 @@ bool sp_mic_window_job_channels_coherent(const sp_mic_window_job_t *job);
 /**
  * Take pending PCM + matching channel snapshots atomically and clear pending.
  * Returns false when L0/PCM is off or no window is pending.
- * out may be NULL to discard.
+ * out may be NULL to discard. A non-NULL successful take acquires a lease;
+ * release pcm.lease_token after the last PCM access.
  */
 bool sp_mic_take_window_job(sp_mic_window_job_t *out);
 
@@ -63,6 +91,12 @@ typedef struct {
     uint32_t reset_discards;
     uint32_t legacy_takes;
     uint32_t projection_failed;
+    uint32_t pending_retired;
+    uint32_t no_bank_drops;
+    uint32_t unpublished_fills;
+    uint32_t invalid_releases;
+    uint32_t ownership_violations;
+    uint32_t legacy_generation_mismatches;
     bool pending;
     bool saturated;
 } sp_mic_window_diag_t;

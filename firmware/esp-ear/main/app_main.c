@@ -105,11 +105,8 @@ void app_main(void)
     sp_effective_defaults(&s_cfg);
     ESP_ERROR_CHECK(sp_nvs_load(&s_cfg));
 
-    ESP_LOGI(
-        TAG_PLATFORM,
-        "node_id=%s",
-        s_cfg.identity.node_id[0] != '\0' ? s_cfg.identity.node_id : "UNPROVISIONED"
-    );
+    int64_t next_usb_identity_us = 0;
+    sp_log_usb_identity(TAG_PLATFORM, &s_cfg, &next_usb_identity_us);
     ESP_LOGI(
         TAG_PLATFORM,
         "hub_id=%s",
@@ -210,6 +207,7 @@ void app_main(void)
 
     int backoff_ms = 1000;
     while (1) {
+        sp_log_usb_identity(TAG_PLATFORM, &s_cfg, &next_usb_identity_us);
         sp_ota_report_pending_boot(&s_cfg);
         if (!sp_mqtt_is_connected()) {
             sp_mqtt_request_reconnect();

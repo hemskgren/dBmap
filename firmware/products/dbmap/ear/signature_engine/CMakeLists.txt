@@ -8,4 +8,5 @@ idf_component_register(
         acoustic_profile
     PRIV_REQUIRES
         freertos
+        log
 )

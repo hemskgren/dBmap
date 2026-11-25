@@ -18,7 +18,7 @@ from collections import deque
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import dbmap_config
 
@@ -398,14 +398,27 @@ def _extra_component_srcs(target_config: dict) -> list[Path]:
     return out
 
 
-def _target_dbmap_config(target: str) -> dict:
+def _validate_profile(target: str, profile: object) -> str:
+    if (
+        target != "ear-esp32-s3"
+        or not isinstance(profile, str)
+        or profile not in dbmap_config.EAR_DIAGNOSTIC_PROFILES
+    ):
+        raise ValueError("Select a supported diagnostic profile for ear-esp32-s3.")
+    return profile
+
+
+def _target_dbmap_config(
+    target: str, profile: str | None = None, *, project: Path | None = None
+) -> dict:
     target_config = TARGETS.get(target)
     if target_config is None:
         raise KeyError(target)
     resolved = dbmap_config.resolve_effective_dbmap_config(
         node_type=target_config["node_type"],
         chip=target_config["chip"],
-        project=target_config["project"],
+        project=project if project is not None else target_config["project"],
+        profile=profile,
         components=target_config["components"],
         extra_component_trees=_extra_component_srcs(target_config),
         ntp_server=NTP_SERVER,
@@ -416,8 +429,29 @@ def _target_dbmap_config(target: str) -> dict:
         "node_type": target_config["node_type"],
         "hardware_revision": target_config["hardware_revision"],
         "esp_idf_version": target_config["idf_version"],
+        **({"profile": profile} if profile is not None else {}),
         **resolved,
     }
+
+
+def _record_diagnostic_config(
+    job: dict, sdkconfig_text: str, phase: str, log_path: Path
+) -> None:
+    diagnostics = job["diagnostics"]
+    generated = dbmap_config.generated_diagnostic_settings(sdkconfig_text)
+    mismatches = dbmap_config.diagnostic_mismatches(diagnostics["requested"], generated)
+    record = {"settings": generated, "mismatches": mismatches}
+    diagnostics.setdefault("generated", {})[phase] = record
+    _persist(job)
+    _append_log(
+        log_path,
+        f"Generated diagnostic config ({phase}): {json.dumps(record, sort_keys=True)}",
+    )
+    if mismatches:
+        raise RuntimeError(
+            f"Diagnostic profile {job['profile']} mismatch after {phase}: "
+            + "; ".join(mismatches)
+        )
 
 
 def _build(job_id: str, target: str) -> None:
@@ -429,6 +463,7 @@ def _build(job_id: str, target: str) -> None:
     artifact_dir = ARTIFACTS / job_id
     log_path = JOBS / f"{job_id}.log"
     job = json.loads(job_path.read_text(encoding="utf-8"))
+    profile = job.get("profile")
     try:
         descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         os.close(descriptor)
@@ -476,22 +511,34 @@ def _build(job_id: str, target: str) -> None:
             _persist(job)
             _run_ear_fast_gate(log_path)
 
-        pre_build_config = _target_dbmap_config(target)
+        defaults_args = []
+        if profile is not None:
+            overlay = dbmap_config.diagnostic_overlay(
+                _validate_profile(target, profile)
+            )
+            defaults_args = ["-D", f"SDKCONFIG_DEFAULTS=sdkconfig.defaults;{overlay}"]
+        pre_build_config = _target_dbmap_config(target, profile, project=work_dir)
+        if "diagnostics" in pre_build_config:
+            job["diagnostics"] = pre_build_config["diagnostics"]
         _append_log(log_path, dbmap_config.format_log_block(pre_build_config).rstrip())
 
         job.update(stage="configuring")
         _persist(job)
         code, _output = _run_stage(
-            ["idf.py", "set-target", TARGETS[target]["chip"]], work_dir, log_path
+            ["idf.py", *defaults_args, "set-target", TARGETS[target]["chip"]],
+            work_dir,
+            log_path,
         )
         if code != 0:
             raise RuntimeError("ESP-IDF target configuration failed.")
         _clear_device_secrets(work_dir / "sdkconfig")
         sdkconfig = work_dir / "sdkconfig"
-        if not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", NTP_SERVER):
-            raise RuntimeError(
-                "NTP_SERVER must be a valid DNS name or IPv4 address."
+        if "diagnostics" in job:
+            _record_diagnostic_config(
+                job, sdkconfig.read_text(encoding="utf-8"), "configuration", log_path
             )
+        if not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", NTP_SERVER):
+            raise RuntimeError("NTP_SERVER must be a valid DNS name or IPv4 address.")
         _set_sdkconfig_string(sdkconfig, "CONFIG_DBMAP_NTP_SERVER", NTP_SERVER)
         base_version = _sdkconfig_string(sdkconfig, "CONFIG_DBMAP_FIRMWARE_VERSION")
         firmware_version = _next_firmware_version(base_version)
@@ -510,20 +557,25 @@ def _build(job_id: str, target: str) -> None:
 
         job.update(stage="building")
         _persist(job)
-        code, _output = _run_stage(["idf.py", "build"], work_dir, log_path)
+        code, _output = _run_stage(
+            ["idf.py", *defaults_args, "build"], work_dir, log_path
+        )
         if code != 0:
             raise RuntimeError("ESP-IDF firmware build failed.")
 
-        generated_config = (work_dir / "sdkconfig").read_text(encoding="utf-8")
+        generated_config = sdkconfig.read_text(encoding="utf-8")
+        if "diagnostics" in job:
+            _record_diagnostic_config(job, generated_config, "build", log_path)
         if any(f'{name}=""' not in generated_config for name in SECRET_CONFIG):
             raise RuntimeError(
                 "Generated firmware configuration includes device-specific credentials."
             )
-        # Metadata sidecar keeps defaults-file CONFIG_DBMAP_* only (list/log keep effective).
+        # Keep existing catalog grouping and defaults-layer semantics.
         config_tree = dbmap_config.resolve_defaults_file_dbmap_config(
             node_type=target_config["node_type"],
             chip=target_config["chip"],
             project=target_config["project"],
+            profile=profile,
             platform_dir=target_config["components"],
         )
         job.update(stage="finalizing")
@@ -666,6 +718,16 @@ class Handler(BaseHTTPRequestHandler):
                         "node_type": target["node_type"],
                         "hardware_revision": target["hardware_revision"],
                         "esp_idf_version": target["idf_version"],
+                        **(
+                            {
+                                "diagnostic_profiles": [
+                                    {"id": key, "label": label}
+                                    for key, label in dbmap_config.EAR_DIAGNOSTIC_PROFILES.items()
+                                ]
+                            }
+                            if target_id == "ear-esp32-s3"
+                            else {}
+                        ),
                     }
                     for target_id, target in TARGETS.items()
                 ],
@@ -681,11 +743,24 @@ class Handler(BaseHTTPRequestHandler):
             if not TARGET_ID_PATTERN.fullmatch(target_id) or target_id not in TARGETS:
                 self.send_error(404, "Firmware target not found.")
                 return
+            profiles = parse_qs(urlsplit(self.path).query, keep_blank_values=True).get(
+                "profile"
+            )
             try:
-                self._json(200, _target_dbmap_config(target_id))
+                profile = None
+                if profiles is not None:
+                    profile = _validate_profile(
+                        target_id, profiles[0] if len(profiles) == 1 else None
+                    )
+            except ValueError as error:
+                self._json(422, {"detail": str(error)})
+                return
+            try:
+                self._json(200, _target_dbmap_config(target_id, profile))
             except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
                 self.send_error(
-                    500, f"Could not resolve CONFIG_DBMAP_* for target: {_short_error(error)}"
+                    500,
+                    f"Could not resolve CONFIG_DBMAP_* for target: {_short_error(error)}",
                 )
             return
         if path == "/api/v1/firmware/builds":
@@ -850,11 +925,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         if (
             not isinstance(body, dict)
-            or set(body) != {"target"}
-            or not isinstance(body["target"], str)
+            or not set(body) <= {"target", "profile"}
+            or not isinstance(body.get("target"), str)
             or body["target"] not in TARGETS
         ):
             self._json(422, {"detail": "Select a supported firmware target."})
+            return
+        try:
+            profile = (
+                _validate_profile(body["target"], body["profile"])
+                if "profile" in body
+                else None
+            )
+        except ValueError as error:
+            self._json(422, {"detail": str(error)})
             return
         key_header = self.headers.get("Idempotency-Key", "")
         try:
@@ -866,11 +950,14 @@ class Handler(BaseHTTPRequestHandler):
         with lock:
             existing = _find_idempotent_job(idempotency_key)
             if existing:
-                if existing["target"] != body["target"]:
+                if (
+                    existing["target"] != body["target"]
+                    or existing.get("profile") != profile
+                ):
                     self._json(
                         409,
                         {
-                            "detail": "Idempotency key was already used for a different target."
+                            "detail": "Idempotency key was already used for a different target or profile."
                         },
                     )
                     return
@@ -892,6 +979,7 @@ class Handler(BaseHTTPRequestHandler):
             job = {
                 "id": job_id,
                 "target": body["target"],
+                **({"profile": profile} if profile is not None else {}),
                 "hardware_revision": TARGETS[body["target"]]["hardware_revision"],
                 "status": "queued",
                 "stage": "queued",

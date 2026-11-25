@@ -9,6 +9,9 @@
  * When CONFIG_SP_MIC_PCM_RETAIN is enabled, PCM is retained for every live
  * microphone (NVS mic_count → live acquire count, 1..SP_MIC_COUNT_MAX).
  * samples / sample_count remain Mic0 aliases for Observation / primary paths.
+ * Banks hold one complete configured frame span per live channel. A nonempty
+ * short attempt may also publish with actual counts; empty attempts have no job.
+ * For acquisition fault and carry metadata, take the bundled window job.
  */
 
 #include "sp_mic_count.h"
@@ -16,6 +19,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,7 +45,9 @@ typedef struct {
     uint8_t active_mic_count;
 
     int full_scale_bits;
+    /** Configured nominal span duration; actual duration derives from count/rate. */
     uint32_t window_ms;
+    /** Software collection-end stamp, not the time of the last physical sample. */
     int64_t window_end_mono_us;
     /**
      * Same measure_window sequence as sp_mic_get_channel/stream for this
@@ -46,6 +55,14 @@ typedef struct {
      * returns this window without verifying window_seq and measured_at_us.
      */
     uint32_t window_seq;
+    /** Pending jobs retired before this take, for sequence-scoped gap attribution. */
+    uint32_t pending_overwrites_at_take;
+    /** Lease identity, valid until released. Zero denotes no lease. */
+    uint64_t lease_token;
+#if CONFIG_DBMAP_EAR_AE_DIAG
+    uint32_t bank_generation;
+    uint8_t bank_index;
+#endif
 } sp_mic_pcm_job_t;
 
 typedef void (*sp_mic_pcm_ready_hook_t)(uint32_t sample_rate_hz);
@@ -59,8 +76,20 @@ bool sp_mic_pcm_ready(void);
  * out may be NULL to discard (still clears pending).
  *
  * Prefer sp_mic_take_window_job() when channel snapshots are also required.
+ * A successful non-NULL take pins the whole channel group until release.
+ * Only one lease may be outstanding, across both take APIs. A NULL take
+ * discards the pending job without acquiring a lease.
  */
 bool sp_mic_take_pcm_job(sp_mic_pcm_job_t *out);
+
+/** Release after the last PCM access. A stale, duplicate or zero token fails. */
+bool sp_mic_release_pcm_job(uint64_t lease_token);
+
+#if CONFIG_DBMAP_EAR_AE_DIAG
+/** Compare the current bank generation only while holding the job lease. */
+uint32_t sp_mic_pcm_job_bank_generation(const sp_mic_pcm_job_t *job);
+void sp_mic_note_legacy_generation_mismatch(void);
+#endif
 
 uint32_t sp_mic_pcm_cap_samples(void);
 /** Total SPIRAM bytes for all PCM banks × retained channels. */

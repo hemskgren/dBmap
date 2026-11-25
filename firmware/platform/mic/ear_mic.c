@@ -9,6 +9,7 @@
 #include "sp_audio_metrics.h"
 #include "sp_background_rms.h"
 #include "sp_mic_capture_diag.h"
+#include "sp_mic_diagnostics.h"
 #include "sp_mic_channel_api.h"
 #include "sp_diag.h"
 #include "sp_health.h"
@@ -18,6 +19,7 @@
 #include "sp_mic_pcm.h"
 #include "sp_mic_window_job.h"
 #include "sp_mic_window_job_slot.h"
+#include "sp_mic_frame_cursor.h"
 #include "driver/i2s_std.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
@@ -29,6 +31,10 @@
 #include "mic_model.h"
 #include "sdkconfig.h"
 
+#if CONFIG_DBMAP_EAR_AE_DIAG
+#include "sp_mic_bank_diag.h"
+#endif
+
 static const char *TAG = "sp_mic";
 
 #define EAR_MIC_READ_FRAMES 256
@@ -36,6 +42,45 @@ static const char *TAG = "sp_mic";
 /* Per-DIN scratch: stereo needs 2 words per sample period (max on one DIN). */
 #define EAR_MIC_SLOT_WORDS_PER_DIN (EAR_MIC_READ_FRAMES * 2)
 #define EAR_MIC_DIN_COUNT_MAX 2
+#define EAR_MIC_PROGRESS_TIMEOUT_US 250000LL
+#define EAR_MIC_READ_TIMEOUT_MS 50u
+
+_Static_assert(EAR_MIC_SLOT_WORDS_PER_DIN * sizeof(uint32_t) <= UINT16_MAX,
+               "I2S scratch must fit the frame cursor");
+static sp_mic_frame_cursor_t s_frame_cursor[EAR_MIC_DIN_COUNT_MAX];
+static uint32_t s_target_frames;
+static uint64_t s_next_group_frame;
+
+#if CONFIG_SP_MIC_CAPTURE_DIAG
+static sp_mic_time_diag_t s_collection_time;
+static sp_mic_time_diag_t s_window_cadence;
+static int64_t s_previous_collection_end;
+static sp_mic_din_diag_t s_din_totals[EAR_MIC_DIN_COUNT_MAX];
+static uint64_t s_short_attempts;
+static uint64_t s_empty_attempts;
+static uint64_t s_stalled_attempts;
+static uint64_t s_deadline_attempts;
+static uint64_t s_software_missing_frames;
+static uint64_t s_carried_frames;
+static uint64_t s_discarded_frames[EAR_MIC_DIN_COUNT_MAX];
+static uint64_t s_incomplete_frames[EAR_MIC_DIN_COUNT_MAX];
+#endif
+
+#if CONFIG_DBMAP_EAR_AE_DIAG
+#if CONFIG_SP_MIC_PCM_RETAIN
+static sp_mic_bank_generation_t s_bank_generations[2];
+#endif
+
+uint32_t sp_mic_pcm_job_bank_generation(const sp_mic_pcm_job_t *job)
+{
+#if CONFIG_SP_MIC_PCM_RETAIN
+    return sp_mic_bank_generation(&s_bank_generations[job->bank_index]);
+#else
+    (void)job;
+    return 0u;
+#endif
+}
+#endif
 
 typedef struct {
     float rms_dbfs;
@@ -192,7 +237,7 @@ static uint32_t s_pcm_free_spiram_after_init;
 
 static void pcm_store_sample(uint8_t mic_index, int32_t sample, uint32_t pcm_count)
 {
-    if (!s_pcm_ready || mic_index >= s_pcm_retained_channels) {
+    if (s_pcm_fill_idx < 0 || mic_index >= s_pcm_retained_channels) {
         return;
     }
     if (s_pcm[mic_index][s_pcm_fill_idx] == NULL) {
@@ -405,16 +450,40 @@ bool sp_mic_take_pcm_job(sp_mic_pcm_job_t *out)
 
     sp_mic_window_slot_pending_t job;
     portENTER_CRITICAL(&s_lock);
-    const bool had = sp_mic_window_slot_take(&job);
+    const bool had = sp_mic_window_slot_take(&job, out == NULL);
     portEXIT_CRITICAL(&s_lock);
     if (!had) {
         return false;
     }
-    const bool projected = sp_mic_window_slot_project_pcm(&job, s_pcm, out);
+    const bool projected = out == NULL || sp_mic_window_slot_project_pcm(&job, s_pcm, out);
     portENTER_CRITICAL(&s_lock);
-    sp_mic_window_slot_note_projection(true, projected);
+    sp_mic_window_slot_note_projection(out == NULL ? 0u : job.lease_token, true, projected);
     portEXIT_CRITICAL(&s_lock);
     return projected;
+#endif
+}
+
+#if CONFIG_DBMAP_EAR_AE_DIAG
+void sp_mic_note_legacy_generation_mismatch(void)
+{
+#if CONFIG_SP_MIC_PCM_RETAIN
+    portENTER_CRITICAL(&s_lock);
+    sp_mic_window_slot_note_legacy_generation_mismatch();
+    portEXIT_CRITICAL(&s_lock);
+#endif
+}
+#endif
+
+bool sp_mic_release_pcm_job(uint64_t token)
+{
+#if CONFIG_SP_MIC_PCM_RETAIN
+    portENTER_CRITICAL(&s_lock);
+    const bool released = sp_mic_window_slot_release(token);
+    portEXIT_CRITICAL(&s_lock);
+    return released;
+#else
+    (void)token;
+    return false;
 #endif
 }
 
@@ -448,17 +517,16 @@ sp_mic_window_take_result_t sp_mic_take_window_job_result(sp_mic_window_job_t *o
     uint32_t rate_hz;
     portENTER_CRITICAL(&s_lock);
     rate_hz = (uint32_t)s_mic_cfg.sample_rate_hz;
-    const bool had = sp_mic_window_slot_take(&job);
+    const bool had = sp_mic_window_slot_take(&job, out == NULL);
     portEXIT_CRITICAL(&s_lock);
     if (!had) {
         return SP_MIC_WINDOW_EMPTY;
     }
-    /* Bank check runs after pending is cleared. Mask stays 0 on fill failure
-     * so AE can still mono-analyze without inventing channels. */
-    const bool projected = sp_mic_window_slot_project_window(&job, s_pcm, rate_hz, out);
+    /* Project outside the lock. The lease keeps the whole group stable. */
+    const bool projected = out == NULL || sp_mic_window_slot_project_window(&job, s_pcm, rate_hz, out);
     if (!projected) {
         portENTER_CRITICAL(&s_lock);
-        sp_mic_window_slot_note_projection(false, false);
+        sp_mic_window_slot_note_projection(job.lease_token, false, false);
         portEXIT_CRITICAL(&s_lock);
     }
     return projected ? SP_MIC_WINDOW_PROJECTED : SP_MIC_WINDOW_PROJECTION_FAILED;
@@ -777,7 +845,7 @@ static void enrich_health(cJSON *state, const sp_effective_t *cfg, bool include_
 #if CONFIG_SP_MIC_BACKGROUND
         /* Omit background unless this mic is currently signal_present (no stale
          * profile on disconnected / noise / unknown DIN). */
-        if (sp_bg_rms_status_allows_profile(mic_status)) {
+        if (sp_bg_rms_status_allows_profile(snaps[i].microphone_status)) {
             sp_bg_rms_profile_t bg;
             portENTER_CRITICAL(&s_lock);
             sp_bg_rms_profile(&s_bg_hist[i], esp_timer_get_time(), &bg);
@@ -1185,13 +1253,12 @@ typedef struct {
  */
 static void accumulate_din_slots(
     uint8_t din_index,
-    const uint32_t *buf,
+    const uint8_t *buf,
     size_t slot_words,
     uint8_t channels_on_din,
     ear_ch_accum_t *acc,
     int32_t clip_threshold,
-    int32_t full_scale_mag,
-    uint32_t *incomplete_stereo
+    int32_t full_scale_mag
 )
 {
     if (buf == NULL || channels_on_din < 1u || s_model == NULL) {
@@ -1199,14 +1266,11 @@ static void accumulate_din_slots(
     }
     const uint8_t ch_left = sp_i2s_mic_index_for_din_slot(din_index, 0);
     if (channels_on_din >= 2u) {
-        if (incomplete_stereo != NULL) {
-            *incomplete_stereo += sp_i2s_stereo_incomplete_trailing(slot_words);
-        }
         const uint8_t ch_right = sp_i2s_mic_index_for_din_slot(din_index, 1);
         const size_t pairs = sp_i2s_stereo_complete_pairs(slot_words);
         for (size_t p = 0; p < pairs; ++p) {
-            const uint32_t left_slot = buf[p * 2u];
-            const uint32_t right_slot = buf[p * 2u + 1u];
+            const uint32_t left_slot = sp_mic_frame_slot(buf + (p * 2u) * sizeof(uint32_t));
+            const uint32_t right_slot = sp_mic_frame_slot(buf + (p * 2u + 1u) * sizeof(uint32_t));
             ch_accum_slot(&acc[ch_left], left_slot);
             ch_accum_slot(&acc[ch_right], right_slot);
             const int32_t left = s_model->extract(left_slot);
@@ -1222,7 +1286,7 @@ static void accumulate_din_slots(
         }
     } else {
         for (size_t i = 0; i < slot_words; ++i) {
-            const uint32_t slot = buf[i];
+            const uint32_t slot = sp_mic_frame_slot(buf + i * sizeof(uint32_t));
             ch_accum_slot(&acc[ch_left], slot);
             const int32_t sample = s_model->extract(slot);
             ch_accum_sample(
@@ -1243,10 +1307,7 @@ static void accumulate_din_slots(
 static void measure_window(ear_audio_snapshot_t *out, uint8_t live_count)
 {
     const uint32_t window_ms = (uint32_t)CONFIG_SP_MIC_WINDOW_MS;
-    const uint32_t expected = sp_audio_expected_samples(
-        (uint32_t)s_mic_cfg.sample_rate_hz,
-        window_ms
-    );
+    const uint32_t expected = s_target_frames;
     const int64_t t_measure0 = esp_timer_get_time();
 
     if (live_count < 1u || live_count > SP_MIC_COUNT_MAX) {
@@ -1275,8 +1336,14 @@ static void measure_window(ear_audio_snapshot_t *out, uint8_t live_count)
     const double full_scale = (double)(1LL << (useful_bits > 1 ? useful_bits - 1 : 1));
     const int32_t clip_threshold = (int32_t)(full_scale * 0.99);
     const int32_t full_scale_mag = (int32_t)full_scale;
-    const int64_t deadline_us = t_measure0 + ((int64_t)window_ms * 1000LL);
-    const TickType_t read_ticks = (s_open_din_count > 1u) ? 20 : 50;
+    const int64_t deadline_us =
+        t_measure0 + (int64_t)window_ms * 1000LL + EAR_MIC_PROGRESS_TIMEOUT_US;
+    int64_t last_progress_us = t_measure0;
+    uint32_t frames = 0u;
+    uint16_t carried_frames = 0u;
+    bool read_started = false;
+    uint64_t missing_frames = 0u;
+    sp_mic_span_end_t span_end = SP_MIC_SPAN_COMPLETE;
 
     ear_ch_accum_t acc[SP_MIC_COUNT_MAX];
     for (uint8_t i = 0; i < live_count; ++i) {
@@ -1286,65 +1353,137 @@ static void measure_window(ear_audio_snapshot_t *out, uint8_t live_count)
     ear_din_read_stats_t din_stats[EAR_MIC_DIN_COUNT_MAX];
     memset(din_stats, 0, sizeof(din_stats));
     uint32_t incomplete_stereo = 0;
+#if CONFIG_SP_MIC_CAPTURE_DIAG
+    uint32_t incomplete_by_din[EAR_MIC_DIN_COUNT_MAX] = {0};
+#endif
+#if CONFIG_SP_MIC_PCM_RETAIN
+    bool fill_attempted = false;
+    s_pcm_fill_idx = -1;
+#if CONFIG_DBMAP_EAR_AE_DIAG
+    uint32_t fill_generation = 0;
+#endif
+#endif
 
-    while (esp_timer_get_time() < deadline_us) {
-        for (uint8_t din = 0; din < s_open_din_count && din < EAR_MIC_DIN_COUNT_MAX; ++din) {
-            if (!s_rx_ready[din]) {
+    while (frames < expected) {
+        span_end = sp_mic_frame_stop(
+            esp_timer_get_time(), last_progress_us, deadline_us, EAR_MIC_PROGRESS_TIMEOUT_US
+        );
+        if (span_end != SP_MIC_SPAN_COMPLETE) {
+            break;
+        }
+
+        if (s_open_din_count > 1u
+            && sp_mic_frame_group(s_frame_cursor, s_open_din_count, 1u) != 0u) {
+            uint64_t start = 0u;
+            for (uint8_t din = 0; din < s_open_din_count; ++din) {
+                if (s_frame_cursor[din].first_frame > start) {
+                    start = s_frame_cursor[din].first_frame;
+                }
+            }
+            for (uint8_t din = 0; din < s_open_din_count; ++din) {
+                const uint16_t discarded = sp_mic_frame_align(
+                    &s_frame_cursor[din], start, s_slot_words_per_din[din] * sizeof(uint32_t)
+                );
+#if CONFIG_SP_MIC_CAPTURE_DIAG
+                s_discarded_frames[din] += discarded;
+#endif
+                (void)discarded;
+            }
+        }
+        const uint16_t group = (uint16_t)sp_mic_frame_group(
+            s_frame_cursor, s_open_din_count, expected - frames
+        );
+        if (group != 0u) {
+            if (!read_started) {
+                carried_frames += group;
+            }
+            const uint64_t first = s_frame_cursor[0].first_frame;
+            missing_frames += first - s_next_group_frame;
+            s_next_group_frame = first + group;
+#if CONFIG_SP_MIC_PCM_RETAIN
+            if (!fill_attempted && s_pcm_ready) {
+                fill_attempted = true;
+                portENTER_CRITICAL(&s_lock);
+                s_pcm_fill_idx = sp_mic_window_slot_begin_fill();
+                portEXIT_CRITICAL(&s_lock);
+#if CONFIG_DBMAP_EAR_AE_DIAG
+                if (s_pcm_fill_idx >= 0) {
+                    fill_generation = sp_mic_bank_write_start(&s_bank_generations[s_pcm_fill_idx]);
+                }
+#endif
+            }
+#endif
+            for (uint8_t din = 0; din < s_open_din_count; ++din) {
+                const uint8_t words = (uint8_t)s_slot_words_per_din[din];
+                const uint8_t *scratch = (const uint8_t *)s_slot_buf[din];
+                accumulate_din_slots(
+                    din, scratch + s_frame_cursor[din].offset, (size_t)group * words,
+                    sp_i2s_channels_on_din(live_count, din), acc,
+                    clip_threshold, full_scale_mag
+                );
+                sp_mic_frame_consume(&s_frame_cursor[din], group, words * sizeof(uint32_t));
+            }
+            frames += group;
+            last_progress_us = esp_timer_get_time();
+            continue;
+        }
+
+        for (uint8_t din = 0; din < s_open_din_count; ++din) {
+            sp_mic_frame_cursor_t *cursor = &s_frame_cursor[din];
+            if (cursor->frames != 0u) {
                 continue;
             }
-            const uint8_t ch_on_din = sp_i2s_channels_on_din(live_count, din);
-            if (ch_on_din < 1u) {
-                continue;
+            if (din > 0u && sp_mic_frame_stop(
+                    esp_timer_get_time(), last_progress_us, deadline_us, EAR_MIC_PROGRESS_TIMEOUT_US
+                ) != SP_MIC_SPAN_COMPLETE) {
+                break;
             }
-            const size_t request_bytes =
-                s_request_bytes_din[din] > 0
-                    ? s_request_bytes_din[din]
-                    : sizeof(s_slot_buf[din]);
+            read_started = true;
+            const size_t request_bytes = s_request_bytes_din[din];
             size_t bytes_read = 0;
-            esp_err_t err = i2s_channel_read(
-                s_rx[din],
-                s_slot_buf[din],
-                request_bytes,
-                &bytes_read,
-                read_ticks
+            const esp_err_t err = i2s_channel_read(
+                s_rx[din], s_slot_buf[din], request_bytes, &bytes_read,
+                s_open_din_count > 1u ? 20u : EAR_MIC_READ_TIMEOUT_MS
             );
             ear_din_read_stats_t *st = &din_stats[din];
             st->read_calls++;
-            st->bytes_received += (uint32_t)bytes_read;
-            if (bytes_read > 0 && bytes_read < request_bytes) {
+            const bool bounded = bytes_read <= request_bytes;
+            const size_t received = bounded ? bytes_read : request_bytes;
+            st->bytes_received += (uint32_t)received;
+            if (received > 0u && received < request_bytes) {
                 st->partial_reads++;
             }
-
-            if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
-                bump_counter(&st->read_errors, &st->counters_capped);
-                taskYIELD();
-                continue;
-            }
-
-            const size_t slot_words = bytes_read / sizeof(uint32_t);
-            accumulate_din_slots(
-                din,
-                s_slot_buf[din],
-                slot_words,
-                ch_on_din,
-                acc,
-                clip_threshold,
-                full_scale_mag,
-                &incomplete_stereo
+            const bool usable = bounded && (err == ESP_OK || err == ESP_ERR_TIMEOUT);
+            const uint8_t words = (uint8_t)s_slot_words_per_din[din];
+            const sp_mic_frame_read_t read = sp_mic_frame_read(
+                cursor, (uint16_t)received, words * sizeof(uint32_t), usable
             );
-
-            if (err == ESP_ERR_TIMEOUT) {
-                bump_counter(&st->timeout_reads, &st->counters_capped);
-                continue;
+#if CONFIG_SP_MIC_CAPTURE_DIAG
+            s_discarded_frames[din] += read.discarded_frames;
+            s_incomplete_frames[din] += read.incomplete_frame;
+#endif
+            if (words == 2u && read.incomplete_frame) {
+                ++incomplete_stereo;
+#if CONFIG_SP_MIC_CAPTURE_DIAG
+                ++incomplete_by_din[din];
+#endif
             }
-            if (slot_words == 0) {
+            if (!usable) {
+                bump_counter(&st->read_errors, &st->counters_capped);
+            } else if (err == ESP_ERR_TIMEOUT) {
+                bump_counter(&st->timeout_reads, &st->counters_capped);
+            } else if (received < sizeof(uint32_t)) {
                 bump_counter(&st->empty_reads, &st->counters_capped);
-                taskYIELD();
-                continue;
+            }
+            if (cursor->frames == 0u && err != ESP_ERR_TIMEOUT) {
+                /* Immediate failures must also let lower-priority tasks run. */
+                vTaskDelay(1);
             }
         }
     }
 
+    (void)carried_frames;
+    (void)missing_frames;
     if (s_window_seq < UINT32_MAX) {
         s_window_seq++;
     }
@@ -1355,6 +1494,31 @@ static void measure_window(ear_audio_snapshot_t *out, uint8_t live_count)
     }
     const int64_t measured_at = esp_timer_get_time();
     s_incomplete_stereo_frames_window = incomplete_stereo;
+#if CONFIG_SP_MIC_CAPTURE_DIAG
+    s_software_missing_frames += missing_frames;
+    s_carried_frames += carried_frames;
+    s_short_attempts += frames != 0u && span_end != SP_MIC_SPAN_COMPLETE;
+    s_empty_attempts += frames == 0u;
+    s_stalled_attempts += span_end == SP_MIC_SPAN_STALLED;
+    s_deadline_attempts += span_end == SP_MIC_SPAN_DEADLINE;
+    sp_mic_time_diag_record(&s_collection_time, t_measure0, measured_at);
+    if (s_previous_collection_end > 0) {
+        sp_mic_time_diag_record(&s_window_cadence, s_previous_collection_end, measured_at);
+    }
+    s_previous_collection_end = measured_at;
+    for (uint8_t din = 0; din < s_open_din_count && din < EAR_MIC_DIN_COUNT_MAX; ++din) {
+        const ear_din_read_stats_t *st = &din_stats[din];
+        const sp_mic_din_diag_t window = {
+            .read_errors = st->read_errors,
+            .timeout_reads = st->timeout_reads,
+            .empty_reads = st->empty_reads,
+            .partial_reads = st->partial_reads,
+            .incomplete_stereo = incomplete_by_din[din],
+            .capped_windows = st->counters_capped != 0,
+        };
+        sp_mic_din_diag_add(&s_din_totals[din], &window);
+    }
+#endif
 
     for (uint8_t i = 0; i < live_count; ++i) {
         const uint8_t din = (uint8_t)(i / 2u);
@@ -1386,46 +1550,45 @@ static void measure_window(ear_audio_snapshot_t *out, uint8_t live_count)
      * Channel views travel with the job (sp_mic_take_window_job) — do not
      * assume a later get_channel() call still matches.
      */
-    if (s_pcm_ready && acc[0].pcm_count > 0) {
-        size_t stored[SP_MIC_COUNT_MAX];
-        uint8_t pcm_mask = 0u;
-        memset(stored, 0, sizeof(stored));
-        const uint8_t retain_n =
-            (s_pcm_retained_channels < live_count) ? s_pcm_retained_channels
-                                                   : live_count;
-        for (uint8_t ch = 0; ch < retain_n; ++ch) {
-            if (acc[ch].pcm_count == 0u) {
-                continue;
-            }
-            stored[ch] =
-                acc[ch].pcm_count < s_pcm_cap ? acc[ch].pcm_count : s_pcm_cap;
-            pcm_mask = (uint8_t)(pcm_mask | (uint8_t)(1u << ch));
-        }
-        portENTER_CRITICAL(&s_lock);
-        for (uint8_t i = 0; i < SP_MIC_COUNT_MAX; ++i) {
-            s_latest[i] = out[i];
-        }
+    if (s_pcm_fill_idx >= 0 && acc[0].pcm_count > 0) {
         sp_mic_window_slot_pending_t pub;
         memset(&pub, 0, sizeof(pub));
         pub.buf_idx = s_pcm_fill_idx;
-        for (uint8_t ch = 0; ch < SP_MIC_COUNT_MAX; ++ch) {
-            pub.sample_count_ch[ch] = stored[ch];
+#if CONFIG_DBMAP_EAR_AE_DIAG
+        pub.bank_generation = fill_generation;
+#endif
+        for (uint8_t ch = 0; ch < live_count; ++ch) {
+            pub.sample_count_ch[ch] = frames;
         }
-        pub.pcm_channel_mask = pcm_mask;
+        pub.pcm_channel_mask = (uint8_t)((1u << live_count) - 1u);
         pub.window_ms = window_ms;
         pub.window_end_mono_us = measured_at;
+        pub.collection_start_mono_us = t_measure0;
+        pub.incomplete_stereo_frames = incomplete_stereo;
+        pub.carried_frames = carried_frames;
+        pub.software_missing_frames =
+            missing_frames > UINT32_MAX ? UINT32_MAX : (uint32_t)missing_frames;
+        pub.span_end = (uint8_t)span_end;
         pub.full_scale_bits = useful_bits;
         pub.window_seq = s_window_seq;
         pub.live_mic_count = live_count;
         for (uint8_t i = 0; i < SP_MIC_COUNT_MAX; ++i) {
             snapshot_to_view(&out[i], &pub.views[i]);
         }
-        sp_mic_window_slot_publish(&pub);
-        s_pcm_fill_idx ^= 1;
+        portENTER_CRITICAL(&s_lock);
+        for (uint8_t i = 0; i < SP_MIC_COUNT_MAX; ++i) {
+            s_latest[i] = out[i];
+        }
+        if (!sp_mic_window_slot_publish(&pub)) {
+            sp_mic_window_slot_cancel_fill(s_pcm_fill_idx);
+        }
         portEXIT_CRITICAL(&s_lock);
     } else {
         /* No PCM job — still publish levels for Observation / health. */
         portENTER_CRITICAL(&s_lock);
+        if (s_pcm_fill_idx >= 0) {
+            sp_mic_window_slot_cancel_fill(s_pcm_fill_idx);
+        }
         for (uint8_t i = 0; i < SP_MIC_COUNT_MAX; ++i) {
             s_latest[i] = out[i];
         }
@@ -1509,6 +1672,63 @@ static void capture_diag_maybe_log(const ear_audio_snapshot_t *snaps, uint8_t li
         (unsigned long)free_heap,
         (unsigned long)free_spiram
     );
+    sp_mic_window_diag_t slots;
+    sp_mic_get_window_diag(&slots);
+    ESP_LOGI(
+        TAG,
+        "capture_diag totals windows=%llu collection_us_min=%llu collection_us_max=%llu "
+        "cadence_n=%llu cadence_us_min=%llu cadence_us_max=%llu produced=%lu replacements=%lu "
+        "slot_counters_saturated=%u",
+        (unsigned long long)s_collection_time.count,
+        (unsigned long long)s_collection_time.min_us,
+        (unsigned long long)s_collection_time.max_us,
+        (unsigned long long)s_window_cadence.count,
+        (unsigned long long)s_window_cadence.min_us,
+        (unsigned long long)s_window_cadence.max_us,
+        (unsigned long)slots.published,
+        (unsigned long)slots.overwrites,
+        (unsigned)slots.saturated
+    );
+    ESP_LOGI(
+        TAG,
+        "capture_diag ownership pending_retired=%lu no_bank_drops=%lu unpublished_fills=%lu "
+        "projection_failed=%lu invalid_releases=%lu violations=%lu legacy_generation_mismatches=%lu",
+        (unsigned long)slots.pending_retired,
+        (unsigned long)slots.no_bank_drops,
+        (unsigned long)slots.unpublished_fills,
+        (unsigned long)slots.projection_failed,
+        (unsigned long)slots.invalid_releases,
+        (unsigned long)slots.ownership_violations,
+        (unsigned long)slots.legacy_generation_mismatches
+    );
+    ESP_LOGI(
+        TAG,
+        "capture_diag assembly seq=%lu target=%lu short=%llu empty=%llu stalled=%llu "
+        "deadline=%llu carried=%llu software_missing=%llu",
+        (unsigned long)snaps[0].window_seq, (unsigned long)s_target_frames,
+        (unsigned long long)s_short_attempts, (unsigned long long)s_empty_attempts,
+        (unsigned long long)s_stalled_attempts, (unsigned long long)s_deadline_attempts,
+        (unsigned long long)s_carried_frames,
+        (unsigned long long)s_software_missing_frames
+    );
+    for (uint8_t din = 0; din < s_open_din_count && din < EAR_MIC_DIN_COUNT_MAX; ++din) {
+        const sp_mic_din_diag_t *totals = &s_din_totals[din];
+        ESP_LOGI(
+            TAG,
+            "capture_diag din=%u read_errors=%llu timeouts=%llu empty=%llu partial=%llu "
+            "incomplete=%llu capped_windows=%llu frame_fragments=%llu discarded_frames=%llu carry_out=%u",
+            (unsigned)din,
+            (unsigned long long)totals->read_errors,
+            (unsigned long long)totals->timeout_reads,
+            (unsigned long long)totals->empty_reads,
+            (unsigned long long)totals->partial_reads,
+            (unsigned long long)totals->incomplete_stereo,
+            (unsigned long long)totals->capped_windows,
+            (unsigned long long)s_incomplete_frames[din],
+            (unsigned long long)s_discarded_frames[din],
+            (unsigned)s_frame_cursor[din].frames
+        );
+    }
     for (uint8_t i = 0; i < live_count; ++i) {
         ESP_LOGI(
             TAG,
@@ -1602,11 +1822,18 @@ esp_err_t sp_mic_start(const sp_effective_t *cfg, const sp_mic_config_t *mic_cfg
         return ESP_ERR_NOT_SUPPORTED;
     }
 
+    const int rate = mic_cfg->sample_rate_hz > 0
+        ? mic_cfg->sample_rate_hz : CONFIG_SP_MIC_SAMPLE_RATE_HZ;
+    if (rate < 8000 || rate > 48000
+        || !sp_mic_frame_target((uint32_t)rate, CONFIG_SP_MIC_WINDOW_MS, &s_target_frames)) {
+        ESP_LOGE(TAG, "invalid frame span rate=%d window_ms=%u",
+                 rate, (unsigned)CONFIG_SP_MIC_WINDOW_MS);
+        return ESP_ERR_INVALID_ARG;
+    }
     s_cfg = cfg;
     s_mic_cfg = *mic_cfg;
-    if (s_mic_cfg.sample_rate_hz <= 0) {
-        s_mic_cfg.sample_rate_hz = CONFIG_SP_MIC_SAMPLE_RATE_HZ;
-    }
+    s_mic_cfg.sample_rate_hz = rate;
+    memset(s_frame_cursor, 0, sizeof(s_frame_cursor));
 
     s_configured_mic_count = cfg->microphone_count;
     if (!sp_mic_count_supported(s_configured_mic_count)) {
@@ -1667,13 +1894,7 @@ esp_err_t sp_mic_start(const sp_effective_t *cfg, const sp_mic_config_t *mic_cfg
 
 #if CONFIG_SP_MIC_PCM_RETAIN
     {
-        const uint32_t window_ms = (uint32_t)CONFIG_SP_MIC_WINDOW_MS;
-        const uint32_t expected = sp_audio_expected_samples(
-            (uint32_t)s_mic_cfg.sample_rate_hz,
-            window_ms
-        );
-        /* +1% slack for slight over-fill vs nominal window length. */
-        s_pcm_cap = expected + (expected / 100u) + 16u;
+        s_pcm_cap = s_target_frames;
         s_pcm_retained_channels =
             (s_live_mic_count >= 1u && s_live_mic_count <= SP_MIC_COUNT_MAX)
                 ? s_live_mic_count
@@ -1709,7 +1930,7 @@ esp_err_t sp_mic_start(const sp_effective_t *cfg, const sp_mic_config_t *mic_cfg
             s_pcm_retained_channels = 0u;
         } else {
             s_pcm_ready = true;
-            s_pcm_fill_idx = 0;
+            s_pcm_fill_idx = -1;
             sp_mic_window_slot_reset_pending();
             s_pcm_free_heap_after_init = (uint32_t)esp_get_free_heap_size();
             s_pcm_free_spiram_after_init =

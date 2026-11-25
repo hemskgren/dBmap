@@ -7,6 +7,10 @@
 #include <math.h>
 #include <string.h>
 
+#if CONFIG_DBMAP_EAR_OBS_DECISION_DIAG
+#include "esp_log.h"
+#endif
+
 static float clampf(float v, float lo, float hi)
 {
     if (v < lo) {
@@ -27,30 +31,38 @@ static bool window_tonal_vote(
     const ae_signature_t *sig,
     float bg_rms_ema,
     bool bg_valid
+#if CONFIG_DBMAP_EAR_OBS_DECISION_DIAG
+    , const char **gate
+#endif
 )
 {
+#if CONFIG_DBMAP_EAR_OBS_DECISION_DIAG
+#define TONAL_REJECT(reason) do { *gate = (reason); return false; } while (0)
+#else
+#define TONAL_REJECT(reason) return false
+#endif
     if (sig == NULL || !sig->spectral_valid) {
-        return false;
+        TONAL_REJECT("spectral");
     }
     if (!quality_usable(sig->quality)) {
-        return false;
+        TONAL_REJECT("quality");
     }
     if (!(isfinite(sig->flatness)
           && isfinite(sig->dominant_hz)
           && isfinite(sig->rms_dbfs)
           && isfinite(sig->crest_db))) {
-        return false;
+        TONAL_REJECT("nonfinite");
     }
     if (sig->flatness < EAR_SIREN_FLAT_MIN
         || sig->flatness > EAR_SIREN_FLAT_MAX) {
-        return false;
+        TONAL_REJECT("flatness");
     }
     if (sig->dominant_hz < EAR_SIREN_DOM_HZ_MIN
         || sig->dominant_hz > EAR_SIREN_DOM_HZ_MAX) {
-        return false;
+        TONAL_REJECT("dominant");
     }
     if (sig->crest_db > EAR_SIREN_CREST_MAX_DB) {
-        return false;
+        TONAL_REJECT("crest");
     }
     /*
      * Relative level vs recent non-tonal background. Once a streak has
@@ -58,8 +70,9 @@ static bool window_tonal_vote(
      * dBFS) remain contiguous when bg also rises.
      */
     if (bg_valid && sig->rms_dbfs < (bg_rms_ema + EAR_SIREN_BG_MARGIN_DB)) {
-        return false;
+        TONAL_REJECT("rms");
     }
+#undef TONAL_REJECT
     return true;
 }
 
@@ -125,9 +138,23 @@ void ear_siren_se_public_on_signature(
     if (det == NULL || !det->initialized || sig == NULL) {
         return;
     }
+#if CONFIG_DBMAP_EAR_OBS_DECISION_DIAG
+    const unsigned before = det->consecutive;
+    const bool bg_valid = det->bg_rms_valid;
+    const double bg = bg_valid ? (double)det->bg_rms_ema : NAN;
+    const char *gate = "tonal";
+#define LOG_TONAL(reason, level_checked) \
+    ESP_LOGI("ear_dec", "AS002 seq=%lu gate=%s rms=%.2f bg=%.2f bg_ok=%d level=%d streak=%u>%u allow=%d", \
+             (unsigned long)sig->window_seq, (reason), (double)sig->rms_dbfs, bg, bg_valid, \
+             (level_checked), before, (unsigned)det->consecutive, \
+             ear_siren_se_public_allows_promote(det))
+#else
+#define LOG_TONAL(reason, level_checked) ((void)0)
+#endif
     if (sig->quality == AE_QUALITY_INVALID) {
         /* Unknown evidence: do not mutate streak; record non-usable last. */
         set_last_window(det, EAR_SIREN_LAST_INVALID, false, sig);
+        LOG_TONAL("invalid", false);
         return;
     }
     if (sig->quality == AE_QUALITY_GAP) {
@@ -136,10 +163,12 @@ void ear_siren_se_public_on_signature(
         det->streak_window_ms_sum = 0;
         det->streak_flat_sum = 0.0f;
         set_last_window(det, EAR_SIREN_LAST_UNUSABLE, false, sig);
+        LOG_TONAL("gap", false);
         return;
     }
     if (!quality_usable(sig->quality)) {
         set_last_window(det, EAR_SIREN_LAST_UNUSABLE, false, sig);
+        LOG_TONAL("quality", false);
         return;
     }
 
@@ -150,6 +179,9 @@ void ear_siren_se_public_on_signature(
         sig,
         det->bg_rms_ema,
         det->bg_rms_valid && !in_streak
+#if CONFIG_DBMAP_EAR_OBS_DECISION_DIAG
+        , &gate
+#endif
     );
 
     ear_siren_hist_t h;
@@ -189,6 +221,9 @@ void ear_siren_se_public_on_signature(
             }
         }
     }
+    LOG_TONAL(gate, bg_valid && !in_streak
+              && (vote || !strcmp(gate, "rms")));
+#undef LOG_TONAL
 }
 
 void ear_siren_se_public_get_last_window(

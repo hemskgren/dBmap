@@ -7,6 +7,10 @@
  */
 #pragma once
 
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#endif
+
 #include "ae_types.h"
 
 #include <stdbool.h>
@@ -85,6 +89,9 @@ typedef struct {
     uint8_t skipped_spectral;
     uint8_t skipped_pair;
     uint8_t rejected_eligibility;
+#if CONFIG_DBMAP_EAR_OBS_DECISION_DIAG
+    const char *gate;
+#endif
 } as_profile_match_result_t;
 
 /**

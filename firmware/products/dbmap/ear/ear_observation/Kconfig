@@ -321,6 +321,15 @@ menu "dBmap Ear Observation"
             thresholds, hysteresis, timing, or Observation emission. Do not
             enable in production fleet images.
 
+    config DBMAP_EAR_OBS_DECISION_DIAG
+        bool "USB diagnostics for EAR signature and promotion decisions"
+        default n
+        depends on DBMAP_EAR_AUDIO_ENGINE && DBMAP_EAR_OBS_RMS_ACTIVITY
+        help
+            Log the production AS-001 and AS-002 gates, Candidate association,
+            and Promotion Policy results by AE window. For bench images only.
+            This build option has no runtime switch and does not affect MQTT.
+
     config DBMAP_EAR_OBS_LIFECYCLE_V2
         bool "Experimental Observation lifecycle v2 (signature persistence)"
         default n

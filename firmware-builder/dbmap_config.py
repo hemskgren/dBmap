@@ -7,6 +7,138 @@ import re
 from pathlib import Path
 from typing import Any
 
+EAR_DIAGNOSTIC_PROFILES = {
+    "production": "Production",
+    "development": "Development",
+    "pcm-verification": "PCM verification",
+    "acoustic-diagnosis": "Acoustic diagnosis",
+    "full-diagnostics": "Full diagnostics",
+    "calibration": "Calibration",
+}
+
+AE_DIAG = "CONFIG_DBMAP_EAR_AE_DIAG"
+AE_CADENCE = "CONFIG_DBMAP_EAR_AE_DIAG_EVERY_N"
+# Symbols outside the DBMAP parser use their Platform or pinned ESP-IDF defaults.
+DIAGNOSTIC_DEFAULTS = {
+    "CONFIG_SP_MIC_CAPTURE_DIAG": False,
+    "CONFIG_DBMAP_EAR_AUDIO_ENGINE": True,
+    AE_DIAG: False,
+    AE_CADENCE: 10,
+    "CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG": False,
+    "CONFIG_DBMAP_EAR_OBS_DECISION_DIAG": False,
+    "CONFIG_DBMAP_EAR_AE_SIG_CAPTURE": False,
+    "CONFIG_DBMAP_DIAG_ENABLED": True,
+    "CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS": False,
+}
+
+
+def diagnostic_overlay(profile: str) -> str:
+    if profile not in EAR_DIAGNOSTIC_PROFILES:
+        raise ValueError("Select a supported EAR diagnostic profile.")
+    return f"sdkconfig.defaults.log-{profile}"
+
+
+def parse_diagnostic_settings(text: str) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("# ") and line.endswith(" is not set"):
+            key = line.removeprefix("# ").removesuffix(" is not set")
+            if key in DIAGNOSTIC_DEFAULTS and key != AE_CADENCE:
+                values[key] = False
+            continue
+        key, sep, value = line.partition("=")
+        if not sep or key not in DIAGNOSTIC_DEFAULTS:
+            continue
+        value = value.strip()
+        if key == AE_CADENCE and value.isascii() and value.isdecimal():
+            values[key] = int(value)
+        elif key != AE_CADENCE and value in ("y", "n"):
+            values[key] = value == "y"
+        else:
+            raise ValueError(f"Invalid value for diagnostic setting {key}.")
+    return values
+
+
+def requested_diagnostic_settings(project: Path, profile: str | None) -> dict[str, Any]:
+    if profile is None:
+        return {}
+    values = parse_diagnostic_settings(
+        (project / diagnostic_overlay(profile)).read_text(encoding="utf-8")
+    )
+    required = DIAGNOSTIC_DEFAULTS.keys() - {AE_CADENCE}
+    if values.get(AE_DIAG):
+        required.add(AE_CADENCE)
+    missing = required - values.keys()
+    if missing:
+        raise ValueError(
+            f"Incomplete diagnostic profile {profile}: missing {', '.join(sorted(missing))}."
+        )
+    if not values[AE_DIAG]:
+        values[AE_CADENCE] = None
+    return values
+
+
+def diagnostic_preview(
+    layers: list[Path], kconfig_defaults: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    rows = {}
+    for key, fallback in DIAGNOSTIC_DEFAULTS.items():
+        value = (
+            kconfig_defaults.get(short_name(key), fallback)
+            if key.startswith("CONFIG_DBMAP_")
+            else fallback
+        )
+        origin = (
+            "ESP-IDF Kconfig default"
+            if key.startswith("CONFIG_FREERTOS_")
+            else "Kconfig default"
+        )
+        rows[key] = {"value": value, "source": origin}
+    for path in layers:
+        for key, value in parse_diagnostic_settings(
+            path.read_text(encoding="utf-8")
+        ).items():
+            rows[key] = {"value": value, "source": path.name}
+    if not rows[AE_DIAG]["value"]:
+        rows[AE_CADENCE] = {
+            "value": None,
+            "source": f"inactive because {AE_DIAG} is off",
+        }
+    return rows
+
+
+def generated_diagnostic_settings(text: str) -> dict[str, Any]:
+    values = parse_diagnostic_settings(text)
+    result = {
+        key: values.get(key, False) for key in DIAGNOSTIC_DEFAULTS if key != AE_CADENCE
+    }
+    result[AE_CADENCE] = values.get(AE_CADENCE) if result[AE_DIAG] else None
+    return result
+
+
+def diagnostic_mismatches(
+    requested: dict[str, Any], generated: dict[str, Any]
+) -> list[str]:
+    def display(key: str, value: Any) -> str:
+        if value is None:
+            return (
+                "inactive"
+                if key == AE_CADENCE and not generated[AE_DIAG]
+                else "missing"
+            )
+        if isinstance(value, bool):
+            return "y" if value else "n"
+        return str(value)
+
+    return [
+        f"{key}: requested {('inactive' if value is None else display(key, value))}, "
+        f"generated {display(key, generated[key])}"
+        for key, value in requested.items()
+        if generated[key] != value
+    ]
+
+
 # Hierarchy used for list/metadata. Keys are CONFIG_DBMAP_* without the prefix.
 GROUP_KEYS: dict[str, tuple[str, ...]] = {
     "node": (
@@ -69,6 +201,7 @@ GROUP_KEYS: dict[str, tuple[str, ...]] = {
         "EAR_OBS_L2",
         "EAR_OBS_L2_PUBLISH",
         "EAR_OBS_SERIAL_DIAG",
+        "EAR_OBS_DECISION_DIAG",
         # AE signature CSV capture (AS-001 calibration); ear sdkconfig.defaults on.
         "EAR_AE_SIG_CAPTURE",
     ),
@@ -99,9 +232,7 @@ GROUPS_BY_NODE_TYPE: dict[str, tuple[str, ...]] = {
     )
 }
 
-_CONFIG_LINE = re.compile(
-    r"^(?P<name>CONFIG_DBMAP_[A-Z0-9_]+)=(?P<value>.*)$"
-)
+_CONFIG_LINE = re.compile(r"^(?P<name>CONFIG_DBMAP_[A-Z0-9_]+)=(?P<value>.*)$")
 _NOT_SET_LINE = re.compile(r"^# (?P<name>CONFIG_DBMAP_[A-Z0-9_]+) is not set$")
 _SHORT = re.compile(r"^DBMAP_[A-Z0-9_]+$")
 # Firmware mic reporting option (CONFIG_SP_*; included in build metadata only).
@@ -370,16 +501,17 @@ def parse_kconfig_dbmap_defaults(text: str) -> dict[str, Any]:
     return defaults
 
 
-def defaults_files(project: Path, chip: str) -> list[Path]:
-    """ESP-IDF auto-loads sdkconfig.defaults and sdkconfig.defaults.<chip> only."""
-    files: list[Path] = []
-    base = project / "sdkconfig.defaults"
-    if base.is_file():
-        files.append(base)
-    target_specific = project / f"sdkconfig.defaults.{chip}"
-    if target_specific.is_file():
-        files.append(target_specific)
-    return files
+def defaults_files(project: Path, chip: str, profile: str | None = None) -> list[Path]:
+    """ESP-IDF inserts each chip-specific companion after its defaults layer."""
+    names = ["sdkconfig.defaults"]
+    if profile is not None:
+        names.append(diagnostic_overlay(profile))
+    return [
+        path
+        for name in names
+        for path in (project / name, project / f"{name}.{chip}")
+        if path.is_file()
+    ]
 
 
 def kconfig_files(components: Path, extra_trees: list[Path]) -> list[Path]:
@@ -476,14 +608,17 @@ def resolve_effective_dbmap_config(
     components: Path,
     extra_component_trees: list[Path],
     ntp_server: str,
+    profile: str | None = None,
 ) -> dict[str, Any]:
     """Merge Kconfig defaults, sdkconfig.defaults, and builder overlays."""
     kconfig_defaults: dict[str, Any] = {}
     for path in kconfig_files(components, extra_component_trees):
-        kconfig_defaults.update(parse_kconfig_dbmap_defaults(path.read_text(encoding="utf-8")))
+        kconfig_defaults.update(
+            parse_kconfig_dbmap_defaults(path.read_text(encoding="utf-8"))
+        )
 
     file_overrides: dict[str, Any] = {}
-    for path in defaults_files(project, chip):
+    for path in defaults_files(project, chip, profile):
         file_overrides.update(parse_sdkconfig_dbmap(path.read_text(encoding="utf-8")))
 
     effective = dict(kconfig_defaults)
@@ -516,6 +651,18 @@ def resolve_effective_dbmap_config(
         "source": "effective",
         "config": nested,
         "highlights": highlights(effective, kconfig_defaults),
+        **(
+            {
+                "diagnostics": {
+                    "requested": requested_diagnostic_settings(project, profile),
+                    "preview": diagnostic_preview(
+                        defaults_files(project, chip, profile), kconfig_defaults
+                    ),
+                },
+            }
+            if node_type == "ear"
+            else {}
+        ),
         "notes": [
             "Release firmware_version is assigned at build time (sdkconfig.defaults series base + retained patch history) and is not duplicated under config.sp.node.",
             "Builder overlay sets NTP_SERVER from Hub env NTP_SERVER (default se.pool.ntp.org if unset); overrides sdkconfig.defaults.",
@@ -532,10 +679,11 @@ def resolve_defaults_file_dbmap_config(
     chip: str,
     project: Path,
     platform_dir: Path | None = None,
+    profile: str | None = None,
 ) -> dict[str, Any]:
     """Only CONFIG_DBMAP_* lines from sdkconfig.defaults / sdkconfig.defaults.<chip>."""
     file_overrides: dict[str, Any] = {}
-    for path in defaults_files(project, chip):
+    for path in defaults_files(project, chip, profile):
         file_overrides.update(parse_sdkconfig_dbmap(path.read_text(encoding="utf-8")))
     sp_version = None
     if platform_dir is not None:
@@ -557,9 +705,11 @@ def format_log_block(payload: dict[str, Any]) -> str:
         "config": payload.get("config", {}),
         "highlights": payload.get("highlights", []),
     }
+    if "diagnostics" in payload:
+        body["diagnostics"] = payload["diagnostics"]
     rendered = json.dumps(body, indent=2, sort_keys=True)
     return (
-        "\nEffective firmware config (pre-build; Kconfig defaults + "
+        "\nResolved firmware config preview (pre-build; Kconfig defaults + "
         "sdkconfig.defaults + builder overlays; CONFIG_DBMAP_* keys):\n"
         f"{rendered}\n"
     )

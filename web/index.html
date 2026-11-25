@@ -811,6 +811,11 @@
                 </div>
               </div>
               <p id="usb-console-status" class="notice usb-console-hint" role="status">Console is closed.</p>
+              <details id="usb-console-comparison" hidden>
+                <summary id="usb-console-comparison-title">Changes since Hub snapshot</summary>
+                <p id="usb-console-baseline" class="notice"></p>
+                <ul id="usb-console-changes"></ul>
+              </details>
               <pre id="usb-console-output" aria-live="polite"></pre>
               <div id="usb-console-meter" aria-live="polite">0 lines · 0% · —</div>
             </dialog>
@@ -852,12 +857,15 @@
               <label for="firmware-build-target">Supported build target
                 <select id="firmware-build-target"><option value="">Loading supported targets…</option></select>
               </label>
+              <label for="firmware-build-profile" id="firmware-build-profile-label" hidden>EAR diagnostic profile
+                <select id="firmware-build-profile"><option value="">Target defaults</option></select>
+              </label>
               <button id="list-firmware-dbmap-config" class="secondary" type="button" disabled>List config</button>
               <button id="start-firmware-build" type="button" disabled>Build firmware</button>
               <span id="firmware-build-status" class="notice" role="status">Checking the optional builder…</span>
             </div>
             <details id="firmware-dbmap-config-panel" hidden>
-              <summary>Effective config for selected target</summary>
+              <summary>Requested settings and resolved build preview</summary>
               <pre id="firmware-dbmap-config-output">Select a target and click List config.</pre>
             </details>
             <div id="firmware-build-toolbar" class="firmware-build-toolbar" hidden>
@@ -3770,9 +3778,10 @@
           return null;
         }
       })();
-      let usbConsolePort = null;
-      let usbConsoleReader = null;
-      let usbConsoleKeepReading = false;
+      let usbConsoleSession = null;
+      let usbConsoleLastConnection = null;
+      let usbConsoleOpening = false;
+      let usbConsoleClosing = false;
 
       const usbConsoleDialog = document.getElementById('usb-console-dialog');
       const usbConsoleLaunchButton = document.getElementById('usb-console-launch');
@@ -3802,10 +3811,19 @@
       const USB_CONSOLE_HUB_ID_RE =
         /(?:DBMAP_HUB_ID=|(?:^|[^\w])hub_id=)([A-Za-z0-9][A-Za-z0-9._-]{0,63})\b/;
       const USB_CONSOLE_IDENTIFY_TIMEOUT_MS = 20000;
-      let usbConsolePortLabel = '';
-      let usbConsoleDeviceId = '';
-      let usbConsoleIdentityPending = false;
-      let usbConsoleIdentifyTimer = 0;
+      // Allow for whole-second uptime and ordinary transport delay. This is not a boot ID.
+      const USB_CONSOLE_BOOT_TOLERANCE_MS = 5000;
+      const USB_CONSOLE_COUNTERS = {
+        ae: { jobs: 'pcm_jobs_taken', analyze_ok: 'ae_analyze_ok' },
+        ce: { created: 'ce_created', expired: 'ce_expired', promo_ok: 'ce_promote_successes' },
+        obs_mgr: {
+          rsv_full: 'obs_reserve_full', drain_fail: 'obs_drain_alloc_fail', evq_drop: 'om_evq_dropped',
+        },
+      };
+      const usbConsoleComparison = document.getElementById('usb-console-comparison');
+      const usbConsoleComparisonTitle = document.getElementById('usb-console-comparison-title');
+      const usbConsoleBaseline = document.getElementById('usb-console-baseline');
+      const usbConsoleChanges = document.getElementById('usb-console-changes');
 
       function showUsbConsoleDialog() {
         if (!usbConsoleDialog.open) usbConsoleDialog.showModal();
@@ -3830,55 +3848,174 @@
         return 'USB serial';
       }
 
-      function resolveUsbConsoleKnownNodeId(port) {
-        if (port && port === inspectedSerialPort) {
-          if (detectedNodeId && detectedNodeId !== 'UNPROVISIONED') return detectedNodeId;
-          if (existingRegisteredNode?.node_id) return existingRegisteredNode.node_id;
+      function usbConsoleIdentityLabel(info) {
+        return [
+          info.nodeId || info.adapter,
+          info.firmware && `Firmware ${info.firmware}`,
+          info.uptime !== null && `Uptime ${info.uptime}s`,
+        ].filter(Boolean).join(' · ');
+      }
+
+      function setUsbConsoleOpenStatus(session) {
+        const info = session.info;
+        const suffix = info.nodeId ? '' : session.identifying ? ' · Identifying…' : ' · Unidentified';
+        setUsbConsoleStatus(`Console open · ${usbConsoleIdentityLabel(info)}${suffix}`);
+      }
+
+      function setUsbConsoleClosedStatus(message = '', isError = false) {
+        const info = usbConsoleLastConnection;
+        const last = info
+          ? `Last connected · ${usbConsoleIdentityLabel(info)}${info.nodeId ? '' : ' · Unidentified'}`
+          : '';
+        setUsbConsoleStatus([last, message].filter(Boolean).join(' · ') || 'Console is closed.', isError);
+      }
+
+      function renderUsbConsoleComparison(session, disconnected = false) {
+        usbConsoleComparisonTitle.textContent = disconnected
+          ? 'Changes since Hub snapshot · Last captured / Disconnected'
+          : 'Changes since Hub snapshot';
+        usbConsoleComparison.hidden = !session.info.nodeId.startsWith('EAR-');
+        usbConsoleBaseline.textContent = '';
+        usbConsoleChanges.replaceChildren();
+        if (usbConsoleComparison.hidden) return;
+        const baseline = session.baseline;
+        const sameBoot = baseline && session.info.firmware === baseline.firmware
+          && session.bootMs !== null && Math.abs(session.bootMs - baseline.bootMs) <= USB_CONSOLE_BOOT_TOLERANCE_MS
+          && !session.invalidated;
+        const valid = sameBoot && session.info.uptime >= baseline.uptime;
+        session.comparable = Boolean(valid);
+        let note = session.invalidated
+          ? 'Baseline invalidated by a device or boot change'
+          : session.baselineStatus;
+        if (baseline) {
+          note = `Hub receipt: ${new Date(baseline.receivedMs).toLocaleString()} · `;
+          if (session.invalidated) note += 'Baseline invalidated by a device or boot change';
+          else if (!sameBoot) note += 'Boot or firmware unverified; comparison paused';
+          else if (!valid) note += 'Waiting for USB uptime to reach the Hub sample';
+          else if (session.changes.size === 0) note += 'No comparable changes observed';
+          else note += 'Boot times consistent within 5 seconds';
         }
-        return '';
-      }
-
-      function clearUsbConsoleIdentifyTimer() {
-        if (usbConsoleIdentifyTimer) {
-          window.clearTimeout(usbConsoleIdentifyTimer);
-          usbConsoleIdentifyTimer = 0;
+        if (disconnected && !baseline && note === 'Loading Hub snapshot…') {
+          note = 'Hub snapshot not captured before disconnect';
+        }
+        if (session.lastUsbObservationMs !== undefined) {
+          note += ` · Last USB counter sample: ${new Date(session.lastUsbObservationMs).toLocaleString()}`;
+        }
+        usbConsoleBaseline.textContent = note;
+        if (valid) {
+          for (const change of session.changes.values()) {
+            const item = document.createElement('li');
+            item.textContent = change;
+            usbConsoleChanges.append(item);
+          }
         }
       }
 
-      function setUsbConsoleOpenStatus() {
-        const portLabel = usbConsolePortLabel || 'USB serial';
-        let identity = 'not found';
-        if (usbConsoleDeviceId) identity = usbConsoleDeviceId;
-        else if (usbConsoleIdentityPending) identity = 'identifying…';
-        setUsbConsoleStatus(
-          `Console open · ${portLabel} > ${identity}. Reset board if no logs.`,
-        );
+      async function loadUsbConsoleBaseline(session) {
+        if (session.fetched || session.invalidated || !session.info.nodeId.startsWith('EAR-')) return;
+        session.fetched = true;
+        session.baselineStatus = 'Loading Hub snapshot…';
+        const nodeId = session.info.nodeId;
+        try {
+          const device = await api(`/api/v1/nodes/${encodeURIComponent(nodeId)}`);
+          if (usbConsoleSession !== session || session.info.nodeId !== nodeId) return;
+          const payload = device.reported?.payload;
+          const receivedMs = Date.parse(device.last_seen_at);
+          const uptime = payload?.uptime_s;
+          const firmware = payload?.firmware_version;
+          const counters = payload?.diag;
+          if (device.node_id === nodeId && payload?.node_id === nodeId && firmware
+              && Number.isFinite(receivedMs) && Number.isSafeInteger(uptime) && uptime >= 0
+              && counters && Object.values(USB_CONSOLE_COUNTERS).some((group) =>
+                Object.values(group).some((key) => Number.isSafeInteger(counters[key]) && counters[key] >= 0))) {
+            session.baseline = { firmware, uptime, receivedMs, bootMs: receivedMs - uptime * 1000, counters };
+          } else {
+            session.baselineStatus = 'No usable Hub diagnostic snapshot';
+          }
+        } catch {
+          if (usbConsoleSession !== session || session.info.nodeId !== nodeId) return;
+          session.baselineStatus = 'Hub diagnostic snapshot unavailable';
+        }
+        renderUsbConsoleComparison(session);
       }
 
-      function startUsbConsoleIdentityWatch() {
-        clearUsbConsoleIdentifyTimer();
-        if (usbConsoleDeviceId) {
-          usbConsoleIdentityPending = false;
+      function noteUsbConsoleLine(session, text) {
+        const line = text.replace(/\x1b\[[0-9;]*m/g, '').trim();
+        if (/^(?:ESP-ROM:|rst:0x[0-9a-f]+\b)/i.test(line)) {
+          session.invalidated = session.fetched;
+          session.info.nodeId = '';
+          session.info.firmware = '';
+          session.info.uptime = null;
+          session.bootMs = null;
+          session.identifying = true;
+          setUsbConsoleOpenStatus(session);
+          renderUsbConsoleComparison(session);
           return;
         }
-        usbConsoleIdentityPending = true;
-        usbConsoleIdentifyTimer = window.setTimeout(() => {
-          usbConsoleIdentifyTimer = 0;
-          if (!usbConsolePort || usbConsoleDeviceId) return;
-          usbConsoleIdentityPending = false;
-          setUsbConsoleOpenStatus();
-        }, USB_CONSOLE_IDENTIFY_TIMEOUT_MS);
+        const identity = line.match(/^(?:[IWDVE]\s+\(\d+\)\s+(?:platform_boot|esp-output):\s+)?(?:node_id=|DBMAP_DEVICE_ID=)((?:EAR|OUT)-[0-9]+|UNPROVISIONED)(?=\s|$)/);
+        if (identity) {
+          const nodeId = identity[1];
+          const firmware = line.match(/\sfirmware_version=([A-Za-z0-9._+-]+)(?=\s|$)/)?.[1];
+          const uptimeText = line.match(/\suptime_s=(\d+)(?=\s|$)/)?.[1];
+          const uptime = uptimeText === undefined ? null : Number(uptimeText);
+          const info = session.info;
+          const changed = (info.nodeId && info.nodeId !== nodeId)
+            || (firmware && info.firmware && firmware !== info.firmware)
+            || (uptime !== null && info.uptime !== null && uptime < info.uptime);
+          if (changed && session.fetched) session.invalidated = true;
+          info.nodeId = nodeId === 'UNPROVISIONED' ? '' : nodeId;
+          if (changed || !info.nodeId) {
+            info.firmware = '';
+            info.uptime = null;
+            session.bootMs = null;
+          }
+          if (firmware) info.firmware = firmware;
+          if (Number.isSafeInteger(uptime)) {
+            info.uptime = uptime;
+            session.bootMs = Date.now() - uptime * 1000;
+          }
+          session.identifying = false;
+          window.clearTimeout(session.timer);
+          setUsbConsoleOpenStatus(session);
+          if (info.nodeId) void loadUsbConsoleBaseline(session);
+          renderUsbConsoleComparison(session);
+          return;
+        }
+        if (!session.comparable) return;
+        const log = line.match(/^[IWDVE]\s+\(\d+\)\s+(?:(ae): diag|(ear_obs): (ce|obs_mgr) diag)\s(.*)$/);
+        if (!log) return;
+        const mapping = USB_CONSOLE_COUNTERS[log[1] || log[3]];
+        for (const [, key, raw] of log[4].matchAll(/(?:^|\s)([a-z_]+)=(\d+)(?=\s|$)/g)) {
+          const field = Object.hasOwn(mapping, key) ? mapping[key] : null;
+          if (!field) continue;
+          const current = Number(raw);
+          const before = session.baseline.counters[field];
+          if (!Number.isSafeInteger(current) || !Number.isSafeInteger(before) || before < 0) continue;
+          const previous = session.counters.get(field) ?? before;
+          session.counters.set(field, current);
+          session.lastUsbObservationMs = Date.now();
+          if (current < previous || session.resets.has(field)) {
+            session.resets.add(field);
+            session.changes.set(field, `${field}: Hub ${before}, USB ${current} (counter reset or baseline mismatch)`);
+          } else if (current !== before) {
+            session.changes.set(field, `${field}: ${before} → ${current} (+${current - before})`);
+          }
+        }
+        renderUsbConsoleComparison(session);
       }
 
-      function noteUsbConsoleDeviceIdFromText(text) {
-        if (!text || !usbConsolePort) return;
-        const match = text.match(USB_CONSOLE_NODE_ID_RE);
-        if (!match) return;
-        if (usbConsoleDeviceId === match[1]) return;
-        usbConsoleDeviceId = match[1];
-        usbConsoleIdentityPending = false;
-        clearUsbConsoleIdentifyTimer();
-        setUsbConsoleOpenStatus();
+      function noteUsbConsoleChunk(session, text) {
+        const lines = text.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (session.carry !== null) {
+            session.carry = session.carry.length + lines[i].length <= 4096
+              ? session.carry + lines[i] : null;
+          }
+          if (i < lines.length - 1) {
+            if (session.carry !== null) noteUsbConsoleLine(session, session.carry);
+            session.carry = '';
+          }
+        }
       }
 
       function usbConsoleFindTerms() {
@@ -3995,7 +4132,7 @@
       }
 
       function syncUsbConsoleControls(open) {
-        usbConsoleOpenButton.disabled = open || !navigator.serial;
+        usbConsoleOpenButton.disabled = open || usbConsoleOpening || usbConsoleClosing || !navigator.serial;
         usbConsoleCloseButton.disabled = !open;
         const empty = usbConsoleBuffer.length === 0;
         usbConsoleClearButton.disabled = empty;
@@ -4007,7 +4144,7 @@
         });
       }
 
-      function appendUsbConsoleText(text) {
+      function appendUsbConsoleText(session, text) {
         if (!text) return;
         usbConsoleBuffer += text;
         if (usbConsoleBuffer.length > USB_CONSOLE_LOG_TRIM_AT_CHARS) {
@@ -4015,96 +4152,109 @@
         }
         usbConsoleLineCount = countUsbConsoleLines(usbConsoleBuffer);
         usbConsoleLastAppendMs = Date.now();
-        noteUsbConsoleDeviceIdFromText(text);
+        noteUsbConsoleChunk(session, text);
         scheduleUsbConsoleRender();
-        syncUsbConsoleControls(Boolean(usbConsolePort));
+        syncUsbConsoleControls(Boolean(usbConsoleSession?.reader));
       }
 
-      async function stopUsbConsole(message = 'Console is closed.') {
-        usbConsoleKeepReading = false;
-        const reader = usbConsoleReader;
-        const port = usbConsolePort;
-        usbConsoleReader = null;
-        usbConsolePort = null;
-        usbConsolePortLabel = '';
-        usbConsoleDeviceId = '';
-        usbConsoleIdentityPending = false;
-        clearUsbConsoleIdentifyTimer();
-        if (reader) {
-          try { await reader.cancel(); } catch (_) { /* ignore */ }
-          try { reader.releaseLock(); } catch (_) { /* ignore */ }
+      async function stopUsbConsole(message = '', isError = false) {
+        const session = usbConsoleSession;
+        if (!session) return;
+        usbConsoleSession = null;
+        window.clearTimeout(session.timer);
+        if (session.info) {
+          usbConsoleLastConnection = session.info;
+          renderUsbConsoleComparison(session, true);
         }
-        if (port) {
-          try { await port.close(); } catch (_) { /* ignore */ }
-        }
-        setUsbConsoleStatus(message);
+        usbConsoleClosing = Boolean(session.reader);
+        setUsbConsoleClosedStatus(message, isError);
         syncUsbConsoleControls(false);
+        if (session.reader) {
+          try { await session.reader.cancel(); } catch (_) { /* already disconnected */ }
+          session.reader.releaseLock();
+          try { await session.port.close(); } catch (_) { /* already disconnected */ }
+          usbConsoleClosing = false;
+          syncUsbConsoleControls(false);
+        }
       }
 
-      async function readUsbConsoleLoop() {
+      async function readUsbConsoleLoop(session) {
         const decoder = new TextDecoder();
-        while (usbConsoleKeepReading && usbConsoleReader) {
-          try {
-            const { value, done } = await usbConsoleReader.read();
-            if (done) break;
-            appendUsbConsoleText(decoder.decode(value, { stream: true }));
-          } catch (error) {
-            if (usbConsoleKeepReading) {
-              setUsbConsoleStatus(`USB console stopped: ${error.message}`, true);
-            }
-            break;
+        try {
+          while (usbConsoleSession === session) {
+            const { value, done } = await session.reader.read();
+            if (done || usbConsoleSession !== session) break;
+            appendUsbConsoleText(session, decoder.decode(value, { stream: true }));
           }
+        } catch (error) {
+          if (usbConsoleSession === session) await stopUsbConsole(`USB read stopped: ${error.message}`, true);
         }
-        if (usbConsoleKeepReading) {
-          await stopUsbConsole('USB console disconnected.');
-        }
+        if (usbConsoleSession === session) await stopUsbConsole('USB disconnected');
       }
 
       async function openUsbConsole(preferredPort = null) {
-        if (!navigator.serial) {
-          setUsbConsoleStatus('Web Serial is not available in this browser.', true);
-          return;
-        }
-        await stopUsbConsole('Opening USB console…');
+        if (!navigator.serial || usbConsoleSession || usbConsoleOpening || usbConsoleClosing) return;
+        const session = {
+          carry: '', identifying: true, bootMs: null, counters: new Map(),
+          changes: new Map(), resets: new Set(),
+        };
+        usbConsoleSession = session;
+        usbConsoleOpening = true;
+        setUsbConsoleStatus('Opening USB console…');
+        syncUsbConsoleControls(false);
+        let opened = false;
         try {
           const port = preferredPort || await navigator.serial.requestPort();
+          if (usbConsoleSession !== session) return;
           await port.open({ baudRate: 115200, bufferSize: 8192 });
-          usbConsolePort = port;
-          usbConsoleReader = port.readable.getReader();
-          usbConsoleKeepReading = true;
-          usbConsolePortLabel = usbConsolePortUsbLabel(port);
-          usbConsoleDeviceId = resolveUsbConsoleKnownNodeId(port);
-          startUsbConsoleIdentityWatch();
-          setUsbConsoleOpenStatus();
+          opened = true;
+          session.port = port;
+          if (usbConsoleSession !== session) return;
+          session.reader = port.readable.getReader();
+          session.info = { adapter: usbConsolePortUsbLabel(port), nodeId: '', firmware: '', uptime: null };
+          usbConsoleComparison.open = false;
+          renderUsbConsoleComparison(session);
+          session.timer = window.setTimeout(() => {
+            if (usbConsoleSession !== session || session.info.nodeId) return;
+            session.identifying = false;
+            setUsbConsoleOpenStatus(session);
+          }, USB_CONSOLE_IDENTIFY_TIMEOUT_MS);
+          setUsbConsoleOpenStatus(session);
           syncUsbConsoleControls(true);
-          readUsbConsoleLoop();
+          void readUsbConsoleLoop(session);
         } catch (error) {
-          await stopUsbConsole(
-            error.name === 'NotFoundError'
-              ? 'No USB serial port was selected.'
-              : `Could not open USB console: ${error.message}`,
-          );
-          if (error.name !== 'NotFoundError') setUsbConsoleStatus(usbConsoleStatus.textContent, true);
+          if (usbConsoleSession === session) {
+            await stopUsbConsole(
+              error.name === 'NotFoundError'
+                ? 'No USB serial port selected'
+                : `Could not open USB console: ${error.message}`,
+              error.name !== 'NotFoundError',
+            );
+          }
+        } finally {
+          if (opened && !session.reader) {
+            try { await session.port.close(); } catch (_) { /* already disconnected */ }
+          }
+          usbConsoleOpening = false;
+          syncUsbConsoleControls(Boolean(usbConsoleSession?.reader));
         }
       }
 
       usbConsoleLaunchButton.addEventListener('click', async () => {
         showUsbConsoleDialog();
-        if (!usbConsolePort) await openUsbConsole(inspectedSerialPort);
+        await openUsbConsole(inspectedSerialPort);
       });
       usbConsoleDismissButton.addEventListener('click', () => usbConsoleDialog.close());
-      usbConsoleDialog.addEventListener('close', () => {
-        if (usbConsolePort) stopUsbConsole('Console is closed.');
-      });
+      usbConsoleDialog.addEventListener('close', () => stopUsbConsole());
       usbConsoleOpenButton.addEventListener('click', () => openUsbConsole(inspectedSerialPort));
-      usbConsoleCloseButton.addEventListener('click', () => stopUsbConsole('Console is closed.'));
+      usbConsoleCloseButton.addEventListener('click', () => stopUsbConsole());
       usbConsoleClearButton.addEventListener('click', () => {
         usbConsoleBuffer = '';
         usbConsoleLineCount = 0;
         usbConsoleLastAppendMs = 0;
         renderUsbConsoleOutput();
         updateUsbConsoleMeter();
-        syncUsbConsoleControls(Boolean(usbConsolePort));
+        syncUsbConsoleControls(Boolean(usbConsoleSession?.reader));
       });
       usbConsoleDownloadButton.addEventListener('click', () => {
         const blob = new Blob([usbConsoleBuffer], { type: 'text/plain' });
@@ -4133,8 +4283,8 @@
         );
       } else {
         navigator.serial.addEventListener('disconnect', (event) => {
-          if (event.target === usbConsolePort) {
-            stopUsbConsole('USB device disconnected. Open the console again when ready.');
+          if (event.target === usbConsoleSession?.port) {
+            stopUsbConsole('USB disconnected');
           }
         });
       }
@@ -4716,6 +4866,25 @@
         return result;
       }
 
+      function syncFirmwareBuildProfiles() {
+        const targetSelect = document.getElementById('firmware-build-target');
+        const select = document.getElementById('firmware-build-profile');
+        const profiles = JSON.parse(targetSelect.selectedOptions[0]?.dataset.profiles || '[]');
+        const pendingTarget = sessionStorage.getItem('dbmap-pending-build-target');
+        const selected = pendingTarget
+          ? sessionStorage.getItem('dbmap-pending-build-profile') || ''
+          : select.value;
+        select.replaceChildren(new Option('Target defaults', ''));
+        for (const profile of profiles) select.append(new Option(profile.label, profile.id));
+        // Keep an uncertain request retryable even if the target list changed.
+        if (pendingTarget && selected && !profiles.some(profile => profile.id === selected)) {
+          select.append(new Option(selected, selected));
+        }
+        select.value = [...select.options].some(option => option.value === selected) ? selected : '';
+        document.getElementById('firmware-build-profile-label').hidden = select.options.length === 1;
+        select.disabled = Boolean(pendingTarget) || firmwareBuildInProgress;
+      }
+
       function syncFirmwareBuildActionButtons() {
         const targetSelect = document.getElementById('firmware-build-target');
         const buildButton = document.getElementById('start-firmware-build');
@@ -4723,6 +4892,7 @@
         const disabled = firmwareBuildInProgress || !targetSelect.value;
         buildButton.disabled = disabled;
         listButton.disabled = disabled;
+        document.getElementById('firmware-build-profile').disabled = disabled || Boolean(sessionStorage.getItem('dbmap-pending-build-target'));
       }
 
       async function refreshFirmwareBuildTargets() {
@@ -4737,15 +4907,18 @@
           const targets = await firmwareBuilderApi('/api/v1/firmware/targets');
           targetSelect.replaceChildren(new Option('Select a build target', ''));
           for (const target of targets) {
-            targetSelect.append(new Option(
+            const option = new Option(
               `${target.id} · ${target.node_type || 'device'} · ${target.chip} · ${target.hardware_revision} · ESP-IDF ${target.esp_idf_version}`,
               target.id,
-            ));
+            );
+            option.dataset.profiles = JSON.stringify(target.diagnostic_profiles || []);
+            targetSelect.append(option);
           }
           const pendingTarget = sessionStorage.getItem('dbmap-pending-build-target');
           if (pendingTarget && targets.some((target) => target.id === pendingTarget)) {
             targetSelect.value = pendingTarget;
           }
+          syncFirmwareBuildProfiles();
           syncFirmwareBuildActionButtons();
           status.textContent = targets.length
             ? 'Optional local builder is available. Builds contain no device-specific credentials.'
@@ -4753,6 +4926,7 @@
           status.className = targets.length ? 'notice' : 'notice error';
         } catch (error) {
           targetSelect.replaceChildren(new Option('Builder unavailable', ''));
+          syncFirmwareBuildProfiles();
           button.disabled = true;
           listButton.disabled = true;
           const builderStopped = error.message.includes('Optional firmware builder is not running');
@@ -4775,12 +4949,16 @@
           return;
         }
         listButton.disabled = true;
-        status.textContent = `Resolving effective config for ${targetSelect.value}…`;
+        const target = targetSelect.value;
+        const profile = document.getElementById('firmware-build-profile').value;
+        const query = profile ? `?profile=${encodeURIComponent(profile)}` : '';
+        status.textContent = `Resolving build preview for ${target}…`;
         status.className = 'notice';
         try {
           const config = await firmwareBuilderApi(
-            `/api/v1/firmware/targets/${encodeURIComponent(targetSelect.value)}/dbmap-config`,
+            `/api/v1/firmware/targets/${encodeURIComponent(target)}/dbmap-config${query}`,
           );
+          if (target !== targetSelect.value || profile !== document.getElementById('firmware-build-profile').value) return;
           output.textContent = JSON.stringify(config, null, 2);
           panel.hidden = false;
           panel.open = true;
@@ -4926,9 +5104,20 @@
                 expandedFirmwareBuildLogs.delete(job.id);
               }
             });
-            row.append(logDetails);
+            const diagnosticDetails = document.createElement('details');
+            diagnosticDetails.dataset.buildDiagnostics = '';
+            diagnosticDetails.append(
+              el('summary', 'Requested, preview and generated diagnostic settings'),
+              document.createElement('pre'),
+            );
+            row.append(diagnosticDetails, logDetails);
           }
-          row.querySelector('[data-build-status]').textContent = `${job.target}${job.hardware_revision ? ` · ${job.hardware_revision}` : ''}${job.firmware_version ? ` · ${job.firmware_version}` : ''} · ${job.status} · ${job.stage}`;
+          const diagnosticDetails = row.querySelector('[data-build-diagnostics]');
+          diagnosticDetails.hidden = !job.diagnostics;
+          diagnosticDetails.querySelector('pre').textContent = job.diagnostics
+            ? JSON.stringify(job.diagnostics, null, 2)
+            : '';
+          row.querySelector('[data-build-status]').textContent = `${job.target}${job.profile ? ` · ${job.profile}` : ''}${job.hardware_revision ? ` · ${job.hardware_revision}` : ''}${job.firmware_version ? ` · ${job.firmware_version}` : ''} · ${job.status} · ${job.stage}`;
           row.querySelector('[data-build-started]').textContent = `Build ${job.id} · started ${formatSeen(new Date((job.started_at || job.created_at) * 1000))}`;
           const error = row.querySelector('[data-build-error]');
           error.textContent = firmwareBuildErrorSummary(job.error);
@@ -5018,7 +5207,11 @@
 
       async function startFirmwareBuild() {
         const targetSelect = document.getElementById('firmware-build-target');
-        const target = sessionStorage.getItem('dbmap-pending-build-target') || targetSelect.value;
+        const pendingTarget = sessionStorage.getItem('dbmap-pending-build-target');
+        const target = pendingTarget || targetSelect.value;
+        const profile = pendingTarget
+          ? sessionStorage.getItem('dbmap-pending-build-profile') || ''
+          : document.getElementById('firmware-build-profile').value;
         const button = document.getElementById('start-firmware-build');
         const status = document.getElementById('firmware-build-status');
         if (!target || currentRole !== 'admin') return;
@@ -5028,7 +5221,7 @@
           status.className = 'notice error';
           return;
         }
-        if (!window.confirm(`Build a generic ${target} image? The build does not flash or change a device.`)) return;
+        if (!window.confirm(`Build a generic ${target} image using ${profile || 'target defaults'}? The build does not flash or change a device.`)) return;
         button.disabled = true;
         document.getElementById('list-firmware-dbmap-config').disabled = true;
         status.textContent = 'Submitting validated firmware build…';
@@ -5036,14 +5229,17 @@
         const idempotencyKey = sessionStorage.getItem('dbmap-pending-build-key') || crypto.randomUUID();
         sessionStorage.setItem('dbmap-pending-build-key', idempotencyKey);
         sessionStorage.setItem('dbmap-pending-build-target', target);
+        sessionStorage.setItem('dbmap-pending-build-profile', profile);
+        syncFirmwareBuildProfiles();
         try {
           const job = await firmwareBuilderApi('/api/v1/firmware/builds', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
-            body: JSON.stringify({ target }),
+            body: JSON.stringify(profile ? { target, profile } : { target }),
           });
           sessionStorage.removeItem('dbmap-pending-build-key');
           sessionStorage.removeItem('dbmap-pending-build-target');
+          sessionStorage.removeItem('dbmap-pending-build-profile');
           status.textContent = `Build ${job.id} ${job.status}: ${job.stage}.`;
           firmwareBuildPage = 0;
           await refreshFirmwareBuilds();
@@ -5861,15 +6057,20 @@
       });
 
       document.getElementById('refresh-firmware-catalog').addEventListener('click', refreshFirmwareCatalog);
-      document.getElementById('firmware-build-target').addEventListener('change', (event) => {
-        const pendingTarget = sessionStorage.getItem('dbmap-pending-build-target');
-        if (pendingTarget) event.currentTarget.value = pendingTarget;
-        syncFirmwareBuildActionButtons();
+      function clearFirmwareBuildPreview() {
         document.getElementById('firmware-dbmap-config-panel').hidden = true;
         document.getElementById('firmware-dbmap-config-panel').open = false;
         document.getElementById('firmware-dbmap-config-output').textContent =
           'Select a target and click List config.';
+      }
+      document.getElementById('firmware-build-target').addEventListener('change', (event) => {
+        const pendingTarget = sessionStorage.getItem('dbmap-pending-build-target');
+        if (pendingTarget) event.currentTarget.value = pendingTarget;
+        syncFirmwareBuildProfiles();
+        syncFirmwareBuildActionButtons();
+        clearFirmwareBuildPreview();
       });
+      document.getElementById('firmware-build-profile').addEventListener('change', clearFirmwareBuildPreview);
       document.getElementById('list-firmware-dbmap-config').addEventListener('click', listFirmwareDbmapConfig);
       document.getElementById('start-firmware-build').addEventListener('click', startFirmwareBuild);
       document.getElementById('firmware-builds-show-deleted').addEventListener('change', (event) => {

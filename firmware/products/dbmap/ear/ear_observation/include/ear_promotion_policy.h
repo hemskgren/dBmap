@@ -76,6 +76,9 @@ typedef struct {
     /** When true, AS-002 promote eligibility uses sig_engine published state. */
     bool as002_from_engine;
     ear_promotion_policy_diag_t diag;
+#if CONFIG_DBMAP_EAR_OBS_DECISION_DIAG
+    uint32_t last_logged_window;
+#endif
 } ear_promotion_policy_t;
 
 void ear_promotion_policy_init(

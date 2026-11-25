@@ -2720,6 +2720,9 @@ static void activity_task(void *arg)
 {
     (void)arg;
     ESP_LOGI(TAG, "RMS activity task started");
+#if CONFIG_DBMAP_EAR_OBS_DECISION_DIAG
+    ESP_LOGI("ear_dec", "USB decision diagnostics enabled (AS001, AS002, CE, policy)");
+#endif
 #if defined(CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2) && CONFIG_DBMAP_EAR_OBS_LIFECYCLE_V2
     ESP_LOGI(TAG, "lifecycle v2 experimental path enabled");
 #endif

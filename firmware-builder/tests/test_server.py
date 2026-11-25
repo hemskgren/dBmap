@@ -118,6 +118,10 @@ def test_builder_requires_admin_token(builder):
     assert targets[1]["chip"] == "esp32s3"
     assert targets[1]["node_type"] == "ear"
     assert targets[1]["hardware_revision"] == "esp32-s3-n16r8"
+    assert "diagnostic_profiles" not in targets[0]
+    assert [profile["id"] for profile in targets[1]["diagnostic_profiles"]] == list(
+        server.dbmap_config.EAR_DIAGNOSTIC_PROFILES
+    )
 
 
 def test_dbmap_config_endpoint_returns_effective_hierarchy(builder, monkeypatch):
@@ -154,6 +158,31 @@ def test_dbmap_config_endpoint_returns_effective_hierarchy(builder, monkeypatch)
     assert observation["EAR_OBS_REL_EXIT_HOLD_MS"] == 2000
     assert observation["EAR_OBS_REL_CANCEL_HYST_DB_X1000"] == 1500
     assert payload["config"]["sp"]["node"]["WIFI_SSID"] == ""
+
+    status, selected = request(
+        builder,
+        "GET",
+        "/api/v1/firmware/targets/ear-esp32-s3/dbmap-config?profile=production",
+        token="test-admin-token",
+    )
+    assert status == 200
+    assert selected["profile"] == "production"
+    diag = selected["diagnostics"]
+    assert diag["requested"]["CONFIG_DBMAP_EAR_AE_SIG_CAPTURE"] is False
+    assert diag["preview"]["CONFIG_DBMAP_EAR_AE_DIAG_EVERY_N"]["value"] is None
+    assert "generated" not in diag
+    for target, query in [
+        ("ear-esp32-s3", "profile=unknown"),
+        ("ear-esp32-s3", "profile=production&profile=development"),
+        ("output-esp32", "profile=production"),
+    ]:
+        status, _ = request(
+            builder,
+            "GET",
+            f"/api/v1/firmware/targets/{target}/dbmap-config?{query}",
+            token="test-admin-token",
+        )
+        assert status == 422
 
 
 @pytest.mark.parametrize("body", [None, {}, {"target": "unlisted"}, {"target": []}])
@@ -450,3 +479,148 @@ def test_ear_fast_gate_success(monkeypatch, tmp_path):
     text = log_path.read_text(encoding="utf-8")
     assert "gate-ok" in text
     assert "Running Ear firmware fast test gate" in text
+
+
+@pytest.mark.parametrize(
+    ("target", "profile"),
+    [
+        ("ear-esp32-s3", "../production"),
+        ("ear-esp32-s3", None),
+        ("ear-esp32-s3", []),
+        ("output-esp32", "production"),
+    ],
+)
+def test_build_rejects_invalid_diagnostic_profile(builder, target, profile):
+    status, response = request(
+        builder,
+        "POST",
+        "/api/v1/firmware/builds",
+        body={"target": target, "profile": profile},
+        token="test-admin-token",
+    )
+    assert status == 422
+    assert "diagnostic profile" in response["detail"]
+
+
+def test_ear_profile_submission_and_idempotency(builder, monkeypatch):
+    monkeypatch.setattr(server, "_build", lambda job_id, target: None)
+    key = "d8e1d748-9582-4a65-aa85-4d149b8afc9f"
+
+    def submit(**values):
+        return request(
+            builder,
+            "POST",
+            "/api/v1/firmware/builds",
+            body={"target": "ear-esp32-s3", **values},
+            token="test-admin-token",
+            idempotency_key=key,
+        )
+
+    status, queued = submit(profile="production")
+    assert status == 202
+    assert queued["profile"] == "production"
+    assert submit(profile="production")[1]["id"] == queued["id"]
+    assert submit(profile="pcm-verification")[0] == 409
+    assert submit()[0] == 409
+
+
+@pytest.mark.parametrize(
+    ("profile", "mismatch_phase"),
+    [
+        (None, None),
+        ("production", None),
+        ("production", "configuration"),
+        ("production", "build"),
+    ],
+)
+def test_profile_build_checks_generated_settings_and_keeps_catalog_shape(
+    monkeypatch, tmp_path, profile, mismatch_phase
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    platform = tmp_path / "platform"
+    platform.mkdir()
+    (platform / "VERSION").write_text("0.2.0\n", encoding="utf-8")
+    artifact_root = tmp_path / "artifacts"
+    jobs = artifact_root / ".jobs"
+    jobs.mkdir(parents=True)
+    monkeypatch.setattr(server, "ARTIFACTS", artifact_root)
+    monkeypatch.setattr(server, "JOBS", jobs)
+    target = "ear-esp32-s3"
+    monkeypatch.setitem(
+        server.TARGETS,
+        target,
+        {
+            **server.TARGETS[target],
+            "project": project,
+            "components": platform,
+            "extra_component_trees": [],
+        },
+    )
+    monkeypatch.setattr(server, "_install_hub_ca", lambda _: None)
+    monkeypatch.setattr(server, "_check_toolchain", lambda *_: None)
+    monkeypatch.setattr(server, "_run_ear_fast_gate", lambda _: None)
+    monkeypatch.setattr(server, "_next_firmware_version", lambda _: "0.8.43")
+    monkeypatch.setattr(server, "_artifact_entries", lambda *_: [])
+    base = 'CONFIG_DBMAP_FIRMWARE_VERSION="0.8.0"\nCONFIG_DBMAP_EAR_AE_SIG_CAPTURE=y\n'
+    (project / "sdkconfig.defaults").write_text(base, encoding="utf-8")
+    overlay = server.dbmap_config.diagnostic_overlay("production")
+    repo = Path(__file__).resolve().parents[2]
+    overlay_text = (repo / "firmware/esp-ear" / overlay).read_text(encoding="utf-8")
+    (project / overlay).write_text(overlay_text, encoding="utf-8")
+    calls = []
+
+    def fake_idf(command, cwd, _log):
+        calls.append(command)
+        path = cwd / "sdkconfig"
+        actual = (
+            base + (overlay_text if profile else "")
+            if command[-2:] == ["set-target", "esp32s3"]
+            else path.read_text()
+        )
+        phase = "configuration" if command[-1] == "esp32s3" else "build"
+        if phase == mismatch_phase:
+            actual += "CONFIG_DBMAP_EAR_AE_SIG_CAPTURE=y\n"
+        path.write_text(actual, encoding="utf-8")
+        return 0, ""
+
+    monkeypatch.setattr(server, "_run_stage", fake_idf)
+    job_id = "fake-job"
+    server._persist(
+        {"id": job_id, "target": target, **({"profile": profile} if profile else {})}
+    )
+    server._build(job_id, target)
+    job = server._get_job(job_id)
+    assert all(
+        (f"SDKCONFIG_DEFAULTS=sdkconfig.defaults;{overlay}" in call) == bool(profile)
+        for call in calls
+    )
+    generated = job["diagnostics"]["generated"]
+    if mismatch_phase is not None:
+        assert job["status"] == "failed"
+        assert f"mismatch after {mismatch_phase}" in job["error"]
+        assert (
+            "CONFIG_DBMAP_EAR_AE_SIG_CAPTURE: requested n, generated y" in job["error"]
+        )
+        assert generated[mismatch_phase]["mismatches"]
+        assert not (artifact_root / job_id / "firmware.zip").exists()
+        assert len(calls) == (1 if mismatch_phase == "configuration" else 2)
+    else:
+        assert job["status"] == "succeeded"
+        assert len(calls) == 2
+        for phase in ("configuration", "build"):
+            settings = generated[phase]["settings"]
+            if profile:
+                assert settings == job["diagnostics"]["requested"]
+            else:
+                assert job["diagnostics"]["requested"] == {}
+                assert settings["CONFIG_DBMAP_EAR_AE_SIG_CAPTURE"] is True
+            assert generated[phase]["mismatches"] == []
+        with zipfile.ZipFile(artifact_root / job_id / "firmware.zip") as bundle:
+            manifest = json.loads(bundle.read("manifest.json"))
+        assert manifest["target"] == target
+        assert "diagnostics" not in manifest
+        assert "profile" not in manifest
+        assert manifest["config"]["product"]["dbmap"]["observation"][
+            "EAR_AE_SIG_CAPTURE"
+        ] is (profile is None)
