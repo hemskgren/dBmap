@@ -112,7 +112,7 @@ def test_one_cycle_prints_single_grouped_report(
     monkeypatch.setattr(
         keepalive,
         "resolve_credentials_files",
-        lambda _args: [
+        lambda _args, **_kwargs: [
             "shared/simulator/sim-ear-a.json",
             "shared/simulator/sim-ear-b.json",
         ],
@@ -164,7 +164,7 @@ def test_cycle_with_failure_reports_and_exits_nonzero(
     monkeypatch.setattr(
         keepalive,
         "resolve_credentials_files",
-        lambda _args: [
+        lambda _args, **_kwargs: [
             "shared/simulator/sim-ear-a.json",
             "shared/simulator/sim-ear-b.json",
         ],
@@ -195,3 +195,60 @@ def test_cycle_with_failure_reports_and_exits_nonzero(
     assert "SIM-EAR-002" in out
     assert "timed out publishing the keepalive" in out
     assert out.count("] Keepalive published") == 1
+
+
+def test_minimal_watch_uses_configured_local_tls_destination(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    published: list[str] = []
+
+    def fake_publish(
+        credentials: dict, ca_file: str, payload: dict, *, live: bool
+    ) -> None:
+        assert live is False
+        published.append(credentials["node_id"])
+
+    def local_credentials(path: Path) -> dict:
+        credentials = _credentials_for_path(path)
+        credentials["mqtt"].update(
+            host="local-hub.example",
+            use_tls=True,
+        )
+        return credentials
+
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_HOST", "local-hub.example")
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_PORT", "8883")
+    monkeypatch.setattr(keepalive, "publish_keepalive", fake_publish)
+    monkeypatch.setattr(
+        keepalive,
+        "resolve_credentials_files",
+        lambda _args, **_kwargs: [
+            "shared/simulator/sim-ear-a.json",
+            "shared/simulator/sim-ear-b.json",
+        ],
+    )
+    monkeypatch.setattr(keepalive, "load_credentials", local_credentials)
+    real_is_file = Path.is_file
+    monkeypatch.setattr(
+        keepalive.Path,
+        "is_file",
+        lambda path: True
+        if str(path).endswith("shared/trust/ca.crt")
+        else real_is_file(path),
+    )
+    monkeypatch.setattr(
+        keepalive.sys,
+        "argv",
+        ["simulate_keepalive.py", "watch", "--ear", "all"],
+    )
+
+    def stop_watch(_seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(keepalive.time, "sleep", stop_watch)
+
+    assert keepalive.main() == 0
+    out = capsys.readouterr().out
+    assert published == ["SIM-EAR-001", "SIM-EAR-002"]
+    assert "MQTT destination: TLS local-hub.example:8883" in out
+    assert "Stopped simulated keepalive." in out

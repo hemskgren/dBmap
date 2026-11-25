@@ -1,4 +1,5 @@
 import json
+import os
 import socket
 import sys
 from pathlib import Path
@@ -8,8 +9,11 @@ from unittest.mock import Mock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[3] / "simulator" / "ear"))
+sys.path.insert(0, str(Path(__file__).parents[3] / "scripts"))
+import publish_safety
 import simulate_keepalive
 import simulate_observation
+import simulate_scenario
 from publish_safety import BROKER_HOST, HUB_URL, NoRedirect
 
 PUBLISHERS = {
@@ -36,6 +40,8 @@ def credentials(node_id):
 
 @pytest.fixture
 def transport(monkeypatch):
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_HOST", "local-hub.example")
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_PORT", "8883")
     client = Mock()
     client.return_value.is_connected.return_value = True
     client.return_value.publish.return_value.is_published.return_value = True
@@ -46,6 +52,26 @@ def transport(monkeypatch):
     monkeypatch.setattr("urllib.request.build_opener", http)
     yield client, http
     network.assert_not_called()
+
+
+@pytest.fixture
+def restore_loaded_project_environment(request):
+    keys = (
+        "DBMAP_LOCAL_MQTT_HOST",
+        "DBMAP_LOCAL_MQTT_PORT",
+        "DBMAP_CA_FILE",
+    )
+    missing = object()
+    original = {key: os.environ.get(key, missing) for key in keys}
+
+    def restore() -> None:
+        for key, value in original.items():
+            if value is missing:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    request.addfinalizer(restore)
 
 
 def publish(kind, record, **options):
@@ -66,8 +92,8 @@ def publish(kind, record, **options):
     ("TST-EAR-001", True, True, True),
     ("TST-EAR-001", False, True, False),
     ("Tst-Ear-001", True, True, False),
-    ("SIM-EAR-001", False, False, False),
-    ("TST-EAR-001", True, False, False),
+    ("SIM-EAR-001", False, False, True),
+    ("TST-EAR-001", True, False, True),
 ])
 def test_publish_identity(kind, identity, test_context, live, accepted, transport):
     client, http = transport
@@ -107,6 +133,10 @@ def test_publish_mismatches(kind, field, value, transport):
             record["observation"]["identity"]["node_id"] = value
         else:
             args["payload_id"] = value
+    elif field == "host":
+        args["mqtt_host"] = value
+    elif field == "port":
+        args["mqtt_port"] = value
     else:
         record["mqtt"][field] = value
     with pytest.raises(ValueError):
@@ -172,14 +202,295 @@ def test_http_identity_rejected_before_transport(path, body, identity, transport
 
 
 @pytest.mark.parametrize("module,command", [
-    (simulate_observation, "add"),
-    (simulate_observation, "publish"),
-    (simulate_keepalive, "once"),
-    (simulate_keepalive, "watch"),
+    (simulate_observation, ["add"]),
+    (simulate_observation, ["publish"]),
+    (simulate_keepalive, ["once"]),
+    (simulate_keepalive, ["watch"]),
+    (simulate_scenario, ["run", "--scenario-file", "scenario.json"]),
 ])
-def test_cli_without_opt_in_stops_before_credentials(module, command, monkeypatch, transport):
-    monkeypatch.setattr(sys, "argv", [module.__file__, command])
-    with pytest.raises(SystemExit, match="2"):
-        module.main()
+def test_cli_accepts_configured_local_destination_without_opt_in(
+    module, command
+):
+    parser = module.build_parser()
+    args = parser.parse_args(command)
+    assert args.live_mqtt is False
+
+
+@pytest.mark.parametrize("kind", PUBLISHERS)
+def test_configured_local_tls_destination_does_not_need_opt_in(
+    kind, monkeypatch, tmp_path, restore_loaded_project_environment, transport
+):
+    (tmp_path / ".env").write_text(
+        "DBMAP_LOCAL_MQTT_HOST=dotenv-hub.example\nDBMAP_LOCAL_MQTT_PORT=9883\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(publish_safety, "REPO_ROOT", tmp_path)
+    monkeypatch.delenv("DBMAP_LOCAL_MQTT_HOST", raising=False)
+    monkeypatch.delenv("DBMAP_LOCAL_MQTT_PORT", raising=False)
+    publish_safety.load_simulator_environment()
+    record = credentials("SIM-EAR-001")
+
+    publish(kind, record, live=False)
+
+    transport[0].return_value.connect.assert_called_once_with(
+        "dotenv-hub.example", 9883, keepalive=30
+    )
+
+
+def test_scenario_observations_use_configured_local_destination(
+    monkeypatch, transport, tmp_path, restore_loaded_project_environment
+):
+    (tmp_path / ".env").write_text(
+        "DBMAP_LOCAL_MQTT_HOST=dotenv-hub.example\nDBMAP_LOCAL_MQTT_PORT=9883\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(publish_safety, "REPO_ROOT", tmp_path)
+    monkeypatch.delenv("DBMAP_LOCAL_MQTT_HOST", raising=False)
+    monkeypatch.delenv("DBMAP_LOCAL_MQTT_PORT", raising=False)
+    simulate_scenario.load_simulator_environment()
+    record = credentials("SIM-EAR-001")
+    record["next_sequence_number"] = 1
+    scenario = {
+        "scenario_id": "test-scenario",
+        "source_id": "SIM-VEHICLE-001",
+        "observations": [
+            {
+                "at_seconds": 0,
+                "ear": "ear_a",
+                "classification_confidence": 0.7,
+                "source_family": "vehicle",
+            }
+        ],
+    }
+
+    simulate_scenario.run_scenario(
+        scenario,
+        {"ear_a": record},
+        {"ear_a": tmp_path / "sim-ear-a.json"},
+        "test-ca.crt",
+        1,
+        sleep=lambda _delay: None,
+        monotonic=lambda: 0.0,
+        save=lambda *_args: None,
+        announce=False,
+    )
+
+    assert transport[0].return_value.connect.call_count == 3
+    assert all(
+        call.args[:2] == ("dotenv-hub.example", 9883)
+        for call in transport[0].return_value.connect.call_args_list
+    )
+
+
+def test_explicit_isolated_broker_still_publishes_with_opt_in(
+    monkeypatch, transport
+):
+    monkeypatch.delenv("DBMAP_LOCAL_MQTT_HOST")
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_PORT", "not-a-port")
+
+    publish(
+        "keepalive",
+        credentials("SIM-EAR-001"),
+        live=True,
+        mqtt_host=BROKER_HOST,
+        mqtt_port=8883,
+    )
+
+    transport[0].return_value.connect.assert_called_once_with(
+        BROKER_HOST, 8883, keepalive=30
+    )
+
+
+def test_missing_local_mqtt_host_is_actionable(monkeypatch, transport):
+    monkeypatch.delenv("DBMAP_LOCAL_MQTT_HOST")
+
+    with pytest.raises(ValueError, match="DBMAP_LOCAL_MQTT_HOST is required"):
+        publish("keepalive", credentials("SIM-EAR-001"), live=False)
+
+    transport[0].assert_not_called()
+
+
+def test_explicit_unauthorized_destination_is_rejected(transport):
+    with pytest.raises(ValueError, match="MQTT destination is not authorized"):
+        publish(
+            "keepalive",
+            credentials("SIM-EAR-001"),
+            live=True,
+            mqtt_host="unapproved.example",
+            mqtt_port=8883,
+        )
+
+    transport[0].assert_not_called()
+
+
+def test_isolated_broker_still_requires_opt_in_when_configured_as_local(
+    monkeypatch, transport
+):
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_HOST", BROKER_HOST)
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_PORT", str(8883))
+
+    with pytest.raises(ValueError, match="explicit --live-mqtt"):
+        publish("keepalive", credentials("SIM-EAR-001"), live=False)
+
+    transport[0].assert_not_called()
+
+
+def test_isolated_hub_still_requires_opt_in_when_configured_as_local(
+    monkeypatch, transport
+):
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_HOST", "hub.ear-test.invalid")
+    monkeypatch.setenv("DBMAP_HTTPS_PORT", "8443")
+
+    with pytest.raises(ValueError, match="explicit --live-mqtt"):
+        simulate_observation.api_request(
+            HUB_URL,
+            "test-ca.crt",
+            "POST",
+            "/api/v1/nodes",
+            {},
+            "fake-token",
+            live=False,
+        )
+
     for call in transport:
         call.assert_not_called()
+
+
+def test_configured_local_hub_is_authorized_without_test_opt_in(monkeypatch):
+    monkeypatch.setenv("DBMAP_LAN_IP", "192.0.2.10")
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_HOST", "hub.local")
+    monkeypatch.setenv("DBMAP_HTTPS_PORT", "8443")
+    monkeypatch.setenv("DBMAP_PUBLIC_BASE_PATH", "/dbmap")
+
+    simulate_observation.validate_api_destination("https://hub.local:8443/dbmap")
+
+
+def test_destination_errors_never_include_saved_password():
+    record = credentials("SIM-EAR-001")
+    record["mqtt"]["host"] = "unapproved.example"
+
+    with pytest.raises(ValueError) as error:
+        publish("keepalive", record, live=True, mqtt_host="unapproved.example")
+
+    assert record["mqtt"]["password"] not in str(error.value)
+
+
+CLI_COMMANDS = [
+    (simulate_keepalive, ["watch", "--ear", "a"]),
+    (simulate_observation, ["publish", "--ear", "a"]),
+    (
+        simulate_scenario,
+        [
+            "run",
+            "--scenario-file",
+            "scenario.json",
+            "--ear-profile",
+            "profile.json",
+        ],
+    ),
+]
+
+
+@pytest.mark.parametrize("module,command", CLI_COMMANDS)
+def test_project_env_destination_and_ca_defaults_for_each_cli(
+    module, command, monkeypatch, tmp_path, restore_loaded_project_environment
+):
+    (tmp_path / ".env").write_text(
+        "DBMAP_LOCAL_MQTT_HOST=dotenv-hub.example\n"
+        "DBMAP_LOCAL_MQTT_PORT=9883\n"
+        "DBMAP_CA_FILE=custom/ca.pem\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(publish_safety, "REPO_ROOT", tmp_path)
+    for key in ("DBMAP_LOCAL_MQTT_HOST", "DBMAP_LOCAL_MQTT_PORT", "DBMAP_CA_FILE"):
+        monkeypatch.delenv(key, raising=False)
+
+    module.load_simulator_environment()
+    args = module.build_parser().parse_args(command)
+    destination = publish_safety.resolve_mqtt_destination(
+        credentials("SIM-EAR-001")["mqtt"],
+        mqtt_host=args.mqtt_host,
+        mqtt_port=args.mqtt_port,
+        live=args.live_mqtt,
+    )
+
+    assert destination == ("dotenv-hub.example", 9883)
+    assert publish_safety.resolve_repo_path(args.ca) == tmp_path / "custom/ca.pem"
+
+
+@pytest.mark.parametrize("module,command", CLI_COMMANDS)
+def test_process_environment_overrides_project_env_for_each_cli(
+    module, command, monkeypatch, tmp_path, restore_loaded_project_environment
+):
+    (tmp_path / ".env").write_text(
+        "DBMAP_LOCAL_MQTT_HOST=dotenv-hub.example\nDBMAP_LOCAL_MQTT_PORT=9883\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(publish_safety, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_HOST", "process-hub.example")
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_PORT", "10883")
+    monkeypatch.delenv("DBMAP_CA_FILE", raising=False)
+
+    module.load_simulator_environment()
+    args = module.build_parser().parse_args(command)
+    destination = publish_safety.resolve_mqtt_destination(
+        credentials("SIM-EAR-001")["mqtt"],
+        mqtt_host=args.mqtt_host,
+        mqtt_port=args.mqtt_port,
+        live=args.live_mqtt,
+    )
+
+    assert destination == ("process-hub.example", 10883)
+
+
+@pytest.mark.parametrize("module,command", CLI_COMMANDS)
+def test_explicit_cli_overrides_select_isolated_broker_for_each_cli(
+    module, command, monkeypatch, tmp_path, restore_loaded_project_environment
+):
+    (tmp_path / ".env").write_text(
+        "DBMAP_LOCAL_MQTT_HOST=dotenv-hub.example\nDBMAP_LOCAL_MQTT_PORT=9883\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(publish_safety, "REPO_ROOT", tmp_path)
+    monkeypatch.delenv("DBMAP_LOCAL_MQTT_HOST", raising=False)
+    monkeypatch.delenv("DBMAP_LOCAL_MQTT_PORT", raising=False)
+    module.load_simulator_environment()
+    args = module.build_parser().parse_args(
+        [
+            *command,
+            "--mqtt-host",
+            BROKER_HOST,
+            "--mqtt-port",
+            "8883",
+            "--ca",
+            "cli/isolated-ca.pem",
+            "--live-mqtt",
+        ]
+    )
+
+    assert publish_safety.resolve_mqtt_destination(
+        credentials("SIM-EAR-001")["mqtt"],
+        mqtt_host=args.mqtt_host,
+        mqtt_port=args.mqtt_port,
+        live=args.live_mqtt,
+    ) == (BROKER_HOST, 8883)
+    assert args.ca == "cli/isolated-ca.pem"
+
+
+@pytest.mark.parametrize("module,command", CLI_COMMANDS)
+def test_builtin_ca_default_is_repository_relative_for_each_cli(
+    module, command, monkeypatch, tmp_path, restore_loaded_project_environment
+):
+    (tmp_path / ".env").write_text(
+        "DBMAP_LOCAL_MQTT_HOST=local-hub.example\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(publish_safety, "REPO_ROOT", tmp_path)
+    monkeypatch.delenv("DBMAP_CA_FILE", raising=False)
+    module.load_simulator_environment()
+
+    args = module.build_parser().parse_args(command)
+
+    assert args.ca == "shared/trust/ca.crt"
+    assert publish_safety.resolve_repo_path(args.ca) == (
+        tmp_path / "shared/trust/ca.crt"
+    )

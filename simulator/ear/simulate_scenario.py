@@ -19,6 +19,13 @@ _SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 for _path in (_EAR_DIR, _SCRIPTS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
+from assessment import (
+    AssessmentGenerationError,
+    annotate_assessment_progression,
+    assessment_path_depth,
+    build_assessment,
+    source_assessment_path,
+)
 from ear_profile import (
     EarProfileError,
     load_ear_profile,
@@ -50,7 +57,15 @@ from lib.scenario_movement import (
 from lib.scenario_movement import (
     position_on_route as _shared_position_on_route,
 )
-from publish_safety import TEST_CA, add_live_mqtt_argument, validate_publish
+from publish_safety import (
+    add_ca_argument,
+    add_live_mqtt_argument,
+    add_mqtt_arguments,
+    load_simulator_environment,
+    resolve_common_mqtt_destination,
+    resolve_repo_path,
+    validate_publish,
+)
 from scripted_cadence_profile import (
     ScriptedCadenceProfileError,
     apply_scripted_cadence_profile,
@@ -167,15 +182,29 @@ def publish_keepalives_for_ears(
     make_keepalive: Callable[[dict[str, Any], int], dict[str, Any]] | None = None,
     uptime_s: int = 0,
     live: bool = False,
+    mqtt_host: str | None = None,
+    mqtt_port: int | None = None,
 ) -> None:
     if publish_keepalive is None:
-        _validate_live_ears(credentials_by_alias, observation=False, keepalive=True, live=live)
+        _validate_live_ears(
+            credentials_by_alias,
+            observation=False,
+            keepalive=True,
+            live=live,
+            mqtt_host=mqtt_host,
+            mqtt_port=mqtt_port,
+        )
     if publish_keepalive is None or make_keepalive is None:
         default_make, default_publish = _keepalive_helpers()
         if make_keepalive is None:
             make_keepalive = default_make
         if publish_keepalive is None:
-            publish_keepalive = partial(default_publish, live=live)
+            publish_keepalive = partial(
+                default_publish,
+                live=live,
+                mqtt_host=mqtt_host,
+                mqtt_port=mqtt_port,
+            )
     print(f"  keepalive ({label}):", flush=True)
     for alias in sorted(credentials_by_alias):
         credentials = credentials_by_alias[alias]
@@ -299,6 +328,10 @@ def load_scenario(path: Path) -> dict[str, Any]:
         raise ScenarioError(
             "source.source_family must be a non-empty string of at most 64 characters"
         )
+    try:
+        source_assessment_path(source_family)
+    except AssessmentGenerationError as exc:
+        raise ScenarioError(str(exc)) from exc
     try:
         movement = normalize_movement(source["movement"], field="source.movement")
     except MovementError as exc:
@@ -486,7 +519,9 @@ def parse_ear_arguments(values: list[str]) -> dict[str, Path]:
     return ears
 
 
-def resolve_scenario_ear_paths(args: argparse.Namespace) -> dict[str, Path]:
+def resolve_scenario_ear_paths(
+    args: argparse.Namespace, *, repository_relative: bool = False
+) -> dict[str, Path]:
     """Resolve Ear credential paths from ``--ear`` or ``--ear-profile`` (not both)."""
     ear_values = list(getattr(args, "ear", None) or [])
     profile_path = getattr(args, "ear_profile", None)
@@ -494,8 +529,25 @@ def resolve_scenario_ear_paths(args: argparse.Namespace) -> dict[str, Path]:
         raise ScenarioError("use either --ear-profile or --ear, not both")
     if profile_path:
         try:
-            profile = load_ear_profile(profile_path)
-            paths = resolve_profile_credential_paths(profile, require_files=True)
+            profile = load_ear_profile(
+                resolve_repo_path(profile_path) if repository_relative else profile_path
+            )
+            paths = resolve_profile_credential_paths(
+                profile, require_files=not repository_relative
+            )
+            if repository_relative:
+                paths = {
+                    alias: resolve_repo_path(path) for alias, path in paths.items()
+                }
+            missing = [
+                f"{alias} ({path})"
+                for alias, path in paths.items()
+                if not path.is_file()
+            ]
+            if repository_relative and missing:
+                raise ScenarioError(
+                    "EAR profile credential file(s) missing: " + ", ".join(missing)
+                )
         except EarProfileError as exc:
             raise ScenarioError(str(exc)) from exc
         print(f"EAR profile: {profile_summary(profile)}", flush=True)
@@ -504,7 +556,10 @@ def resolve_scenario_ear_paths(args: argparse.Namespace) -> dict[str, Path]:
         raise ScenarioError(
             "provide --ear ALIAS=CREDENTIALS_FILE and/or --ear-profile PATH"
         )
-    return parse_ear_arguments(ear_values)
+    paths = parse_ear_arguments(ear_values)
+    if repository_relative:
+        return {alias: resolve_repo_path(path) for alias, path in paths.items()}
+    return paths
 
 
 def validate_ear_aliases(
@@ -761,6 +816,11 @@ def make_scenario_observation(
     observation_id = (
         str(raw_observation_id) if raw_observation_id else str(uuid4())
     )
+    source_family = event.get("source_family", "vehicle")
+    classification_confidence = event["classification_confidence"]
+    path_depth = event.get("_assessment_path_depth")
+    if path_depth is None:
+        path_depth = assessment_path_depth(source_family, emission_kind)
     payload: dict[str, Any] = {
         "protocol_version": 1,
         "message_type": "observation",
@@ -778,10 +838,15 @@ def make_scenario_observation(
             "classification": {
                 "schema": "l2",
                 "version": 1,
-                "source_family": event.get("source_family", "vehicle"),
-                "confidence": event["classification_confidence"],
+                "source_family": source_family,
+                "confidence": classification_confidence,
                 "hints": {"simulated_source_id": source_id},
             },
+            "assessment": build_assessment(
+                source_family,
+                classification_confidence,
+                path_depth=path_depth,
+            ),
         },
         "spatial": {
             "bearing": bearing,
@@ -901,17 +966,37 @@ def apply_named_scripted_cadence_profile(
 def _validate_live_ears(
     credentials_by_alias: dict[str, dict[str, Any]], *,
     observation: bool, keepalive: bool, live: bool,
+    mqtt_host: str | None = None, mqtt_port: int | None = None,
 ) -> None:
+    if observation or keepalive:
+        resolve_common_mqtt_destination(
+            list(credentials_by_alias.values()),
+            mqtt_host=mqtt_host,
+            mqtt_port=mqtt_port,
+            live=live,
+        )
     for credentials in credentials_by_alias.values():
         if keepalive:
             validate_publish(
-                credentials, {"node_id": credentials["node_id"]}, "keepalive", live=live
+                credentials,
+                {"node_id": credentials["node_id"]},
+                "keepalive",
+                live=live,
+                mqtt_host=mqtt_host,
+                mqtt_port=mqtt_port,
             )
         if observation:
             payload = credentials.get("pending_observation")
             if payload is None:
                 payload = {"identity": {"node_id": credentials["node_id"]}}
-            validate_publish(credentials, payload, "observation", live=live)
+            validate_publish(
+                credentials,
+                payload,
+                "observation",
+                live=live,
+                mqtt_host=mqtt_host,
+                mqtt_port=mqtt_port,
+            )
 
 
 def run_scenario(
@@ -932,15 +1017,25 @@ def run_scenario(
     make_keepalive: Callable[[dict[str, Any], int], dict[str, Any]] | None = None,
     announce: bool = True,
     live: bool = False,
+    mqtt_host: str | None = None,
+    mqtt_port: int | None = None,
 ) -> list[str]:
     _validate_live_ears(
         credentials_by_alias, observation=publish is None,
-        keepalive=publish_keepalive is None, live=live,
+        keepalive=publish_keepalive is None,
+        live=live,
+        mqtt_host=mqtt_host,
+        mqtt_port=mqtt_port,
     )
     if publish is None or save is None:
         default_publish, default_save = _observation_helpers()
         if publish is None:
-            publish = partial(default_publish, live=live)
+            publish = partial(
+                default_publish,
+                live=live,
+                mqtt_host=mqtt_host,
+                mqtt_port=mqtt_port,
+            )
         if save is None:
             save = default_save
     if not math.isfinite(time_scale) or time_scale <= 0:
@@ -954,6 +1049,8 @@ def run_scenario(
         publish_keepalive=publish_keepalive,
         make_keepalive=make_keepalive,
         live=live,
+        mqtt_host=mqtt_host,
+        mqtt_port=mqtt_port,
         uptime_s=0,
     )
     scenario_start = started_at_utc or datetime.now(UTC)
@@ -964,7 +1061,9 @@ def run_scenario(
     )
     wall_start = monotonic()
     published_ids = []
-    timed_events = assign_scripted_ear_observation_lifecycles(scenario["observations"])
+    timed_events = annotate_assessment_progression(
+        assign_scripted_ear_observation_lifecycles(scenario["observations"])
+    )
     for index, event in enumerate(timed_events, start=1):
         target_elapsed = event["at_seconds"] * time_scale
         delay = target_elapsed - (monotonic() - wall_start)
@@ -1007,6 +1106,8 @@ def run_scenario(
         publish_keepalive=publish_keepalive,
         make_keepalive=make_keepalive,
         live=live,
+        mqtt_host=mqtt_host,
+        mqtt_port=mqtt_port,
         uptime_s=elapsed_s,
     )
     return published_ids
@@ -1016,7 +1117,9 @@ def print_schedule(scenario: dict[str, Any], *, time_scale: float = 1.0) -> None
     started_at = datetime.now(UTC)
     started_at_monotonic_us = time.monotonic_ns() // 1000
     sequences: dict[str, int] = {}
-    timed_events = assign_scripted_ear_observation_lifecycles(scenario["observations"])
+    timed_events = annotate_assessment_progression(
+        assign_scripted_ear_observation_lifecycles(scenario["observations"])
+    )
     for event in timed_events:
         alias = event["ear"]
         sequence = sequences.get(alias, 1)
@@ -1122,15 +1225,25 @@ def retry_pending_observations(
     make_keepalive: Callable[[dict[str, Any], int], dict[str, Any]] | None = None,
     announce: bool = True,
     live: bool = False,
+    mqtt_host: str | None = None,
+    mqtt_port: int | None = None,
 ) -> list[str]:
     _validate_live_ears(
         credentials_by_alias, observation=publish is None,
-        keepalive=publish_keepalive is None, live=live,
+        keepalive=publish_keepalive is None,
+        live=live,
+        mqtt_host=mqtt_host,
+        mqtt_port=mqtt_port,
     )
     if publish is None or save is None:
         default_publish, default_save = _observation_helpers()
         if publish is None:
-            publish = partial(default_publish, live=live)
+            publish = partial(
+                default_publish,
+                live=live,
+                mqtt_host=mqtt_host,
+                mqtt_port=mqtt_port,
+            )
         if save is None:
             save = default_save
     pending_aliases = [
@@ -1176,7 +1289,9 @@ def retry_pending_observations(
         publish_keepalive=publish_keepalive,
         make_keepalive=make_keepalive,
         live=live,
+        mqtt_host=mqtt_host,
         uptime_s=0,
+        mqtt_port=mqtt_port,
     )
     ids = []
     for index, (alias, credentials, payload) in enumerate(pending_payloads, start=1):
@@ -1202,6 +1317,8 @@ def retry_pending_observations(
         publish_keepalive=publish_keepalive,
         make_keepalive=make_keepalive,
         live=live,
+        mqtt_host=mqtt_host,
+        mqtt_port=mqtt_port,
         uptime_s=0,
     )
     return ids
@@ -1233,9 +1350,8 @@ def _add_scenario_common_args(parser: argparse.ArgumentParser) -> None:
             "shared/simulator/ear-profiles/abc.json. Cannot combine with --ear."
         ),
     )
-    parser.add_argument(
-        "--ca", default=TEST_CA, help="Path to the isolated test CA"
-    )
+    add_ca_argument(parser)
+    add_mqtt_arguments(parser)
     parser.add_argument(
         "--mode",
         choices=SIMULATION_MODES,
@@ -1368,6 +1484,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    try:
+        load_simulator_environment()
+    except ValueError as exc:
+        print(f"Scenario configuration failed: {exc}", file=sys.stderr)
+        return 1
     parser = build_parser()
     if print_help_without_arguments(parser):
         return 0
@@ -1379,8 +1500,12 @@ def main() -> int:
         MQTTException = ()  # type: ignore[misc, assignment]
 
     try:
-        loaded = load_scenario(Path(args.scenario_file))
-        ear_paths = resolve_scenario_ear_paths(args)
+        scenario_file = resolve_repo_path(args.scenario_file)
+        ca_file = resolve_repo_path(args.ca)
+        if args.command != "dry-run" and not ca_file.is_file():
+            raise ScenarioError(f"CA file does not exist: {ca_file}")
+        loaded = load_scenario(scenario_file)
+        ear_paths = resolve_scenario_ear_paths(args, repository_relative=True)
         per_ear_ranges = parse_ear_max_range_arguments(args.ear_max_range)
         validate_ear_aliases(loaded, ear_paths, mode=args.mode)
         scenario, diagnostics = apply_simulation_mode(
@@ -1408,21 +1533,32 @@ def main() -> int:
             print_schedule(scenario, time_scale=args.time_scale)
             return 0
 
-        if not args.live_mqtt:
-            raise ScenarioError("publishing requires --live-mqtt")
-        if not Path(args.ca).is_file():
-            raise ScenarioError(f"CA file does not exist: {args.ca}")
+        mqtt_options = {
+            key: value
+            for key, value in (
+                ("mqtt_host", args.mqtt_host),
+                ("mqtt_port", args.mqtt_port),
+            )
+            if value is not None
+        }
         if args.command == "run":
             if not math.isfinite(args.time_scale) or args.time_scale <= 0:
                 raise ScenarioError("--time-scale must be finite and greater than zero")
             credentials_by_alias = load_ear_credentials(ear_paths, allow_pending=False)
+            mqtt_host, mqtt_port = resolve_common_mqtt_destination(
+                list(credentials_by_alias.values()),
+                live=args.live_mqtt,
+                **mqtt_options,
+            )
+            print(f"MQTT destination: TLS {mqtt_host}:{mqtt_port}", flush=True)
             ids = run_scenario(
                 scenario,
                 credentials_by_alias,
                 ear_paths,
-                args.ca,
+                str(ca_file),
                 args.time_scale,
                 live=args.live_mqtt,
+                **mqtt_options,
             )
             if diagnostics is not None:
                 for line in format_independent_detection_diagnostics(diagnostics):
@@ -1438,12 +1574,19 @@ def main() -> int:
                     "retry-pending applies to saved payloads; use --mode scripted"
                 )
             credentials_by_alias = load_ear_credentials(ear_paths, allow_pending=True)
+            mqtt_host, mqtt_port = resolve_common_mqtt_destination(
+                list(credentials_by_alias.values()),
+                live=args.live_mqtt,
+                **mqtt_options,
+            )
+            print(f"MQTT destination: TLS {mqtt_host}:{mqtt_port}", flush=True)
             ids = retry_pending_observations(
                 scenario,
                 credentials_by_alias,
                 ear_paths,
-                args.ca,
+                str(ca_file),
                 live=args.live_mqtt,
+                **mqtt_options,
             )
             print(
                 f"Scenario {scenario['scenario_id']} finished: "
