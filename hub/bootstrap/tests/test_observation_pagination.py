@@ -158,7 +158,9 @@ def _seed_reports(
                         "WHERE node_id = :node AND sequence_number = :seq"
                     ),
                     {
-                        "ts": shared_received.replace(tzinfo=None).isoformat(sep=" "),
+                        "ts": shared_received.replace(tzinfo=None).isoformat(
+                            sep=" ", timespec="microseconds"
+                        ),
                         "node": node_id,
                         "seq": 1000 + i,
                     },
@@ -323,6 +325,34 @@ def test_http_envelope_and_legacy_limit_alias() -> None:
     assert legacy.status_code == 200
     assert legacy.json()["pagination"]["page_size"] == 2
     assert len(legacy.json()["reports"]) == 2
+
+
+@pytest.mark.parametrize("role", ["admin", "viewer"])
+def test_http_received_period_filters_before_pagination(role: str) -> None:
+    oid = _seed_reports(3, same_received_time=True)
+    client = TestClient(create_app())
+    params = {
+        "node_id": "EAR-PAG",
+        "observation_id": oid,
+        "received_from": "2026-11-05T14:00:00+01:00",
+        "received_before": "2026-11-05T13:00:01Z",
+        "page_size": 1,
+    }
+    headers = {"Authorization": f"Bearer test-{role}"}
+    path = "/api/v1/observations"
+    response = client.get(path, params=params, headers=headers)
+    assert response.status_code == 200
+    result = response.json()
+    assert result["pagination"]["total_count"] == 3
+    assert len(result["reports"]) == 1
+    params["received_from"] = "2026-11-05T12:00:00Z"
+    params["received_before"] = "2026-11-05T13:00:00Z"
+    excluded = client.get(path, params=params, headers=headers)
+    assert excluded.status_code == 200
+    assert excluded.json()["pagination"]["total_count"] == 0
+    params["received_from"] = "2026-11-05T13:00:00Z"
+    assert client.get(path, params=params, headers=headers).status_code == 422
+    assert client.get(path).status_code == 401
 
 
 def test_http_invalid_page_size() -> None:

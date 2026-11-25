@@ -184,14 +184,13 @@
       #observation-filters {
         display: flex;
         flex-wrap: wrap;
-        align-items: end;
-        gap: 0.55rem 0.75rem;
+        align-items: start;
+        gap: 0.55rem 0.85rem;
         margin: 0.55rem 0 0.15rem;
       }
       #observation-filters label {
-        flex: 1 1 14rem;
         margin: 0;
-        font-size: 0.88rem;
+        font-size: 0.84rem;
       }
       #observation-filters select {
         display: block;
@@ -323,9 +322,20 @@
         margin: 0.55rem 0 0;
         padding: 0.1rem 0.15rem 0.1rem 0;
       }
-      .observation-id-filter { flex: 1 1 23rem; min-width: 0; }
-      #observation-id-form { margin-top: 0.35rem; }
-      #observation-id-input { flex: 1 1 12rem; width: auto; min-width: 0; }
+      .observation-node-filter { width: 7rem; }
+      .observation-id-filter { width: 22rem; max-width: 100%; }
+      #observation-id-form { margin-bottom: 0.25rem; }
+      #observation-id-form .obs-filter-actions { flex-wrap: nowrap; }
+      #observation-id-input { flex: 1; width: auto; min-width: 0; }
+      .observation-period-filter { max-width: 100%; }
+      #observation-date-form { display: flex; flex-wrap: wrap; align-items: end; gap: 0.3rem; }
+      .observation-time-bound { display: flex; flex-wrap: wrap; align-items: end; gap: 0.25rem; }
+      #observation-date-form input { display: block; width: auto; max-width: 100%; }
+      #observation-date-form .observation-clock { width: 4rem; }
+      #observation-filters input:not([type="checkbox"]),
+      #observation-filters button,
+      #load-older-observations { padding: 0.25rem 0.45rem; font-size: 0.82rem; }
+      .observation-period-actions { margin-top: 0.3rem; }
       .observation-emissions { border: 0; padding: 0; margin: 0; min-width: 0; }
       #observation-filters .observation-emissions label { display: inline-block; margin-right: 0.4rem; }
       .observation-emissions input { width: auto; }
@@ -1008,13 +1018,13 @@
           <div class="overview-grid obs-stats" aria-live="polite">
             <article class="overview-card"><span>Unique observations</span><strong id="hub-observation-unique-total">—</strong></article>
             <article class="overview-card"><span>Observation reports</span><strong id="hub-observation-db-total">—</strong></article>
-            <article class="overview-card"><span>Recent (max 200)</span><strong id="hub-observation-count">—</strong></article>
+            <article class="overview-card"><span>Loaded reports</span><strong id="hub-observation-count">—</strong></article>
             <article class="overview-card"><span>Latest</span><strong id="latest-observation-card">—</strong></article>
           </div>
           <details id="observation-retained-stats" aria-label="Retained observation statistics">
             <summary>Observation Statistics</summary>
             <div class="obs-stats-body">
-              <p class="notice">Complete retained Observation history under a frozen Hub snapshot (CLI <code>hub_event_track summary</code> semantics). Not limited to the recent-200 timeline below. Loads only when you expand this panel (can be slow on large history).</p>
+              <p class="notice">Complete retained Observation history under a frozen Hub snapshot (CLI <code>hub_event_track summary</code> semantics). Loads only when you expand this panel (can be slow on large history).</p>
               <div class="obs-stats-actions">
                 <button id="refresh-observation-stats" class="secondary" type="button">Refresh statistics</button>
               </div>
@@ -1028,14 +1038,12 @@
           </details>
           <section>
             <h3>Observation timeline</h3>
-            <p class="notice">Recent window only: newest 200 reports globally (not full retained history). Each list row is one observation report (MQTT payload). Node/Observation filter counts are raw report counts inside this recent-200 window — not unique observation lifecycles. Bars stack filtered reports into adaptive time slots (height = report count). Amber = selected time slot; darker amber = selected row. Clicking a time slot turns Auto-refresh off; re-check Auto-refresh to return to the live latest view. Expanding the JSON panel alone does not pause refresh.</p>
-            <div id="observation-filters" aria-label="Filter observation reports in the recent-200 window">
-              <label for="observation-filter-node">Node ID (recent 200 reports)
+            <p class="notice">Initially shows the newest 200 reports. Load older reports as needed, or search retained history by Hub reception time (UTC). Node, Observation ID and emission filters apply to loaded reports. Click a timeline slot to highlight its reports and pause Auto-refresh.</p>
+            <div id="observation-filters" aria-label="Filter observation reports">
+              <label class="observation-node-filter" for="observation-filter-node">Node ID
                 <select id="observation-filter-node" multiple size="4"></select>
               </label>
               <div class="observation-id-filter">
-                <label for="observation-filter-observation">Observation IDs (Ctrl/Cmd to select several)</label>
-                <select id="observation-filter-observation" multiple size="4"></select>
                 <form id="observation-id-form">
                   <label for="observation-id-input">Add Observation UUID</label>
                   <div class="obs-filter-actions">
@@ -1045,22 +1053,42 @@
                   </div>
                   <span id="observation-id-error" class="error" role="status"></span>
                 </form>
+                <label for="observation-filter-observation">Observation IDs</label>
+                <select id="observation-filter-observation" multiple size="4"></select>
               </div>
-              <fieldset class="observation-emissions">
-                <legend>Emission</legend>
-                <label><input type="checkbox" value="start" checked> Start</label>
-                <label><input type="checkbox" value="periodic" checked> Periodic</label>
-                <label><input type="checkbox" value="end" checked> End</label>
-                <label><input type="checkbox" value="complete" checked> Complete</label>
-              </fieldset>
-              <div class="obs-filter-actions">
-                <button id="observation-filter-clear" class="secondary" type="button">Clear filters</button>
+              <div class="observation-period-filter">
+                <form id="observation-date-form">
+                  <div class="observation-time-bound">
+                    <label>Start date <input id="observation-date-start" type="date"></label>
+                    <label>Start UTC <input id="observation-clock-start" class="observation-clock"
+                      type="text" value="00:00" placeholder="HH:MM" aria-label="Start time (UTC, 24-hour HH:MM)"
+                      pattern="([01][0-9]|2[0-3]):[0-5][0-9]" required></label>
+                  </div>
+                  <div class="observation-time-bound">
+                    <label>End date <input id="observation-date-end" type="date"></label>
+                    <label>End UTC <input id="observation-clock-end" class="observation-clock"
+                      type="text" value="23:59" placeholder="HH:MM" aria-label="End time (UTC, 24-hour HH:MM)"
+                      pattern="([01][0-9]|2[0-3]):[0-5][0-9]" required></label>
+                  </div>
+                  <button class="secondary" type="submit">Apply</button>
+                </form>
+                <div class="obs-filter-actions observation-period-actions">
+                  <fieldset class="observation-emissions">
+                    <legend>Emission</legend>
+                    <label><input type="checkbox" value="start" checked> Start</label>
+                    <label><input type="checkbox" value="periodic" checked> Periodic</label>
+                    <label><input type="checkbox" value="end" checked> End</label>
+                    <label><input type="checkbox" value="complete" checked> Complete</label>
+                  </fieldset>
+                  <button id="observation-filter-clear" class="secondary" type="button">Clear filters</button>
+                </div>
               </div>
             </div>
             <p id="observation-filter-status" class="notice" aria-live="polite"></p>
             <div id="observation-chart" class="obs-slot-chart" aria-live="polite"></div>
             <span id="observation-copy-status" role="status"></span>
             <div id="observation-list" class="observation-list" aria-live="polite"><p class="notice">Loading observations…</p></div>
+            <button id="load-older-observations" class="secondary" type="button" hidden>Load older reports</button>
           </section>
           <section>
             <details id="latest-observation-details">
@@ -1352,7 +1380,7 @@
         }
         for (const value of selected) {
           if (choices.some((choice) => choice.value === value)) continue;
-          const option = el('option', `${value} (outside recent window)`);
+          const option = el('option', `${value} (outside loaded reports)`);
           option.value = value;
           option.selected = true;
           select.append(option);
@@ -1366,14 +1394,15 @@
       }
 
       function chooseObservationSlotMs(spanMs) {
-        /* Adaptive buckets from the span of the recent (≤200) observations. */
+        /* Adaptive buckets from the span of the loaded reports. */
         if (spanMs <= 2 * 60 * 1000) return 5 * 1000;
         if (spanMs <= 10 * 60 * 1000) return 15 * 1000;
         if (spanMs <= 20 * 60 * 1000) return 20 * 1000;
         if (spanMs <= 60 * 60 * 1000) return 60 * 1000;
         if (spanMs <= 3 * 60 * 60 * 1000) return 5 * 60 * 1000;
         if (spanMs <= 12 * 60 * 60 * 1000) return 15 * 60 * 1000;
-        return 60 * 60 * 1000;
+        const hourMs = 60 * 60 * 1000;
+        return Math.max(1, Math.ceil(spanMs / (96 * hourMs))) * hourMs;
       }
 
       function formatSlotLabel(ms) {
@@ -1479,13 +1508,17 @@
         latestId: null,
         autoRefresh: true,
         items: [],
+        pagination: null,
+        requestId: 0,
+        receivedFrom: '',
+        receivedBefore: '',
         filterNodeIds: new Set(),
         filterObservationIds: new Set(),
         filterEmissionKinds: new Set(observationEmissionKinds),
         detailsOpen: false,
       };
 
-      /* Retained-history statistics (CLI summary semantics). Separate from recent-200 timeline. */
+      /* Retained-history statistics (CLI summary semantics). Separate from the paginated timeline. */
       let observationStatsState = {
         status: 'idle', // idle | loading | ready | incomplete | error | empty
         summary: null,
@@ -1569,6 +1602,11 @@
         observationViewState.filterEmissionKinds = new Set(observationEmissionKinds);
         observationViewState.slotStartMs = null;
         observationViewState.slotIds = null;
+        const hadDates = observationViewState.receivedFrom || observationViewState.receivedBefore;
+        observationViewState.receivedFrom = '';
+        observationViewState.receivedBefore = '';
+        document.getElementById('observation-date-form').reset();
+        document.getElementById('observation-date-end').setCustomValidity('');
         document.getElementById('observation-id-input').value = '';
         setObservationIdError('');
         for (const checkbox of document.querySelectorAll('.observation-emissions input')) {
@@ -1576,6 +1614,7 @@
         }
         updateObservationFilterOptions(observationViewState.items);
         renderObservationView({ preserveDetails: true });
+        if (hadDates) refreshObservations({ force: true });
       }
 
       function filteredObservationReports(observations) {
@@ -1597,7 +1636,7 @@
             filterNodeIds.has(observationNodeId(report)))) otherNodes.push(id);
         }
         return [
-          absent.length ? `Outside the latest 200 reports: ${absent.join(', ')}.` : '',
+          absent.length ? `Outside the loaded reports: ${absent.join(', ')}.` : '',
           otherNodes.length ? `Outside the selected nodes: ${otherNodes.join(', ')}. Change the Node filter to include these reports.` : '',
         ].filter(Boolean).join(' ');
       }
@@ -1780,6 +1819,10 @@
         document.getElementById('hub-observation-unique-total').textContent = Number.isFinite(uniqueTotal)
           ? String(uniqueTotal)
           : '—';
+        updateObservationLoadedCards(observations);
+      }
+
+      function updateObservationLoadedCards(observations) {
         const recentUnique = countUniqueObservationIds(observations);
         document.getElementById('hub-observation-count').textContent =
           `${recentUnique} unique · ${observations.length} reports`;
@@ -1814,7 +1857,7 @@
         } else if (!filtersActive) {
           filterStatus.textContent =
             `Showing all ${observations.length} report${observations.length === 1 ? '' : 's'} `
-            + `in the recent-200 window `
+            + `in the loaded history `
             + `(${sourceUnique} distinct observation_id${sourceUnique === 1 ? '' : 's'} in this window). `
             + 'Hold Ctrl/Cmd to multi-select in either filter.';
         } else {
@@ -1833,7 +1876,7 @@
           filterStatus.textContent =
             `Filtered to ${visible.length} report${visible.length === 1 ? '' : 's'} `
             + `(${visibleUnique} distinct observation_id${visibleUnique === 1 ? '' : 's'}) `
-            + `of ${observations.length} in the recent-200 window. `
+            + `of ${observations.length} in the loaded history. `
             + `${parts.join(', ')} selected. ${observationFilterNotes(observations)}`.trimEnd();
         }
 
@@ -2092,43 +2135,56 @@
           return;
         }
 
-        if (observationViewState.autoRefresh) clearObservationDigDown();
+        if (observationViewState.autoRefresh && !options.older) clearObservationDigDown();
 
+        const state = observationViewState;
+        const loadOlder = Boolean(options.older);
+        const pagination = state.pagination;
+        const olderButton = document.getElementById('load-older-observations');
+        if (loadOlder && (!pagination?.snapshot_id || pagination.page >= pagination.total_pages)) return;
+        if (loadOlder) pauseObservationAutoRefresh();
+
+        const requestId = ++state.requestId;
+        if (!loadOlder) state.pagination = null;
+        const page = loadOlder ? pagination.page + 1 : 1;
+        const query = new URLSearchParams(`page=${page}&page_size=200&order=newest`);
+        if (loadOlder) query.set('snapshot_id', pagination.snapshot_id);
+        if (state.receivedFrom) query.set('received_from', state.receivedFrom);
+        if (state.receivedBefore) query.set('received_before', state.receivedBefore);
         const status = document.getElementById('observation-refresh-status');
-        const chart = document.getElementById('observation-chart');
-        const list = document.getElementById('observation-list');
-        observationViewState.detailsOpen = document.getElementById('latest-observation-details').open;
-        status.textContent = 'Loading latest observation reports…';
+        state.detailsOpen = document.getElementById('latest-observation-details').open;
+        olderButton.disabled = true;
+        status.textContent = loadOlder ? 'Loading older observation reports…' : 'Loading observation reports…';
         status.className = 'notice';
-        chart.replaceChildren();
-        list.replaceChildren();
         try {
           const [observationPage, countBody] = await Promise.all([
-            api('/api/v1/observations?page=1&page_size=200&order=newest'),
-            api('/api/v1/observations/count'),
+            api(`/api/v1/observations?${query}`),
+            loadOlder ? null : api('/api/v1/observations/count'),
           ]);
-          if (!observationPage || typeof observationPage !== 'object' || !Array.isArray(observationPage.reports)) {
+          if (requestId !== state.requestId) return;
+          if (!Array.isArray(observationPage?.reports) || !observationPage.pagination) {
             throw new Error('Hub returned an invalid observation list envelope.');
           }
-          const observations = observationPage.reports;
-          observationViewState.items = observations;
-          observationViewState.latestId = observationReportKey(observations[0]) || null;
-          updateObservationCountCards(countBody, observations);
-          updateObservationFilterOptions(observations);
+          state.items = loadOlder ? state.items.concat(observationPage.reports) : observationPage.reports;
+          state.pagination = observationPage.pagination;
+          state.latestId = observationReportKey(state.items[0]) || null;
+          if (countBody) updateObservationCountCards(countBody, state.items);
+          else updateObservationLoadedCards(state.items);
+          updateObservationFilterOptions(state.items);
           renderObservationView({ preserveDetails: true });
 
           markUpdated('observation');
-          status.textContent = observationViewState.autoRefresh ? '' : observationPausedStatus;
+          status.textContent = state.autoRefresh ? '' : observationPausedStatus;
         } catch (error) {
-          observationViewState.items = [];
-          document.getElementById('hub-observation-unique-total').textContent = '—';
-          document.getElementById('hub-observation-db-total').textContent = '—';
-          document.getElementById('hub-observation-count').textContent = '—';
-          document.getElementById('latest-observation-card').textContent = '—';
-          chart.replaceChildren();
-          list.append(el('p', error.message, 'notice error'));
-          status.textContent = 'Could not load observations.';
+          if (requestId !== state.requestId) return;
+          status.textContent = `Could not load observations. ${error.message}`;
           status.className = 'notice error';
+        } finally {
+          if (requestId === state.requestId) {
+            olderButton.disabled = false;
+            olderButton.hidden = !state.pagination?.snapshot_id
+              || state.pagination.page >= state.pagination.total_pages;
+          }
         }
       }
 
@@ -2751,7 +2807,7 @@
 
       function setActiveTab(tabName, updateLocation = true) {
         const localRoles = ['admin', 'viewer'].includes(currentRole);
-        const knownTabs = ['hub', 'devices', ...(localRoles ? ['users', 'groups', 'firmware'] : []), 'observations', ...(localRoles ? ['espconnect'] : [])];
+        const knownTabs = ['hub', 'devices', ...(localRoles ? ['users', 'groups', 'firmware', 'observations', 'espconnect'] : [])];
         const activeTab = knownTabs.includes(tabName) ? tabName : 'hub';
         activeTabName = activeTab;
         for (const name of knownTabs) {
@@ -6166,6 +6222,8 @@
         document.getElementById('dashboard').hidden = false;
         document.getElementById('user-controls').hidden = false;
         document.getElementById('admin-panel').hidden = role !== 'admin';
+        document.getElementById('tab-observations').hidden = true;
+        document.getElementById('tab-button-observations').hidden = !['admin', 'viewer'].includes(role);
         document.getElementById('tab-button-espconnect').hidden = !['admin', 'viewer'].includes(role);
         document.getElementById('tab-button-firmware').hidden = !['admin', 'viewer'].includes(role);
         if (role === 'admin') {
@@ -6483,6 +6541,32 @@
         else observationViewState.filterEmissionKinds.delete(kind);
         applyObservationFilters();
       });
+      document.getElementById('load-older-observations').addEventListener('click', () => {
+        refreshObservations({ force: true, older: true });
+      });
+      document.getElementById('observation-date-form').addEventListener('input', () => {
+        document.getElementById('observation-date-end').setCustomValidity('');
+      });
+      document.getElementById('observation-date-form').addEventListener('submit', (event) => {
+        event.preventDefault();
+        const start = document.getElementById('observation-date-start');
+        const end = document.getElementById('observation-date-end');
+        const startClock = document.getElementById('observation-clock-start').value;
+        const endClock = document.getElementById('observation-clock-end').value;
+        const from = start.value ? Date.parse(`${start.value}T${startClock}Z`) : null;
+        const through = end.value ? Date.parse(`${end.value}T${endClock}Z`) : null;
+        if (from !== null && through !== null && from > through) {
+          end.setCustomValidity('End time must be on or after the start time.');
+          end.reportValidity();
+          return;
+        }
+        pauseObservationAutoRefresh();
+        clearObservationDigDown();
+        observationViewState.receivedFrom = from === null ? '' : new Date(from).toISOString();
+        observationViewState.receivedBefore = through === null
+          ? '' : new Date(through + 60_000).toISOString();
+        refreshObservations({ force: true });
+      });
       document.getElementById('observation-filter-clear').addEventListener('click', () => {
         clearObservationFilters();
       });
@@ -6533,6 +6617,9 @@
         currentDeploymentAttempt = null;
         authToken.value = '';
         currentRole = '';
+        observationViewState.requestId += 1;
+        observationViewState.pagination = null;
+        observationViewState.items = [];
         document.getElementById('dashboard').hidden = true;
         window.history.replaceState(null, '', window.location.pathname + window.location.search);
         document.getElementById('admin-panel').hidden = true;

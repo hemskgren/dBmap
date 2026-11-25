@@ -669,6 +669,8 @@ def list_observations_page(
     page_size: int = DEFAULT_OBSERVATION_PAGE_SIZE,
     order: ObservationListOrder = "newest",
     snapshot_id: int | None = None,
+    received_from: datetime | None = None,
+    received_before: datetime | None = None,
 ) -> ObservationListResult:
     """
     Return one page of observation reports.
@@ -684,6 +686,16 @@ def list_observations_page(
         observation_id=observation_id,
         snapshot_id=None,
     )
+    if (
+        received_from is not None
+        and received_before is not None
+        and received_from >= received_before
+    ):
+        raise ValueError("received_from must precede received_before")
+    if received_from is not None:
+        base_filters.append(Observation.received_time_utc >= received_from.astimezone(UTC))
+    if received_before is not None:
+        base_filters.append(Observation.received_time_utc < received_before.astimezone(UTC))
     max_id_stmt = select(func.max(Observation.id))
     for clause in base_filters:
         max_id_stmt = max_id_stmt.where(clause)
@@ -692,11 +704,9 @@ def list_observations_page(
         current_max_id = int(current_max_id)
     effective_snapshot = resolve_snapshot_id(snapshot_id, current_max_id)
 
-    filters = _observation_filter_clause(
-        node_id=node_id,
-        observation_id=observation_id,
-        snapshot_id=effective_snapshot,
-    )
+    filters = base_filters
+    if effective_snapshot is not None:
+        filters.append(Observation.id <= effective_snapshot)
     count_stmt = select(func.count()).select_from(Observation)
     for clause in filters:
         count_stmt = count_stmt.where(clause)

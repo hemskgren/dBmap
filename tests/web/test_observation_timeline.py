@@ -68,7 +68,17 @@ def test_observation_timeline_in_browser(tmp_path, width):
         if (fail) throw Error('Offline');
         if (path === '/api/v1/devices') return [];
         if (path.endsWith('/count')) return { total: reports.length, unique_observations: 3 };
-        return { reports };
+        const query = new URL(path, 'https://hub.test').searchParams;
+        if (query.has('received_from')) {
+          return { reports: [report('EAR-B', b, 99, 'start', null)],
+            pagination: { page: 1, total_pages: 1, snapshot_id: 8 } };
+        }
+        if (query.get('page') === '2') {
+          expect(query.get('snapshot_id') === '7', 'older page reuses snapshot');
+          return { reports: [report('EAR-B', b, 0, 'start', null)],
+            pagination: { page: 2, total_pages: 2, snapshot_id: 7 } };
+        }
+        return { reports, pagination: { page: 1, total_pages: 2, snapshot_id: 7 } };
       };
       const renderDevices = () => {};
       const formatDisplayDateTime = () => '2026-11-22 17:24:36 CET';
@@ -143,7 +153,7 @@ def test_observation_timeline_in_browser(tmp_path, width):
         submit();
         expect(draft.getAttribute('aria-invalid') === 'true' && selected(ids).length === 3,
           'prefix rejected without removing selection');
-        expect(state().includes('Outside the latest 200'), 'out-of-window warning');
+        expect(state().includes('Outside the loaded reports'), 'out-of-window warning');
 
         choose(node, ['EAR-C']);
         expect(!rows().length && state().includes('Outside the selected nodes'), 'explicit conflict');
@@ -173,7 +183,7 @@ def test_observation_timeline_in_browser(tmp_path, width):
 
         reports = reports.filter((entry) => entry.identity.observation_id !== a);
         await refreshObservations({ force: true });
-        expect(selected(ids).join() === a && state().includes('Outside the latest 200'),
+        expect(selected(ids).join() === a && state().includes('Outside the loaded reports'),
           'refresh retains aged-out selection');
         const lastUpdated = get('observation-updated').dateTime;
         const pausedStatus = get('observation-refresh-status').textContent;
@@ -194,6 +204,24 @@ def test_observation_timeline_in_browser(tmp_path, width):
           change(box);
         }
         expect(!rows().length && !document.querySelector('.obs-slot-bar'), 'zero emissions match nothing');
+        reset();
+        await refreshObservations({ force: true, older: true });
+        expect(keys().at(-1) === 'EAR-B:0' && get('load-older-observations').hidden,
+          'older page appends and hides button at end');
+        choose(node, ['EAR-B']);
+        get('observation-date-start').value = '2026-10-01';
+        get('observation-clock-start').value = '08:30';
+        get('observation-date-end').value = '2026-10-02';
+        get('observation-clock-end').value = '21:45';
+        get('observation-date-form').dispatchEvent(new Event('submit', { cancelable: true }));
+        await Promise.resolve();
+        await Promise.resolve();
+        const dateQuery = new URL(requests.findLast((path) => path.includes('received_from')),
+          'https://hub.test').searchParams;
+        expect(dateQuery.get('received_from') === '2026-10-01T08:30:00.000Z' &&
+          dateQuery.get('received_before') === '2026-10-02T21:46:00.000Z' &&
+          keys().join() === 'EAR-B:99' && selected(node).join() === 'EAR-B',
+          'server date search replaces loaded reports and keeps node filter');
         fail = true;
         await refreshObservations({ force: true });
         await refreshDevices();
