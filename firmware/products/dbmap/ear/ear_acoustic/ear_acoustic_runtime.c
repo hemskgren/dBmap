@@ -222,7 +222,20 @@ esp_err_t dbmap_ear_mic_l0_poll(void)
     if (!sp_mic_take_pcm_job(&job)) {
         return ESP_OK;
     }
-    return dbmap_ear_acoustic_analyze_pcm_job(&job);
+#if CONFIG_DBMAP_EAR_AE_DIAG
+    const uint32_t generation_before = sp_mic_pcm_job_bank_generation(&job);
+#endif
+    const esp_err_t result = dbmap_ear_acoustic_analyze_pcm_job(&job);
+#if CONFIG_DBMAP_EAR_AE_DIAG
+    const uint32_t generation_after = sp_mic_pcm_job_bank_generation(&job);
+#endif
+    (void)sp_mic_release_pcm_job(job.lease_token);
+#if CONFIG_DBMAP_EAR_AE_DIAG
+    if (generation_before != job.bank_generation || generation_after != generation_before) {
+        sp_mic_note_legacy_generation_mismatch();
+    }
+#endif
+    return result;
 #endif
 }
 

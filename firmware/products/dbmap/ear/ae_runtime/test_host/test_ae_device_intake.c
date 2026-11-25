@@ -106,7 +106,10 @@ static void fill_meta(
 static int publish_job(uint32_t seq, int64_t end_us, float rms, int32_t amp)
 {
     const uint32_t n = host_mic_pcm_n();
-    const int buf = host_mic_fill_idx();
+    const int buf = host_mic_begin_fill();
+    if (buf < 0) {
+        return -1;
+    }
     int32_t *bank = host_mic_bank(0u, buf);
     if (amp == 0) {
         memset(bank, 0, (size_t)n * sizeof(*bank));
@@ -180,8 +183,8 @@ static void test_start_baseline_and_single_delivery(void)
     const uint32_t ow0 = sp_mic_pcm_pending_overwrite();
     const int older = publish_job(1u, 1000000, -62.0f, 0);
     const int newer = publish_job(2u, 2000000, -31.0f, 250000);
-    EXPECT(older == 0);
-    EXPECT(newer == 1);
+    EXPECT(older >= 0);
+    EXPECT(newer == (older ^ 1));
     EXPECT(sp_mic_pcm_pending_overwrite() == ow0 + 1u);
     EXPECT(ae_device_start() == ESP_OK);
     bind_listener();
@@ -241,7 +244,8 @@ static void test_pending_overwrite(void)
     ae_device_diag_t d0;
     ae_device_get_diag(&d0);
     EXPECT(publish_job(5u, 5000000, -62.0f, 0) >= 0);
-    EXPECT(publish_job(6u, 6000000, -28.0f, 250000) >= 0);
+    const int newer = publish_job(6u, 6000000, -28.0f, 250000);
+    EXPECT(newer >= 0);
     EXPECT(sp_mic_pcm_pending_overwrite() == ow0 + 1u);
     EXPECT(ae_device_poll() == ESP_OK);
     ae_device_diag_t d;
@@ -255,7 +259,7 @@ static void test_pending_overwrite(void)
     EXPECT(g_sig.window_seq == 6u);
     EXPECT(g_sig.window_end_mono_us == 6000000);
     EXPECT(g_sig.quality == AE_QUALITY_GAP);
-    EXPECT(host_mic_last_pcm() == host_mic_bank(0u, 1));
+    EXPECT(host_mic_last_pcm() == host_mic_bank(0u, newer));
     EXPECT(ae_device_poll() == ESP_OK);
     EXPECT(g_hits == 1u);
     stop_ae();
@@ -269,6 +273,7 @@ static void test_seq_hole_and_recovery(void)
     EXPECT(publish_job(1u, 1000000, -31.0f, 250000) >= 0);
     EXPECT(ae_device_poll() == ESP_OK);
     EXPECT(g_sig.quality == AE_QUALITY_DEGRADED);
+    const ae_signature_t first = g_sig;
     ae_device_diag_t after_first;
     ae_device_get_diag(&after_first);
 
@@ -283,12 +288,24 @@ static void test_seq_hole_and_recovery(void)
     EXPECT(g_sig.quality == AE_QUALITY_GAP);
 
     /* 4500000 is not the hole time and not seq*1000000. */
-    EXPECT(publish_job(4u, 4500000, -31.0f, 250000) >= 0);
+    sp_mic_window_slot_pending_t meta;
+    const uint32_t n = host_mic_pcm_n();
+    fill_meta(&meta, 4u, 4500000, -31.0f, n);
+    meta.collection_start_mono_us = 3490000;
+    meta.views[0].sample_count += 976u;
+    fill_pcm(host_mic_bank(0u, host_mic_begin_fill()), n, 250000);
+    EXPECT(host_mic_publish(&meta) >= 0);
     EXPECT(ae_device_poll() == ESP_OK);
     ae_device_diag_t after_recover;
     ae_device_get_diag(&after_recover);
     EXPECT(g_sig.window_seq == 4u);
     EXPECT(g_sig.quality == AE_QUALITY_DEGRADED);
+    EXPECT(g_sig.flags == first.flags);
+    EXPECT(g_sig.rms_dbfs == first.rms_dbfs);
+    EXPECT(g_sig.peak_dbfs == first.peak_dbfs);
+    for (size_t band = 0; band < sizeof(first.band_dbfs) / sizeof(first.band_dbfs[0]); ++band) {
+        EXPECT(g_sig.band_dbfs[band] == first.band_dbfs[band]);
+    }
     EXPECT((g_sig.flags & AE_FLAG_L1_MISSING) != 0u);
     EXPECT(after_recover.seq_gap_events == after_hole.seq_gap_events);
     EXPECT(after_recover.gap_sigs_published == after_hole.gap_sigs_published);
@@ -343,6 +360,7 @@ static void test_both_take_apis(void)
     sp_mic_pcm_job_t pcm;
     EXPECT(sp_mic_take_pcm_job(&pcm));
     EXPECT(pcm.window_seq == 10u);
+    EXPECT(sp_mic_release_pcm_job(pcm.lease_token));
     sp_mic_window_job_t discarded;
     EXPECT(!sp_mic_take_window_job(&discarded));
 
@@ -353,6 +371,7 @@ static void test_both_take_apis(void)
     EXPECT((win.channel_mask & 0x01u) != 0u);
     EXPECT(win.channels[0].window_seq == 11u);
     EXPECT(win.channels[0].measured_at_us == 11000000);
+    EXPECT(sp_mic_release_pcm_job(win.pcm.lease_token));
     EXPECT(!sp_mic_take_pcm_job(&pcm));
 
     EXPECT(publish_job(12u, 12000000, -31.0f, 250000) >= 0);
@@ -370,12 +389,162 @@ static void test_both_take_apis(void)
     const uint32_t ow = sp_mic_pcm_pending_overwrite();
     EXPECT(publish_job(15u, 15000000, -31.0f, 250000) >= 0);
     EXPECT(sp_mic_pcm_pending_overwrite() == ow);
+    EXPECT(!sp_mic_take_pcm_job(&pcm));
+    EXPECT(sp_mic_release_pcm_job(win.pcm.lease_token));
     EXPECT(sp_mic_take_pcm_job(&pcm));
     EXPECT(pcm.window_seq == 15u);
+    EXPECT(sp_mic_release_pcm_job(pcm.lease_token));
 }
+
+static void replace_pending_during_analysis(void)
+{
+    const int32_t *const leased = host_mic_last_pcm();
+    EXPECT(leased != NULL && leased[0] == 250000);
+    EXPECT(publish_job(2u, 2000000, -38.0f, 170000) >= 0);
+    EXPECT(publish_job(3u, 3000000, -37.0f, 180000) >= 0);
+    EXPECT(leased[0] == 250000 && leased[1] == -250000);
+}
+
+static void test_retirement_gap_is_on_successor(void)
+{
+    host_mic_begin(true, 16000u);
+    EXPECT(ae_device_start() == ESP_OK);
+    bind_listener();
+    EXPECT(publish_job(1u, 1000000, -31.0f, 250000) >= 0);
+    host_mic_on_second_ready_check(replace_pending_during_analysis);
+    EXPECT(ae_device_poll() == ESP_OK);
+    EXPECT(g_sig.window_seq == 1u && g_sig.quality == AE_QUALITY_DEGRADED);
+    EXPECT(ae_device_poll() == ESP_OK);
+    EXPECT(g_sig.window_seq == 3u && g_sig.quality == AE_QUALITY_GAP);
+    ae_device_diag_t diag;
+    ae_device_get_diag(&diag);
+    EXPECT(diag.pcm_overwrite_events == 1u);
+    EXPECT(diag.seq_gap_events == 1u);
+    EXPECT(diag.gap_sigs_published == 1u);
+    stop_ae();
+}
+
+static void fail_analysis(void)
+{
+    host_mic_set_ready(false);
+}
+
+static void test_consumer_errors_release(void)
+{
+    host_mic_begin(true, 16000u);
+    EXPECT(ae_device_start() == ESP_OK);
+    EXPECT(publish_job(1u, 1000000, -31.0f, 250000) >= 0);
+    host_mic_on_second_ready_check(fail_analysis);
+    EXPECT(ae_device_poll() == ESP_ERR_INVALID_STATE);
+    host_mic_set_ready(true);
+
+    sp_mic_window_slot_pending_t empty;
+    fill_meta(&empty, 2u, 2000000, -31.0f, 0);
+    EXPECT(host_mic_begin_fill() >= 0);
+    EXPECT(host_mic_publish(&empty) >= 0);
+    EXPECT(ae_device_poll() == ESP_ERR_INVALID_STATE);
+    EXPECT(publish_job(3u, 3000000, -31.0f, 250000) >= 0);
+    EXPECT(ae_device_poll() == ESP_OK);
+    stop_ae();
+
+    EXPECT(publish_job(4u, 4000000, -31.0f, 250000) >= 0);
+    host_mic_on_second_ready_check(fail_analysis);
+    EXPECT(dbmap_ear_mic_l0_poll() == ESP_ERR_INVALID_STATE);
+    host_mic_set_ready(true);
+    EXPECT(publish_job(5u, 5000000, -31.0f, 250000) >= 0);
+    EXPECT(dbmap_ear_mic_l0_poll() == ESP_OK);
+    sp_mic_window_diag_t diag;
+    sp_mic_window_slot_get_diag(&diag);
+    EXPECT(diag.invalid_releases == 0u);
+    EXPECT(diag.ownership_violations == 0u);
+    EXPECT(diag.legacy_generation_mismatches == 0u);
+}
+
+#if CONFIG_DBMAP_EAR_AE_DIAG
+#include "../ae_pcm_diagnostics.h"
+#include "sp_mic_bank_diag.h"
+
+static void test_pcm_bank_diagnostics(void)
+{
+    sp_mic_bank_generation_t banks[2] = {UINT32_MAX - 1u, 0u};
+    ae_pcm_diagnostics_t diag = {0};
+    const uint32_t expected = sp_mic_bank_write_start(&banks[0]);
+    EXPECT(expected == UINT32_MAX);
+    const uint32_t before = sp_mic_bank_generation(&banks[0]);
+    EXPECT(sp_mic_bank_write_start(&banks[1]) == 1u);
+    ae_pcm_diag_record_check(&diag, expected, before, sp_mic_bank_generation(&banks[0]));
+    EXPECT(diag.checked == 1u);
+    EXPECT(diag.stale_before_access == 0u);
+    EXPECT(diag.reuse_during_access == 0u);
+
+    /* A fill that never publishes still invalidates a borrow across rollover. */
+    EXPECT(sp_mic_bank_write_start(&banks[0]) == 0u);
+    const uint32_t stale = sp_mic_bank_generation(&banks[0]);
+    ae_pcm_diag_record_check(&diag, expected, stale, stale);
+    EXPECT(diag.checked == 2u);
+    EXPECT(diag.stale_before_access == 1u);
+    EXPECT(diag.reuse_during_access == 0u);
+
+    const uint32_t current = sp_mic_bank_generation(&banks[0]);
+    EXPECT(sp_mic_bank_write_start(&banks[0]) == 1u);
+    ae_pcm_diag_record_check(&diag, current, current, sp_mic_bank_generation(&banks[0]));
+    EXPECT(diag.checked == 3u);
+    EXPECT(diag.stale_before_access == 1u);
+    EXPECT(diag.reuse_during_access == 1u);
+}
+
+static void test_pcm_span_and_age_diagnostics(void)
+{
+    ae_pcm_diagnostics_t diag = {0};
+    sp_mic_window_slot_pending_t pending;
+    sp_mic_window_job_t job;
+    int32_t left = 0;
+    int32_t right = 0;
+    int32_t *banks[SP_MIC_COUNT_MAX][2] = {{&left, NULL}, {&right, NULL}};
+    fill_meta(&pending, 7u, 7000000, -35.0f, 16000u);
+    pending.bank_generation = UINT32_MAX;
+    pending.live_mic_count = 2u;
+    pending.pcm_channel_mask = 3u;
+    pending.sample_count_ch[1] = 16000u;
+    pending.views[1] = pending.views[0];
+    pending.views[0].sample_count += 976u;
+    pending.views[1].sample_count += 100u;
+    EXPECT(sp_mic_window_slot_project_window(&pending, banks, 16000u, &job));
+    EXPECT(job.pcm.bank_index == 0u && job.pcm.bank_generation == UINT32_MAX);
+    ae_pcm_diag_record_spans(&diag, &job);
+    EXPECT(diag.comparable_mask == 3u);
+    EXPECT(diag.channels[0].captured == 16976u);
+    EXPECT(diag.channels[0].retained == 16000u);
+    EXPECT(diag.channels[0].discarded == 976u);
+
+    pending.views[0].sample_count = 16128u;
+    pending.views[1].sample_count = 16000u;
+    EXPECT(sp_mic_window_slot_project_window(&pending, banks, 16000u, &job));
+    ae_pcm_diag_record_spans(&diag, &job);
+    EXPECT(diag.channels[0].discard_total == 1104u);
+    EXPECT(diag.channels[0].discard_max == 976u);
+    EXPECT(diag.channels[1].discard_total == 100u);
+    EXPECT(diag.channels[1].discard_max == 100u);
+
+    sp_mic_time_diag_record(&diag.queue_age, job.pcm.window_end_mono_us, 7030000);
+    sp_mic_time_diag_record(&diag.queue_age, job.pcm.window_end_mono_us, 7010000);
+    sp_mic_time_diag_record(&diag.queue_age, job.pcm.window_end_mono_us, 6999999);
+    sp_mic_time_diag_record(&diag.processing_age, job.pcm.window_end_mono_us, 7400000);
+    EXPECT(diag.queue_age.count == 2u);
+    EXPECT(diag.queue_age.min_us == 10000u);
+    EXPECT(diag.queue_age.max_us == 30000u);
+    EXPECT(diag.queue_age.last_us == 10000u);
+    EXPECT(diag.processing_age.count == 1u);
+    EXPECT(diag.processing_age.last_us == 400000u);
+}
+#endif
 
 int main(void)
 {
+#if CONFIG_DBMAP_EAR_AE_DIAG
+    test_pcm_bank_diagnostics();
+    test_pcm_span_and_age_diagnostics();
+#endif
     EXPECT(dbmap_ear_acoustic_register() == ESP_OK);
     test_inactive_not_ready_empty();
     test_start_baseline_and_single_delivery();
@@ -383,6 +552,8 @@ int main(void)
     test_seq_hole_and_recovery();
     test_signature_rejection_and_ae_epoch();
     test_both_take_apis();
+    test_retirement_gap_is_on_successor();
+    test_consumer_errors_release();
     if (g_failures != 0) {
         fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;

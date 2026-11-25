@@ -19,10 +19,12 @@ menu "Sensor Platform microphone"
         default 16000
 
     config SP_MIC_WINDOW_MS
-        int "Measurement window (ms)"
+        int "Nominal measurement window (ms)"
         range 100 5000
         default 1000
         help
+            A normal window collects sample_rate_hz * window_ms / 1000 complete
+            frames. The configured product must give an integral frame count.
             Latest window metrics are attached to hello/health/keepalive reported
             state (like wifi_rssi_dbm). There is no separate audio MQTT topic yet.
 

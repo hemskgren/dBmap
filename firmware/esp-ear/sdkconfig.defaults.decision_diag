@@ -1,0 +1,2 @@
+# Bench-only USB tracing of production signature and promotion decisions.
+CONFIG_DBMAP_EAR_OBS_DECISION_DIAG=y

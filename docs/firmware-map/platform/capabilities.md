@@ -17,6 +17,9 @@ Primary architecture references:
 | Acoustic DSP (L0/L1/L2) | Host-testable combined-scene L0/L1/L2 libraries; build-time `SP_AUDIO_L*` | `firmware/platform/audio/` (`sp_acoustic_l*.c`, `Kconfig`) |
 | Multi-mic analysis | Every active mic × every enabled DSP layer; serial L1 workspace reuse | `sp_audio_analyze_*` in `firmware/platform/audio/` |
 | Analysis PCM retain | SPIRAM double-buffer for all live mics (NVS `mic_count` 1–4) | `CONFIG_SP_MIC_PCM_RETAIN` in `platform/audio/Kconfig`; fill path in `platform/mic` |
+| PCM frame assembly | Configured complete-frame target. Existing DIN scratch carries unread frames. Shared logical group accounting for 1–4 channels. | `ear_mic.c`, `sp_mic_frame_cursor.h`; [P6 acceptance](../../ear-usb-console.md#p6-frame-bounded-pcm-acceptance) |
+| Analysis PCM ownership | Two group banks, one pending job, one consumer lease. Capture may retire unread pending and continues metering if no bank is writable. | `sp_mic_window_job.c` ownership transitions, `sp_mic_pcm.h` take/release contract |
+| PCM integrity diagnostics | Capture span and ownership counters, AE job ages and independent bank-generation checks | `CONFIG_SP_MIC_CAPTURE_DIAG`, `CONFIG_DBMAP_EAR_AE_DIAG`; [USB baseline](../../ear-usb-console.md#p5-pcm-ownership-acceptance) |
 | Shared resource UART diag | CPU MHz, free/min heap, SPIRAM free, task stack HWM | `firmware/platform/node_common/include/sp_diag.h` — `sp_diag_log_resources` |
 | Platform SemVer | Compile-time string from `firmware/platform/VERSION` | `sp_version.h` / `sp_version.c` |
 | Device lifecycle / MQTT helpers | Provision, OTA, connectivity (shared `node_common`) | `firmware/platform/node_common/` |

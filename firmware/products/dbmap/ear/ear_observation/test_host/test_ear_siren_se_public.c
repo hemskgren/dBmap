@@ -10,6 +10,7 @@
 #include "ear_obs_manager.h"
 #include "ear_promotion_policy.h"
 #include "ear_siren_se_public.h"
+#include "sig_engine.h"
 #include "sp_episode_registry.h"
 
 #include <math.h>
@@ -823,6 +824,45 @@ static void setup_om_siren(
     ear_promotion_policy_set_siren(pol, siren);
 }
 
+static void test_engine_siren_requires_current_candidate_owner(void)
+{
+    ae_engine_t ae;
+    ce_engine_t ce;
+    sp_episode_registry_t reg;
+    ear_obs_manager_t om;
+    ear_promotion_policy_t pol;
+    ear_siren_se_public_t siren;
+    setup_om_siren(&ae, &ce, &reg, &om, &pol, &siren, 0u);
+    EXPECT(sig_engine_start());
+    ear_promotion_policy_use_sig_engine_as002(&pol, true);
+
+    ae_signature_t sig;
+    fill_sig(&sig, 101u, -55.0f, 0.70f, 1800.0f, 8.0f, AE_QUALITY_OK);
+    sig_engine_on_signature(&sig);
+    for (uint32_t seq = 102u; seq <= 104u; ++seq) {
+        fill_sig(&sig, seq, -31.0f, 0.28f, 344.0f, 7.0f, AE_QUALITY_OK);
+        sig_engine_on_signature(&sig);
+    }
+
+    plant_active(&ce, 777u, 5u, -31.0f);
+    ce.last_processed_seq = 104u;
+    ce.slots[0].last_window_seq = 103u;
+    ear_promotion_policy_poll(&pol, sig.window_end_mono_us);
+    ear_promotion_policy_poll(&pol, sig.window_end_mono_us);
+    EXPECT(pol.diag.promote_ok == 0u);
+    EXPECT(pol.diag.last_decision == EAR_PROMO_DECISION_HOLD_IRRELEVANT);
+
+    fill_sig(&sig, 105u, -31.0f, 0.28f, 344.0f, 7.0f, AE_QUALITY_OK);
+    sig_engine_on_signature(&sig);
+    ce.last_processed_seq = 105u;
+    ce.slots[0].last_window_seq = 105u;
+    ear_promotion_policy_poll(&pol, sig.window_end_mono_us);
+    EXPECT(pol.diag.promote_ok == 1u);
+    EXPECT(pol.diag.last_candidate_id == 777u);
+    EXPECT(pol.diag.last_profile_id == AS_PROFILE_ID_AS002);
+    sig_engine_stop();
+}
+
 static void test_pending_as002_keeps_start_assessment(void)
 {
     ae_engine_t ae;
@@ -1073,6 +1113,7 @@ int main(void)
     test_same_profile_repromote_after_end();
     test_pending_same_profile_blocks_policy();
     test_policy_without_siren_unchanged();
+    test_engine_siren_requires_current_candidate_owner();
     test_pending_as002_keeps_start_assessment();
     test_as002_signature_absence_end();
     test_as002_invalid_pauses_and_invalid_hold_ends();

@@ -1,6 +1,10 @@
 """Contract checks for the Hub Web USB console dialog."""
 
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 HUB_INDEX = Path(__file__).resolve().parents[2] / "web" / "index.html"
 
@@ -15,22 +19,12 @@ def test_usb_console_log_capacity_is_bounded_at_460_kib() -> None:
     assert "Live serial at 115200 baud" in html
     assert "In-browser log retention is about 460" in html
     assert "Log buffer ~460 KiB" not in html
-    assert (
-        "Console open · ${portLabel} > ${identity}. Reset board if no logs." in html
-    )
     assert "setUsbConsoleOpenStatus" in html
-    assert "resolveUsbConsoleKnownNodeId" in html
-    assert "noteUsbConsoleDeviceIdFromText" in html
-    assert "startUsbConsoleIdentityWatch" in html
+    assert "noteUsbConsoleChunk" in html
     assert "USB_CONSOLE_NODE_ID_RE" in html
     assert "USB_CONSOLE_HUB_ID_RE" in html
-    # Current Sensor Platform boot lines plus legacy DBMAP_* identity keys.
-    assert "node_id=" in html
-    assert "hub_id=" in html
-    assert "DBMAP_DEVICE_ID=" in html
-    assert "DBMAP_HUB_ID=" in html
-    assert "identifying…" in html
-    assert "not found" in html
+    assert "Identifying…" in html
+    assert "Last connected" in html
     assert "usb-console-notice-aside" in html
     assert "USB console open at 115200 baud" not in html
     assert "USB_APP_SERIAL_BAUD_RATE" not in html
@@ -96,3 +90,16 @@ def test_usb_console_has_buffer_meter() -> None:
     assert "formatUsbConsoleAge" in html
     assert "setInterval(updateUsbConsoleMeter, 5000)" in html
     assert "usb-console-meter-full" in html
+
+
+def test_usb_console_session_in_javascript() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js required to run the USB console session test")
+    html = HUB_INDEX.read_text(encoding="utf-8")
+    start = html.index("      let usbConsoleSession = null;")
+    end = html.index("      function saveDeploymentSession", start)
+    subprocess.run(
+        [node, str(Path(__file__).with_name("usb_console_session.cjs"))],
+        input=html[start:end], text=True, check=True, timeout=10,
+    )

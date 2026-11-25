@@ -77,7 +77,64 @@ Start the builder profile and recreate Nginx to attach it to the private builder
 docker compose --profile firmware-build up -d firmware-builder nginx
 ```
 
-Sign in to the Hub with the local admin token and open **Firmware → Build reusable firmware**. Select a supported target, optionally click **List config** to review the effective Kconfig defaults + `sdkconfig.defaults` + builder overlays nested as `config.sp` (Sensor Platform) and `config.product.dbmap` (dBmap product; secrets cleared, NTP from `.env` `NTP_SERVER`) before starting the build, then start the build. The same effective snapshot is written into the build log after the ESP-IDF version check and before `idf.py set-target`. The downloadable metadata JSON / catalog entry includes a smaller `config` object: only the `CONFIG_DBMAP_*` lines explicitly set in that target’s `sdkconfig.defaults` (not the full effective set), nested the same way. Release identity is the top-level `firmware_version` field only — `config.sp.node` does not repeat `FIRMWARE_VERSION` (the sdkconfig.defaults series base would disagree with the builder-bumped release). Output hardware pins live under `config.sp.output` when present. The build list shows the hardware profile. Each build gets the next numeric patch version based on retained build history, starting from the configured firmware version. The shared series default is `0.7.0` in `firmware/platform/node_common/Kconfig.projbuild`; after `0.7.0`, builds use `0.7.1`, `0.7.2`, and so on. To start a new series, change that default (and the relevant `sdkconfig.defaults`). The firmware build also embeds `NTP_SERVER` from `.env` (default `se.pool.ntp.org` if unset) into `CONFIG_DBMAP_NTP_SERVER` for UTC timestamps. Changing it requires recreating the builder and building a new firmware image. Each build log is collapsed by default; expand it to load the full output, including successful builds. While a build is running, use **Refresh log** to load newer output. Logs are retained privately with the build and deleted when its artifact is deleted. Builds started before full-log support do not have a retained full log. Successful builds offer **Download firmware ZIP** and **Download matching metadata JSON**; filenames share the ID format `dbmap-<target>-<hardware_revision>-<version>-<8 SHA-256 hex characters>`, where the final suffix is derived from the exact ZIP artifact. The JSON sidecar uses the same ID and contains the ZIP checksum and build metadata. Select both files in the catalog upload form. Failed builds can be removed from history. Build artifacts remain in the `firmware-artifacts` Docker volume until deleted. The same build controls are unavailable to viewers, and the builder independently checks the bearer token.
+Sign in to the Hub with the local admin token and open **Firmware → Build reusable firmware**. Select a supported target and, for EAR, an optional diagnostic profile. **List config** shows the requested diagnostics and resolved preview before building. The build job and log record the allowlisted generated diagnostic settings after ESP-IDF configuration and after compilation. Downloadable metadata and the catalog retain the existing grouped defaults-file `config` object, including selected defaults layers for named profiles. See [EAR diagnostic profiles](#ear-diagnostic-build-profiles). Release identity is the top-level `firmware_version` field only — `config.sp.node` does not repeat `FIRMWARE_VERSION` (the sdkconfig.defaults series base would disagree with the builder-bumped release). Output hardware pins live under `config.sp.output` when present. The build list shows the hardware profile. Each build gets the next numeric patch version based on retained build history, starting from the configured firmware version. The shared series default is `0.7.0` in `firmware/platform/node_common/Kconfig.projbuild`; after `0.7.0`, builds use `0.7.1`, `0.7.2`, and so on. To start a new series, change that default (and the relevant `sdkconfig.defaults`). The firmware build also embeds `NTP_SERVER` from `.env` (default `se.pool.ntp.org` if unset) into `CONFIG_DBMAP_NTP_SERVER` for UTC timestamps. Changing it requires recreating the builder and building a new firmware image. Each build log is collapsed by default; expand it to load the full output, including successful builds. While a build is running, use **Refresh log** to load newer output. Logs are retained privately with the build and deleted when its artifact is deleted. Builds started before full-log support do not have a retained full log. Successful builds offer **Download firmware ZIP** and **Download matching metadata JSON**; filenames share the ID format `dbmap-<target>-<hardware_revision>-<version>-<8 SHA-256 hex characters>`, where the final suffix is derived from the exact ZIP artifact. The JSON sidecar uses the same ID and contains the ZIP checksum and build metadata. Select both files in the catalog upload form. Failed builds can be removed from history. Build artifacts remain in the `firmware-artifacts` Docker volume until deleted. The same build controls are unavailable to viewers, and the builder independently checks the bearer token.
+
+### EAR diagnostic build profiles
+
+The optional `profile` on `ear-esp32-s3` selects one checked-in
+`firmware/esp-ear/sdkconfig.defaults.log-<profile>` file. Output uses its
+existing defaults. Leaving the EAR profile at **Target defaults** also
+preserves existing behavior, including CSV capture when enabled in the
+standard EAR defaults. Selecting a profile leaves the target, firmware ID
+format, hardware compatibility, catalog schema and OTA flow intact.
+
+| UI profile | Request value | Mic capture | AE diagnostics | AE cadence | Observation serial | Classifier decision trace | AE CSV capture |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Production | `production` | n | n | inactive | n | n | n |
+| Development | `development` | n | n | inactive | y | n | n |
+| PCM verification | `pcm-verification` | y | y | 10 | y | n | n |
+| Acoustic diagnosis | `acoustic-diagnosis` | n | n | inactive | y | y | n |
+| Full diagnostics | `full-diagnostics` | y | y | 10 | y | y | y |
+| Calibration | `calibration` | n | n | inactive | y | y | y |
+
+The varying symbols, in table order with the `CONFIG_` prefix implied, are
+`SP_MIC_CAPTURE_DIAG`, `DBMAP_EAR_AE_DIAG`,
+`DBMAP_EAR_AE_DIAG_EVERY_N`, `DBMAP_EAR_OBS_SERIAL_DIAG`,
+`DBMAP_EAR_OBS_DECISION_DIAG` and `DBMAP_EAR_AE_SIG_CAPTURE`.
+Every named profile explicitly sets `DBMAP_EAR_AUDIO_ENGINE=y`,
+`DBMAP_DIAG_ENABLED=y` and `FREERTOS_GENERATE_RUN_TIME_STATS=n`.
+Full diagnostics reproduces the current P4/P5 diagnostic inputs.
+PCM verification retains the integrity and timing reports. Calibration
+adds the bounded CSV to acoustic decision traces. Neither profile changes
+the supported microphone count, capture semantics or production processing.
+
+The builder API accepts `{"target":"ear-esp32-s3","profile":"production"}`
+at the existing build endpoint. The same profile ID is accepted in the
+existing List config URL as `?profile=production`. Omit the key or query
+parameter to use target defaults. An idempotent retry must use both the
+same target and the same profile.
+
+- **Requested** is the named overlay's allowlisted settings. Omitted profiles
+  have no explicit request overrides.
+- **Preview** reports the planned values and their source. The order is
+  Kconfig defaults, base defaults, their chip companion if present, then the
+  selected profile and its chip companion if present. The preview is a
+  resolver estimate before ESP-IDF applies Kconfig dependencies.
+- **Generated** reports the same allowlisted settings from the actual
+  `sdkconfig`, separately at configuration and build. The job fails with
+  the mismatched setting and phase if ESP-IDF cannot satisfy a named profile.
+  AE cadence is inactive when AE diagnostics are off. The full generated
+  configuration is excluded from the job response and downloadable metadata.
+
+The calibration buffer and its associated state account for **5,028 bytes**
+of identified optional static internal RAM in an earlier target ELF.
+Production, Development, PCM verification and Acoustic diagnosis all
+explicitly disable that feature. Confirm actual section savings later
+using matched ESP32-S3 builds with only `DBMAP_EAR_AE_SIG_CAPTURE` changed.
+Compare image size, ELF sections, and the three capture-owned symbols in
+the linker map. Check `AE_SIG_CAPTURE` capability reporting and the
+existing calibration output in the enabled build before approving deployment.
+
 
 Upload the matching pair as an unregistered firmware candidate, then review and promote it before browser flashing. Ear bundles use `esp-ear.bin` (bootloader at `0x0` on ESP32-S3); Output bundles keep `esp-output.bin` (bootloader at `0x1000`). Device OTA serves the app binary that matches the node's type.
 

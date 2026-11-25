@@ -58,6 +58,8 @@ CONFIG_DBMAP_EAR_OBS_L2=y
 CONFIG_DBMAP_EAR_OBS_L2_PUBLISH=y
 # Serial diagnostics (RMS activity + L0).
 CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG=y
+# USB decision diagnostics for the three-node acoustic baseline.
+CONFIG_DBMAP_EAR_OBS_DECISION_DIAG=y
 # Multi-mic capture UART (~5s): ch0–ch3 slot, rms/peak, n/expect, window_seq, incomplete.
 # Needed for multi-mic bench on USB console after win# stops at 30. Turn off for
 # production fleet images if UART noise is unwanted (Kconfig / menuconfig).

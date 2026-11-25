@@ -47,16 +47,27 @@ static void bg_note_non_match(as_profile_bg_state_t *bg, float rms_dbfs)
         AS_BG_EMA_ALPHA * bg->bg_rms_ema + (1.0f - AS_BG_EMA_ALPHA) * rms_dbfs;
 }
 
-static bool spectral_gate_ok(const as_profile_t *p, const ae_signature_t *sig)
+#if CONFIG_DBMAP_EAR_OBS_DECISION_DIAG
+#define AS_GATE(result, reason) ((result)->gate = (reason))
+#else
+#define AS_GATE(result, reason) ((void)0)
+#endif
+
+static bool spectral_gate_ok(
+    const as_profile_t *p, const ae_signature_t *sig, as_profile_match_result_t *result
+)
 {
+    (void)result;
     if (p->dominant_hz_max >= p->dominant_hz_min) {
         if (sig->dominant_hz < p->dominant_hz_min
             || sig->dominant_hz > p->dominant_hz_max) {
+            AS_GATE(result, "dominant");
             return false;
         }
     }
     if (p->flatness_max >= p->flatness_min) {
         if (sig->flatness < p->flatness_min || sig->flatness > p->flatness_max) {
+            AS_GATE(result, "flatness");
             return false;
         }
     }
@@ -100,12 +111,14 @@ static bool match_core(
     if (sig->schema_version != 0u
         && sig->schema_version != profile->ae_schema_version) {
         if (out != NULL) {
+            AS_GATE(out, "schema");
             out->rejected_eligibility = 1u;
         }
         return false;
     }
     if (sig->quality != AE_QUALITY_OK && sig->quality != AE_QUALITY_DEGRADED) {
         if (out != NULL) {
+            AS_GATE(out, "quality");
             out->rejected_eligibility = 1u;
         }
         return false;
@@ -122,6 +135,7 @@ static bool match_core(
      * on spectral shape alone once gates are widened for real heli.
      */
     if (profile->uses_rms_rel_bg && bg == NULL) {
+        AS_GATE(&local, "bg_unavailable");
         local.rejected_eligibility = 1u;
         if (out != NULL) {
             *out = local;
@@ -130,6 +144,8 @@ static bool match_core(
     }
 
     if (!level_eligible(profile, sig, bg)) {
+        AS_GATE(&local, profile->uses_rms_rel_bg && (!bg->initialized || !bg->bg_valid)
+                            ? "bg_unavailable" : !isfinite(sig->rms_dbfs) ? "rms_invalid" : "rms");
         local.rejected_eligibility = 1u;
         if (out != NULL) {
             *out = local;
@@ -139,6 +155,7 @@ static bool match_core(
 
     if (profile->uses_spectral) {
         if (!sig->spectral_valid) {
+            AS_GATE(&local, "spectral");
             local.skipped_spectral = 1u;
             local.rejected_eligibility = 1u;
             if (out != NULL) {
@@ -146,7 +163,7 @@ static bool match_core(
             }
             return false;
         }
-        if (!spectral_gate_ok(profile, sig)) {
+        if (!spectral_gate_ok(profile, sig, &local)) {
             local.rejected_eligibility = 1u;
             if (out != NULL) {
                 *out = local;
@@ -197,6 +214,7 @@ static bool match_core(
 
     local.distance = dist;
     local.matched = (dist <= profile->match_distance_max);
+    AS_GATE(&local, local.matched ? "match" : "distance");
 
     if (out != NULL) {
         *out = local;

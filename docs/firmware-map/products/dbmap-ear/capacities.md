@@ -61,11 +61,47 @@ not an identity or promotion threshold.
 | Item | Value | Class | Source | Controls | Binding |
 | --- | --- | --- | --- | --- | --- |
 | Signature history capacity | 32 | `configured` | `AE_HISTORY_CAPACITY` in `ae_history.h`; hint in `ae_config_set_defaults` | Global rolling signature ring | compile-time |
-| AE signature CSV capture | on (EAR `sdkconfig.defaults`) | `configured` | `CONFIG_DBMAP_EAR_AE_SIG_CAPTURE=y` in `firmware/esp-ear/sdkconfig.defaults`; Kconfig symbol default n; List key `EAR_AE_SIG_CAPTURE` | Bounded UART CSV for AS-001 calibration | kconfig |
+| AE signature CSV capture | on with EAR target defaults, opt-in by named profile | `configured` | `CONFIG_DBMAP_EAR_AE_SIG_CAPTURE=y` in `firmware/esp-ear/sdkconfig.defaults`; Kconfig symbol default n; List key `EAR_AE_SIG_CAPTURE` | Bounded UART CSV for AS-001 calibration | kconfig |
 | Capture buffer capacity | 48 | `configured` | `AE_SIG_CAPTURE_CAPACITY` in `ae_sig_capture.h` | Max stored AE windows per session | compile-time |
 | Reported map key | `AE_SIG_CAPTURE` bool | `configured` | `capabilities.observation.AE_SIG_CAPTURE` in `ear_observation.c` | Build metadata visible on hello/health | compile-time |
+| USB AS-001/AS-002 decision diagnostic | on with EAR target defaults | `configured` | `CONFIG_DBMAP_EAR_OBS_DECISION_DIAG`; List config `EAR_OBS_DECISION_DIAG` | Actual profile gates, pre-evaluation background and siren streak | kconfig |
+| USB Candidate and Policy decision diagnostic | on with EAR target defaults (same switch) | `configured` | `CONFIG_DBMAP_EAR_OBS_DECISION_DIAG` | AE sequence, CE association, Candidate eligibility, ownership and Policy outcome | kconfig |
+
+For the USB decision diagnostic, both Audio Engine and RMS activity must be
+enabled. Kconfig defaults to off, and the EAR target enables it in
+`firmware/esp-ear/sdkconfig.defaults`. **List config** reports the
+resolved builder configuration under `config.product.dbmap.observation`.
+Check the generated `sdkconfig` for a locally built image that uses the bench
+overlay. The flag determines whether the logs are compiled in. There is no
+diagnostic-specific runtime switch or live Hub state. See the
+[USB capture and interpretation procedure](../../../ear-usb-console.md#ear-signature-and-promotion-decisions).
 
 ---
+
+## Analysis PCM handoff
+
+| Item | Value | Class | Source |
+| --- | --- | --- | --- |
+| PCM banks / pending slots / outstanding leases | 2 / 1 / 1 | `configured` | `firmware/platform/mic/sp_mic_window_job.c` |
+| Retained capacity | 16,000 int32 samples per channel per bank at 16 kHz and 1,000 ms | `configured` | `sp_mic_start()` in `firmware/platform/mic/ear_mic.c` |
+| Consumers | AE and AE-disabled legacy acoustic analysis release immediately after PCM access | `configured` | `ae_device_poll()` and `dbmap_ear_mic_l0_poll()` |
+| P4/P5 USB flags | `SP_MIC_CAPTURE_DIAG=y`, `DBMAP_EAR_AUDIO_ENGINE=y`, `DBMAP_EAR_AE_DIAG=y`, `DBMAP_EAR_AE_DIAG_EVERY_N=10`, `DBMAP_EAR_OBS_SERIAL_DIAG=y`; FreeRTOS runtime stats disabled | `configured` | EAR target defaults and ESP-IDF v5.4.4 Kconfig. [USB baseline](../../../ear-usb-console.md#p4-capture-and-pcm-integrity-baseline) |
+
+Named diagnostic profiles on the same EAR builder target select overlays
+without changing the default target or physical microphone support. See
+[the exact profile settings and provenance](../../../device-registration-and-deployment.md#ear-diagnostic-build-profiles).
+The optional CSV capture owns a 48-record array plus capture state and
+capture-local classifier background. These symbols account for 5,028 bytes
+in a pre-P5 ESP32-S3 ELF. Confirm section savings for the current build with
+a matched CSV-on/off pair.
+
+Bank ownership is shared across the retained channel group. P6 uses a configured
+frame target and keeps the unread suffix of each DIN batch in its existing
+scratch. At 16 kHz and 1,000 ms each channel needs 128,000 PSRAM bytes across
+both banks. Mono/stereo total 128,000/256,000 bytes. Logical 3/4-channel
+totals are 384,000/512,000 bytes and need physical acquisition verification.
+The P5 capacity was 129,408 bytes per channel across both banks.
+[P6 verification procedure](../../../ear-usb-console.md#p6-frame-bounded-pcm-acceptance)
 
 ## Microphone acquisition (Kconfig defaults)
 

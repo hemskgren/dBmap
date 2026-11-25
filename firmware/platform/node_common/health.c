@@ -6,6 +6,7 @@
 #include "sp_diag.h"
 #include "sp_mqtt.h"
 #include "sp_wifi.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
 
@@ -28,6 +29,18 @@ void sp_health_set_enricher(sp_health_enrich_fn fn)
     if (fn != NULL) {
         sp_health_add_enricher(fn);
     }
+}
+
+void sp_log_usb_identity(const char *tag, const sp_effective_t *cfg, int64_t *next_us)
+{
+    const int64_t now_us = esp_timer_get_time();
+    if (now_us < *next_us) {
+        return;
+    }
+    *next_us = now_us + INT64_C(60000000);
+    ESP_LOGI(tag, "node_id=%s firmware_version=%s uptime_s=%lld",
+             cfg->identity.node_id[0] ? cfg->identity.node_id : "UNPROVISIONED",
+             CONFIG_DBMAP_FIRMWARE_VERSION, (long long)(now_us / 1000000));
 }
 
 static cJSON *build_state(const sp_effective_t *cfg, bool include_diag)

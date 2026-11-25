@@ -18,6 +18,12 @@
 
 #if defined(CONFIG_DBMAP_EAR_AUDIO_ENGINE) && CONFIG_DBMAP_EAR_AUDIO_ENGINE
 
+#if CONFIG_DBMAP_EAR_AE_DIAG
+#include "ae_pcm_diagnostics.h"
+
+static ae_pcm_diagnostics_t s_pcm_diag;
+#endif
+
 static const char *TAG = "ae";
 
 static ae_engine_t s_ae;
@@ -92,6 +98,46 @@ static void maybe_diag_log(void)
         (unsigned long)s_diag.stereo_degraded,
         (unsigned long)s_diag.stereo_pcm_incomplete
     );
+    ESP_LOGI(
+        TAG,
+        "timing pcm seq=%lu consumed=%lu checked=%llu stale_before_access=%llu "
+        "reuse_during_access=%llu queue_n=%llu queue_us_last=%llu queue_us_max=%llu "
+        "processing_n=%llu processing_us_last=%llu processing_us_max=%llu "
+        "epoch=%lu capture_mask=0x%x comparable_mask=0x%x "
+        "span_end=%u carry_in=%u software_missing=%lu",
+        (unsigned long)s_diag.last_pcm_seq,
+        (unsigned long)s_diag.pcm_jobs_taken,
+        (unsigned long long)s_pcm_diag.checked,
+        (unsigned long long)s_pcm_diag.stale_before_access,
+        (unsigned long long)s_pcm_diag.reuse_during_access,
+        (unsigned long long)s_pcm_diag.queue_age.count,
+        (unsigned long long)s_pcm_diag.queue_age.last_us,
+        (unsigned long long)s_pcm_diag.queue_age.max_us,
+        (unsigned long long)s_pcm_diag.processing_age.count,
+        (unsigned long long)s_pcm_diag.processing_age.last_us,
+        (unsigned long long)s_pcm_diag.processing_age.max_us,
+        (unsigned long)s_diag.epoch,
+        (unsigned)s_pcm_diag.captured_mask,
+        (unsigned)s_pcm_diag.comparable_mask,
+        (unsigned)s_pcm_diag.span_end,
+        (unsigned)s_pcm_diag.carried_frames,
+        (unsigned long)s_pcm_diag.software_missing_frames
+    );
+    for (uint8_t ch = 0; ch < s_pcm_diag.live_count && ch < SP_MIC_COUNT_MAX; ++ch) {
+        const ae_pcm_span_diag_t *span = &s_pcm_diag.channels[ch];
+        ESP_LOGI(
+            TAG,
+            "diag pcm seq=%lu ch=%u captured=%lu retained=%zu cap_discarded=%lu "
+            "cap_discard_total=%llu cap_discard_max=%lu",
+            (unsigned long)s_diag.last_pcm_seq,
+            (unsigned)ch,
+            (unsigned long)span->captured,
+            span->retained,
+            (unsigned long)span->discarded,
+            (unsigned long long)span->discard_total,
+            (unsigned long)span->discard_max
+        );
+    }
     {
         const uint32_t an = s_diag.analyze_n;
         const uint32_t pn = s_diag.post_dsp_n;
@@ -165,6 +211,9 @@ esp_err_t ae_device_start(void)
         return ESP_OK;
     }
     memset(&s_diag, 0, sizeof(s_diag));
+#if CONFIG_DBMAP_EAR_AE_DIAG
+    memset(&s_pcm_diag, 0, sizeof(s_pcm_diag));
+#endif
     s_diag_publish_count = 0u;
 #if defined(CONFIG_DBMAP_EAR_AE_SIG_CAPTURE) && CONFIG_DBMAP_EAR_AE_SIG_CAPTURE
     /* Session id = boot-relative seconds so console captures are correlatable. */
@@ -244,13 +293,29 @@ esp_err_t ae_device_poll(void)
     s_diag.last_pcm_end_us = job->window_end_mono_us;
 
     if (job->samples == NULL || job->sample_count == 0) {
+        (void)sp_mic_release_pcm_job(job->lease_token);
         s_diag.analyze_fail++;
         return ESP_ERR_INVALID_STATE;
     }
 
+#if CONFIG_DBMAP_EAR_AE_DIAG
+    ae_pcm_diag_record_spans(&s_pcm_diag, &wjob);
+#endif
     const int64_t t_analyze0 = esp_timer_get_time();
+#if CONFIG_DBMAP_EAR_AE_DIAG
+    const uint32_t generation_before = sp_mic_pcm_job_bank_generation(job);
+#endif
     const esp_err_t an = dbmap_ear_acoustic_analyze_pcm_job(job);
+#if CONFIG_DBMAP_EAR_AE_DIAG
+    const uint32_t generation_after = sp_mic_pcm_job_bank_generation(job);
+#endif
     const int64_t t_analyze1 = esp_timer_get_time();
+    (void)sp_mic_release_pcm_job(job->lease_token);
+#if CONFIG_DBMAP_EAR_AE_DIAG
+    /* Account for the access bracket even on analysis failure. */
+    ae_pcm_diag_record_check(&s_pcm_diag, job->bank_generation, generation_before, generation_after);
+    sp_mic_time_diag_record(&s_pcm_diag.queue_age, job->window_end_mono_us, t_analyze0);
+#endif
     const uint32_t analyze_us =
         (t_analyze1 > t_analyze0) ? (uint32_t)(t_analyze1 - t_analyze0) : 0u;
     if (an != ESP_OK) {
@@ -367,7 +432,7 @@ esp_err_t ae_device_poll(void)
     }
 
     const uint32_t last = ae_last_window_seq(&s_ae);
-    const uint32_t ow_now = sp_mic_pcm_pending_overwrite();
+    const uint32_t ow_now = job->pending_overwrites_at_take;
     const ae_window_gap_t gap = ae_window_gap_eval(
         last,
         job->window_seq,
@@ -413,6 +478,9 @@ esp_err_t ae_device_poll(void)
         const int64_t t_post1 = esp_timer_get_time();
         const uint32_t pus =
             (t_post1 > t_analyze1) ? (uint32_t)(t_post1 - t_analyze1) : 0u;
+#if CONFIG_DBMAP_EAR_AE_DIAG
+        sp_mic_time_diag_record(&s_pcm_diag.processing_age, job->window_end_mono_us, t_post1);
+#endif
         s_diag.post_dsp_n++;
         s_diag.post_dsp_us_last = pus;
         s_diag.post_dsp_us_sum += pus;

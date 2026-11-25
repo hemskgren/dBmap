@@ -158,10 +158,13 @@ run_host_tests() {
     "${SP_AUDIO}/sp_acoustic_l2.c" \
     "${SP_AUDIO}/test_host/test_acoustic_golden.c" || host_fail=1
   run_host_one audio_analyze_multimic \
-    ${sp_inc} \
+    ${sp_inc} "-I${SP_MIC}" "-I${SP_MIC}/include" \
+    "-I${FIRMWARE_ROOT}/platform/node_common/include" \
     -DCONFIG_SP_AUDIO_L0=1 -DCONFIG_SP_AUDIO_L1=1 -DCONFIG_SP_AUDIO_L2=1 \
     "${SP_AUDIO}/sp_acoustic_l0.c" "${SP_AUDIO}/sp_acoustic_l1.c" \
     "${SP_AUDIO}/sp_acoustic_l2.c" "${SP_AUDIO}/sp_audio_analyze.c" \
+    "${SP_MIC}/sp_mic_window_job.c" "${SP_MIC}/ear_mic_channel_api.c" \
+    "${SP_MIC}/audio_metrics.c" \
     "${SP_AUDIO}/test_host/test_audio_analyze_multimic.c" || host_fail=1
 
   section "Host Platform mic tests (migration-relevant)"
@@ -171,6 +174,10 @@ run_host_tests() {
     ${mic_inc} \
     "${SP_MIC}/i2s_stereo.c" "${SP_MIC}/audio_metrics.c" \
     "${SP_MIC}/test_host/test_stereo_unpack.c" || host_fail=1
+  run_host_one sp_mic_frame_cursor \
+    ${mic_inc} \
+    "${SP_MIC}/i2s_stereo.c" "${SP_MIC}/audio_metrics.c" \
+    "${SP_MIC}/test_host/test_sp_mic_frame_cursor.c" || host_fail=1
   run_host_one sp_mic_window_job \
     ${mic_inc} \
     "${SP_MIC}/sp_mic_window_job.c" "${SP_MIC}/ear_mic_channel_api.c" \
@@ -275,23 +282,27 @@ run_host_tests() {
   if [[ -f "${EAR_AE_RT}/test_host/test_ae_device_intake.c" \
     && -f "${EAR_AE_RT}/ae_device.c" \
     && -f "${SP_MIC}/sp_mic_window_job.c" ]]; then
-    run_host_one ae_device_intake \
-      -DCONFIG_DBMAP_EAR_AUDIO_ENGINE=1 -DCONFIG_SP_AUDIO_L0=1 \
-      "-I${EAR_AE_RT}/test_host/host_shim" \
-      "-I${EAR_AE_RT}/test_host" \
-      "-I${EAR_AE_RT}/include" \
-      ${ae_inc} "-I${SP_MIC}" \
-      "${SP_AUDIO}/sp_acoustic_l0.c" "${SP_AUDIO}/sp_audio_analyze.c" \
-      "${SP_MIC}/sp_mic_window_job.c" "${SP_MIC}/ear_mic_channel_api.c" \
-      "${SP_MIC}/audio_metrics.c" \
-      "${EAR_AC}/ear_acoustic_runtime.c" \
-      "${EAR_AE}/ae_align.c" "${EAR_AE}/ae_stereo.c" "${EAR_AE}/ae_gap.c" \
-      "${EAR_AE}/ae_signature.c" "${EAR_AE}/ae_history.c" \
-      "${EAR_AE}/ae_time.c" "${EAR_AE}/ae_engine.c" \
-      "${EAR_AE_RT}/ae_sig_capture.c" \
-      "${EAR_AE_RT}/ae_device.c" \
-      "${EAR_AE_RT}/test_host/host_mic_facade.c" \
-      "${EAR_AE_RT}/test_host/test_ae_device_intake.c" || host_fail=1
+    local ae_diag
+    for ae_diag in 0 1; do
+      run_host_one "ae_device_intake_diag_${ae_diag}" \
+        "-DCONFIG_DBMAP_EAR_AE_DIAG=${ae_diag}" -DCONFIG_DBMAP_EAR_AE_DIAG_EVERY_N=1 \
+        -DCONFIG_DBMAP_EAR_AUDIO_ENGINE=1 -DCONFIG_SP_AUDIO_L0=1 \
+        "-I${EAR_AE_RT}/test_host/host_shim" \
+        "-I${EAR_AE_RT}/test_host" \
+        "-I${EAR_AE_RT}/include" \
+        ${ae_inc} "-I${SP_MIC}" \
+        "${SP_AUDIO}/sp_acoustic_l0.c" "${SP_AUDIO}/sp_audio_analyze.c" \
+        "${SP_MIC}/sp_mic_window_job.c" "${SP_MIC}/ear_mic_channel_api.c" \
+        "${SP_MIC}/audio_metrics.c" \
+        "${EAR_AC}/ear_acoustic_runtime.c" \
+        "${EAR_AE}/ae_align.c" "${EAR_AE}/ae_stereo.c" "${EAR_AE}/ae_gap.c" \
+        "${EAR_AE}/ae_signature.c" "${EAR_AE}/ae_history.c" \
+        "${EAR_AE}/ae_time.c" "${EAR_AE}/ae_engine.c" \
+        "${EAR_AE_RT}/ae_sig_capture.c" \
+        "${EAR_AE_RT}/ae_device.c" \
+        "${EAR_AE_RT}/test_host/host_mic_facade.c" \
+        "${EAR_AE_RT}/test_host/test_ae_device_intake.c" || host_fail=1
+    done
   else
     record_fail "host/ae_device_intake (sources/tests not in tree)"
     host_fail=1
@@ -435,6 +446,19 @@ run_host_tests() {
         "${EAR_OBS}/ear_obs_lifecycle_section.c" \
         "${PLAT_OBS}/observation_lifecycle.c" \
         "${EAR_OBS}/test_host/test_ear_obs_manager.c" || host_fail=1
+      run_host_one pcm_window_replay \
+        ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" "-I${SP_MIC}" \
+        -DCONFIG_SP_AUDIO_L0=1 -DCONFIG_SP_AUDIO_L1=1 -DCONFIG_SP_AUDIO_L2=1 \
+        "${ce_srcs[@]}" \
+        "${SP_AUDIO}/sp_acoustic_l0.c" "${SP_AUDIO}/sp_acoustic_l1.c" \
+        "${SP_AUDIO}/sp_acoustic_l2.c" "${SP_AUDIO}/sp_audio_analyze.c" \
+        "${SP_MIC}/audio_metrics.c" \
+        "${PLAT_OBS}/episode_registry.c" "${PLAT_OBS}/observation_lifecycle.c" \
+        "${EAR_OBS}/ear_cls_progressive.c" "${EAR_OBS}/ear_cls_as001.c" \
+        "${EAR_OBS}/ear_obs_manager.c" "${EAR_OBS}/ear_promotion_policy.c" \
+        "${EAR_OBS}/ear_obs_start_retain.c" "${EAR_OBS}/ear_sig_product.c" \
+        "${EAR_OBS}/ear_obs_lifecycle_section.c" "${EAR_OBS}/activity_detector.c" \
+        "${EAR_OBS}/test_host/test_pcm_window_replay.c" || host_fail=1
       run_host_one ear_obs_start_publish \
         ${ae_inc} "-I${EAR_OBS}/include" "-I${PLAT_OBS}/include" \
         "${PLAT_OBS}/observation_lifecycle.c" \
@@ -713,12 +737,12 @@ configure_isolated() {
 
 build_audio_archive() {
   local build_dir="$1"
-  ninja -C "${build_dir}" esp-idf/audio/libaudio.a >/dev/null
+  ninja --quiet -C "${build_dir}" esp-idf/audio/libaudio.a
 }
 
 build_ear_acoustic_archive() {
   local build_dir="$1"
-  ninja -C "${build_dir}" esp-idf/ear_acoustic/libear_acoustic.a >/dev/null
+  ninja --quiet -C "${build_dir}" esp-idf/ear_acoustic/libear_acoustic.a
 }
 
 run_modularity_checks() {
@@ -771,13 +795,13 @@ run_modularity_checks() {
       -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults" \
       set-target esp32s3
   ) >/dev/null
-  build_audio_archive "${ear_build}"
+  build_audio_archive "${ear_build}" || { record_fail "modularity/ear_full_audio_build"; return 1; }
   expect_members "modularity/ear_full_audio_archive" \
     "${ear_build}/esp-idf/audio/libaudio.a" \
     sp_acoustic_l0.c.obj sp_audio_analyze.c.obj \
     sp_acoustic_l1.c.obj sp_acoustic_l2.c.obj \
     || mod_fail=1
-  build_ear_acoustic_archive "${ear_build}"
+  build_ear_acoustic_archive "${ear_build}" || { record_fail "modularity/ear_runtime_build"; return 1; }
   expect_members "modularity/ear_runtime_archive" \
     "${ear_build}/esp-idf/ear_acoustic/libear_acoustic.a" \
     ear_acoustic_runtime.c.obj \
@@ -795,7 +819,7 @@ run_modularity_checks() {
   # B) L0-only
   log "Configuring L0-only…"
   configure_isolated "l0-only" "${overlays}/l0_only.defaults"
-  build_audio_archive "${GATE_ROOT}/l0-only"
+  build_audio_archive "${GATE_ROOT}/l0-only" || { record_fail "modularity/l0_only_build"; return 1; }
   expect_members "modularity/l0_only_archive" \
     "${GATE_ROOT}/l0-only/esp-idf/audio/libaudio.a" \
     sp_acoustic_l0.c.obj sp_audio_analyze.c.obj \
@@ -811,7 +835,7 @@ run_modularity_checks() {
   # C) L0+L1
   log "Configuring L0+L1…"
   configure_isolated "l0-l1" "${overlays}/l0_l1.defaults"
-  build_audio_archive "${GATE_ROOT}/l0-l1"
+  build_audio_archive "${GATE_ROOT}/l0-l1" || { record_fail "modularity/l0_l1_build"; return 1; }
   expect_members "modularity/l0_l1_archive" \
     "${GATE_ROOT}/l0-l1/esp-idf/audio/libaudio.a" \
     sp_acoustic_l0.c.obj sp_audio_analyze.c.obj sp_acoustic_l1.c.obj \

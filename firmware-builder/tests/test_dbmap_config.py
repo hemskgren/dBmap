@@ -120,6 +120,7 @@ def test_ear_effective_config_highlights_defaults_overrides(real_firmware_target
     assert observation["EAR_OBS_L2"] is True
     assert observation["EAR_OBS_L2_PUBLISH"] is True
     assert observation["EAR_OBS_SERIAL_DIAG"] is True
+    assert observation["EAR_OBS_DECISION_DIAG"] is True
     assert observation["EAR_AE_SIG_CAPTURE"] is True
     assert observation["EAR_OBS_RELATIVE_END"] is True
     assert observation["EAR_OBS_REL_RETURN_MARGIN_DB_X1000"] == 4000
@@ -134,10 +135,29 @@ def test_ear_effective_config_highlights_defaults_overrides(real_firmware_target
     assert payload["config"]["sp"]["version"] == "0.2.0"
     highlight_keys = {row["key"] for row in payload["highlights"]}
     assert "EAR_OBS_SERIAL_DIAG" in highlight_keys
+    assert "EAR_OBS_DECISION_DIAG" in highlight_keys
     assert "EAR_OBS_PUBLISH_L0" in highlight_keys
     assert "EAR_OBS_L2" in highlight_keys
     assert "EAR_AE_SIG_CAPTURE" in highlight_keys
     # EAR_MIC_L0 and Relative END match Kconfig default y → not defaults-file highlights.
+
+
+def test_ear_decision_diag_can_be_disabled_by_target_override(
+    tmp_path, monkeypatch, real_firmware_targets
+):
+    source = REPO_FIRMWARE / "esp-ear" / "sdkconfig.defaults"
+    tmp_path.joinpath("sdkconfig.defaults").write_bytes(source.read_bytes())
+    tmp_path.joinpath("sdkconfig.defaults.esp32s3").write_text(
+        "# CONFIG_DBMAP_EAR_OBS_DECISION_DIAG is not set\n", encoding="utf-8"
+    )
+    target = server.TARGETS["ear-esp32-s3"]
+    monkeypatch.setitem(server.TARGETS, "ear-esp32-s3", {**target, "project": tmp_path})
+
+    payload = server._target_dbmap_config("ear-esp32-s3")
+    assert (
+        payload["config"]["product"]["dbmap"]["observation"]["EAR_OBS_DECISION_DIAG"]
+        is False
+    )
 
 
 def test_output_effective_config_includes_output_group(real_firmware_targets):
@@ -155,11 +175,14 @@ def test_format_log_block_mentions_pre_build():
     text = dbmap_config.format_log_block(
         {
             "source": "effective",
-            "config": {"sp": {"node": {"NODE_TYPE_EAR": True}}, "product": {"dbmap": {}}},
+            "config": {
+                "sp": {"node": {"NODE_TYPE_EAR": True}},
+                "product": {"dbmap": {}},
+            },
             "highlights": [],
         }
     )
-    assert "Effective firmware config (pre-build" in text
+    assert "Resolved firmware config preview (pre-build" in text
     assert '"NODE_TYPE_EAR": true' in text
     json.loads(text.split(":\n", 1)[1])
 
@@ -181,6 +204,7 @@ def test_defaults_file_dbmap_config_is_overrides_only(real_firmware_targets):
     acoustic = ear["product"]["dbmap"]["acoustic"]
     assert acoustic["EAR_MIC_L0"] is True
     assert observation["EAR_OBS_SERIAL_DIAG"] is True
+    assert observation["EAR_OBS_DECISION_DIAG"] is True
     assert observation["EAR_AE_SIG_CAPTURE"] is True
     assert observation["EAR_OBS_L2"] is True
     assert observation["EAR_OBS_L2_PUBLISH"] is True
@@ -256,3 +280,97 @@ def test_sp_version_independent_of_firmware_series(real_firmware_targets):
     assert 'CONFIG_DBMAP_FIRMWARE_VERSION="0.8.0"' in defaults_text
     assert sp_ver == "0.2.0"
     assert sp_ver != "0.8.0"
+
+
+@pytest.mark.parametrize(
+    ("profile", "capture", "ae", "serial", "decision", "csv"),
+    [
+        ("production", False, False, False, False, False),
+        ("development", False, False, True, False, False),
+        ("pcm-verification", True, True, True, False, False),
+        ("acoustic-diagnosis", False, False, True, True, False),
+        ("full-diagnostics", True, True, True, True, True),
+        ("calibration", False, False, True, True, True),
+    ],
+)
+def test_named_ear_profile(
+    real_firmware_targets, profile, capture, ae, serial, decision, csv
+):
+    resolved = server._target_dbmap_config("ear-esp32-s3", profile)
+    settings = {
+        "CONFIG_SP_MIC_CAPTURE_DIAG": capture,
+        "CONFIG_DBMAP_EAR_AUDIO_ENGINE": True,
+        "CONFIG_DBMAP_EAR_AE_DIAG": ae,
+        "CONFIG_DBMAP_EAR_AE_DIAG_EVERY_N": 10 if ae else None,
+        "CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG": serial,
+        "CONFIG_DBMAP_EAR_OBS_DECISION_DIAG": decision,
+        "CONFIG_DBMAP_EAR_AE_SIG_CAPTURE": csv,
+        "CONFIG_DBMAP_DIAG_ENABLED": True,
+        "CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS": False,
+    }
+    diag = resolved["diagnostics"]
+    assert resolved["profile"] == profile
+    assert diag["requested"] == settings
+    assert {key: entry["value"] for key, entry in diag["preview"].items()} == settings
+    assert diag["preview"]["CONFIG_SP_MIC_CAPTURE_DIAG"][
+        "source"
+    ] == dbmap_config.diagnostic_overlay(profile)
+    assert "generated" not in diag
+    catalog = dbmap_config.resolve_defaults_file_dbmap_config(
+        node_type="ear",
+        chip="esp32s3",
+        project=REPO_FIRMWARE / "esp-ear",
+        profile=profile,
+    )
+    assert catalog["product"]["dbmap"]["observation"]["EAR_AE_SIG_CAPTURE"] is csv
+    assert "diagnostics" not in catalog
+
+
+def test_preview_without_profile_preserves_ear_and_output(real_firmware_targets):
+    legacy = server._target_dbmap_config("ear-esp32-s3")
+    assert "profile" not in legacy
+    assert legacy["diagnostics"]["requested"] == {}
+    full = server._target_dbmap_config("ear-esp32-s3", "full-diagnostics")
+    assert {
+        key: entry["value"] for key, entry in legacy["diagnostics"]["preview"].items()
+    } == full["diagnostics"]["requested"]
+    assert "diagnostics" not in server._target_dbmap_config("output-esp32")
+
+
+def test_preview_layers_match_idf_companion_order(tmp_path):
+    overlay = dbmap_config.diagnostic_overlay("pcm-verification")
+    for filename, value in (
+        ("sdkconfig.defaults", 2),
+        ("sdkconfig.defaults.esp32s3", 3),
+        (overlay, 10),
+        (f"{overlay}.esp32s3", 12),
+    ):
+        (tmp_path / filename).write_text(
+            f"{dbmap_config.AE_DIAG}=y\n{dbmap_config.AE_CADENCE}={value}\n",
+            encoding="utf-8",
+        )
+    layers = dbmap_config.defaults_files(tmp_path, "esp32s3", "pcm-verification")
+    assert dbmap_config.diagnostic_preview(layers, {})[dbmap_config.AE_CADENCE] == {
+        "value": 12,
+        "source": f"{overlay}.esp32s3",
+    }
+
+
+def test_generated_diagnostic_parser_and_mismatch():
+    diag = dbmap_config.generated_diagnostic_settings(
+        "# CONFIG_SP_MIC_CAPTURE_DIAG is not set\n"
+        "CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG=n\n"
+        "CONFIG_DBMAP_EAR_AE_DIAG_EVERY_N=10\n"
+        'CONFIG_DBMAP_WIFI_PASSWORD="never exposed"\n'
+    )
+    assert diag["CONFIG_SP_MIC_CAPTURE_DIAG"] is False
+    assert diag["CONFIG_DBMAP_EAR_OBS_SERIAL_DIAG"] is False
+    assert diag[dbmap_config.AE_CADENCE] is None
+    assert set(diag) == dbmap_config.DIAGNOSTIC_DEFAULTS.keys()
+    assert dbmap_config.diagnostic_mismatches({dbmap_config.AE_DIAG: True}, diag) == [
+        f"{dbmap_config.AE_DIAG}: requested y, generated n"
+    ]
+    active = dbmap_config.generated_diagnostic_settings(f"{dbmap_config.AE_DIAG}=y\n")
+    assert dbmap_config.diagnostic_mismatches(
+        {dbmap_config.AE_CADENCE: 10}, active
+    ) == [f"{dbmap_config.AE_CADENCE}: requested 10, generated missing"]

@@ -1,17 +1,10 @@
 /**
  * Host tests: Platform multi-mic analysis (every active mic × enabled layers).
  *
- *   cc -std=c11 -Wall -Wextra -O2 -lm \
- *     -DCONFIG_SP_AUDIO_L0=1 -DCONFIG_SP_AUDIO_L1=1 -DCONFIG_SP_AUDIO_L2=1 \
- *     -I firmware/platform/audio/include \
- *     firmware/platform/audio/sp_acoustic_l0.c \
- *     firmware/platform/audio/sp_acoustic_l1.c \
- *     firmware/platform/audio/sp_acoustic_l2.c \
- *     firmware/platform/audio/sp_audio_analyze.c \
- *     firmware/platform/audio/test_host/test_audio_analyze_multimic.c \
- *     -o /tmp/test_audio_analyze_multimic && /tmp/test_audio_analyze_multimic
+ * Run via firmware/scripts/run_firmware_fast_gate.sh --host-only.
  */
 #include "sp_audio_analyze.h"
+#include "sp_mic_window_job_slot.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -201,9 +194,76 @@ static void test_silence_channel_no_leak(void)
     EXPECT(out.channels[1].channel_id == 1u);
 }
 
+static void test_leased_pcm_feature_parity(void)
+{
+    static int32_t storage[SP_MIC_COUNT_MAX][2][k_n];
+    static sp_audio_analyze_ctx_t direct_ctx, leased_ctx;
+    int32_t *banks[SP_MIC_COUNT_MAX][2];
+    int32_t *direct[SP_MIC_COUNT_MAX] = {0};
+    const int bank = sp_mic_window_slot_begin_fill();
+    EXPECT(bank >= 0);
+    if (bank < 0) {
+        return;
+    }
+    sp_mic_window_slot_pending_t pending = {
+        .buf_idx = bank,
+        .pcm_channel_mask = (1u << SP_MIC_COUNT_MAX) - 1u,
+        .live_mic_count = SP_MIC_COUNT_MAX,
+        .window_ms = k_window_ms,
+        .full_scale_bits = k_fs_bits,
+        .window_seq = 1,
+        .window_end_mono_us = 1000000,
+    };
+    for (uint8_t ch = 0; ch < SP_MIC_COUNT_MAX; ++ch) {
+        banks[ch][0] = storage[ch][0];
+        banks[ch][1] = storage[ch][1];
+        direct[ch] = banks[ch][bank];
+        fill_tone(direct[ch], k_n, 440.0 * (ch + 1u), 0.15);
+        pending.sample_count_ch[ch] = k_n;
+    }
+    EXPECT(sp_mic_window_slot_publish(&pending));
+    sp_mic_window_slot_pending_t leased;
+    EXPECT(sp_mic_window_slot_take(&leased, false));
+    sp_mic_pcm_job_t pcm;
+    EXPECT(sp_mic_window_slot_project_pcm(&leased, banks, &pcm));
+
+    sp_audio_analyze_input_t direct_input, leased_input;
+    make_input(&direct_input, pending.pcm_channel_mask, pending.window_seq,
+               pending.window_end_mono_us, direct, k_n);
+    leased_input = (sp_audio_analyze_input_t){
+        .pcm_channel_mask = pcm.pcm_channel_mask,
+        .window_seq = pcm.window_seq,
+        .window_ms = pcm.window_ms,
+        .window_end_mono_us = pcm.window_end_mono_us,
+        .full_scale_bits = pcm.full_scale_bits,
+    };
+    for (uint8_t ch = 0; ch < SP_MIC_COUNT_MAX; ++ch) {
+        leased_input.samples_ch[ch] = pcm.samples_ch[ch];
+        leased_input.sample_count_ch[ch] = pcm.sample_count_ch[ch];
+    }
+    sp_audio_window_result_t direct_out, leased_out;
+    sp_audio_analyze_ctx_init(&direct_ctx, k_rate);
+    sp_audio_analyze_ctx_init(&leased_ctx, k_rate);
+    EXPECT(sp_audio_analyze_channels(&direct_ctx, &direct_input, SP_MIC_COUNT_MAX, &direct_out)
+           == SP_AUDIO_ANALYZE_OK);
+    const int other = sp_mic_window_slot_begin_fill();
+    EXPECT(other == (bank ^ 1));
+    if (other >= 0) {
+        for (uint8_t ch = 0; ch < SP_MIC_COUNT_MAX; ++ch) {
+            memset(banks[ch][other], 0, sizeof(storage[ch][other]));
+        }
+        sp_mic_window_slot_cancel_fill(other);
+    }
+    EXPECT(sp_audio_analyze_channels(&leased_ctx, &leased_input, SP_MIC_COUNT_MAX, &leased_out)
+           == SP_AUDIO_ANALYZE_OK);
+    EXPECT(memcmp(&direct_out, &leased_out, sizeof(direct_out)) == 0);
+    EXPECT(sp_mic_window_slot_release(pcm.lease_token));
+}
+
 int main(void)
 {
     test_layer_flags();
+    test_leased_pcm_feature_parity();
     test_mic_counts_and_isolation();
     test_missing_channel_explicit();
     test_invalid_args();

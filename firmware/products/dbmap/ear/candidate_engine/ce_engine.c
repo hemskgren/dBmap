@@ -6,6 +6,10 @@
 
 #include <string.h>
 
+#if CONFIG_DBMAP_EAR_OBS_DECISION_DIAG
+#include "esp_log.h"
+#endif
+
 #define CE_MOD_FLAG_PROFILE_MATCH (1u << 8)
 
 static int slot_index_by_id(const ce_engine_t *eng, uint64_t candidate_id)
@@ -246,6 +250,11 @@ void ce_engine_on_signature(ce_engine_t *eng, const ae_signature_t *sig)
     }
 
     const ce_ingest_t in = ce_manager_ingest(eng, sig);
+#if CONFIG_DBMAP_EAR_OBS_DECISION_DIAG
+    ESP_LOGI("ear_dec", "CE seq=%lu cid=%llu action=%u",
+             (unsigned long)sig->window_seq, (unsigned long long)in.candidate_id,
+             (unsigned)in.action);
+#endif
     switch (in.action) {
     case CE_INGEST_UNUSABLE:
         /* Invalid evidence is explicit and does not create or promote. */

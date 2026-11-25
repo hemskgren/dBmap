@@ -6,6 +6,11 @@
 
 #include <string.h>
 
+#if CONFIG_DBMAP_EAR_OBS_DECISION_DIAG
+#include "esp_log.h"
+#include <math.h>
+#endif
+
 #if defined(ESP_PLATFORM)
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
@@ -211,16 +216,38 @@ static void eval_distance_def(
     a->allows_promote = 0u;
     a->consecutive = 0u;
     if (kind != SIG_EV_USABLE || d->distance_profile == NULL) {
+#if CONFIG_DBMAP_EAR_OBS_DECISION_DIAG
+        if (d->id == AS_PROFILE_ID_AS001) {
+            ESP_LOGI("ear_dec", "AS001 seq=%lu gate=not_evaluated q=%u",
+                     (unsigned long)sig->window_seq, (unsigned)sig->quality);
+        }
+#endif
         return;
     }
     as_profile_match_result_t r;
     const as_profile_t *p = d->distance_profile;
     bool matched;
+#if CONFIG_DBMAP_EAR_OBS_DECISION_DIAG
+    const as_profile_bg_state_t bg_before = s_eng.as001_bg;
+#endif
     if (p->uses_rms_rel_bg) {
         matched = as_profile_match_with_bg(p, sig, &s_eng.as001_bg, &r);
     } else {
         matched = as_profile_match(p, sig, &r);
     }
+#if CONFIG_DBMAP_EAR_OBS_DECISION_DIAG
+    if (d->id == AS_PROFILE_ID_AS001) {
+        const bool scored = r.gate != NULL
+                            && (!strcmp(r.gate, "match") || !strcmp(r.gate, "distance"));
+        ESP_LOGI("ear_dec", "AS001 seq=%lu gate=%s q=%u rms=%.2f bg=%.2f bg_ok=%d min=%.2f dist=%.2f",
+                 (unsigned long)sig->window_seq, r.gate != NULL ? r.gate : "unknown",
+                 (unsigned)sig->quality, (double)sig->rms_dbfs,
+                 bg_before.bg_valid ? (double)bg_before.bg_rms_ema : NAN,
+                 bg_before.bg_valid,
+                 bg_before.bg_valid ? (double)(bg_before.bg_rms_ema + p->rms_bg_margin_db) : NAN,
+                 scored ? (double)r.distance : NAN);
+    }
+#endif
     if (matched && r.matched) {
         a->matched = 1u;
         a->score = r.distance;
