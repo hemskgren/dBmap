@@ -22,13 +22,16 @@ from lib.hub_cli import (
     print_help_without_arguments,
 )
 from publish_safety import (
-    HUB_HOST,
     HUB_PORT,
-    TEST_CA,
+    HUB_URL,
     NoRedirect,
+    add_ca_argument,
     add_live_mqtt_argument,
+    add_mqtt_arguments,
+    load_simulator_environment,
     require_identity,
-    require_live,
+    resolve_mqtt_destination,
+    resolve_repo_path,
     validate_api_destination,
     validate_publish,
 )
@@ -49,6 +52,15 @@ def resolve_credentials_file(args: argparse.Namespace) -> str:
     if getattr(args, "credentials_file", None):
         return args.credentials_file
     return credentials_file_for_ear(getattr(args, "ear", DEFAULT_EAR))
+
+
+def admin_token_for_destination(api_url: str) -> tuple[str, str]:
+    variable = (
+        "DBMAP_TEST_HUB_ADMIN_TOKEN"
+        if api_url == HUB_URL
+        else "DBMAP_ADMIN_TOKEN"
+    )
+    return variable, os.environ.get(variable, "")
 
 
 def _observation_body():
@@ -78,10 +90,23 @@ def _keepalive_helpers():
 
 
 def publish_ear_keepalive(
-    credentials: dict, ca_file: str, *, uptime_s: int = 0, live: bool = False
+    credentials: dict,
+    ca_file: str,
+    *,
+    uptime_s: int = 0,
+    live: bool = False,
+    mqtt_host: str | None = None,
+    mqtt_port: int | None = None,
 ) -> None:
     make_keepalive, publish_keepalive = _keepalive_helpers()
-    publish_keepalive(credentials, ca_file, make_keepalive(credentials, uptime_s), live=live)
+    publish_keepalive(
+        credentials,
+        ca_file,
+        make_keepalive(credentials, uptime_s),
+        live=live,
+        mqtt_host=mqtt_host,
+        mqtt_port=mqtt_port,
+    )
 
 
 class UnsupportedSimulatorIdentity(RuntimeError):
@@ -273,15 +298,40 @@ def finish_provisioning(
         "next_sequence_number": 1,
         "pending_observation": observation,
     }
-    validate_publish(result, observation, "observation", live=args.live_mqtt)
-    validate_publish(result, {"node_id": result["node_id"]}, "keepalive", live=args.live_mqtt)
-    save_credentials(Path(args.credentials_file), result)
+    mqtt_options = _mqtt_options(args)
+    validate_publish(
+        result, observation, "observation", live=args.live_mqtt, **mqtt_options
+    )
+    validate_publish(
+        result,
+        {"node_id": result["node_id"]},
+        "keepalive",
+        live=args.live_mqtt,
+        **mqtt_options,
+    )
+    credentials_path = getattr(
+        args, "credentials_path", resolve_repo_path(args.credentials_file)
+    )
+    save_credentials(credentials_path, result)
     return result
 
 
+def _mqtt_options(args: argparse.Namespace) -> dict[str, str | int]:
+    return {
+        key: value
+        for key, value in (
+            ("mqtt_host", getattr(args, "mqtt_host", None)),
+            ("mqtt_port", getattr(args, "mqtt_port", None)),
+        )
+        if value is not None
+    }
+
+
 def load_or_provision(args: argparse.Namespace, admin_token: str) -> dict:
-    require_live(args.live_mqtt)
-    credentials_path = Path(args.credentials_file)
+    credentials_path = getattr(
+        args, "credentials_path", resolve_repo_path(args.credentials_file)
+    )
+    mqtt_options = _mqtt_options(args)
     if args.reuse_credentials:
         if credentials_path.stat().st_mode & 0o077:
             raise PermissionError(
@@ -290,13 +340,28 @@ def load_or_provision(args: argparse.Namespace, admin_token: str) -> dict:
         with credentials_path.open(encoding="utf-8") as stream:
             record = json.load(stream)
         if record.get("state") == "pending":
+            if len(admin_token) < 32:
+                raise ValueError(
+                    f"{getattr(args, 'admin_token_env', 'DBMAP_ADMIN_TOKEN')} must be "
+                    "configured to resume provisioning"
+                )
+            validate_api_destination(args.api_url, live=args.live_mqtt)
             return finish_provisioning(args, record, admin_token)
         if record.get("state") == "provisioned":
-            validate_publish(record, record["observation"], "observation", live=args.live_mqtt)
+            validate_publish(
+                record, record["observation"], "observation",
+                live=args.live_mqtt, **mqtt_options,
+            )
             pending = record.get("pending_observation")
             if pending is not None:
-                validate_publish(record, pending, "observation", live=args.live_mqtt)
-            validate_publish(record, {"node_id": record["node_id"]}, "keepalive", live=args.live_mqtt)
+                validate_publish(
+                    record, pending, "observation",
+                    live=args.live_mqtt, **mqtt_options,
+                )
+            validate_publish(
+                record, {"node_id": record["node_id"]}, "keepalive",
+                live=args.live_mqtt, **mqtt_options,
+            )
             record.setdefault(
                 "next_sequence_number",
                 record["observation"]["identity"]["sequence_number"] + 1,
@@ -310,6 +375,11 @@ def load_or_provision(args: argparse.Namespace, admin_token: str) -> dict:
             f"{credentials_path} already exists; use publish (or choose another --ear / --credentials-file)"
         )
 
+    if len(admin_token) < 32:
+        raise ValueError(
+            f"{getattr(args, 'admin_token_env', 'DBMAP_ADMIN_TOKEN')} must be "
+            "configured to provision a simulator Ear"
+        )
     validate_api_destination(args.api_url, live=args.live_mqtt)
     save_credentials(credentials_path, {"state": "creating"}, create=True)
     created = api_request(
@@ -340,18 +410,42 @@ def load_or_provision(args: argparse.Namespace, admin_token: str) -> dict:
     return finish_provisioning(args, pending, admin_token)
 
 
-def publish_observation(credentials: dict, ca_file: str, *, live: bool = False) -> str:
-    return publish_payload(credentials, credentials["observation"], ca_file, live=live)
+def publish_observation(
+    credentials: dict,
+    ca_file: str,
+    *,
+    live: bool = False,
+    mqtt_host: str | None = None,
+    mqtt_port: int | None = None,
+) -> str:
+    return publish_payload(
+        credentials,
+        credentials["observation"],
+        ca_file,
+        live=live,
+        mqtt_host=mqtt_host,
+        mqtt_port=mqtt_port,
+    )
 
 
 def publish_payload(
     credentials: dict, payload: dict, ca_file: str, *,
     live: bool = False, test_context: bool = False,
+    mqtt_host: str | None = None, mqtt_port: int | None = None,
 ) -> str:
     client_id = validate_publish(
-        credentials, payload, "observation", live=live, test_context=test_context
+        credentials,
+        payload,
+        "observation",
+        live=live,
+        test_context=test_context,
+        mqtt_host=mqtt_host,
+        mqtt_port=mqtt_port,
     )
     endpoint = credentials["mqtt"]
+    host, port = resolve_mqtt_destination(
+        endpoint, mqtt_host=mqtt_host, mqtt_port=mqtt_port, live=live
+    )
     topic = credentials["topics"]["observation"]
     _observation_body().model_validate(payload)
 
@@ -364,7 +458,7 @@ def publish_payload(
     client.username_pw_set(endpoint["username"], endpoint["password"])
     client.tls_set(ca_certs=ca_file, cert_reqs=ssl.CERT_REQUIRED)
     try:
-        client.connect(endpoint["host"], endpoint["port"], keepalive=30)
+        client.connect(host, port, keepalive=30)
         client.loop_start()
         info = client.publish(topic, json.dumps(payload), qos=1)
         info.wait_for_publish(timeout=15)
@@ -389,6 +483,8 @@ def publish_observation_batch(
     include_l0: bool = False,
     l0_scenario: str = "quiet_ambient",
     live: bool = False,
+    mqtt_host: str | None = None,
+    mqtt_port: int | None = None,
 ) -> list[str]:
     published_ids = []
     for index in range(count):
@@ -407,11 +503,28 @@ def publish_observation_batch(
         pending["acoustic"]["classification"]["hints"]["simulated_source_id"] = (
             vehicle_id
         )
-        validate_publish(credentials, pending, "observation", live=live)
+        validate_publish(
+            credentials,
+            pending,
+            "observation",
+            live=live,
+            mqtt_host=mqtt_host,
+            mqtt_port=mqtt_port,
+        )
         credentials["pending_observation"] = pending
         save_credentials(credentials_path, credentials)
 
-        observation_id = publish_payload(credentials, pending, ca_file, live=live)
+        mqtt_options = {
+            key: value
+            for key, value in (
+                ("mqtt_host", mqtt_host),
+                ("mqtt_port", mqtt_port),
+            )
+            if value is not None
+        }
+        observation_id = publish_payload(
+            credentials, pending, ca_file, live=live, **mqtt_options
+        )
         published_ids.append(observation_id)
         credentials["next_sequence_number"] = max(
             credentials["next_sequence_number"],
@@ -489,10 +602,9 @@ def build_parser() -> argparse.ArgumentParser:
             "Use add for a new SIM-EAR-* device, publish to reuse credentials."
         )
     )
-    parser.add_argument("--hub-host", default=HUB_HOST)
-    parser.add_argument("--hub-port", type=int, default=HUB_PORT)
-    parser.add_argument("--base-path", default="")
-    parser.add_argument("--ca", default=TEST_CA, help="Path to the isolated test CA")
+    _add_hub_arguments(parser)
+    add_ca_argument(parser)
+    add_mqtt_arguments(parser)
     commands = parser.add_subparsers(dest="command", required=True)
 
     add_cmd = commands.add_parser(
@@ -501,6 +613,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ear_selection_args(add_cmd)
     _add_publish_options(add_cmd)
+    _add_hub_arguments(add_cmd, subcommand=True)
+    add_ca_argument(add_cmd, subcommand=True)
+    add_mqtt_arguments(add_cmd, subcommand=True)
     add_live_mqtt_argument(add_cmd)
 
     publish_cmd = commands.add_parser(
@@ -509,11 +624,48 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ear_selection_args(publish_cmd)
     _add_publish_options(publish_cmd)
+    _add_hub_arguments(publish_cmd, subcommand=True)
+    add_ca_argument(publish_cmd, subcommand=True)
+    add_mqtt_arguments(publish_cmd, subcommand=True)
     add_live_mqtt_argument(publish_cmd)
     return parser
 
 
+def _add_hub_arguments(
+    parser: argparse.ArgumentParser, *, subcommand: bool = False
+) -> None:
+    default = argparse.SUPPRESS if subcommand else None
+    parser.add_argument(
+        "--hub-host",
+        default=default
+        if subcommand
+        else os.environ.get("DBMAP_LAN_IP")
+        or os.environ.get("DBMAP_LOCAL_MQTT_HOST", "hub.local"),
+        help="Configured local Hub host (defaults from project .env)",
+    )
+    parser.add_argument(
+        "--hub-port",
+        type=int,
+        default=default
+        if subcommand
+        else int(os.environ.get("DBMAP_HTTPS_PORT", str(HUB_PORT))),
+        help="Local Hub HTTPS port (default: DBMAP_HTTPS_PORT or 8443)",
+    )
+    parser.add_argument(
+        "--base-path",
+        default=default
+        if subcommand
+        else os.environ.get("DBMAP_PUBLIC_BASE_PATH", ""),
+        help="Configured Hub base path",
+    )
+
+
 def main() -> int:
+    try:
+        load_simulator_environment()
+    except ValueError as exc:
+        print(f"Observation configuration failed: {exc}", file=sys.stderr)
+        return 1
     parser = build_parser()
     if print_help_without_arguments(parser):
         return 0
@@ -527,23 +679,53 @@ def main() -> int:
 
     args.reuse_credentials = args.command == "publish"
     args.credentials_file = resolve_credentials_file(args)
-    if not args.live_mqtt:
-        parser.error("publishing requires --live-mqtt")
-    args.api_url = f"https://{args.hub_host}:{args.hub_port}{args.base_path}"
-    try:
-        validate_api_destination(args.api_url, live=args.live_mqtt)
-    except ValueError as exc:
-        parser.error(str(exc))
-    admin_token = os.environ.get("DBMAP_TEST_HUB_ADMIN_TOKEN", "")
-    credentials_path = Path(args.credentials_file)
+    args.credentials_path = resolve_repo_path(args.credentials_file)
+    base_path = args.base_path.rstrip("/")
+    if base_path and (
+        not base_path.startswith("/")
+        or "//" in base_path
+        or any(part in {".", ".."} for part in base_path.split("/"))
+    ):
+        parser.error("--base-path must be empty or a normalized absolute path")
+    args.api_url = f"https://{args.hub_host}:{args.hub_port}{base_path}"
+    admin_token_env, admin_token = admin_token_for_destination(args.api_url)
+    args.admin_token_env = admin_token_env
+    credentials_path = args.credentials_path
+    ca_file = resolve_repo_path(args.ca)
+    args.ca = str(ca_file)
+    if not ca_file.is_file():
+        parser.error(f"CA file does not exist: {ca_file}")
+    if args.command == "add":
+        if len(admin_token) < 32:
+            parser.error(
+                f"{admin_token_env} must be configured in the project .env file"
+            )
+        try:
+            validate_api_destination(args.api_url, live=args.live_mqtt)
+        except ValueError as exc:
+            parser.error(str(exc))
+    mqtt_options = _mqtt_options(args)
     try:
         credentials = load_or_provision(args, admin_token)
         node_id = credentials["node_id"]
+        mqtt_host, mqtt_port = resolve_mqtt_destination(
+            credentials["mqtt"],
+            live=args.live_mqtt,
+            **mqtt_options,
+        )
+        print(f"MQTT destination: TLS {mqtt_host}:{mqtt_port}", flush=True)
         print(
-            f"Publishing {args.count} observation(s) from {node_id} (--ear {args.ear}):",
+            f"Publishing {args.count} observation(s) from {node_id} "
+            f"(--ear {args.ear}):",
             flush=True,
         )
-        publish_ear_keepalive(credentials, args.ca, uptime_s=0, live=args.live_mqtt)
+        publish_ear_keepalive(
+            credentials,
+            str(ca_file),
+            uptime_s=0,
+            live=args.live_mqtt,
+            **mqtt_options,
+        )
         print(f"  keepalive  {args.ear}  {node_id}", flush=True)
         if args.count == 1:
             if args.include_l0:
@@ -556,9 +738,21 @@ def main() -> int:
                 credentials["pending_observation"] = pending
                 credentials["observation"] = pending
                 save_credentials(credentials_path, credentials)
-                observation_id = publish_payload(credentials, pending, args.ca, live=args.live_mqtt)
+                observation_id = publish_payload(
+                    credentials,
+                    pending,
+                    str(ca_file),
+                    live=args.live_mqtt,
+                    **mqtt_options,
+                )
             else:
-                observation_id = publish_observation(credentials, args.ca, live=args.live_mqtt)
+                observation_id = publish_payload(
+                    credentials,
+                    credentials["observation"],
+                    str(ca_file),
+                    live=args.live_mqtt,
+                    **mqtt_options,
+                )
             credentials["next_sequence_number"] = max(
                 credentials.get("next_sequence_number", 1),
                 credentials["observation"]["identity"]["sequence_number"] + 1,
@@ -572,7 +766,7 @@ def main() -> int:
         else:
             publish_observation_batch(
                 credentials,
-                args.ca,
+                str(ca_file),
                 credentials_path,
                 args.count,
                 args.interval_seconds,
@@ -581,6 +775,7 @@ def main() -> int:
                 include_l0=args.include_l0,
                 l0_scenario=args.l0_scenario,
                 live=args.live_mqtt,
+                **mqtt_options,
             )
     except UnsupportedSimulatorIdentity as exc:
         print(f"Simulator setup failed: {exc}", file=sys.stderr)

@@ -22,9 +22,14 @@ from ear_profile import (
 )
 from lib.hub_cli import print_help_without_arguments
 from publish_safety import (
-    TEST_CA,
+    add_ca_argument,
     add_live_mqtt_argument,
+    add_mqtt_arguments,
+    load_simulator_environment,
     require_identity,
+    resolve_common_mqtt_destination,
+    resolve_mqtt_destination,
+    resolve_repo_path,
     validate_publish,
 )
 from sim_ear_slots import (
@@ -41,7 +46,9 @@ def _cli_has_ear_flag(argv: list[str] | None = None) -> bool:
     return any(token == "--ear" or token.startswith("--ear=") for token in tokens)
 
 
-def resolve_credentials_files(args: argparse.Namespace) -> list[str]:
+def resolve_credentials_files(
+    args: argparse.Namespace, *, repository_relative: bool = False
+) -> list[str]:
     profile_path = getattr(args, "ear_profile", None)
     if profile_path:
         if args.credentials_file:
@@ -49,8 +56,19 @@ def resolve_credentials_files(args: argparse.Namespace) -> list[str]:
         if _cli_has_ear_flag():
             raise ValueError("--ear-profile cannot be combined with --ear")
         try:
-            profile = load_ear_profile(profile_path)
-            paths = resolve_profile_keepalive_paths(profile, require_files=True)
+            profile = load_ear_profile(
+                resolve_repo_path(profile_path) if repository_relative else profile_path
+            )
+            paths = resolve_profile_keepalive_paths(
+                profile, require_files=not repository_relative
+            )
+            if repository_relative:
+                paths = [str(resolve_repo_path(path)) for path in paths]
+            missing = [path for path in paths if not Path(path).is_file()]
+            if repository_relative and missing:
+                raise ValueError(
+                    "EAR profile credential file(s) missing: " + ", ".join(missing)
+                )
         except EarProfileError as exc:
             raise ValueError(str(exc)) from exc
         print(f"EAR profile: {profile_summary(profile)}", flush=True)
@@ -60,11 +78,12 @@ def resolve_credentials_files(args: argparse.Namespace) -> list[str]:
             raise ValueError("--credentials-file cannot be combined with --ear all")
         return [args.credentials_file]
     if args.ear == "all":
-        paths = [
-            credentials_file_for_ear(slot)
-            for slot in EAR_SLOTS
-            if Path(credentials_file_for_ear(slot)).is_file()
-        ]
+        paths = []
+        for slot in EAR_SLOTS:
+            path = credentials_file_for_ear(slot)
+            resolved_path = resolve_repo_path(path) if repository_relative else Path(path)
+            if resolved_path.is_file():
+                paths.append(str(resolved_path) if repository_relative else path)
         if not paths:
             letters = ",".join(EAR_SLOTS)
             raise ValueError(
@@ -146,13 +165,23 @@ def format_keepalive_cycle_report(
 def publish_keepalive(
     credentials: dict, ca_file: str, payload: dict, *,
     live: bool = False, test_context: bool = False,
+    mqtt_host: str | None = None, mqtt_port: int | None = None,
 ) -> None:
     client_id = validate_publish(
-        credentials, payload, "keepalive", live=live, test_context=test_context
+        credentials,
+        payload,
+        "keepalive",
+        live=live,
+        test_context=test_context,
+        mqtt_host=mqtt_host,
+        mqtt_port=mqtt_port,
     )
     import paho.mqtt.client as mqtt
 
     endpoint = credentials["mqtt"]
+    host, port = resolve_mqtt_destination(
+        endpoint, mqtt_host=mqtt_host, mqtt_port=mqtt_port, live=live
+    )
     topic = credentials["topics"]["keepalive"]
     client = mqtt.Client(
         mqtt.CallbackAPIVersion.VERSION2,
@@ -162,7 +191,7 @@ def publish_keepalive(
     client.username_pw_set(endpoint["username"], endpoint["password"])
     client.tls_set(ca_certs=ca_file, cert_reqs=ssl.CERT_REQUIRED)
     try:
-        client.connect(endpoint["host"], endpoint["port"], keepalive=30)
+        client.connect(host, port, keepalive=30)
         client.loop_start()
         deadline = time.monotonic() + 10
         while not client.is_connected() and time.monotonic() < deadline:
@@ -200,9 +229,8 @@ def _add_ear_selection_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Override credentials path (single Ear; cannot combine with --ear all)",
     )
-    parser.add_argument(
-        "--ca", default=TEST_CA, help="Path to the isolated test CA"
-    )
+    add_ca_argument(parser)
+    add_mqtt_arguments(parser)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -235,26 +263,51 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    try:
+        load_simulator_environment()
+    except ValueError as exc:
+        print(f"Keepalive configuration failed: {exc}", file=sys.stderr)
+        return 1
     parser = build_parser()
     if print_help_without_arguments(parser):
         return 0
     args = parser.parse_args()
-    if not args.live_mqtt:
-        parser.error("publishing requires --live-mqtt")
     if args.command == "watch" and args.interval_seconds <= 0:
         parser.error("--interval-seconds must be greater than zero")
-    if not Path(args.ca).is_file():
-        parser.error(f"CA file does not exist: {args.ca}")
+    ca_file = resolve_repo_path(args.ca)
+    if not ca_file.is_file():
+        parser.error(f"CA file does not exist: {ca_file}")
 
     try:
-        credential_paths = resolve_credentials_files(args)
+        credential_paths = resolve_credentials_files(
+            args, repository_relative=True
+        )
         loaded = [
-            (path, load_credentials(Path(path))) for path in credential_paths
+            (path, load_credentials(resolve_repo_path(path)))
+            for path in credential_paths
         ]
+        mqtt_options = {
+            key: value
+            for key, value in (
+                ("mqtt_host", args.mqtt_host),
+                ("mqtt_port", args.mqtt_port),
+            )
+            if value is not None
+        }
         for _, credentials in loaded:
             validate_publish(
-                credentials, make_keepalive(credentials, 0), "keepalive", live=args.live_mqtt
+                credentials,
+                make_keepalive(credentials, 0),
+                "keepalive",
+                live=args.live_mqtt,
+                **mqtt_options,
             )
+        mqtt_host, mqtt_port = resolve_common_mqtt_destination(
+            [credentials for _, credentials in loaded],
+            live=args.live_mqtt,
+            **mqtt_options,
+        )
+        print(f"MQTT destination: TLS {mqtt_host}:{mqtt_port}", flush=True)
         started = time.monotonic()
         while True:
             successes: list[tuple[str, str]] = []
@@ -265,7 +318,13 @@ def main() -> int:
                     payload = make_keepalive(
                         credentials, int(time.monotonic() - started)
                     )
-                    publish_keepalive(credentials, args.ca, payload, live=args.live_mqtt)
+                    publish_keepalive(
+                        credentials,
+                        str(ca_file),
+                        payload,
+                        live=args.live_mqtt,
+                        **mqtt_options,
+                    )
                 except (OSError, ValueError, KeyError, RuntimeError) as exc:
                     failures.append((node_id, path, str(exc)))
                 else:

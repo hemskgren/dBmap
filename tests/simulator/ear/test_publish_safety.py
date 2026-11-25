@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[3] / "simulator" / "ear"))
 import simulate_keepalive
 import simulate_observation
+import simulate_scenario
 from publish_safety import BROKER_HOST, HUB_URL, NoRedirect
 
 PUBLISHERS = {
@@ -172,14 +173,83 @@ def test_http_identity_rejected_before_transport(path, body, identity, transport
 
 
 @pytest.mark.parametrize("module,command", [
-    (simulate_observation, "add"),
-    (simulate_observation, "publish"),
-    (simulate_keepalive, "once"),
-    (simulate_keepalive, "watch"),
+    (simulate_observation, ["add"]),
+    (simulate_observation, ["publish"]),
+    (simulate_keepalive, ["once"]),
+    (simulate_keepalive, ["watch"]),
+    (simulate_scenario, ["run", "--scenario-file", "scenario.json"]),
 ])
-def test_cli_without_opt_in_stops_before_credentials(module, command, monkeypatch, transport):
-    monkeypatch.setattr(sys, "argv", [module.__file__, command])
-    with pytest.raises(SystemExit, match="2"):
-        module.main()
+def test_cli_accepts_configured_local_destination_without_opt_in(
+    module, command
+):
+    parser = module.build_parser()
+    args = parser.parse_args(command)
+    assert args.live_mqtt is False
+
+
+@pytest.mark.parametrize("kind", PUBLISHERS)
+def test_configured_local_tls_destination_does_not_need_opt_in(
+    kind, monkeypatch, transport
+):
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_HOST", "local-hub.example")
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_PORT", "8883")
+    record = credentials("SIM-EAR-001")
+    record["mqtt"]["host"] = "local-hub.example"
+
+    publish(kind, record, live=False)
+
+    transport[0].return_value.connect.assert_called_once_with(
+        "local-hub.example", 8883, keepalive=30
+    )
+
+
+def test_isolated_broker_still_requires_opt_in_when_configured_as_local(
+    monkeypatch, transport
+):
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_HOST", BROKER_HOST)
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_PORT", str(8883))
+
+    with pytest.raises(ValueError, match="explicit --live-mqtt"):
+        publish("keepalive", credentials("SIM-EAR-001"), live=False)
+
+    transport[0].assert_not_called()
+
+
+def test_isolated_hub_still_requires_opt_in_when_configured_as_local(
+    monkeypatch, transport
+):
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_HOST", "hub.ear-test.invalid")
+    monkeypatch.setenv("DBMAP_HTTPS_PORT", "8443")
+
+    with pytest.raises(ValueError, match="explicit --live-mqtt"):
+        simulate_observation.api_request(
+            HUB_URL,
+            "test-ca.crt",
+            "POST",
+            "/api/v1/nodes",
+            {},
+            "fake-token",
+            live=False,
+        )
+
     for call in transport:
         call.assert_not_called()
+
+
+def test_configured_local_hub_is_authorized_without_test_opt_in(monkeypatch):
+    monkeypatch.setenv("DBMAP_LAN_IP", "192.0.2.10")
+    monkeypatch.setenv("DBMAP_LOCAL_MQTT_HOST", "hub.local")
+    monkeypatch.setenv("DBMAP_HTTPS_PORT", "8443")
+    monkeypatch.setenv("DBMAP_PUBLIC_BASE_PATH", "/dbmap")
+
+    simulate_observation.validate_api_destination("https://hub.local:8443/dbmap")
+
+
+def test_destination_errors_never_include_saved_password():
+    record = credentials("SIM-EAR-001")
+    record["mqtt"]["host"] = "unapproved.example"
+
+    with pytest.raises(ValueError) as error:
+        publish("keepalive", record, live=True)
+
+    assert record["mqtt"]["password"] not in str(error.value)

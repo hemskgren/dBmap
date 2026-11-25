@@ -2,17 +2,26 @@
 
 Laptop tools that register `SIM-EAR-*` devices on your Hub and publish MQTT observations. Credentials stay in `shared/simulator/` so you can reuse the same Ears.
 
-Hub host/token come from `.env`. No arguments → help (same as other Hub scripts).
+The three EAR simulator commands share the project configuration: they load the
+repository `.env` automatically, with explicit CLI options taking precedence
+over process environment, `.env`, and built-in defaults. Relative configuration
+paths (including the CA, scenario, profile, and credentials paths) resolve from
+the repository root. No arguments → help.
+
+`DBMAP_LOCAL_MQTT_HOST` / `DBMAP_LOCAL_MQTT_PORT` authorize the normal local
+TLS broker (defaults: `hub.local:8883`); existing provisioned credentials must
+match that destination. Observation provisioning uses `DBMAP_LAN_IP`,
+`DBMAP_HTTPS_PORT`, `DBMAP_PUBLIC_BASE_PATH`, and `DBMAP_ADMIN_TOKEN`. The CA
+defaults to `shared/trust/ca.crt` (or `DBMAP_CA_FILE`). CLI `--hub-*`,
+`--base-path`, `--mqtt-*`, and `--ca` options override these values. Credentials
+and tokens are never printed. The configured local broker is treated as an
+authorized live destination, so verify that `.env` points to the intended
+development Hub before starting a simulator; the tool cannot infer whether a
+configured Hub is production or disposable.
 
 ## Do this first (Ear A)
 
 Hub must be running. From the repo root:
-
-```bash
-set -a
-. ./.env
-set +a
-```
 
 **1. Add Ear A and publish one observation**
 
@@ -166,6 +175,27 @@ Keepalive / publish:
 ./scripts/sim-ear-keepalive watch --ear all   # every a–g file that exists
 ./scripts/sim-ear-keepalive once --ear-profile shared/simulator/ear-profiles/ade.json
 ```
+
+For an already provisioned slot, these are the minimal normal local startup
+commands:
+
+```bash
+./scripts/sim-ear-keepalive watch --ear all
+./scripts/sim-ear-observation publish --ear a
+./scripts/sim-ear-scenario run \
+  --scenario-file simulator/ear/scenarios/helicopter_east_west.json \
+  --ear-profile shared/simulator/ear-profiles/abc.json
+```
+
+`add` is the Observation simulator's first-time provisioning command. Scenario
+`dry-run --scenario-file ... --ear ALIAS=CREDENTIALS_FILE` validates and prints a
+timeline without opening the credentials files or publishing. Normal local TLS
+publishing to the configured `DBMAP_LOCAL_MQTT_*`
+destination does not need `--live-mqtt`. The flag is required for the isolated
+`mqtt.ear-test.invalid:8883` / `hub.ear-test.invalid:8443` test stack. A destination
+that matches neither the configured local broker nor that isolated test broker
+is rejected. Use `--mqtt-host` / `--mqtt-port` only to select one of those authorized
+destinations; TLS certificate verification remains enabled.
 
 ### EAR profiles (preferred for scenarios)
 
@@ -544,7 +574,18 @@ Related: [Local deployment](./local-deployment.md) · [Protocol](./protocol.md)
 | `SIM-EAR-00*` | Simulator devices, including the existing `SIM-EAR-001` |
 | `TST-EAR-00*` | Automated tests, fixtures, and acoustic replay. The first identity is `TST-EAR-001`. |
 
-Offline tests use callbacks and local fixtures. Simulator scenario `dry-run` works without MQTT. Simulator Observation, keepalive, and scenario publish commands require `--live-mqtt`. For example, add it after `publish`, `once`, or `run` respectively. The live publishers accept only TLS `mqtt.ear-test.invalid:8883` and canonical identity, username, client ID, topic, and payload combinations. Simulator provisioning accepts only `https://hub.ear-test.invalid:8443` and reads the isolated Hub token from `DBMAP_TEST_HUB_ADMIN_TOKEN`. Use `--ca` with the isolated stack's CA and use isolated credential files. The simulator commands no longer source the repository's production `.env`. Existing `SIM-EAR-001` payloads and slot mappings still work on the isolated stack. Reprovision saved credentials that point at a different broker.
+Offline tests use callbacks and local fixtures. Simulator scenario `dry-run`
+works without MQTT. The configured local TLS broker is the normal live
+destination and needs no extra flag. `--live-mqtt` is required when using the
+isolated test Hub or broker (`hub.ear-test.invalid:8443` and
+`mqtt.ear-test.invalid:8883`); the publishers still require canonical simulator
+identity, username, client ID, topic, and payload combinations. Isolated provisioning reads `DBMAP_TEST_HUB_ADMIN_TOKEN`, while configured local
+Hub provisioning reads `DBMAP_ADMIN_TOKEN`; token selection follows the
+validated destination, even when both variables are set. Use `--ca` with the
+isolated stack's CA and isolated credentials. The normal project `.env` is loaded
+automatically, but its local broker and Hub settings are not substituted for
+the isolated test endpoints. Saved credentials must point to the selected
+authorized broker.
 
 Run the disposable TLS integration test from the repository root:
 
