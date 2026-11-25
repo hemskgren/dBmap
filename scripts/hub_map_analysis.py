@@ -20,6 +20,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from datetime import UTC, datetime
+from itertools import combinations
 from typing import Any
 
 from hub_event_track import (
@@ -37,8 +38,16 @@ from hub_event_track import (
     fetch_environmental_context,
     fetch_nodes,
     filter_observations,
+    filter_reports_by_event_time,
+    format_brief_report,
+    format_filter_status,
+    installation_distance_m,
+    is_sim_ear,
+    observation_fields,
     observation_time,
     parse_positive_interval,
+    parse_utc_time_range,
+    report_time_span,
 )
 from lib.hub_cli import (
     add_hub_connection_arguments,
@@ -99,38 +108,6 @@ def request_json(
         raise MapAnalysisError(f"invalid JSON for {path}") from exc
 
 
-def parse_utc_datetime(value: str, *, label: str) -> datetime:
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError as exc:
-        raise ValueError(f"{label} must be an ISO-8601 datetime") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ValueError(f"{label} must include a timezone (e.g. ...Z or +00:00)")
-    return parsed.astimezone(UTC)
-
-
-def filter_reports_by_event_time(
-    reports: list[dict[str, Any]],
-    *,
-    since: datetime | None,
-    until: datetime | None,
-) -> list[dict[str, Any]]:
-    """Client-side time window applied only after a complete snapshot fetch."""
-    if since is None and until is None:
-        return reports
-    filtered: list[dict[str, Any]] = []
-    for report in reports:
-        event_time = observation_time(report)
-        if event_time is None:
-            continue
-        if since is not None and event_time < since:
-            continue
-        if until is not None and event_time > until:
-            continue
-        filtered.append(report)
-    return filtered
-
-
 def build_analysis_config(args: argparse.Namespace) -> AnalysisConfig:
     return AnalysisConfig(
         event_gap_seconds=args.event_gap_seconds,
@@ -144,6 +121,12 @@ def build_analysis_config(args: argparse.Namespace) -> AnalysisConfig:
         cross_ear_geometry_detail=False,
         include_site_context=True,
         include_observation_details=False,
+        presentation=(
+            "list"
+            if getattr(args, "detailed", False)
+            or getattr(args, "command", "analyze") == "publish"
+            else "brief"
+        ),
     )
 
 
@@ -159,6 +142,10 @@ def fetch_and_analyze(
     """
     node_ids = {item for item in (args.node_id or []) if item}
     fetch_node_id = next(iter(node_ids)) if len(node_ids) == 1 else None
+    since, until = parse_utc_time_range(
+        getattr(args, "since", None),
+        getattr(args, "until", None),
+    )
 
     fetched, fetch_meta = fetch_all_observation_reports(
         base_url,
@@ -170,21 +157,18 @@ def fetch_and_analyze(
     )
     require_complete_snapshot(fetch_meta)
 
-    since = (
-        parse_utc_datetime(args.since, label="--since")
-        if getattr(args, "since", None)
+    node_filtered_reports = filter_observations(fetched, node_ids=node_ids)
+    missing_event_time_count = (
+        sum(observation_time(item) is None for item in node_filtered_reports)
+        if since is not None or until is not None
         else None
     )
-    until = (
-        parse_utc_datetime(args.until, label="--until")
-        if getattr(args, "until", None)
-        else None
+    reports = filter_reports_by_event_time(
+        node_filtered_reports,
+        since=since,
+        until=until,
     )
-    if since is not None and until is not None and since > until:
-        raise ValueError("--since must be <= --until")
-
-    reports = filter_observations(fetched, node_ids=node_ids)
-    reports = filter_reports_by_event_time(reports, since=since, until=until)
+    time_start, time_end, missing_retained_time_count = report_time_span(reports)
 
     nodes = fetch_nodes(base_url, ca_file, token)
     reference_times = [
@@ -202,6 +186,17 @@ def fetch_and_analyze(
     )
 
     config = build_analysis_config(args)
+    filter_status_lines = format_filter_status(
+        node_ids=node_ids,
+        fetched_count=len(fetched),
+        filtered_count=len(reports),
+        since=since,
+        until=until,
+        retained_time_span=(
+            (time_start, time_end) if since is not None or until is not None else None
+        ),
+        missing_event_time_count=missing_event_time_count,
+    )
     snapshot = AnalysisSnapshot(
         reports=reports,
         nodes=nodes,
@@ -212,12 +207,17 @@ def fetch_and_analyze(
             else None
         ),
         environmental_context=weather,
+        filter_status_lines=filter_status_lines,
         fetch_meta={
             **fetch_meta,
+            "reports_after_node_filter": len(node_filtered_reports),
             "reports_after_filter": len(reports),
             "client_node_ids": sorted(node_ids),
             "client_since_utc": since.isoformat() if since else None,
             "client_until_utc": until.isoformat() if until else None,
+            "time_filter_applied": since is not None or until is not None,
+            "reports_excluded_missing_event_time": missing_event_time_count or 0,
+            "reports_missing_event_time_after_filter": missing_retained_time_count,
         },
     )
     result = analyze(snapshot)
@@ -238,6 +238,153 @@ def fetch_and_analyze(
         *format_run_counts(counts),
     ]
     return result, fetch_meta, summary
+
+
+def _utc_iso(value: datetime | None, *, empty: str = "unknown") -> str:
+    if value is None:
+        return empty
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _compact_map_summary_lines(
+    result: Any,
+    args: argparse.Namespace,
+) -> list[str]:
+    snapshot = result.snapshot
+    fetch_meta = snapshot.fetch_meta
+    reports = snapshot.reports
+    reports_fetched = int(fetch_meta.get("fetched_report_count") or len(reports))
+    counts = counts_from_result(
+        result,
+        reports_fetched=reports_fetched,
+        reports_after_filter=len(reports),
+    )
+    start, end, missing_time_count = report_time_span(reports)
+    node_ids = sorted(
+        {
+            fields["node_id"]
+            for report in reports
+            for fields in [observation_fields(report)]
+            if isinstance(fields.get("node_id"), str)
+        }
+    )
+    selected_nodes = sorted(item for item in (args.node_id or []) if item)
+    filter_parts = []
+    if selected_nodes:
+        filter_parts.append(f"Node ID: {', '.join(selected_nodes)}")
+    since = fetch_meta.get("client_since_utc")
+    until = fetch_meta.get("client_until_utc")
+    if since is not None or until is not None:
+        filter_parts.append(
+            "event_time_utc (inclusive): "
+            f"{_utc_iso(datetime.fromisoformat(since)) if since else 'unbounded'} to "
+            f"{_utc_iso(datetime.fromisoformat(until)) if until else 'unbounded'}"
+        )
+    total_count = fetch_meta.get("total_count")
+    snapshot_label = (
+        f"Hub snapshot {snapshot.snapshot_id}; complete; "
+        f"retained total={total_count if total_count is not None else 'unknown'}"
+    )
+    lines = [
+        "Hub Map Analysis — script-local analysis; not Hub-persisted Events.",
+        snapshot_label,
+        f"Applied filters: {'; '.join(filter_parts) if filter_parts else 'none'}",
+        f"Reports: {reports_fetched} fetched; {len(reports)} matched",
+        (
+            f"Unique observations: {result.unique_observation_count} "
+            "(identity: node_id + observation_id); "
+            f"assembled: {counts.observations_assembled}"
+        ),
+        (
+            "Matched report event_time_utc span: "
+            f"{_utc_iso(start)} to {_utc_iso(end)}; "
+            f"matched reports without valid event_time_utc: {missing_time_count}"
+        ),
+        (
+            "Localization outcomes: "
+            f"{counts.localizations_published} published; "
+            f"{counts.localizations_withheld} withheld"
+        ),
+    ]
+    if fetch_meta.get("time_filter_applied"):
+        lines.extend(
+            [
+                (
+                    "Reports excluded for missing/invalid event_time_utc: "
+                    f"{fetch_meta.get('reports_excluded_missing_event_time', 0)}"
+                ),
+                (
+                    "Lifecycle caveat: filtering is report-level; observation "
+                    "lifecycles may be partial, affecting association and promotion."
+                ),
+            ]
+        )
+
+    installed: dict[str, dict[str, Any]] = {}
+    for node_id in node_ids:
+        node = snapshot.nodes.get(node_id)
+        installation = node.get("installation") if isinstance(node, dict) else None
+        if not isinstance(installation, dict):
+            continue
+        if installation_distance_m(installation, installation) is not None:
+            installed[node_id] = installation
+    within_radius = 0
+    beyond_radius = 0
+    unknown_distance = 0
+    long_range_sim_pairs = 0
+    for first_id, second_id in combinations(node_ids, 2):
+        first = installed.get(first_id)
+        second = installed.get(second_id)
+        distance = (
+            installation_distance_m(first, second)
+            if first is not None and second is not None
+            else None
+        )
+        if distance is None:
+            unknown_distance += 1
+        elif distance <= args.max_association_distance_m:
+            within_radius += 1
+        else:
+            beyond_radius += 1
+            if (
+                args.allow_long_range_sim_ears
+                and is_sim_ear(first_id)
+                and is_sim_ear(second_id)
+            ):
+                long_range_sim_pairs += 1
+    lines.append(
+        f"Site context: {len(installed)}/{len(node_ids)} observed Ears have "
+        "valid installation coordinates; site-distance pairs "
+        f"within/outside/unknown {args.max_association_distance_m:g}m="
+        f"{within_radius}/{beyond_radius}/{unknown_distance} "
+        "(context/eligibility only, not association evidence)."
+    )
+    if args.allow_long_range_sim_ears and long_range_sim_pairs:
+        lines.append(
+            "Warning: long-range SIM-EAR pairs remain eligible beyond the "
+            f"{args.max_association_distance_m:g}m radius "
+            f"({long_range_sim_pairs} pair(s)); this is not an association decision."
+        )
+
+    weather = snapshot.environmental_context
+    if weather is None:
+        lines.append("Weather context: unavailable.")
+    else:
+        availability = weather.get("availability", "unavailable")
+        weather_summary = (
+            f"availability={availability}; region={weather.get('region_id', '?')}; "
+            f"provider={weather.get('provider', '?')}"
+        )
+        if availability != "unavailable":
+            weather_summary += (
+                f"; temperature={weather.get('temperature_c', '?')}°C; "
+                f"wind={weather.get('wind_speed_ms', '?')}m/s"
+            )
+        lines.append(
+            "Weather context (informational, not association input): "
+            f"{weather_summary}."
+        )
+    return lines
 
 
 def list_scratch_metadata(
@@ -331,11 +478,20 @@ def replace_dataset_analysis_layer(
 
 def cmd_analyze(base_url: str, ca_file: str, token: str, args: argparse.Namespace) -> int:
     result, _fetch_meta, summary = fetch_and_analyze(base_url, ca_file, token, args)
-    print("Hub → analyze() summary")
-    for line in summary:
-        print(f"  {line}")
-    print()
-    for line in result.lines:
+    if getattr(args, "detailed", False):
+        print("Hub → analyze() summary")
+        for line in summary:
+            print(f"  {line}")
+        print()
+        lines = result.lines
+    else:
+        lines = format_brief_report(
+            result.snapshot,
+            result.correlation,
+            include_per_ear_episodes=True,
+            compact_summary_lines=_compact_map_summary_lines(result, args),
+        )
+    for line in lines:
         print(line)
     return 0
 
@@ -482,9 +638,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     analyze_parser = sub.add_parser(
         "analyze",
-        help="Fetch complete snapshot, analyze, print summary (no scratch write)",
+        help=(
+            "Fetch complete snapshot and analyze (compact output by default; "
+            "no scratch write)"
+        ),
     )
     add_shared_analysis_arguments(analyze_parser)
+    analyze_parser.add_argument(
+        "--detailed",
+        action="store_true",
+        help="Print the full diagnostic analysis report",
+    )
 
     publish_parser = sub.add_parser(
         "publish",
