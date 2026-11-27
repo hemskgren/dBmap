@@ -154,8 +154,6 @@ services:
       DBMAP_LOCAL_MQTT_HOST: ${DBMAP_LOCAL_MQTT_HOST:-hub.local}
       DBMAP_LOCAL_MQTT_PORT: ${DBMAP_LOCAL_MQTT_PORT:-8883}
       DBMAP_PUBLIC_HUB_URL: ${DBMAP_PUBLIC_HUB_URL:-}
-      DBMAP_PUBLIC_API_MONITOR_ENABLED: ${DBMAP_PUBLIC_API_MONITOR_ENABLED:-false}
-      DBMAP_PUBLIC_MQTT_MONITOR_ENABLED: ${DBMAP_PUBLIC_MQTT_MONITOR_ENABLED:-false}
       DBMAP_HUB_ID: ${DBMAP_HUB_ID:-${DBMAP_SITE_ID:-local-01}}
       DBMAP_DATABASE_URL: sqlite:////data/bootstrap.db
       DBMAP_HUB_MONITOR_GAP_THRESHOLD_S: ${DBMAP_HUB_MONITOR_GAP_THRESHOLD_S:-120}
@@ -172,8 +170,6 @@ services:
       - bootstrap-data:/data
       - firmware-catalog:/firmware-catalog
       - ./shared/hub-bootstrap/certs:/certs:ro
-      - ./shared/mosquitto/logs:/mosquitto/log:ro
-      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - default
       - opa-private
@@ -244,6 +240,7 @@ services:
     volumes:
       - operations-data:/data
       - ./shared/operations/certs:/certs:ro
+      - ./shared/mosquitto/logs:/mosquitto/log:ro
       - ${DBMAP_DOCKER_SOCKET:-/var/run/docker.sock}:${DBMAP_DOCKER_SOCKET:-/var/run/docker.sock}
     networks:
       - default

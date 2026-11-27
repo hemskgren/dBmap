@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app import probes
+from app import monitoring_cycle, probes
 from app.config import settings
 from app.db import SessionLocal
 from app.models import (
@@ -111,8 +111,21 @@ def _store() -> MonitorStore:
         OperationsMonitorCheckpoint,
         hub_id=settings.hub_id,
         source="operations_monitor",
-        legacy_components=COMPONENT_IDS,
+        legacy_components=(*COMPONENT_IDS, "nginx"),
+        component_aliases=(("nginx", "hub_api_via_nginx"),),
     )
+
+
+def _sample_payload(sample: OperationsMonitorSample) -> dict[str, Any]:
+    payload = monitoring_cycle.sample_payload(
+        sample,
+        (*COMPONENT_IDS, "nginx"),
+    )
+    states = payload["states"]
+    if "hub_api_via_nginx" not in states and "nginx" in states:
+        states["hub_api_via_nginx"] = states["nginx"]
+    states.pop("nginx", None)
+    return payload
 
 
 def _probe_components() -> dict[str, Any]:
@@ -339,10 +352,10 @@ def build_status(db: Session) -> dict[str, Any]:
     now = _utcnow()
     store = _store()
     history = store.history(db, now, settings.retention_days)
-    from app import monitoring_availability, monitoring_cycle
+    from app import monitoring_availability
 
     payloads = {
-        sample.sample_id: monitoring_cycle.sample_payload(sample, COMPONENT_IDS)
+        sample.sample_id: _sample_payload(sample)
         for sample in history
     }
     overall = monitoring_cycle.observations(history, payloads)
@@ -386,7 +399,7 @@ def build_status(db: Session) -> dict[str, Any]:
 
     sample = store.latest_sample(db)
     if sample is not None:
-        payload = monitoring_cycle.sample_payload(sample, COMPONENT_IDS)
+        payload = _sample_payload(sample)
         states = payload["states"]
         health = sample.overall_health
         availability = sample.overall_availability

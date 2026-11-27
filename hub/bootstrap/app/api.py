@@ -22,15 +22,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import (
-    container_logs,
     deployment_service,
     device_monitor,
     edge_status,
     firmware_catalog,
     group_service,
-    hub_monitor,
     identity_service,
-    mqtt_connection_failures,
     ownership_service,
     policy,
     regional_environment,
@@ -955,20 +952,7 @@ def get_hub_status(db: Session = Depends(get_db)) -> dict:
                 latest_observation.isoformat() if latest_observation is not None else None
             ),
         },
-        "monitoring": hub_monitor.monitoring_status(db),
     }
-
-
-@router.get(
-    "/api/v1/hub/monitoring/events",
-    dependencies=[Depends(require_policy("hub.status.read", "hub"))],
-)
-def get_hub_monitoring_events(
-    limit: int = Query(default=15, ge=1, le=50),
-    db: Session = Depends(get_db),
-) -> dict:
-    """Newest Hub monitoring events; fetched on demand from the Hub tab."""
-    return hub_monitor.list_recent_events(db, limit=limit)
 
 
 @router.get(
@@ -1071,83 +1055,38 @@ def _hub_components(mqtt_status: str, edge: dict[str, str]) -> list[dict]:
             "id": "nginx",
             "name": "Nginx",
             "status": edge["nginx"],
-            "logs": True,
-            "connection_failures": False,
         },
         {
             "id": "web",
             "name": "Web",
             "status": edge["web"],
-            "logs": True,
-            "connection_failures": False,
         },
         {
             "id": "hub-api",
             "name": "Hub API",
             "status": "online",
-            "logs": True,
-            "connection_failures": False,
         },
         {
             "id": "database",
             "name": "Database",
             "status": "online",
-            "logs": False,
-            "connection_failures": False,
         },
         {
             "id": "opa",
             "name": "Policy engine",
             "status": "online",
-            "logs": True,
-            "connection_failures": False,
         },
         {
             "id": "mosquitto",
             "name": "MQTT broker",
             "status": mqtt_status,
-            "logs": True,
-            "connection_failures": True,
         },
         {
             "id": "firmware-builder",
             "name": "Firmware builder",
             "status": edge["firmware-builder"],
-            "logs": True,
-            "connection_failures": False,
         },
     ]
-
-
-@router.get(
-    "/api/v1/hub/components/{component}/logs",
-    dependencies=[Depends(require_policy("hub.logs.read", "hub"))],
-)
-def get_hub_component_logs(component: str) -> dict:
-    if component not in container_logs.HUB_LOG_COMPONENTS:
-        raise HTTPException(status_code=404, detail="unknown Hub component")
-    try:
-        return container_logs.read_tail(component)
-    except container_logs.UnknownComponent:
-        raise HTTPException(status_code=404, detail="unknown Hub component") from None
-    except container_logs.ContainerNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
-    except container_logs.ContainerLogsUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from None
-
-
-@router.get(
-    "/api/v1/hub/components/{component}/connection-failures",
-    dependencies=[Depends(require_policy("hub.logs.read", "hub"))],
-)
-def get_hub_component_connection_failures(component: str) -> dict:
-    """Recent Mosquitto connection failures (auth, TLS/CA, protocol) from the broker log."""
-    if component != "mosquitto":
-        raise HTTPException(
-            status_code=404,
-            detail="connection failure summary is only available for the MQTT broker",
-        )
-    return mqtt_connection_failures.read_recent_failures()
 
 
 @router.post(

@@ -145,31 +145,25 @@ def test_hub_status_lists_web_nginx_and_firmware_builder(monkeypatch) -> None:
         "id": "nginx",
         "name": "Nginx",
         "status": "online",
-        "logs": True,
-        "connection_failures": False,
     }
     assert components["Web"]["status"] == "offline"
-    assert components["Web"]["logs"] is True
     assert components["Firmware builder"]["status"] == "unavailable"
-    assert components["Database"]["logs"] is False
     assert components["Hub API"]["id"] == "hub-api"
     assert components["Policy engine"]["id"] == "opa"
     assert components["MQTT broker"]["id"] == "mosquitto"
-    assert components["MQTT broker"]["connection_failures"] is True
 
 
-def test_admin_and_viewer_can_read_component_logs(monkeypatch) -> None:
-    def fake_tail(component: str, line_limit: int = 15) -> dict:
-        if component != "web":
-            raise container_logs.UnknownComponent(component)
-        return {
-            "service": "Web",
-            "compose_service": "dbmap-web",
-            "lines": ["GET /"],
-            "line_limit": line_limit,
-        }
+def test_hub_mqtt_connection_failures_endpoint_is_retired() -> None:
+    client = TestClient(create_app())
+    response = client.get(
+        "/api/v1/hub/components/mosquitto/connection-failures",
+        headers={"Authorization": f"Bearer {settings.admin_token}"},
+    )
 
-    monkeypatch.setattr(container_logs, "read_tail", fake_tail)
+    assert response.status_code == 404
+
+
+def test_hub_component_logs_endpoint_is_retired() -> None:
     client = TestClient(create_app())
     admin = client.get(
         "/api/v1/hub/components/web/logs",
@@ -188,9 +182,7 @@ def test_admin_and_viewer_can_read_component_logs(monkeypatch) -> None:
         headers={"Authorization": f"Bearer {settings.admin_token}"},
     )
 
-    assert admin.status_code == 200, admin.text
-    assert admin.json()["lines"] == ["GET /"]
-    assert viewer.status_code == 200, viewer.text
-    assert viewer.json()["lines"] == ["GET /"]
+    assert admin.status_code == 404
+    assert viewer.status_code == 404
     assert missing.status_code == 404
     assert operations.status_code == 404

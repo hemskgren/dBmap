@@ -1,4 +1,4 @@
-"""Summarize recent Mosquitto connection failures from the host-mounted broker log."""
+"""Summarize recent Mosquitto connection failures from the mounted broker log."""
 
 from __future__ import annotations
 
@@ -99,7 +99,7 @@ def read_recent_failures(
             + [
                 (
                     f"Mosquitto log file is not readable at {path}. "
-                    "Ensure the Hub mounts shared/mosquitto/logs and Mosquitto is writing it."
+                    "Ensure Operations mounts shared/mosquitto/logs and Mosquitto is writing it."
                 )
             ],
         }

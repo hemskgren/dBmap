@@ -39,7 +39,6 @@ def _test_policy(input_data: dict) -> bool:
         "groups.read",
         "firmware.catalog.read",
         "hub.status.read",
-        "hub.logs.read",
         "observations.read",
     }
 

@@ -1,12 +1,13 @@
 # Operations Service
 
-Operations is dBmap's optional monitoring service. It owns Core Hub,
-public endpoint, service health, and monitoring history responsibilities.
-It does not manage Devices or Observation reports.
+Operations is dBmap's optional infrastructure administration service and the
+sole active owner of Core Hub, public endpoint, service health, and container
+runtime monitoring. It does not manage Devices or Observation reports.
 
 Operations is a Compose profile and can be absent. Hub-bootstrap, MQTT,
 dbmap-web, Nginx, EAR communication, and Observation processing do not depend
-on it.
+on it. Device Monitor remains active in Hub-bootstrap when Operations is
+disabled.
 
 ## Responsibilities
 
@@ -50,15 +51,16 @@ inspect results, and caps Docker responses at 1,000,000 bytes. Runtime
 checkpoints and inferred restart events are persisted in the Operations
 database. Operations still uses authenticated Hub-bootstrap APIs for
 Hub-owned database and service diagnostics; direct HTTPS probes remain
-independent of those APIs.
+independent of those APIs. Hub-bootstrap no longer mounts the socket or runs
+the legacy Hub/Public infrastructure monitoring workers. Operations has no
+access to the Hub database.
 
 The Docker socket grants broad control over the host Docker engine. A
 read-only bind mount does not make Docker API operations read-only. This direct
 socket model is accepted for current development and standalone deployment,
 but remains a significant security limitation; no socket proxy or additional
-runtime infrastructure is introduced. Hub-bootstrap retains its own socket
-mount for the legacy Hub Monitor and Hub component Logs controls until the
-later infrastructure cutover.
+runtime infrastructure is introduced. Operations is the only Hub service with
+Docker socket access.
 
 The implementation does not use an external database or native extensions.
 
@@ -86,8 +88,10 @@ Viewer access is allowed for `operations.status.read`,
 The deployed policy must include the same rules as
 [`policy/authz.rego`](../policy/authz.rego).
 
-Operations uses a dedicated `operations-data` volume. Legacy monitoring remains
-owned by `hub-bootstrap` and `bootstrap.db`.
+Operations uses a dedicated `operations-data` volume. Legacy Hub and Public
+monitoring tables remain in `bootstrap.db` for rollback, but their workers are
+disabled and do not append samples or events. No history is migrated or
+deleted.
 
 ### Configuration
 
@@ -104,8 +108,8 @@ owned by `hub-bootstrap` and `bootstrap.db`.
 | `DBMAP_CORE_MONITOR_INTERVAL_S` | `60` | Core polling interval |
 | `DBMAP_GAP_THRESHOLD_S` | `120` | Monitoring gap threshold |
 | `DBMAP_RETENTION_DAYS` | `30` | Monitoring history retention |
-| `DBMAP_PUBLIC_API_MONITOR_ENABLED` | `false` | Enable Public API polling |
-| `DBMAP_PUBLIC_MQTT_MONITOR_ENABLED` | `false` | Enable Public MQTT polling |
+| `DBMAP_PUBLIC_API_MONITOR_ENABLED` | `false` | Enable Operations Public API polling |
+| `DBMAP_PUBLIC_MQTT_MONITOR_ENABLED` | `false` | Enable Operations Public MQTT polling |
 | `DBMAP_PUBLIC_MONITOR_INTERVAL_S` | `60` | Public polling interval |
 | `DBMAP_PROBE_TIMEOUT_S` | `2` | Individual probe timeout |
 
@@ -129,6 +133,7 @@ Authenticated routes are:
 - `GET /api/v1/operations/services`
 - `GET /api/v1/operations/services/{service}/details`
 - `GET /api/v1/operations/services/{service}/logs`
+- `GET /api/v1/operations/services/mosquitto/connection-failures`
 - `GET /api/v1/operations/events`
 
 Runtime inspection and log retrieval run directly in Operations and allow only
@@ -224,8 +229,26 @@ source. For example:
 
 The Docker reader caps response bodies at 1,000,000 bytes. It selects only the
 newest container belonging to the configured Compose project and allowlisted
-Compose service. Hub MQTT failed-connection parsing remains Hub-owned and is
-not migrated by Operations.
+Compose service. MQTT failed-connection diagnostics are also Operations-owned
+and require `operations.logs.read`. The endpoint reads the read-only mounted
+Mosquitto log and preserves the existing three-hour time window, two-megabyte
+scan bound, 200-line result limit, filtering, and response fields:
+
+```json
+{
+  "service": "MQTT broker",
+  "compose_service": "mosquitto",
+  "window_hours": 3,
+  "source": "file",
+  "path": "/mosquitto/log/mosquitto.log",
+  "lines": [],
+  "count": 0,
+  "notices": ["Host fail2ban ..."]
+}
+```
+
+`path` is omitted when the log is unavailable. The Hub no longer mounts or reads
+the broker log.
 
 | Monitored service | Direct Details signal | Supplementary diagnostic source | Logs |
 | --- | --- | --- | --- |
@@ -275,8 +298,14 @@ component-availability calculation. Nginx serves
 `GET /api/v1/nginx/health` directly with a JSON `200`; the existing `/health`
 endpoint still proxies to Hub-bootstrap. The Docker healthcheck uses the local
 endpoint so a Hub API restart does not mark the Nginx container unhealthy.
-Existing monitoring rows are not rewritten; new end-to-end samples and events
-use the explicit `hub_api_via_nginx` component identity.
+Existing `nginx_local` continuity is preserved because that component key is
+unchanged. Historical Operations rows whose `nginx` key represented the
+upstream Hub API path are read as `hub_api_via_nginx`; stored samples/events are
+not rewritten, and the rename does not emit a false state-change event.
+`nginx_local` history begins when that independent probe was introduced; older
+`nginx` history cannot establish local Nginx health, so its availability window
+has an expected history discontinuity before that point. Nginx-local state is
+not derived from Hub API availability.
 
 Operations inspects the allowlisted Compose containers during each Core
 monitoring cycle. It persists each service's last-seen start time and restart
@@ -350,13 +379,13 @@ and events require:
 - `operations.details.read`
 - `operations.events.read`
 
-Log retrieval requires `operations.logs.read`. Runtime diagnostics require
+Log retrieval and MQTT failed-connection summaries require
+`operations.logs.read`. Runtime diagnostics require
 `operations.details.read`. When Operations requests Hub-owned diagnostic
 details, it uses its configured admin bearer token to call the existing Hub
 APIs, which continue to enforce `hub.status.read`. Runtime metadata, restart
-detection, and container logs are read directly by Operations under the
-Operations authorization boundary; Hub's `hub.logs.read` policy remains in
-place for Hub's own Logs controls.
+detection, container logs, and broker-log summaries are read directly by
+Operations under the Operations authorization boundary.
 
 For authorization troubleshooting, distinguish API responses: HTTP 401 means
 the bearer token was not accepted by Operations; HTTP 403 means authentication
@@ -390,54 +419,160 @@ Passwords, bearer tokens, private keys, and sensitive configuration values are
 not logged. Probe failures use short bounded reasons.
 
 Compose retains the project's Docker `json-file` rotation settings for the
-container logs used by Operations. Operations and hub-bootstrap both retain
-Docker socket access during this side-by-side stage: Operations owns the new
-runtime diagnostics, while hub-bootstrap still needs the socket for legacy Hub
-Monitor restart diagnostics and Hub component Logs controls, including the
-optional Firmware Builder container tail.
+container logs used by Operations. Hub-bootstrap does not mount Docker socket.
+The Hub component container-logs endpoint is retired; Operations owns the
+allowlisted container log tails. Firmware Builder build status and complete
+build logs continue through its dedicated API and are not part of Operations
+monitoring.
 
 ## Known limitations
 
+- Local manual verification observed temporary Hub API unavailability during
+  multi-service rebuilds. The cause and recovery behavior remain an
+  investigation item; no startup behavior or monitoring algorithms were
+  changed in response.
 - Hub database details and supplementary service diagnostics depend on
   authenticated Hub-bootstrap APIs. If Hub-bootstrap is unavailable, those
   details are unavailable; direct Operations probes and Docker runtime reads
   continue.
-- Operations and hub-bootstrap have direct Docker socket access, which is not
-  suitable as a final least-privilege production architecture.
-- Hub-bootstrap still requires its socket for legacy infrastructure monitoring
-  and Hub component Logs; its removal is deferred until those consumers are
-  retired or migrated. The Firmware tab's build status and job logs use the
-  Firmware Builder API and dedicated build logs, not Docker runtime logs. The
-  separate Hub component Logs control can still tail the Firmware Builder
-  container.
+- Operations has direct Docker socket access, which is not suitable as a final
+  least-privilege production architecture.
 - Public API/Public MQTT monitoring is optional and disabled by default.
 - Public and Core workers have independent schedules and need comparison rather
   than exact timestamp equality.
-- Legacy Hub monitoring and Device Monitor remain active in hub-bootstrap.
-- Web and CLI consumers are not switched to Operations by default.
+- The legacy Hub monitor code and tables remain available for rollback, but the
+  Hub and Public workers are not started.
+- The Hub tab no longer displays legacy infrastructure monitoring, component
+  Details, Logs, or MQTT failed-connection diagnostics. Operations remains
+  optional, so the diagnostics control is available only when it is enabled.
+- `hub_summary.py` is intentionally not migrated: it continues to read the
+  Hub overview/service status but no longer fetches legacy monitoring events.
+  Its output does not include Operations health or availability until the
+  deferred CLI migration.
 
-## Local side-by-side verification
+## Local deployment and verification
 
-Build and start the optional Operations service and the services it calls:
+These are local manual checks; they are not run automatically by the test
+suite. Review with the operator before restarting any running local service.
+Compose validation itself is read-only:
 
 ```bash
-docker compose --profile operations up -d --build hub-bootstrap nginx opa operations dbmap-web
+docker compose --profile operations config --quiet
+COMPOSE_PROFILES= docker compose config --quiet
+```
+
+With Operations enabled, source the local `.env` into the shell, then start
+the Hub dependencies and Operations profile:
+
+```bash
+set -a
+. ./.env
+set +a
+docker compose --profile operations up -d --build hub-bootstrap nginx opa operations dbmap-web mosquitto
 docker compose --profile operations ps
+curl -fsS --cacert shared/trust/ca.crt -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" https://hub.local:8443/api/v1/operations/status
+curl -fsS --cacert shared/trust/ca.crt -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" https://hub.local:8443/api/v1/operations/services/hub-api/details
+curl -fsS --cacert shared/trust/ca.crt -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" https://hub.local:8443/api/v1/operations/services/hub-api/logs
+curl -fsS --cacert shared/trust/ca.crt -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" "https://hub.local:8443/api/v1/operations/events?page_size=50"
+curl -fsS --cacert shared/trust/ca.crt -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" https://hub.local:8443/api/v1/nodes
 ```
 
-Compare the legacy Hub monitoring status with the Operations status using the
-same local CA and bearer token:
+Open the Web Operations tab and verify Core/Public worker status, Service
+Details, Logs, monitoring events, and graceful handling in the Hub tab. Public
+workers remain disabled unless enabled in `.env`. To verify both public workers,
+configure their target URLs/hosts and set
+`DBMAP_PUBLIC_API_MONITOR_ENABLED=true` and
+`DBMAP_PUBLIC_MQTT_MONITOR_ENABLED=true` in `.env`, then recreate Operations:
 
 ```bash
-curl --cacert shared/trust/ca.crt -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" https://hub.local:8443/api/v1/hub/status
-curl --cacert shared/trust/ca.crt -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" https://hub.local:8443/api/v1/operations/status
+docker compose --profile operations up -d --force-recreate operations
+curl -fsS --cacert shared/trust/ca.crt -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" https://hub.local:8443/api/v1/operations/status
 ```
 
-Open the Web Operations tab to compare the independent availability signals,
-Details, and on-demand Logs with the unchanged Hub tab. To compare direct Nginx
-availability with the existing upstream-dependent health route:
+Confirm Core and Public worker states in the response. For a local
+restart-detection check (this interrupts the Hub API briefly), restart the Hub
+and wait at least one Core polling interval:
 
 ```bash
-curl --cacert shared/trust/ca.crt https://hub.local:8443/api/v1/nginx/health
-curl --cacert shared/trust/ca.crt https://hub.local:8443/health
+docker compose --profile operations restart hub-bootstrap
+sleep 70
+curl -fsS --cacert shared/trust/ca.crt -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" https://hub.local:8443/api/v1/operations/services/nginx/details
+curl -fsS --cacert shared/trust/ca.crt -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" "https://hub.local:8443/api/v1/operations/events?page_size=50"
 ```
+
+Nginx Details report its direct local health separately from
+`hub_api_via_nginx`; Hub API restart state must not be used as Nginx-local
+availability. To verify the separation across a complete polling cycle, during
+a planned local maintenance window, stop Hub-bootstrap for at least 70 seconds,
+request Nginx Details while it is stopped, then start Hub-bootstrap again. This
+temporarily makes the Hub API unavailable; Nginx-local health should remain
+healthy while `hub_api_via_nginx` is unavailable:
+
+```bash
+docker compose --profile operations stop hub-bootstrap
+sleep 70
+curl -fsS --cacert shared/trust/ca.crt -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" https://hub.local:8443/api/v1/operations/services/nginx/details
+docker compose --profile operations start hub-bootstrap
+```
+
+Inspect a node's Device Monitor summary through
+`GET /api/v1/nodes/{node_id}` and events through
+`GET /api/v1/nodes/{node_id}/monitoring/events`. Device sampling cadence,
+continuity, and bounded per-device retention remain Hub-owned.
+
+For Operations-disabled verification:
+
+```bash
+docker compose --profile operations stop operations
+COMPOSE_PROFILES= docker compose up -d --build hub-bootstrap nginx opa dbmap-web mosquitto
+COMPOSE_PROFILES= docker compose ps
+curl -fsS --cacert shared/trust/ca.crt -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" https://hub.local:8443/api/v1/hub/status
+curl -fsS --cacert shared/trust/ca.crt -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" https://hub.local:8443/api/v1/nodes
+curl -i --cacert shared/trust/ca.crt -H "Authorization: Bearer $DBMAP_ADMIN_TOKEN" https://hub.local:8443/api/v1/operations/status
+```
+
+Confirm the Hub and Devices UI/API remain available and the Operations route
+returns the configured optional-service 503. Check a device detail and its
+monitoring events to verify Device Monitor continues. No Hub database access by
+Operations is needed.
+
+Firmware Builder compatibility is independent: when the optional builder is
+running, its dedicated status/build and log API remains available through the
+Firmware tab (`GET /api/v1/firmware/builds` and
+`GET /api/v1/firmware/builds/{build_id}/log`). Operations does not include
+Firmware Builder in its allowlist and the retired Hub container-log route is
+not used for build logs.
+
+The Hub API continues to expose authenticated `/api/v1/hub/status` and
+`/api/v1/hub/components/{component}/details`. The old
+`/api/v1/hub/monitoring/events`,
+`/api/v1/hub/components/{component}/logs`, and
+`/api/v1/hub/components/{component}/connection-failures` endpoints are retired.
+MQTT failures are available at
+`/api/v1/operations/services/mosquitto/connection-failures` when Operations is
+enabled. The status response no longer includes legacy Hub monitoring history.
+These changes do not affect Device Monitor APIs or Firmware Builder APIs/logs.
+
+### Rollback
+
+The cutover makes no database schema changes and preserves the legacy Hub and
+Public monitoring tables. To roll back:
+
+1. In the deployment checkout, switch to the verified pre-cutover checkpoint:
+
+   ```bash
+   git switch --detach 558f2d6b7d62e21fa95876004f31caa03fe66440
+   ```
+
+2. Remove `operations` from `.env`'s `COMPOSE_PROFILES`, preserving any other
+   profiles in use. Restore the prior `DBMAP_HUB_MONITOR_ENABLED` and Public
+   monitor settings if they were explicitly overridden.
+3. Redeploy the usual Hub services so the checkpoint restores the Hub Monitor
+   worker and Hub Docker socket mount:
+
+   ```bash
+   docker compose up -d --build hub-bootstrap nginx opa dbmap-web mosquitto
+   ```
+
+No history conversion or table cleanup is needed. Operations data remains in
+its separate volume.

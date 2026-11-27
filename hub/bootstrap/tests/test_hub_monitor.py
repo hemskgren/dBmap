@@ -768,7 +768,7 @@ def test_docker_restart_detection_emits_inferred_event(monkeypatch) -> None:
         hub_monitor._last_docker_signatures.clear()
 
 
-def test_hub_status_includes_monitoring_payload(monkeypatch) -> None:
+def test_hub_status_keeps_overview_without_legacy_monitoring(monkeypatch) -> None:
     _reset_db()
     _patch_healthy(monkeypatch)
     db = SessionLocal()
@@ -783,26 +783,17 @@ def test_hub_status_includes_monitoring_payload(monkeypatch) -> None:
     )
     assert response.status_code == 200, response.text
     body = response.json()
-    assert "monitoring" in body
-    assert body["monitoring"]["health"]["state"] in {
-        "healthy",
-        "degraded",
-        "unhealthy",
-        "unknown",
-    }
-    assert "24h" in body["monitoring"]["availability"]["windows"]
-    assert "7d" in body["monitoring"]["availability"]["windows"]
-    assert "30d" in body["monitoring"]["availability"]["windows"]
-    assert body["monitoring"]["recent_events"] == []
+    assert body["mode"] == "Local Hub"
+    assert body["summary"]["device_count"] == 0
+    assert "monitoring" not in body
     events = client.get(
         "/api/v1/hub/monitoring/events?limit=15",
         headers={"Authorization": f"Bearer {settings.admin_token}"},
     )
-    assert events.status_code == 200, events.text
-    assert isinstance(events.json()["events"], list)
+    assert events.status_code == 404
 
 
-def test_monitor_failure_does_not_break_status(monkeypatch) -> None:
+def test_legacy_monitor_failure_does_not_affect_hub_status(monkeypatch) -> None:
     _reset_db()
     monkeypatch.setattr(
         hub_monitor,
@@ -815,7 +806,7 @@ def test_monitor_failure_does_not_break_status(monkeypatch) -> None:
         headers={"Authorization": f"Bearer {settings.admin_token}"},
     )
     assert response.status_code == 200, response.text
-    assert response.json()["monitoring"]["health"]["state"] == "unknown"
+    assert "monitoring" not in response.json()
 
 
 def test_dense_history_produces_availability_percent(monkeypatch) -> None:

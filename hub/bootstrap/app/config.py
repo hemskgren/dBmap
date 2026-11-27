@@ -25,7 +25,6 @@ class Settings(BaseSettings):
     edge_probe_timeout_s: float = 2.0
     docker_socket: str = "/var/run/docker.sock"
     compose_project: str = ""
-    mosquitto_log_path: str = "/mosquitto/log/mosquitto.log"
     hub_monitor_enabled: bool = True
     hub_monitor_interval_s: float = Field(default=60.0, ge=5.0, le=3600.0)
     hub_monitor_gap_threshold_s: float = Field(default=120.0, ge=5.0)

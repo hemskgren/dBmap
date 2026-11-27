@@ -164,6 +164,7 @@ class MonitorStore:
     source: str
     component: str | None = None
     legacy_components: tuple[str, ...] = ()
+    component_aliases: tuple[tuple[str, str], ...] = ()
 
     @property
     def scope(self) -> dict[str, str]:
@@ -346,6 +347,10 @@ class MonitorStore:
             if previous
             else {}
         )
+        for old_component, current_component in self.component_aliases:
+            if current_component not in prior_states and old_component in prior_states:
+                prior_states[current_component] = prior_states[old_component]
+            prior_states.pop(old_component, None)
         if gap is not None and previous.overall_availability != "unobserved":
             self._add_sample(
                 db,

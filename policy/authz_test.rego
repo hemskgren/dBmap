@@ -12,22 +12,16 @@ test_admin_can_perform_any_action if {
 	}
 }
 
-test_viewer_can_read_hub_status_and_container_logs if {
+test_viewer_can_read_hub_status if {
 	authz.allow with input as {
 		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
 		"action": "hub.status.read",
 		"resource": {"type": "hub"},
 		"context": {},
 	}
-	authz.allow with input as {
-		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
-		"action": "hub.logs.read",
-		"resource": {"type": "hub"},
-		"context": {},
-	}
 }
 
-test_viewer_can_read_operations_status_events_and_details_but_logs if {
+test_viewer_can_read_operations_status_events_details_and_logs if {
 	authz.allow with input as {
 		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
 		"action": "operations.status.read",

@@ -4,7 +4,7 @@ Current LOCAL_MEDIUM path from a laptop, an Output board, and an Ear client into
 
 The browser page and the Hub API are different containers. Nginx is the only HTTPS listener on the LAN. It forwards pages to `dbmap-web` and `/api` to `hub-bootstrap`. SQLite is a file inside `hub-bootstrap` (`/data/bootstrap.db` on the `bootstrap-data` volume). There is no database port.
 
-OPA is consulted on every protected API call, including opening one device. The Policy engine details button adds a separate health request. Database details stay inside `hub-bootstrap`. Output boards and the Ear simulator publish MQTT to Mosquitto; `hub-bootstrap` writes SQLite from its own subscription. That write does not pass through Nginx or OPA.
+OPA is consulted on every protected API call, including opening one device. Operations uses Hub-owned diagnostic endpoints for Hub database details and supplementary service diagnostics; it does not mount or open Hub SQLite. Output boards and the Ear simulator publish MQTT to Mosquitto; `hub-bootstrap` writes SQLite from its own subscription. That write does not pass through Nginx or OPA.
 
 Message fields are in the [protocol reference](./protocol.md). Authorization actions are in [authorization](./authorization.md). The Hub HTTPS routes are in [hub-api.openapi.yaml](./hub-api.openapi.yaml).
 
@@ -59,9 +59,9 @@ flowchart LR
 | 6 | `hub-bootstrap` | `opa:8181` | `POST /v1/data/dbmap/authz/allow`. Missing or non-boolean decisions fail the request with HTTP 503. |
 | 7 | `hub-bootstrap` | SQLite file | Reads the node, reported state, installation, and ownership. Online means a keepalive arrived within `DBMAP_DEVICE_ONLINE_WINDOW_S` (default 90 seconds). |
 
-Hub overview **Details** uses the same browser → Nginx → `hub-bootstrap` → OPA → SQLite path, because `GET /api/v1/hub/components/{component}/details` is a protected API call. The extra hop depends on the component:
+Operations service Details uses protected Hub-owned endpoints where required, with existing bearer-token and OPA authorization:
 
-| Details button | After the OPA decision |
+| Hub diagnostic | After the OPA decision |
 | --- | --- |
 | Hub API | Returns listener text. No further connection. |
 | Database | In-process SQLite version, file size, and row counts. |
@@ -71,7 +71,7 @@ Hub overview **Details** uses the same browser → Nginx → `hub-bootstrap` →
 | Web | `GET https://dbmap-web/health`, a short response. The probe reads that response to completion. |
 | Firmware builder | `GET https://firmware-builder:8443/health`. No answer means the optional profile is not running. Admin Components/details only — excluded from Health and Availability scoring. |
 
-Administrators and viewers can also open **Logs** on a container component. `hub-bootstrap` reads the latest 15 lines from the local Docker engine for that Compose service. The database is not a container, so it has no log button. For the MQTT broker, **Failed connections (last 3h)** filters the host-mounted Mosquitto log for auth failures, TLS/CA errors, and protocol/socket errors in that window (clean client disconnects are omitted). Attempts dropped by host fail2ban never reach Mosquitto and therefore do not appear there. Viewer tokens can read component status, details, and logs.
+Operations reads bounded container runtime metadata, on-demand container log tails, and the host-mounted Mosquitto log. Hub-bootstrap has neither a Docker socket nor a Mosquitto log mount. The Operations Web **Failed connections (last 3h)** control under MQTT uses `GET /api/v1/operations/services/mosquitto/connection-failures`, authorized by `operations.logs.read`. It retains the existing three-hour filter and response, including auth, TLS/CA, and protocol/socket failures while omitting clean disconnects. Attempts dropped by host fail2ban never reach Mosquitto and do not appear there.
 
 CLI tools on the laptop (`curl`, `scripts/hub_summary.py`, `scripts/hub_admin.py`, `scripts/hub_event_track.py`) are the same HTTPS client as the browser: they call Nginx and stop there. They do not open MQTT.
 

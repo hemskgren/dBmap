@@ -1616,7 +1616,7 @@ paths:
         - bearerAuth: []
   /api/v1/hub/status:
     get:
-      summary: "Hub mode, addresses, summary, and monitoring"
+      summary: "Hub mode, addresses, and device summary"
       operationId: getHubStatus
       responses:
         "200":
@@ -1645,51 +1645,7 @@ paths:
                 $ref: "#/components/schemas/ErrorMessage"
       tags:
         - Hub
-      description: "Includes current Hub health, historical availability windows, last state change, and observation gaps. Recent monitoring events are loaded separately from GET /api/v1/hub/monitoring/events. See docs/health-and-availability.md."
-      security:
-        - bearerAuth: []
-  /api/v1/hub/monitoring/events:
-    get:
-      summary: Recent Hub monitoring events
-      description: Newest Hub health and availability events. Intended for on-demand UI expansion; default limit is 15.
-      operationId: getHubMonitoringEvents
-      parameters:
-        - name: limit
-          in: query
-          required: false
-          schema:
-            type: integer
-            maximum: 50
-            minimum: 1
-            default: 15
-            title: Limit
-      responses:
-        "200":
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/HubMonitoringEvents"
-        "401":
-          description: Missing or invalid local bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorMessage"
-        "403":
-          description: "Authenticated, but OPA denied the action."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorMessage"
-        "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorMessage"
-      tags:
-        - Hub
+      description: "Returns Hub identity, call-home addresses, current component status, and device/observation counts."
       security:
         - bearerAuth: []
   /api/v1/hub/environmental-context:
@@ -1785,94 +1741,6 @@ paths:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
           description: "OPA, MQTT, or the Docker engine is unavailable."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorMessage"
-      tags:
-        - Hub
-      security:
-        - bearerAuth: []
-  "/api/v1/hub/components/{component}/logs":
-    get:
-      summary: Latest container log lines
-      operationId: getHubComponentLogs
-      parameters:
-        - name: component
-          in: path
-          required: true
-          schema:
-            type: string
-            title: Component
-      responses:
-        "200":
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/HubComponentLogs"
-        "401":
-          description: Missing or invalid local bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorMessage"
-        "403":
-          description: "Authenticated, but OPA denied the action."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorMessage"
-        "404":
-          description: The requested resource was not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorMessage"
-        "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorMessage"
-      tags:
-        - Hub
-      description: Returns the last 15 lines for an allowlisted Compose service. Available to local admin and viewer tokens.
-      security:
-        - bearerAuth: []
-  "/api/v1/hub/components/{component}/connection-failures":
-    get:
-      summary: Recent MQTT connection failures
-      description: "Mosquitto only. Returns auth, TLS/CA, and protocol/socket failure lines from the host-mounted broker log for the last 3 hours. Fail2ban drops never reach Mosquitto and are omitted. Available to local admin and viewer tokens."
-      operationId: getHubComponentConnectionFailures
-      parameters:
-        - name: component
-          in: path
-          required: true
-          schema:
-            type: string
-            title: Component
-      responses:
-        "200":
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/HubComponentConnectionFailures"
-        "401":
-          description: Missing or invalid local bearer token.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorMessage"
-        "403":
-          description: "Authenticated, but OPA denied the action."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorMessage"
-        "404":
-          description: The requested resource was not found.
           content:
             application/json:
               schema:
@@ -2652,18 +2520,6 @@ paths:
       description: "Returns {pagination, reports}. pagination includes total_count, page, page_size, total_pages, order, snapshot_id. Query: page (default 1), page_size (default 200, max 500), order=newest|oldest, node_id, observation_id, optional snapshot_id, deprecated limit alias for page_size."
       operationId: listObservations
       parameters:
-        - name: received_from
-          in: query
-          schema:
-            type: string
-            format: date-time
-          description: Inclusive Hub reception time with timezone.
-        - name: received_before
-          in: query
-          schema:
-            type: string
-            format: date-time
-          description: Exclusive Hub reception time with timezone. Must follow received_from if both are supplied.
         - name: node_id
           in: query
           required: false
@@ -2732,6 +2588,22 @@ paths:
             minimum: 1
             nullable: true
           description: Optional freeze boundary (Observation.id). Reuse pagination.snapshot_id from a prior page to avoid duplicates when new reports arrive.
+        - name: received_from
+          in: query
+          required: false
+          schema:
+            title: Received From
+            type: string
+            format: date-time
+            nullable: true
+        - name: received_before
+          in: query
+          required: false
+          schema:
+            title: Received Before
+            type: string
+            format: date-time
+            nullable: true
       responses:
         "200":
           description: Successful Response
@@ -3777,7 +3649,10 @@ components:
           $ref: "#/components/schemas/ObservationClassification"
           nullable: true
         assessment:
-          $ref: "#/components/schemas/ObservationAssessment"
+          title: Assessment
+          oneOf:
+            - $ref: "#/components/schemas/ObservationAssessmentV1"
+            - $ref: "#/components/schemas/ObservationAssessmentV2"
           nullable: true
         evidence:
           $ref: "#/components/schemas/ObservationEvidence"
@@ -3791,24 +3666,24 @@ components:
         - measurements
       title: ObservationAcoustic
     ObservationAssessmentPathNode:
-      type: object
-      additionalProperties: false
-      required:
-        - id
-        - confidence
       properties:
         id:
           type: string
-          minLength: 1
           maxLength: 64
+          minLength: 1
           title: Id
         confidence:
           type: number
-          minimum: 0.0
           maximum: 1.0
+          minimum: 0.0
           title: Confidence
+      additionalProperties: false
+      type: object
+      required:
+        - id
+        - confidence
       title: ObservationAssessmentPathNode
-      description: One ear_hyp_v2 taxonomy node (confidence independent of depth).
+      description: One node in an ear_hyp_v2 taxonomy path (confidence is independent of depth).
     ObservationAssessmentV1:
       properties:
         schema:
@@ -3854,11 +3729,11 @@ components:
           title: Version
           default: 1
         path:
-          type: array
-          minItems: 1
-          maxItems: 8
           items:
             $ref: "#/components/schemas/ObservationAssessmentPathNode"
+          type: array
+          maxItems: 8
+          minItems: 1
           title: Path
       additionalProperties: false
       type: object
@@ -3866,18 +3741,7 @@ components:
         - schema
         - path
       title: ObservationAssessmentV2
-      description: >
-        EAR hierarchical assessment (schema ear_hyp_v2). Ordered root→deepest
-        path with independent per-node confidence. Distinct from ear_hyp_v1
-        (primary.family + tier); Hub does not reinterpret v1 as v2.
-    ObservationAssessment:
-      oneOf:
-        - $ref: "#/components/schemas/ObservationAssessmentV1"
-        - $ref: "#/components/schemas/ObservationAssessmentV2"
-      title: ObservationAssessment
-      description: >
-        EAR assessment union. ear_hyp_v1 (family/tier) and ear_hyp_v2
-        (path + per-node confidence) are both accepted; they are not equivalent.
+      description: "EAR hierarchical assessment (schema ear_hyp_v2).\n\nOrdered root\u2192deepest path with independent per-node confidence.\nNot a reinterpretation of ear_hyp_v1 (which uses primary.family + tier)."
     ObservationBearing:
       properties:
         deg:
@@ -3988,8 +3852,6 @@ components:
           nullable: true
         origin:
           title: Origin
-          description: Optional technical Observation path mark. Omit/null on normal
-            Observations. Only critical_path is accepted today (Critical Path / ADR 0003).
           type: string
           enum:
             - critical_path
@@ -5125,7 +4987,7 @@ components:
           type: string
         config:
           type: object
-          description: Optional nested firmware config from sdkconfig.defaults overrides (config.sp Sensor Platform, config.product.dbmap dBmap product). Not the full effective Kconfig merge.
+          description: "Optional nested firmware config from sdkconfig.defaults overrides: config.sp (Sensor Platform) and config.product.dbmap (dBmap product). Not the full effective Kconfig merge."
           additionalProperties: true
         dbmap_config:
           type: object
@@ -5309,7 +5171,6 @@ components:
         - id
         - name
         - status
-        - logs
       properties:
         id:
           type: string
@@ -5325,8 +5186,6 @@ components:
           type: string
         status:
           type: string
-        logs:
-          type: boolean
     HubSummary:
       type: object
       properties:
@@ -5357,228 +5216,7 @@ components:
           type: string
           format: date-time
           nullable: true
-          description: Newest observation received_time_utc, or null when empty.
-    HubMonitoringComponent:
-      type: object
-      properties:
-        id:
-          type: string
-        name:
-          type: string
-        state:
-          type: string
-        last_success_at:
-          type: string
-          format: date-time
-          nullable: true
-        reason:
-          type: string
-          nullable: true
-        docker:
-          type: object
-          additionalProperties: true
-          nullable: true
-    HubAvailabilityWindow:
-      type: object
-      properties:
-        percent:
-          type: number
-          nullable: true
-        state_summary:
-          type: string
-        eligible_seconds:
-          type: integer
-        available_seconds:
-          type: integer
-        unavailable_seconds:
-          type: integer
-        unobserved_seconds:
-          type: integer
-        not_running_seconds:
-          type: integer
-          description: Seconds the Hub monitor was not running inside this window. A stopped Hub container and a powered-off computer are both recorded this way and are excluded from the percentage.
-        sample_count:
-          type: integer
-        insufficient_data:
-          type: boolean
-        low_coverage:
-          type: boolean
-        score_ready:
-          type: boolean
-          description: False for multi-day windows until at least half the window has been observed. UIs should not show a bare window percentage until ready.
-        reason:
-          type: string
-          nullable: true
-        basis:
-          type: string
-    HubMonitorEvent:
-      type: object
-      properties:
-        event_id:
-          type: string
-        occurred_at:
-          type: string
-          format: date-time
-        observed_at:
-          type: string
-          format: date-time
-        component:
-          type: string
-        event_type:
-          type: string
-        previous_state:
-          type: string
-          nullable: true
-        new_state:
-          type: string
-          nullable: true
-        reason:
-          type: string
-          nullable: true
-        source:
-          type: string
-        certainty:
-          type: string
-          enum:
-            - confirmed
-            - inferred
-    HubMonitoringEvents:
-      type: object
-      required:
-        - events
-        - limit
-        - count
-      properties:
-        events:
-          type: array
-          items:
-            $ref: "#/components/schemas/HubMonitorEvent"
-        limit:
-          type: integer
-          example: 15
-        count:
-          type: integer
-    HubMonitoring:
-      type: object
-      description: "Local Hub health and availability, with optional informational public checks. See docs/health-and-availability.md."
-      properties:
-        health:
-          type: object
-          properties:
-            state:
-              type: string
-            score:
-              type: integer
-              nullable: true
-            score_definition:
-              type: object
-              additionalProperties: true
-            reason:
-              type: string
-              nullable: true
-              description: Plain-language cause when health is not healthy.
-            components:
-              type: array
-              items:
-                $ref: "#/components/schemas/HubMonitoringComponent"
-            calculated_at:
-              type: string
-              format: date-time
-            notes:
-              type: string
-        availability:
-          type: object
-          description: Core Hub availability plus independent MQTT/API/Web windows. Firmware Builder is excluded. See docs/health-and-availability.md.
-          properties:
-            current_state:
-              type: string
-            label:
-              type: string
-              example: Core Hub availability
-            definition:
-              type: string
-            windows:
-              type: object
-              additionalProperties:
-                $ref: "#/components/schemas/HubAvailabilityWindow"
-            components:
-              type: object
-              description: "Independent MQTT, API, and Web availability windows."
-              additionalProperties:
-                type: object
-                properties:
-                  label:
-                    type: string
-                  windows:
-                    type: object
-                    additionalProperties:
-                      $ref: "#/components/schemas/HubAvailabilityWindow"
-            insufficient_data:
-              type: boolean
-            gaps:
-              type: array
-              items:
-                type: object
-                additionalProperties: true
-            retention_days:
-              type: integer
-            interval_seconds:
-              type: number
-            notes:
-              type: string
-        last_checks:
-          type: object
-          additionalProperties: true
-        public_components:
-          type: object
-          description: Enabled public checks from the Hub's network. Keys are public_api and public_mqtt.
-          additionalProperties:
-            type: object
-            properties:
-              label:
-                type: string
-              state:
-                type: string
-                enum:
-                  - ok
-                  - offline
-                  - unknown
-              reason:
-                type: string
-                nullable: true
-              checked_at:
-                type: string
-                format: date-time
-                nullable: true
-              last_success_at:
-                type: string
-                format: date-time
-                nullable: true
-              interval_seconds:
-                type: integer
-                example: 60
-              windows:
-                type: object
-                additionalProperties:
-                  $ref: "#/components/schemas/HubAvailabilityWindow"
-              recent_events:
-                type: array
-                items:
-                  $ref: "#/components/schemas/HubMonitorEvent"
-        last_state_change:
-          type: object
-          additionalProperties: true
-          nullable: true
-        recent_events:
-          type: array
-          items:
-            $ref: "#/components/schemas/HubMonitorEvent"
-          description: Empty on status responses; use GET /api/v1/hub/monitoring/events.
-        events_endpoint:
-          type: string
-          example: /api/v1/hub/monitoring/events
-        sample_count:
-          type: integer
+          description: "Newest observation received_time_utc, or null when empty."
     HubStatus:
       type: object
       required:
@@ -5587,7 +5225,6 @@ components:
         - addresses
         - components
         - summary
-        - monitoring
       properties:
         mode:
           type: string
@@ -5602,8 +5239,6 @@ components:
             $ref: "#/components/schemas/HubComponent"
         summary:
           $ref: "#/components/schemas/HubSummary"
-        monitoring:
-          $ref: "#/components/schemas/HubMonitoring"
     HubComponentDetails:
       type: object
       additionalProperties: true
@@ -5613,61 +5248,6 @@ components:
           type: string
         status:
           type: string
-    HubComponentLogs:
-      type: object
-      required:
-        - service
-        - compose_service
-        - lines
-        - line_limit
-      properties:
-        service:
-          type: string
-        compose_service:
-          type: string
-        lines:
-          type: array
-          items:
-            type: string
-        line_limit:
-          type: integer
-          example: 15
-    HubComponentConnectionFailures:
-      type: object
-      required:
-        - service
-        - compose_service
-        - window_hours
-        - source
-        - lines
-        - count
-        - notices
-      properties:
-        service:
-          type: string
-        compose_service:
-          type: string
-          example: mosquitto
-        window_hours:
-          type: integer
-          example: 3
-        source:
-          type: string
-          enum:
-            - file
-            - unavailable
-        path:
-          type: string
-        lines:
-          type: array
-          items:
-            type: string
-        count:
-          type: integer
-        notices:
-          type: array
-          items:
-            type: string
   securitySchemes:
     bearerAuth:
       type: http
@@ -5702,7 +5282,7 @@ tags:
   - name: Observations
     description: Persisted Ear observations.
   - name: Hub
-    description: "Local mode, component details, and container logs."
+    description: "Local mode, component diagnostics, and device summary."
   - name: Provisioning
     description: Device bootstrap-token exchange.
 security:

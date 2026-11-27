@@ -4,6 +4,14 @@ Phase 1 monitoring for the Local Hub, plus device **availability** (D0) and
 device **health** from optional on-device diagnostics (D1 firmware / D2 Hub).
 Planned reboots, leaderboards, and Regional Hub synchronization remain later work.
 
+> **Current ownership:** optional Operations is the sole active owner of
+> infrastructure health, availability, public endpoint monitoring, and
+> container diagnostics. The legacy Hub/Public infrastructure workers are no
+> longer started; their code and database tables are retained for rollback and
+> historical reference only. The Hub tab no longer displays this legacy
+> monitoring. Device Monitor remains active in `hub-bootstrap` and does not
+> depend on Operations. See [Operations](./operations.md).
+
 ## Concepts
 
 Health and Availability are independent.
@@ -21,9 +29,15 @@ A working web session does **not** prove that MQTT or device communication is av
 
 The browser talks HTTPS to Nginx → Web / API. Device traffic uses MQTT (Mosquitto). Those paths are independent. Stopping Mosquitto disconnects devices while an already-loaded Hub tab can keep working until the next API call that depends on MQTT-backed data.
 
-## Observation model (Hub)
+## Legacy Hub Monitor (disabled; retained for rollback)
 
-Every `DBMAP_HUB_MONITOR_INTERVAL_S` seconds (default **60**), a background thread inside `hub-bootstrap` runs a monitor cycle that:
+The following describes the retained pre-cutover implementation, not an active
+worker. The Hub/Public monitor code and tables remain available for rollback;
+Hub-bootstrap does not start these workers and does not write new infrastructure
+monitor samples or events.
+
+Before cutover, every `DBMAP_HUB_MONITOR_INTERVAL_S` seconds (default **60**),
+a background thread inside `hub-bootstrap` ran a monitor cycle that:
 
 1. Probes API/database, Nginx, Web, MQTT, and OPA.
 2. Optionally reads Docker runtime diagnostics for monitored Compose services (not Firmware Builder).
@@ -140,7 +154,7 @@ A detected `service_restart_detected` event (Docker `StartedAt` / `RestartCount`
 
 A future Regional Hub can observe Local Hub reachability externally and provide a more authoritative view. Phase 1 only prepares local event/summary shapes for that later sync.
 
-## Persistence (Hub)
+## Legacy monitoring persistence (Hub)
 
 SQLite tables (same database as the Hub):
 
@@ -161,9 +175,28 @@ Each event carries UTC `occurred_at` and `observed_at`, component id, previous/n
 
 `state_changed` and `health_changed` / `availability_changed` describe different layers. A health score field of `0` is not the same as a component state of `offline`; UI labels should keep those distinct.
 
-## API and UI (Hub)
+## Retired legacy monitoring API and UI
 
-`GET /api/v1/hub/status` (existing auth: bearer token + OPA `hub.status.read`) includes a `monitoring` object with:
+The authenticated `GET /api/v1/hub/status` endpoint remains for Hub overview,
+service-status, and CLI compatibility, but no longer includes a `monitoring`
+object. `GET /api/v1/hub/monitoring/events` and
+`GET /api/v1/hub/components/{component}/logs` and
+`GET /api/v1/hub/components/{component}/connection-failures` are retired.
+Hub-owned component Details remain available where Operations needs them;
+MQTT failed-connection diagnostics are now Operations-owned.
+
+The Hub tab no longer presents legacy health/availability, component Details,
+Logs, or infrastructure monitoring events. Operations history and MQTT failed
+connection diagnostics are available in the Operations tab/API when that
+optional profile is enabled.
+
+`scripts/hub_summary.py` is not migrated to Operations. It still reports the
+Hub overview and current component status, but its output no longer includes
+legacy availability history or monitoring events; Operations data is not
+included until the deferred CLI migration.
+
+Previously, `GET /api/v1/hub/status` (bearer token + OPA `hub.status.read`)
+included a `monitoring` object with:
 
 - current health state, score, reason, and per-component summary (Firmware Builder omitted)
 - Core Hub availability windows for 24h / 7d / 30d
@@ -172,24 +205,30 @@ Each event carries UTC `occurred_at` and `observed_at`, component id, previous/n
 - last relevant state change
 - observation gaps / insufficient-data warnings
 
-Recent event history is **not** embedded in every status refresh. Open `GET /api/v1/hub/monitoring/events?limit=15` (same `hub.status.read` action) when the Hub tab expands that section, or when `hub_summary` prints the human-readable event list. Default limit is 15 (max 50).
+The prior Hub UI and CLI fetched event history separately from
+`GET /api/v1/hub/monitoring/events?limit=15`. That endpoint is retired.
 
-The Hub tab and `scripts/hub_summary.py` both use those shared calculations. There is no second scoring algorithm in the CLI.
+The prior Hub tab and `scripts/hub_summary.py` used those shared calculations.
+The active infrastructure monitoring implementation is now Operations.
 
-## Configuration (Hub monitor)
+## Legacy Hub monitor configuration
 
-| Variable | Default | Notes |
+The old Hub worker configuration is inert after cutover. The gap-threshold
+setting remains in Hub configuration for the existing Device Monitor continuity
+semantics.
+
+| Variable | Former default | Notes |
 | --- | --- | --- |
-| `DBMAP_HUB_MONITOR_ENABLED` | `true` | Set `false` to disable the background thread |
-| `DBMAP_HUB_MONITOR_INTERVAL_S` | `60` | Full probe interval in seconds |
-| `DBMAP_HUB_MONITOR_GAP_THRESHOLD_S` | `120` | Infer a gap when elapsed time between successful Hub observations exceeds this threshold |
-| `DBMAP_HUB_MONITOR_RETENTION_DAYS` | `30` | Clamped to 30–90; raise via env if longer Hub sample history is needed |
-| `DBMAP_PUBLIC_API_MONITOR_ENABLED` | `false` | Probe the public Hub HTTPS health endpoint |
-| `DBMAP_PUBLIC_MQTT_MONITOR_ENABLED` | `false` | Probe an authenticated MQTT session through the public endpoint |
+| `DBMAP_HUB_MONITOR_ENABLED` | `true` | No longer starts a worker |
+| `DBMAP_HUB_MONITOR_INTERVAL_S` | `60` | No longer schedules infrastructure probes |
+| `DBMAP_HUB_MONITOR_GAP_THRESHOLD_S` | `120` | Still used by Device Monitor for its existing gap threshold |
+| `DBMAP_HUB_MONITOR_RETENTION_DAYS` | `30` | No longer prunes legacy infrastructure samples |
 
 ### Public API and Public MQTT
 
-These optional checks run independently every 60 seconds in the Hub process. The Hub tab displays their state, last check, reason, transitions, and 24h, 7d, and 30d availability with eligible observation time. API clients can read `monitoring.public_components` in `GET /api/v1/hub/status`. Public checks are informational. Core Hub, Web, and Device Monitor continue using their existing inputs and schedules.
+These checks previously ran from the Hub process and persisted in Hub-owned
+tables. They are now owned by Operations, where they remain optional and
+disabled by default. See [Operations configuration](./operations.md#configuration).
 
 - Public API appends `/health` to `DBMAP_PUBLIC_HUB_URL`, verifies the configured hostname with the existing CA, and requires a successful response identifying `hub-bootstrap`. It sends no API credentials.
 - Public MQTT uses `DBMAP_PUBLIC_MQTT_HOST`, `DBMAP_PUBLIC_MQTT_PORT`, the existing MQTT CA and regular Hub login, and verified TLS. It requires a successful MQTT 3.1.1 CONNACK for a unique, clean client session. It disconnects without subscribing, publishing, or reconnecting. DynSec client-ID restrictions or rejected credentials can block this check and are surfaced as failure reasons.
@@ -211,7 +250,7 @@ Core and Device Monitor history carry through the upgrade.
 
 These results describe reachability from the Hub's network. Router NAT loopback and split DNS can make the result differ from what an internet client sees. The probes use the Hub resolver and do not compare DNS answers to an independently measured WAN address. Use an off-LAN client to validate externally visible reachability.
 
-## Limitations (Hub)
+## Legacy monitoring limitations
 
 For a separately approved history reset, see [Monitoring history recovery](monitoring-history-recovery.md).
 
@@ -407,7 +446,9 @@ Device-side diagnostic defaults use on-device Kconfig / future Desired `payload.
 
 ## Related surfaces
 
-- Component list and on-demand details: Hub tab Components section / `GET /api/v1/hub/components/...` (may still list Firmware Builder for admin ops; that list is not HA scoring)
+- Hub overview and component status: Hub tab / `GET /api/v1/hub/status`
+- Infrastructure service details and logs: optional Operations tab / `/api/v1/operations/services/...`
+- Hub-owned diagnostic details: `GET /api/v1/hub/components/{component}/details` (consumed by Operations; not a Hub-tab monitoring control)
 - Compose healthchecks: process/dependency checks used by Docker, not the historical score source of record
 - Device detail `Last seen` / status: same online window as D0 availability
 - Protocol `diag` fields: [protocol.md](./protocol.md)

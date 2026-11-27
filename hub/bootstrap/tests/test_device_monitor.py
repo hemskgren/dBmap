@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -520,6 +521,34 @@ def test_device_worker_start_is_idempotent_when_hub_monitor_is_disabled(
     assert first is second
     assert first.name == "device-monitor"
     assert first.starts == 1
+
+
+def test_hub_lifespan_starts_only_device_monitor_for_monitoring(
+    monkeypatch,
+) -> None:
+    from app import main, public_monitor
+
+    started: list[str] = []
+    monkeypatch.setattr(
+        main,
+        "start_device_monitor_thread",
+        lambda: started.append("device"),
+    )
+    monkeypatch.setattr(main, "start_weather_worker", lambda: None)
+
+    def legacy_worker_must_not_start(*_args, **_kwargs):
+        raise AssertionError("legacy infrastructure monitoring must not start")
+
+    monkeypatch.setattr(hub_monitor, "start_monitor_thread", legacy_worker_must_not_start)
+    monkeypatch.setattr(public_monitor, "start", legacy_worker_must_not_start)
+
+    async def run_lifespan() -> None:
+        async with main._lifespan(None):
+            pass
+
+    asyncio.run(run_lifespan())
+
+    assert started == ["device"]
 
 
 def test_device_cycle_commit_failure_preserves_previous_checkpoint(monkeypatch) -> None:

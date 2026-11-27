@@ -9,7 +9,6 @@ The Hub API authenticates the current local admin/viewer bearer tokens, then ask
 | `session.read` | `session` | Allow | Allow |
 | `devices.list_summary` | `device_summaries` | Allow | Allow |
 | `hub.status.read` | `hub` | Allow | Allow |
-| `hub.logs.read` | `hub` | Allow | Allow |
 | `operations.status.read` | `operations` | Allow | Allow |
 | `operations.events.read` | `operations` | Allow | Allow |
 | `operations.details.read` | `operations` | Allow | Allow |

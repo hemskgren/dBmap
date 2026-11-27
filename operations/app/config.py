@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     viewer_token: str = ""
     docker_socket: str = "/var/run/docker.sock"
     compose_project: str = ""
+    mosquitto_log_path: str = "/mosquitto/log/mosquitto.log"
 
     hub_id: str = Field(
         default="local-01",
