@@ -15,12 +15,14 @@ Message fields are in the [protocol reference](./protocol.md). Authorization act
 | `nginx` | Laptop, Output, Ear simulator, CLI | HTTPS, TLS 1.2 and 1.3 | `${DBMAP_LAN_IP}:${DBMAP_HTTPS_PORT:-8443}` | Only published HTTPS port. Verifies each upstream certificate. |
 | `dbmap-web` | `nginx` on the Compose network | HTTPS | `443` | Static files. No API, database, or MQTT client. |
 | `hub-bootstrap` | `nginx` on the Compose network | HTTPS | `8443` | API, SQLite, MQTT subscriber, command publisher, broker-user admin. |
-| `opa` | `hub-bootstrap` and `analysis` on `opa-private` | HTTPS | `8181` | No host port. Decision URL `POST /v1/data/dbmap/authz/allow`. |
+| `opa` | `hub-bootstrap`, `analysis`, and optional `operations` on `opa-private` | HTTPS | `8181` | No host port. Decision URL `POST /v1/data/dbmap/authz/allow`. |
 | `mosquitto` | Devices, simulator, `hub-bootstrap`, and the LAN | MQTT 3.1.1 over TLS | `${DBMAP_LAN_IP}:8883` | Username and password. Server certificate only; clients do not present a certificate. |
 | `firmware-builder` | `nginx` on `firmware-private` | HTTPS | `8443` | Optional `firmware-build` profile. No host port. |
 | `analysis` | `nginx` on the Compose network | HTTPS | `8443` | Optional `analysis` profile (`COMPOSE_PROFILES=analysis` in normal/dev). No host port. Own SQLite. |
+| `operations` | `nginx` on the Compose network; OPA on `opa-private` | HTTPS | `8443` | Optional `operations` profile. No host port. Own SQLite. |
 | SQLite | The `hub-bootstrap` process | File | none | `sqlite:////data/bootstrap.db` |
 | Analysis SQLite | The `analysis` process | File | none | `sqlite:////data/analysis.db` on `analysis-data` |
+| Operations SQLite | The `operations` process | File | none | `sqlite:////data/operations.db` on `operations-data` |
 | Board USB serial | The laptop browser | Web Serial | 115200 baud | Identity, flash, and NVS provisioning. The Hub is not on this path. |
 | NTP server | The Output board | SNTP, UDP | `123` | `NTP_SERVER` (platform builder env), default `se.pool.ntp.org` if unset. Set at firmware build time into `CONFIG_DBMAP_NTP_SERVER`. |
 

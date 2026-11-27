@@ -17,6 +17,7 @@ server {
     set $dbmap_web_upstream dbmap-web:443;
     set $firmware_builder_upstream firmware-builder:8443;
     set $analysis_upstream analysis:8443;
+    set $operations_upstream operations:8443;
     set $dbmap_public_base_path "${DBMAP_PUBLIC_BASE_PATH}";
 
     ssl_certificate /certs/nginx.crt;
@@ -116,6 +117,13 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
     }
 
+    location ~ ^(?<nginx_health_request_base>/[^/]+(?:/[^/]+)*)?(?<nginx_health_uri>/api/v1/nginx/health)$ {
+        if ($nginx_health_request_base != $dbmap_public_base_path) { return 404; }
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+        return 200 '{"status":"ok","service":"nginx"}';
+    }
+
     location ~ ^(?<request_base>/[^/]+(?:/[^/]+)*)?(?<health_uri>/health)$ {
         if ($request_base != $dbmap_public_base_path) { return 404; }
         proxy_pass https://$hub_bootstrap_upstream$health_uri;
@@ -170,6 +178,28 @@ server {
         default_type application/json;
         add_header Cache-Control "no-store" always;
         return 503 '{"detail":"Optional analysis service is not running. Enable COMPOSE_PROFILES=analysis (or pass --profile analysis) and run docker compose up -d analysis nginx."}';
+    }
+
+    # Optional Operations monitoring API. It starts in a separate profile and
+    # must never become a dependency of the existing Hub routes.
+    location ~ ^(?<operations_request_base>/[^/]+(?:/[^/]+)*)?(?<operations_api_uri>/api/v1/operations(?:/.*)?)$ {
+        if ($operations_request_base != $dbmap_public_base_path) { return 404; }
+        error_page 502 503 504 = @operations_unavailable;
+        proxy_pass https://$operations_upstream$operations_api_uri;
+        proxy_ssl_server_name on;
+        proxy_ssl_name operations;
+        proxy_ssl_verify on;
+        proxy_ssl_trusted_certificate /certs/ca.crt;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location @operations_unavailable {
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+        return 503 '{"detail":"Optional Operations service is not running. Enable COMPOSE_PROFILES=operations and run docker compose up -d operations nginx."}';
     }
 
     location ~ ^(?<request_base>/[^/]+(?:/[^/]+)*)?(?<api_uri>/api/.*)$ {

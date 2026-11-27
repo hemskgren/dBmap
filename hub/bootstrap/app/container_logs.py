@@ -14,14 +14,17 @@ from app.config import settings
 log = logging.getLogger("hub-bootstrap.container-logs")
 
 LOG_TAIL_LINES = 15
+OPERATIONS_LOG_TAIL_LINES = 30
 _TARGETS = {
     "nginx": ("Nginx", "nginx"),
     "web": ("Web", "dbmap-web"),
     "hub-api": ("Hub API", "hub-bootstrap"),
     "opa": ("Policy engine", "opa"),
     "mosquitto": ("MQTT broker", "mosquitto"),
+    "operations": ("Operations", "operations"),
     "firmware-builder": ("Firmware builder", "firmware-builder"),
 }
+HUB_LOG_COMPONENTS = frozenset(_TARGETS) - {"operations"}
 _api_version: str | None = None
 _api_lock = threading.Lock()
 
@@ -118,13 +121,18 @@ def _project_name() -> str:
     return "dbmap"
 
 
-def decode_docker_logs(payload: bytes) -> list[str]:
+def decode_docker_logs(
+    payload: bytes,
+    line_limit: int = LOG_TAIL_LINES,
+) -> list[str]:
     """Turn a Docker log response into at most the last tail lines."""
+    if not 1 <= line_limit <= OPERATIONS_LOG_TAIL_LINES:
+        raise ValueError("line_limit must be between 1 and 30")
     if not payload:
         return []
     frames = _demux(payload)
     text = (frames if frames is not None else payload).decode("utf-8", errors="replace")
-    return text.splitlines()[-LOG_TAIL_LINES:]
+    return text.splitlines()[-line_limit:]
 
 
 def _demux(payload: bytes) -> bytes | None:
@@ -201,11 +209,13 @@ def _resolve_container(component: str) -> tuple[str, str, str]:
     return service_name, compose_service, container_id
 
 
-def read_tail(component: str) -> dict:
+def read_tail(component: str, line_limit: int = LOG_TAIL_LINES) -> dict:
+    if not 1 <= line_limit <= OPERATIONS_LOG_TAIL_LINES:
+        raise ValueError("line_limit must be between 1 and 30")
     service_name, compose_service, container_id = _resolve_container(component)
     log_status, log_body = _request(
         "GET",
-        f"{_api_prefix()}/containers/{container_id}/logs?stdout=1&stderr=1&tail={LOG_TAIL_LINES}",
+        f"{_api_prefix()}/containers/{container_id}/logs?stdout=1&stderr=1&tail={line_limit}",
     )
     if log_status != 200:
         log.warning(
@@ -217,8 +227,8 @@ def read_tail(component: str) -> dict:
     return {
         "service": service_name,
         "compose_service": compose_service,
-        "lines": decode_docker_logs(log_body),
-        "line_limit": LOG_TAIL_LINES,
+        "lines": decode_docker_logs(log_body, line_limit),
+        "line_limit": line_limit,
     }
 
 

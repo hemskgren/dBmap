@@ -91,6 +91,7 @@ Material lands under `shared/` (public trust at `shared/trust/ca.crt`; CA key on
 - Optional path prefix: `DBMAP_PUBLIC_BASE_PATH=/dbmap` (or empty for `/`).
 - OPA is HTTPS-only on a private network; policy lives in `policy/` and reloads on change. Policy unit tests: `sh scripts/test-policy.sh`.
 - Optional Analysis service: Compose profile `analysis`, enabled for normal development by `COMPOSE_PROFILES=analysis` in `.env`. Own SQLite volume and `/api/v1/analysis/*` routes via Nginx. Omit the profile for a minimal Hub; EAR ingest and Hub Observation APIs are unaffected. When the profile is off, analysis routes return JSON `503`.
+- Optional Operations service: Compose profile `operations`; start with `docker compose --profile operations up -d --build opa operations nginx dbmap-web`. Operations requires OPA for authorization. If viewer requests receive `access denied by policy` after adding Operations, verify the mounted `policy/authz.rego` includes the `operations.*.read` actions and restart OPA with `docker compose restart opa`.
 - Optional firmware builder: Compose profile `firmware-build` (not required for normal Hub use; heavy ESP-IDF image). Enable with `COMPOSE_PROFILES=analysis,firmware-build` or `docker compose --profile firmware-build up -d firmware-builder nginx`.
 - Trust `shared/trust/ca.crt` in browsers/OS clients that talk to the Hub; CLI tools use `--cacert shared/trust/ca.crt`.
 - Optional mDNS: `./scripts/publish-hub-mdns.sh "$DBMAP_LAN_IP"`.

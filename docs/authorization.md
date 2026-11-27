@@ -10,6 +10,10 @@ The Hub API authenticates the current local admin/viewer bearer tokens, then ask
 | `devices.list_summary` | `device_summaries` | Allow | Allow |
 | `hub.status.read` | `hub` | Allow | Allow |
 | `hub.logs.read` | `hub` | Allow | Allow |
+| `operations.status.read` | `operations` | Allow | Allow |
+| `operations.events.read` | `operations` | Allow | Allow |
+| `operations.details.read` | `operations` | Allow | Allow |
+| `operations.logs.read` | `operations` | Allow | Allow |
 | `observations.read` | `observations` | Allow | Allow |
 | `nodes.create` | `nodes` | Allow | Deny |
 | `nodes.list` | `nodes` | Allow | Deny |
@@ -45,9 +49,9 @@ The Hub API authenticates the current local admin/viewer bearer tokens, then ask
 | `analysis.scratch.write` | `analysis_scratch` | Allow | Deny |
 | `analysis.scratch.delete` | `analysis_scratch` | Allow | Deny |
 
-The optional Analysis service (`COMPOSE_PROFILES=analysis`) reuses the same local admin/viewer bearer tokens and the same OPA package. Scratch `namespace` is an organizational label for scripts only; it is not an authorization boundary. Admin has full scratch access; viewer is read-only.
+The optional Analysis service (`COMPOSE_PROFILES=analysis`) and Operations service (`COMPOSE_PROFILES=operations`) reuse the same local admin/viewer bearer tokens and OPA package. Scratch `namespace` is an organizational label for scripts only; it is not an authorization boundary. Admin has full scratch access; viewer is read-only.
 
-The admin rule grants every action to an authenticated admin. A viewer can read the session, Hub status, Hub component logs, device summaries, device details (including Desired and Reported state), observations, internal user directory, group directory, all firmware catalog entries, including unregistered candidates, and Analysis scratch objects, but cannot change Hub state, user records, groups, firmware catalog records, or Analysis scratch data. Firmware uploads, promotion, deletion, and device-specific firmware selection are admin-only. Authentication still happens in the API; OPA never receives the bearer token.
+The admin rule grants every action to an authenticated admin. A viewer can read the session, Hub status and component logs, Operations status, events, details, and logs, device summaries, device details (including Desired and Reported state), observations, internal user directory, group directory, all firmware catalog entries, including unregistered candidates, and Analysis scratch objects, but cannot change Hub state, user records, groups, firmware catalog records, or Analysis scratch data. Firmware uploads, promotion, deletion, and device-specific firmware selection are admin-only. Authentication still happens in the API; OPA never receives the bearer token.
 
 Admin and viewer calls use OPA because those tokens are roles: the same credential can be allowed or denied per action, and the API fails closed if OPA is down. `GET /api/v1/device/desired-firmware` and `GET /api/v1/device/ota-image` do not. The device presents its own API token. The Hub hashes it, finds exactly one `node_credentials` row, and scopes the response to that node's Desired firmware only (id/version/app digest for Desired; `esp-output.bin` for OTA). There is no role to decide and no path firmware id to trust. Keeping this check in the Hub also means a device can read Desired and pull its OTA image while OPA is restarting. Human catalog and Desired-edit permissions stay on the admin routes.
 
