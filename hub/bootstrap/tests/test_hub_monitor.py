@@ -15,13 +15,11 @@ settings.hub_id = "local-test"
 settings.hub_monitor_interval_s = 60
 settings.hub_monitor_retention_days = 90
 
-from app import container_logs, device_monitor, edge_status, hub_monitor, policy
+from app import container_logs, edge_status, hub_monitor, policy
 from app.db import SessionLocal, init_db
 from app.main import create_app
 from app.models import (
     Base,
-    DeviceMonitorEvent,
-    DeviceMonitorSample,
     HubMonitorCheckpoint,
     HubMonitorEvent,
     HubMonitorSample,
@@ -119,7 +117,6 @@ def monitored_device(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "device_online_window_s", 90)
     now = datetime.now(UTC)
     monkeypatch.setattr(hub_monitor, "_utcnow", lambda: now)
-    monkeypatch.setattr(device_monitor, "_utcnow", lambda: now)
     node_id = f"OUT-{uuid4().hex[:12].upper()}"
     engine = create_engine(f"sqlite:///{tmp_path / 'monitoring.db'}")
     Base.metadata.create_all(engine)
@@ -152,7 +149,7 @@ def monitored_device(monkeypatch, tmp_path):
 def test_restart_uses_durable_checkpoint_after_an_hour_of_sparse_checks(
     monkeypatch, monitored_device, downtime
 ) -> None:
-    db, node_id, advance = monitored_device
+    db, _, advance = monitored_device
     first_at = hub_monitor._utcnow()
     hub_monitor.run_check(db, include_summary=False)
     initial_event_ids = set(db.scalars(select(HubMonitorEvent.event_id)))
@@ -193,17 +190,16 @@ def test_restart_uses_durable_checkpoint_after_an_hour_of_sparse_checks(
             select(HubMonitorCheckpoint.last_check_at)
         ) == restarted_at.isoformat()
 
-        for model in (HubMonitorSample, DeviceMonitorSample):
-            samples = restarted.scalars(select(model).order_by(model.observed_at)).all()
-            assert [s.overall_availability for s in samples] == [
-                "available",
-                "unobserved",
-                "available",
-            ]
-            assert ensure_aware(samples[1].observed_at) == last_check_at
-            assert ensure_aware(samples[2].observed_at) == restarted_at
-        device = device_monitor.build_monitoring_summary(restarted, node_id)
-        assert device["availability"]["windows"]["24h"]["eligible_seconds"] == 3600
+        samples = restarted.scalars(
+            select(HubMonitorSample).order_by(HubMonitorSample.observed_at)
+        ).all()
+        assert [s.overall_availability for s in samples] == [
+            "available",
+            "unobserved",
+            "available",
+        ]
+        assert ensure_aware(samples[1].observed_at) == last_check_at
+        assert ensure_aware(samples[2].observed_at) == restarted_at
 
         advance(60)
         summary = hub_monitor.run_check(restarted)
@@ -244,7 +240,7 @@ def test_restart_falls_back_if_checkpoint_missing_or_invalid(
     assert db.scalar(select(HubMonitorCheckpoint.last_check_at)) == now.isoformat()
 
 
-@pytest.mark.parametrize("failure", ["probe", "before_commit", "device_rollback"])
+@pytest.mark.parametrize("failure", ["probe", "before_commit"])
 def test_incomplete_cycle_does_not_commit_checkpoint_or_history(
     monkeypatch, monitored_device, failure
 ) -> None:
@@ -266,10 +262,6 @@ def test_incomplete_cycle_does_not_commit_checkpoint_or_history(
         assert set(db.scalars(select(HubMonitorEvent.event_id))) > initial_event_ids
         raise RuntimeError("test commit failure")
 
-    def rollback_devices(session, **_kwargs):
-        session.flush()
-        session.rollback()
-
     def fail_probe(_session):
         raise RuntimeError("test probe failure")
 
@@ -280,9 +272,6 @@ def test_incomplete_cycle_does_not_commit_checkpoint_or_history(
         elif failure == "before_commit":
             patch.setattr(db, "commit", fail_commit)
             error = "test commit failure"
-        else:
-            patch.setattr(device_monitor, "sample_devices", rollback_devices)
-            error = "Monitoring transaction was rolled back"
         with pytest.raises(RuntimeError, match=error):
             hub_monitor.run_check(db, include_summary=False)
 
@@ -314,138 +303,6 @@ def test_incomplete_cycle_does_not_commit_checkpoint_or_history(
         ).all() == ["available", "unavailable"]
 
 
-def test_stable_hub_checks_preserve_device_observation(monitored_device) -> None:
-    db, node_id, advance = monitored_device
-    hub_monitor.run_check(db)
-    for _ in range(9):
-        advance(63)
-        hub_monitor.run_check(db)
-
-    advance(32)
-    windows = device_monitor.build_monitoring_summary(db, node_id)["availability"][
-        "windows"
-    ]
-    assert windows["24h"]["eligible_seconds"] == 599
-    assert windows["24h"]["percent"] is None
-
-    advance(1)
-    windows = device_monitor.build_monitoring_summary(db, node_id)["availability"][
-        "windows"
-    ]
-    assert windows["24h"]["eligible_seconds"] == 600
-    assert windows["24h"]["percent"] == 100.0
-    assert windows["24h"]["score_ready"]
-    assert all(not windows[name]["score_ready"] for name in ("7d", "30d"))
-
-    advance(30)
-    summary = hub_monitor.run_check(db)
-    assert summary["sample_count"] == 1
-    assert summary["availability"]["windows"]["24h"]["percent"] == 100.0
-    hub_resumes = [
-        event
-        for event in hub_monitor.list_recent_events(db)["events"]
-        if event["event_type"] == "monitoring_resumed"
-    ]
-    assert [event["certainty"] for event in hub_resumes] == ["confirmed"]
-    assert device_monitor.build_monitoring_summary(db, node_id)["sample_count"] == 1
-
-    for _ in range(2):
-        advance(63, keepalive=False)
-        hub_monitor.run_check(db)
-    advance(63)
-    hub_monitor.run_check(db)
-
-    event_types = db.scalars(
-        select(DeviceMonitorEvent.event_type)
-        .where(DeviceMonitorEvent.node_id == node_id)
-        .order_by(DeviceMonitorEvent.occurred_at)
-    ).all()
-    assert event_types == ["monitoring_started", "heartbeat_overdue", "heartbeat_resumed"]
-    monitoring = device_monitor.build_monitoring_summary(db, node_id)
-    assert monitoring["sample_count"] == 3
-    window = monitoring["availability"]["windows"]["24h"]
-    assert window["unavailable_seconds"] == 63
-    assert window["eligible_seconds"] == 819
-
-
-def test_stable_hub_checks_build_multi_day_device_coverage(
-    monkeypatch, monitored_device
-) -> None:
-    db, node_id, advance = monitored_device
-    monkeypatch.setattr(settings, "hub_monitor_interval_s", 3600)
-    monkeypatch.setattr(settings, "hub_monitor_gap_threshold_s", 7200)
-    monkeypatch.setattr(settings, "device_monitor_max_samples_per_device", 50)
-    monkeypatch.setattr(settings, "device_monitor_max_events_per_device", 50)
-    hub_monitor.run_check(db)
-
-    for window_name, hours in (("7d", 84), ("30d", 276)):
-        for _ in range(hours):
-            advance(3600)
-            summary = hub_monitor.run_check(db)
-        monitoring = device_monitor.build_monitoring_summary(db, node_id)
-        window = monitoring["availability"]["windows"][window_name]
-        assert window["score_ready"]
-        assert window["percent"] == 100.0
-        assert monitoring["sample_count"] == 1
-        assert summary["sample_count"] == 1
-
-    event_types = db.scalars(
-        select(DeviceMonitorEvent.event_type).where(DeviceMonitorEvent.node_id == node_id)
-    ).all()
-    assert event_types == ["monitoring_started"]
-
-
-@pytest.mark.parametrize("restart", [False, True])
-def test_hub_interruption_reaches_device_monitor(
-    monkeypatch, monitored_device, restart
-) -> None:
-    db, node_id, advance = monitored_device
-    hub_monitor.run_check(db)
-    persisted_at = hub_monitor._utcnow()
-    last_check_at = advance(63)
-    hub_monitor.run_check(db)
-    if restart:
-        db.execute(delete(HubMonitorCheckpoint))
-        db.commit()
-        monkeypatch.setattr(hub_monitor, "_last_check_at", None)
-    resumed_at = advance(180)
-    hub_monitor.run_check(db)
-    advance(63)
-    summary = hub_monitor.run_check(db)
-
-    gap_start = persisted_at if restart else last_check_at
-    assert summary["sample_count"] == 3
-    inferred_resumes = [
-        event
-        for event in hub_monitor.list_recent_events(db)["events"]
-        if event["event_type"] == "monitoring_resumed"
-        and event["certainty"] == "inferred"
-    ]
-    assert len(inferred_resumes) == 1
-    assert gap_start.isoformat() in inferred_resumes[0]["reason"]
-    device_samples = db.scalars(
-        select(DeviceMonitorSample)
-        .where(DeviceMonitorSample.node_id == node_id)
-        .order_by(DeviceMonitorSample.observed_at)
-    ).all()
-    assert [sample.overall_availability for sample in device_samples] == [
-        "available",
-        "unobserved",
-        "available",
-    ]
-    assert ensure_aware(device_samples[1].observed_at) == max(
-        gap_start, persisted_at + timedelta(microseconds=1)
-    )
-    assert ensure_aware(device_samples[2].observed_at) == resumed_at
-    event_types = db.scalars(
-        select(DeviceMonitorEvent.event_type).where(DeviceMonitorEvent.node_id == node_id)
-    ).all()
-    assert event_types.count("monitoring_resumed") == 2
-    monitoring = device_monitor.build_monitoring_summary(db, node_id)
-    window = monitoring["availability"]["windows"]["24h"]
-    assert window["eligible_seconds"] == (63 if restart else 126)
-
-
 def test_failed_commit_does_not_advance_monitor_continuity(
     monkeypatch, monitored_device
 ) -> None:
@@ -467,96 +324,6 @@ def test_failed_commit_does_not_advance_monitor_continuity(
     assert summary["sample_count"] == 3
     # The gap marker is one microsecond after the initial sample.
     assert summary["availability"]["windows"]["24h"]["not_running_seconds"] == 125
-
-
-@pytest.mark.parametrize(
-    ("failed_hub_check", "device_interval", "suspended"),
-    [(False, 30, False), (False, 90, False), (True, 30, False), (False, 30, True)],
-)
-def test_background_monitor_schedules_device_checks_without_hub_history_reads(
-    monkeypatch, monitored_device, failed_hub_check, device_interval, suspended
-) -> None:
-    db, node_id, advance = monitored_device
-    monkeypatch.setattr(settings, "device_monitor_interval_s", device_interval)
-    elapsed = 0
-    finished = False
-    commit_failed = False
-    hub_checks, device_checks, summary_calls = [], [], []
-    hub_observations = []
-    probe = hub_monitor._probe_components
-    sample = device_monitor.sample_devices
-    build_summary = hub_monitor.build_monitoring_summary
-    commit = db.commit
-
-    def counted_probe(session):
-        hub_checks.append(elapsed)
-        result = probe(session)
-        hub_observations.append(result["observed_at"])
-        return result
-
-    def counted_sample(session, **kwargs):
-        device_checks.append(elapsed)
-        return sample(session, **kwargs)
-
-    def counted_summary(session, **kwargs):
-        summary_calls.append(elapsed)
-        return build_summary(session, **kwargs)
-
-    def maybe_fail_commit():
-        nonlocal commit_failed
-        if failed_hub_check and elapsed == 60 and not commit_failed:
-            commit_failed = True
-            raise RuntimeError("test failed Hub commit")
-        commit()
-
-    class Clock:
-        def is_set(self):
-            return finished
-
-        def wait(self, seconds):
-            nonlocal elapsed, finished
-            if failed_hub_check and elapsed + seconds == 120:
-                seconds += 5  # Wake late after the earlier Hub commit failed.
-            wall_pause = 121 if suspended and elapsed + seconds == 30 else 0
-            advance(seconds + wall_pause)
-            elapsed += seconds
-            finished = elapsed > (155 if failed_hub_check else 660)
-
-    monkeypatch.setattr(hub_monitor, "monotonic", lambda: elapsed)
-    monkeypatch.setattr(hub_monitor, "_stop", Clock())
-    monkeypatch.setattr(hub_monitor, "SessionLocal", lambda: db)
-    monkeypatch.setattr(hub_monitor, "_probe_components", counted_probe)
-    monkeypatch.setattr(hub_monitor, "build_monitoring_summary", counted_summary)
-    monkeypatch.setattr(device_monitor, "sample_devices", counted_sample)
-    monkeypatch.setattr(db, "commit", maybe_fail_commit)
-    hub_monitor._loop()
-    assert summary_calls == []
-
-    expected_hub = [0, 60, 125] if failed_hub_check else list(range(0, 661, 60))
-    expected_device = (
-        [0, 30, 60, 125, 155]
-        if failed_hub_check
-        else list(range(0, 661, device_interval))
-    )
-    if suspended:
-        expected_device.remove(30)
-    assert hub_checks == expected_hub
-    assert device_checks == expected_device
-    assert db.scalar(
-        select(HubMonitorCheckpoint.last_check_at)
-    ) == hub_observations[-1].isoformat()
-    summary = hub_monitor.monitoring_status(db)
-    assert summary_calls == [elapsed]
-    interrupted = failed_hub_check or suspended
-    assert summary["sample_count"] == (3 if interrupted else 1)
-    events = device_monitor.list_recent_events(db, node_id)["events"]
-    assert [event["event_type"] for event in events].count("monitoring_resumed") == (
-        2 if interrupted else 0
-    )
-    monitoring = device_monitor.build_monitoring_summary(db, node_id)
-    assert monitoring["sample_count"] == (3 if interrupted else 1)
-    if not interrupted:
-        assert monitoring["availability"]["windows"]["24h"]["percent"] == 100.0
 
 
 def test_assess_states_core_and_auxiliaries() -> None:

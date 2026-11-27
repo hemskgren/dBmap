@@ -54,3 +54,6 @@ def use_test_policy(monkeypatch: pytest.MonkeyPatch) -> None:
 def disable_hub_monitor_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     # Keep unit tests deterministic; monitor cycles are exercised explicitly.
     monkeypatch.setattr(settings, "hub_monitor_enabled", False)
+    from app import main
+
+    monkeypatch.setattr(main, "start_device_monitor_thread", lambda: None)

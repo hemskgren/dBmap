@@ -549,6 +549,13 @@ class PublicMonitorCheckpoint(_MonitorCheckpoint, Base):
     component: Mapped[str] = mapped_column(String(32), primary_key=True)
 
 
+class DeviceMonitorCheckpoint(Base):
+    __tablename__ = "device_monitor_checkpoints"
+
+    hub_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_check_at: Mapped[str] = mapped_column(String(40))
+
+
 class DeviceMonitorSample(Base):
     """Sparse Hub-observed connectivity samples (transition + gap markers)."""
 

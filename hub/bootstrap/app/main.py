@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.api import router
 from app.config import settings
 from app.db import init_db
+from app.device_monitor import start_monitor_thread as start_device_monitor_thread
 from app.hub_monitor import start_monitor_thread
 from app.logging_config import configure_logging
 from app.mqtt_listener import start_mqtt_thread
@@ -34,6 +35,7 @@ def _validate_security_settings() -> None:
 async def _lifespan(_app: FastAPI):
     # Start after import/create_app so unit tests can disable the monitor first.
     # MQTT may already be running; the monitor tolerates MQTT being down.
+    start_device_monitor_thread()
     start_monitor_thread()
     start_weather_worker()
     yield
