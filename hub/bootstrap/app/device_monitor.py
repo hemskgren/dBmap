@@ -2,7 +2,7 @@
 
 Availability is derived from reported_state.last_seen_at relative to
 DBMAP_DEVICE_ONLINE_WINDOW_S. Health is assessed from device-reported diag
-(D2) when present. Samples are transition-sparse; Hub monitoring gaps are
+(D2) when present. Samples are transition-sparse; Device Monitor gaps are
 recorded as unobserved so they are excluded from the availability denominator.
 """
 
@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 
@@ -19,13 +21,16 @@ from sqlalchemy.orm import Session
 
 from app import device_diag
 from app.config import settings
+from app.db import SessionLocal
 from app.models import (
+    DeviceMonitorCheckpoint,
     DeviceMonitorEvent,
     DeviceMonitorSample,
+    HubMonitorCheckpoint,
     Node,
     ReportedState,
 )
-from app.monitoring_math import attribute_hold, ensure_aware
+from app.monitoring_math import attribute_hold, ensure_aware, plan_gap
 
 log = logging.getLogger("hub-bootstrap.device-monitor")
 
@@ -37,10 +42,29 @@ WINDOW_SPECS = (
 MIN_ELIGIBLE_SECONDS = 600
 LOW_COVERAGE_FRACTION = 0.5
 RECENT_EVENT_LIMIT = 15
+CLEANUP_EVERY_CYCLES = 10
+
+_thread: threading.Thread | None = None
+_stop = threading.Event()
+_last_check_at: datetime | None = None
+_cycles_since_cleanup = 0
 
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _checkpoint_datetime(value: str | None, now: datetime) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+        if parsed.utcoffset() is None:
+            return None
+        parsed = ensure_aware(parsed)
+        return parsed if parsed <= now else None
+    except (ValueError, OverflowError):
+        return None
 
 
 def online_window() -> timedelta:
@@ -207,7 +231,7 @@ def _emit_transition(
         reason = "keepalive received after overdue period"
     elif previous == "unobserved":
         event_type = "monitoring_resumed"
-        reason = "Hub monitoring resumed; current connectivity sampled"
+        reason = "Device monitoring resumed; current connectivity sampled"
     else:
         event_type = "availability_changed"
         reason = "Hub-observed connectivity state changed"
@@ -228,7 +252,7 @@ def sample_devices(
     db: Session,
     *,
     observed_at: datetime | None = None,
-    hub_gap: tuple[datetime, datetime] | None = None,
+    monitoring_gap: tuple[datetime, datetime] | None = None,
 ) -> dict[str, Any]:
     """Sample active devices once. Safe against individual device failures."""
     if not settings.device_monitor_enabled:
@@ -256,8 +280,11 @@ def sample_devices(
         previous = _latest_sample(db, node.node_id)
         previous_state = previous.overall_availability if previous is not None else None
 
-        if hub_gap is not None and previous is not None:
-            gap_start, gap_end = (ensure_aware(hub_gap[0]), ensure_aware(hub_gap[1]))
+        if monitoring_gap is not None and previous is not None:
+            gap_start, gap_end = (
+                ensure_aware(monitoring_gap[0]),
+                ensure_aware(monitoring_gap[1]),
+            )
             if gap_end > gap_start and previous_state != "unobserved":
                 # Stamp slightly after the last confirmed sample when needed
                 # so ordering keeps previous state until the gap.
@@ -279,7 +306,7 @@ def sample_devices(
                         previous_state=previous_state,
                         new_state="unobserved",
                         reason=(
-                            "Hub monitoring resumed after an unobserved gap; "
+                            "Device monitoring resumed after an unobserved gap; "
                             "device connectivity during the gap is unknown"
                         ),
                         occurred_at=now,
@@ -289,7 +316,7 @@ def sample_devices(
                     previous_state = "unobserved"
                     transitions += 1
 
-        if previous_state == state and hub_gap is None:
+        if previous_state == state and monitoring_gap is None:
             continue
 
         _add_sample(
@@ -341,6 +368,124 @@ def cleanup_history(db: Session, now: datetime | None = None) -> dict[str, int]:
         "cutoff": cutoff.isoformat(),
         "retention_days": days,
     }
+
+
+def run_monitor_cycle(
+    db: Session, *, observed_at: datetime | None = None
+) -> dict[str, Any]:
+    """Run one independent Device Monitor cycle and persist its continuity."""
+    global _cycles_since_cleanup, _last_check_at
+    now = ensure_aware(observed_at or _utcnow())
+    result: dict[str, Any] = {
+        "enabled": settings.device_monitor_enabled,
+        "sampled": 0,
+        "transitions": 0,
+    }
+
+    if settings.device_monitor_enabled:
+        checkpoint = db.get(DeviceMonitorCheckpoint, settings.hub_id)
+        checkpoint_value = checkpoint.last_check_at if checkpoint is not None else None
+        checkpoint_at = _checkpoint_datetime(checkpoint_value, now)
+
+        if checkpoint is None:
+            legacy_checkpoint = db.get(HubMonitorCheckpoint, settings.hub_id)
+            legacy_value = (
+                legacy_checkpoint.last_check_at
+                if legacy_checkpoint is not None
+                else None
+            )
+            legacy_at = _checkpoint_datetime(legacy_value, now)
+            if legacy_at is not None:
+                checkpoint_value = legacy_value
+                checkpoint_at = legacy_at
+                checkpoint = DeviceMonitorCheckpoint(
+                    hub_id=settings.hub_id,
+                    last_check_at=legacy_value,
+                )
+            else:
+                checkpoint = DeviceMonitorCheckpoint(
+                    hub_id=settings.hub_id,
+                    last_check_at=now.isoformat(),
+                )
+            db.add(checkpoint)
+
+        gap = plan_gap(
+            now,
+            anchor_at=checkpoint_at,
+            previous_check_at=_last_check_at,
+            persisted_checkpoint=checkpoint_value,
+            threshold=timedelta(seconds=settings.hub_monitor_gap_threshold_s),
+        )
+        result = sample_devices(
+            db,
+            observed_at=now,
+            monitoring_gap=(gap.start, gap.end) if gap is not None else None,
+        )
+        if "error" not in result:
+            checkpoint.last_check_at = now.isoformat()
+            db.commit()
+            _last_check_at = now
+
+    _cycles_since_cleanup += 1
+    if _cycles_since_cleanup >= CLEANUP_EVERY_CYCLES:
+        try:
+            cleanup_history(db, now)
+            device_diag.cleanup_history(db, now)
+            db.commit()
+        except Exception:
+            log.exception("device monitor retention cleanup failed")
+            try:
+                db.rollback()
+            except Exception as rollback_exc:  # noqa: BLE001
+                log.debug("rollback after device cleanup failure: %s", rollback_exc)
+        finally:
+            _cycles_since_cleanup = 0
+
+    return result
+
+
+def _loop() -> None:
+    next_check = monotonic()
+    while not _stop.is_set():
+        now = monotonic()
+        if now < next_check:
+            _stop.wait(next_check - now)
+            continue
+
+        db = SessionLocal()
+        try:
+            run_monitor_cycle(db)
+        except Exception:
+            log.exception("device monitor cycle failed")
+            try:
+                db.rollback()
+            except Exception as rollback_exc:  # noqa: BLE001
+                log.debug("rollback after device monitor failure: %s", rollback_exc)
+        finally:
+            db.close()
+        next_check = monotonic() + settings.device_monitor_interval_s
+
+
+def start_monitor_thread() -> threading.Thread:
+    """Start the independent Device Monitor worker once."""
+    global _last_check_at, _thread
+    if _thread is not None and _thread.is_alive():
+        return _thread
+    _last_check_at = None
+    _stop.clear()
+    _thread = threading.Thread(target=_loop, name="device-monitor", daemon=True)
+    _thread.start()
+    log.info(
+        "device monitor started interval=%ss retention=%sd",
+        settings.device_monitor_interval_s,
+        settings.device_monitor_retention_days,
+    )
+    return _thread
+
+
+def stop_monitor_thread() -> None:
+    """Signal the Device Monitor worker to stop."""
+    _stop.set()
 
 
 def compute_availability_window(

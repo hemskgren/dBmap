@@ -27,6 +27,33 @@ test_viewer_can_read_hub_status_and_container_logs if {
 	}
 }
 
+test_viewer_can_read_operations_status_events_and_details_but_logs if {
+	authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "operations.status.read",
+		"resource": {"type": "operations"},
+		"context": {},
+	}
+	authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "operations.events.read",
+		"resource": {"type": "operations"},
+		"context": {},
+	}
+	authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "operations.details.read",
+		"resource": {"type": "operations"},
+		"context": {},
+	}
+	authz.allow with input as {
+		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},
+		"action": "operations.logs.read",
+		"resource": {"type": "operations"},
+		"context": {},
+	}
+}
+
 test_viewer_can_read_summary_and_session if {
 	authz.allow with input as {
 		"subject": {"id": "local-viewer", "role": "viewer", "authenticated": true},

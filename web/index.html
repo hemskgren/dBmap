@@ -511,7 +511,7 @@
       .deployment-attempt strong { overflow-wrap: anywhere; }
       #tab-observations > section { margin-top: 0.6rem; padding: 0.75rem; }
       #tab-observations > section h3 { margin: 0 0 0.45rem; }
-      #component-details { margin-top: 0.8rem; padding: 1rem; border: 1px solid #d8e0eb; border-radius: 8px; }
+      #component-details, #operations-service-detail { margin-top: 0.8rem; padding: 1rem; border: 1px solid #d8e0eb; border-radius: 8px; }
       .notice { min-height: 1.5rem; margin: 0.6rem 0; color: #526078; }
       .error { color: #a83232; }
       #create-panel { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; gap: 0.5rem; margin: 0.7rem 0; }
@@ -601,6 +601,7 @@
         </dialog>
         <nav class="tab-list" role="tablist" aria-label="Hub sections">
           <button id="tab-button-hub" type="button" role="tab" aria-selected="true" aria-controls="tab-hub" data-tab="hub">Hub</button>
+          <button id="tab-button-operations" type="button" role="tab" aria-selected="false" aria-controls="tab-operations" data-tab="operations" hidden>Operations</button>
           <button id="tab-button-devices" type="button" role="tab" aria-selected="false" aria-controls="tab-devices" data-tab="devices">Devices</button>
           <button id="tab-button-firmware" type="button" role="tab" aria-selected="false" aria-controls="tab-firmware" data-tab="firmware" hidden>Firmware</button>
           <button id="tab-button-users" type="button" role="tab" aria-selected="false" aria-controls="tab-users" data-tab="users" hidden>Users</button>
@@ -670,6 +671,60 @@
               <ul id="hub-monitor-events" class="monitoring-events" aria-live="polite"><li class="notice">Expand to load events.</li></ul>
             </details>
           </section>
+        </section>
+        <section id="tab-operations" role="tabpanel" aria-labelledby="tab-button-operations" hidden>
+          <div class="toolbar">
+            <div>
+              <div class="refresh-heading"><h2>Operations</h2><time id="operations-updated" hidden></time></div>
+              <p id="operations-refresh-status" class="notice" aria-live="polite">Loading Operations status…</p>
+            </div>
+            <button id="refresh-operations" class="secondary" type="button">Refresh</button>
+          </div>
+          <div class="overview-grid hub-identity" aria-live="polite">
+            <article class="overview-card"><span>Operations health</span><strong id="operations-health-state">—</strong></article>
+            <article class="overview-card"><span>Hub health</span><strong id="operations-hub-health-state">—</strong></article>
+            <article class="overview-card"><span>Core Hub availability</span><strong id="operations-hub-availability-state">—</strong></article>
+          </div>
+          <section>
+            <h3>Monitoring workers</h3>
+            <dl id="operations-workers" class="meta"></dl>
+          </section>
+          <section>
+            <h3>Hub health and availability</h3>
+            <div class="table-wrap" role="region" aria-label="Operations availability by period" tabindex="0">
+              <table class="hub-availability-table">
+                <thead><tr><th scope="col">Service</th><th scope="col">24h</th><th scope="col">7d</th><th scope="col">30d</th></tr></thead>
+                <tbody>
+                  <tr><th scope="row">Core Hub availability</th><td id="operations-core-24h">—</td><td id="operations-core-7d">—</td><td id="operations-core-30d">—</td></tr>
+                  <tr><th scope="row">API</th><td id="operations-api-24h">—</td><td id="operations-api-7d">—</td><td id="operations-api-30d">—</td></tr>
+                  <tr><th scope="row">MQTT</th><td id="operations-mqtt-24h">—</td><td id="operations-mqtt-7d">—</td><td id="operations-mqtt-30d">—</td></tr>
+                  <tr><th scope="row">Web</th><td id="operations-web-24h">—</td><td id="operations-web-7d">—</td><td id="operations-web-30d">—</td></tr>
+                </tbody>
+                <tbody id="operations-public-monitoring" hidden>
+                  <tr><th scope="rowgroup" colspan="4">Public endpoint reachability</th></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+          <details id="operations-monitor-details">
+            <summary>Monitoring details</summary>
+            <dl id="operations-monitor-meta" class="meta"></dl>
+          </details>
+          <h3>Monitored services</h3>
+          <div id="operations-service-list" class="component-list" aria-live="polite">
+            <p class="notice">Checking Operations…</p>
+          </div>
+          <div id="operations-service-detail" hidden></div>
+          <details id="operations-events-panel">
+            <summary>Recent monitoring events</summary>
+            <ul id="operations-events" class="monitoring-events" aria-live="polite">
+              <li class="notice">Expand to load events.</li>
+            </ul>
+            <div class="actions">
+              <button id="operations-events-prev" class="secondary" type="button" hidden>Newer</button>
+              <button id="operations-events-next" class="secondary" type="button" hidden>Older</button>
+            </div>
+          </details>
         </section>
         <section id="tab-devices" role="tabpanel" aria-labelledby="tab-button-devices" hidden>
           <div class="toolbar">
@@ -1128,6 +1183,7 @@
       let selectedDeviceId = '';
       let activeTabName = 'hub';
       let openComponentPanel = '';
+      let openOperationsServicePanel = '';
       let hubAddresses = null;
       let currentHubId = '';
       const publicBasePath = document.querySelector('meta[name="dbmap-base-path"]')?.content || '';
@@ -2546,6 +2602,582 @@
         }
       }
 
+      const operationsEventsState = {
+        page: 1,
+        pageSize: 50,
+        snapshotId: null,
+        totalPages: 0,
+      };
+
+      function renderOperationsAvailabilityWindow(idPrefix, window) {
+        for (const period of HUB_AVAILABILITY_PERIODS) {
+          document.getElementById(`${idPrefix}-${period}`).textContent =
+            formatHubAvailabilityWindow(window?.[period]);
+        }
+      }
+
+      function renderOperationsPublicMonitoring(publicComponents) {
+        const body = document.getElementById('operations-public-monitoring');
+        body.replaceChildren();
+        body.hidden = true;
+        const components = publicComponents && typeof publicComponents === 'object'
+          ? Object.values(publicComponents)
+          : [];
+        if (!components.length) return;
+        body.hidden = false;
+        const heading = el('tr');
+        heading.append(el('th', 'Public endpoint reachability', 'scope-col'));
+        heading.firstChild.colSpan = 4;
+        heading.firstChild.scope = 'rowgroup';
+        body.append(heading);
+        for (const component of components) {
+          const row = el('tr');
+          row.append(el('th', component.label || 'Public endpoint'));
+          row.firstChild.scope = 'row';
+          for (const period of HUB_AVAILABILITY_PERIODS) {
+            row.append(el('td', formatHubAvailabilityWindow(component.windows?.[period])));
+          }
+          body.append(row);
+        }
+      }
+
+      async function refreshOperationsStatus() {
+        const statusLine = document.getElementById('operations-refresh-status');
+        const setEmpty = (message) => {
+          openOperationsServicePanel = '';
+          const detailPanel = document.getElementById('operations-service-detail');
+          detailPanel.hidden = true;
+          detailPanel.replaceChildren();
+          document.getElementById('operations-health-state').textContent = 'Unavailable';
+          document.getElementById('operations-hub-health-state').textContent = '—';
+          document.getElementById('operations-hub-availability-state').textContent = '—';
+          document.getElementById('operations-workers').replaceChildren();
+          document.getElementById('operations-monitor-meta').replaceChildren();
+          document.getElementById('operations-service-list').replaceChildren(
+            el('p', message, 'notice error'),
+          );
+          for (const prefix of ['operations-core', 'operations-api', 'operations-mqtt', 'operations-web']) {
+            for (const period of HUB_AVAILABILITY_PERIODS) {
+              document.getElementById(`${prefix}-${period}`).textContent = '—';
+            }
+          }
+          renderOperationsPublicMonitoring();
+          statusLine.textContent = message;
+          statusLine.className = 'notice error';
+        };
+        try {
+          const status = await api('/api/v1/operations/status');
+          const own = status.service || {};
+          const monitoring = status.monitoring || {};
+          const coverage = monitoring.coverage || {};
+          const health = coverage.health || {};
+          const availability = coverage.availability || {};
+          document.getElementById('operations-health-state').textContent =
+            own.health || status.own_health?.status || 'unknown';
+          document.getElementById('operations-hub-health-state').textContent =
+            health.state || 'unknown';
+          document.getElementById('operations-hub-availability-state').textContent =
+            availability.current_state || 'unknown';
+
+          const workers = document.getElementById('operations-workers');
+          workers.replaceChildren();
+          addDetailField(workers, 'Core monitor',
+            `${monitoring.core?.running ? 'running' : 'stopped'}`
+            + `${monitoring.core?.stale ? ', stale' : ', current'}`
+            + `${monitoring.core?.enabled ? '' : ', disabled'}`);
+          for (const [id, worker] of Object.entries(monitoring.public || {})) {
+            addDetailField(
+              workers,
+              worker.label || id,
+              worker.enabled
+                ? `${worker.running ? 'running' : 'stopped'}`
+                  + `${worker.stale ? ', stale' : ', current'}`
+                  + `, ${worker.state || 'unknown'}`
+                : 'disabled',
+            );
+          }
+
+          renderOperationsAvailabilityWindow(
+            'operations-core',
+            availability.windows,
+          );
+          for (const [component, prefix] of Object.entries({
+            api: 'operations-api',
+            mqtt: 'operations-mqtt',
+            web: 'operations-web',
+          })) {
+            renderOperationsAvailabilityWindow(
+              prefix,
+              availability.components?.[component]?.windows,
+            );
+          }
+          renderOperationsPublicMonitoring(monitoring.public_components);
+
+          const meta = document.getElementById('operations-monitor-meta');
+          meta.replaceChildren();
+          addDetailField(meta, 'Hub health reason', health.reason || 'No reason reported');
+          for (const component of health.components || []) {
+            addDetailField(
+              meta,
+              component.name || component.id,
+              component.state || 'unknown',
+            );
+          }
+          addDetailField(
+            meta,
+            'Last monitor check',
+            health.calculated_at ? formatSeen(health.calculated_at) : 'None yet',
+          );
+          addDetailField(
+            meta,
+            'Monitoring gaps',
+            availability.gaps?.length
+              ? `${availability.gaps.length} recent gap(s)`
+              : 'No recent gaps',
+          );
+          addDetailField(
+            meta,
+            'Retention',
+            `${availability.retention_days || monitoring.configuration?.retention_days || '—'} days`,
+          );
+
+          const serviceList = document.getElementById('operations-service-list');
+          serviceList.replaceChildren();
+          const services = await api('/api/v1/operations/services?page=1&page_size=500&order=oldest');
+          for (const service of services.services || []) {
+            const row = el('div', undefined, 'component');
+            row.append(el('span', service.name || service.id));
+            const state = el(
+              'span',
+              String(service.state || 'unknown').replaceAll('_', ' '),
+              `component-status ${service.state || 'unknown'}`,
+            );
+            const actions = el('div', undefined, 'component-actions');
+            const detailsButton = el(
+              'button',
+              openOperationsServicePanel === `${service.id}:details` ? 'Hide details' : 'Details',
+              'secondary',
+            );
+            detailsButton.type = 'button';
+            detailsButton.dataset.operationsDetailsService = service.id;
+            detailsButton.addEventListener('click', () => toggleOperationsServicePanel(service.id, 'details'));
+            actions.append(detailsButton);
+            if (service.database) {
+              const databaseState = el(
+                'span',
+                `${service.database.name}: ${service.database.state || 'unknown'}`,
+                'notice',
+              );
+              const databaseDetailsButton = el(
+                'button',
+                openOperationsServicePanel === `${service.id}:database`
+                  ? 'Hide database details'
+                  : 'Database details',
+                'secondary',
+              );
+              databaseDetailsButton.type = 'button';
+              databaseDetailsButton.dataset.operationsDatabaseService = service.id;
+              databaseDetailsButton.addEventListener('click', () => toggleOperationsServicePanel(service.id, 'database'));
+              actions.append(databaseState, databaseDetailsButton);
+            }
+            if (['operations', 'hub-api', 'nginx', 'web', 'mqtt', 'opa'].includes(service.id)) {
+              const logsButton = el(
+                'button',
+                openOperationsServicePanel === `${service.id}:logs` ? 'Hide logs' : 'Logs',
+                'secondary',
+              );
+              logsButton.type = 'button';
+              logsButton.dataset.operationsLogsService = service.id;
+              logsButton.addEventListener('click', () => toggleOperationsServicePanel(service.id, 'logs'));
+              actions.append(logsButton);
+            }
+            row.append(state, actions);
+            serviceList.append(row);
+          }
+          syncOperationsServiceButtons();
+
+          markUpdated('operations');
+          statusLine.textContent = 'Operations status loaded.';
+          statusLine.className = 'notice';
+        } catch (error) {
+          setEmpty(error.message);
+        }
+      }
+
+      function syncOperationsServiceButtons() {
+        document.querySelectorAll('[data-operations-details-service]').forEach((button) => {
+          button.textContent = openOperationsServicePanel === `${button.dataset.operationsDetailsService}:details`
+            ? 'Hide details'
+            : 'Details';
+        });
+        document.querySelectorAll('[data-operations-database-service]').forEach((button) => {
+          button.textContent = openOperationsServicePanel === `${button.dataset.operationsDatabaseService}:database`
+            ? 'Hide database details'
+            : 'Database details';
+        });
+        document.querySelectorAll('[data-operations-logs-service]').forEach((button) => {
+          button.textContent = openOperationsServicePanel === `${button.dataset.operationsLogsService}:logs`
+            ? 'Hide logs'
+            : 'Logs';
+        });
+      }
+
+      async function toggleOperationsServicePanel(serviceId, mode) {
+        const panel = document.getElementById('operations-service-detail');
+        const token = `${serviceId}:${mode}`;
+        if (openOperationsServicePanel === token && !panel.hidden) {
+          panel.hidden = true;
+          openOperationsServicePanel = '';
+          syncOperationsServiceButtons();
+          return;
+        }
+        openOperationsServicePanel = token;
+        syncOperationsServiceButtons();
+        panel.hidden = false;
+        panel.replaceChildren(el('p', mode === 'logs' ? 'Loading logs…' : 'Loading details…', 'notice'));
+        try {
+          if (mode === 'logs') {
+            const body = await api(`/api/v1/operations/services/${encodeURIComponent(serviceId)}/logs`);
+            if (openOperationsServicePanel === token) {
+              renderComponentLogs(body, 'operations-service-detail');
+            }
+            return;
+          }
+          const details = await api(`/api/v1/operations/services/${encodeURIComponent(serviceId)}/details`);
+          if (openOperationsServicePanel !== token) return;
+          if (mode === 'database') {
+            renderOperationsDatabaseDetails(details, serviceId);
+          } else {
+            renderOperationsServiceDetails(serviceId, details);
+          }
+        } catch (error) {
+          if (openOperationsServicePanel === token) {
+            panel.replaceChildren(el('p', error.message, 'notice error'));
+          }
+        }
+      }
+
+      function operationsStatusLabel(serviceId, state) {
+        const normalized = String(state || 'unknown').toLowerCase();
+        if (serviceId === 'operations') {
+          return ({
+            healthy: 'Healthy',
+            degraded: 'Degraded',
+            unhealthy: 'Unhealthy',
+            unknown: 'Unknown',
+          })[normalized] || normalized;
+        }
+        if (serviceId === 'mqtt') {
+          if (['ok', 'online', 'healthy', 'connected'].includes(normalized)) return 'Connected';
+          if (['offline', 'unhealthy', 'unavailable', 'disconnected'].includes(normalized)) return 'Disconnected';
+        }
+        return ({
+          ok: 'Online',
+          online: 'Online',
+          healthy: serviceId === 'opa' ? 'Healthy' : 'Online',
+          offline: 'Offline',
+          unhealthy: 'Unhealthy',
+          unavailable: 'Unavailable',
+          degraded: 'Degraded',
+          disabled: 'Disabled',
+          unknown: 'Unknown',
+        })[normalized] || normalized;
+      }
+
+      function operationsStatusClass(state) {
+        const normalized = String(state || 'unknown').toLowerCase();
+        if (['ok', 'online', 'healthy', 'connected'].includes(normalized)) return 'available';
+        if (['offline', 'unhealthy', 'unavailable', 'disconnected'].includes(normalized)) return 'unavailable';
+        return normalized;
+      }
+
+      function operationsStatesAgree(left, right) {
+        const available = new Set(['ok', 'online', 'healthy', 'connected']);
+        const unavailable = new Set(['offline', 'unhealthy', 'unavailable', 'disconnected']);
+        const normalizedLeft = String(left || 'unknown').toLowerCase();
+        const normalizedRight = String(right || 'unknown').toLowerCase();
+        if (available.has(normalizedLeft) && available.has(normalizedRight)) return true;
+        if (unavailable.has(normalizedLeft) && unavailable.has(normalizedRight)) return true;
+        return normalizedLeft === normalizedRight;
+      }
+
+      function operationsCombinedStatus(serviceId, direct, diagnostic, httpStatus) {
+        const directLabel = operationsStatusLabel(serviceId, direct);
+        if (!diagnostic) return directLabel;
+        const diagnosticLabel = operationsStatusLabel(serviceId, diagnostic);
+        if (!operationsStatesAgree(direct, diagnostic)) {
+          const response = httpStatus ? ` (HTTP ${httpStatus})` : '';
+          return `Conflicting results: Operations ${directLabel}; Hub diagnostic ${diagnosticLabel}${response}`;
+        }
+        return `${diagnosticLabel}${httpStatus ? ` (HTTP ${httpStatus})` : ''}`;
+      }
+
+      function addOperationsDetailField(container, label, value) {
+        if (value === null || value === undefined || value === '') return;
+        addDetailField(container, label, value);
+      }
+
+      function renderOperationsDatabaseDetails(details, owner) {
+        const panel = document.getElementById('operations-service-detail');
+        const database = details.database;
+        if (database?.engine) {
+          renderComponentDetails('database', database, 'operations-service-detail');
+        } else {
+          panel.replaceChildren(el('h4', `${database?.service || owner} details`));
+          const meta = el('dl', undefined, 'meta');
+          addOperationsDetailField(meta, 'Status', operationsStatusLabel('database', database?.status));
+          panel.append(meta);
+        }
+        const source = details.database_source || details.source;
+        if (source) {
+          const meta = el('dl', undefined, 'meta');
+          addDetailField(meta, 'Diagnostic source', source);
+          panel.append(meta);
+        }
+        if (details.database_error || details.hub_diagnostics_error) {
+          panel.append(el(
+            'p',
+            details.database_error || details.hub_diagnostics_error,
+            'notice error',
+          ));
+        }
+      }
+
+      function renderOperationsServiceDetails(serviceId, details) {
+        const panel = document.getElementById('operations-service-detail');
+        const diagnostic = details.hub_diagnostics || {};
+        const connection = details.connection_diagnostics || {};
+        const heading = details.service || serviceId;
+        panel.replaceChildren(el('h4', `${heading} details`), el('h5', 'Service diagnostics'));
+        const meta = el('dl', undefined, 'meta');
+        addOperationsDetailField(meta, 'Instance', details.instance || serviceId);
+
+        if (serviceId === 'nginx') {
+          addOperationsDetailField(meta, 'Status', operationsStatusLabel('nginx', details.status));
+          addOperationsDetailField(meta, 'Health check', details.health_check);
+          addOperationsDetailField(meta, 'Listener', diagnostic.listener);
+          addOperationsDetailField(meta, 'Browser route', diagnostic.browser_route);
+          addOperationsDetailField(meta, 'Profile', diagnostic.profile);
+          addOperationsDetailField(meta, 'Hub API route check', details.hub_api_via_nginx?.health_check || diagnostic.check);
+          const endToEnd = details.hub_api_via_nginx || {};
+          addOperationsDetailField(
+            meta,
+            'Hub API via Nginx',
+            operationsCombinedStatus('hub-api', endToEnd.status, diagnostic.status, diagnostic.http_status),
+          );
+          addOperationsDetailField(meta, 'End-to-end diagnostic source', endToEnd.source);
+          if (endToEnd.reason) addOperationsDetailField(meta, 'End-to-end failure reason', endToEnd.reason);
+          if (details.reason) addOperationsDetailField(meta, 'Nginx health failure reason', details.reason);
+          if (diagnostic.message) addOperationsDetailField(meta, 'Hub diagnostic message', diagnostic.message);
+        } else {
+          let status = operationsCombinedStatus(
+            serviceId,
+            details.status,
+            diagnostic.status,
+            diagnostic.http_status,
+          );
+          const mqttChecksAgree =
+            !diagnostic.status || operationsStatesAgree(details.status, diagnostic.status);
+          if (
+            serviceId === 'mqtt'
+            && connection.connack_code !== null
+            && connection.connack_code !== undefined
+            && mqttChecksAgree
+          ) {
+            status += ` (CONNACK ${connection.connack_code})`;
+          }
+          addOperationsDetailField(meta, 'Status', status);
+          addOperationsDetailField(meta, 'Health check', details.health_check || diagnostic.health_check || diagnostic.check);
+          const hubCheck = diagnostic.check || diagnostic.health_check;
+          if (hubCheck && !details.health_check?.endsWith(hubCheck)) {
+            addOperationsDetailField(meta, 'Hub diagnostic check', hubCheck);
+          }
+          addOperationsDetailField(meta, 'Listener', diagnostic.listener);
+          addOperationsDetailField(meta, 'Browser route', diagnostic.browser_route);
+          addOperationsDetailField(meta, 'Profile', diagnostic.profile);
+          addOperationsDetailField(meta, 'API version', diagnostic.api_version);
+          addOperationsDetailField(meta, 'Endpoint security', diagnostic.endpoint_scheme?.toUpperCase());
+          addOperationsDetailField(meta, 'Decision endpoint', diagnostic.decision_endpoint);
+          addOperationsDetailField(meta, 'Plugin health', diagnostic.plugin_health);
+
+          if (serviceId === 'mqtt') {
+            addOperationsDetailField(meta, 'Protocol', connection.protocol);
+            addOperationsDetailField(meta, 'Transport', connection.transport);
+            addOperationsDetailField(meta, 'Broker endpoint', connection.endpoint);
+            addOperationsDetailField(meta, 'Connection check', connection.check);
+            if (connection.connack_code !== null && connection.connack_code !== undefined) {
+              const connackResult = mqttChecksAgree
+                ? connection.connack_name || String(connection.connack_code)
+                : `${connection.connack_code}${connection.connack_name ? ` (${connection.connack_name})` : ''}`;
+              addOperationsDetailField(
+                meta,
+                'CONNACK result',
+                connackResult,
+              );
+            }
+            if (typeof diagnostic.connected === 'boolean') {
+              addOperationsDetailField(meta, 'Hub broker connection', diagnostic.connected ? 'Connected' : 'Disconnected');
+            }
+            addOperationsDetailField(meta, 'Connected clients', diagnostic.connected_clients);
+            addOperationsDetailField(meta, 'Registered client sessions', diagnostic.total_client_sessions);
+            addOperationsDetailField(
+              meta,
+              'Traffic received',
+              diagnostic.bytes_received == null ? null : formatBytes(diagnostic.bytes_received),
+            );
+            addOperationsDetailField(
+              meta,
+              'Traffic sent',
+              diagnostic.bytes_sent == null ? null : formatBytes(diagnostic.bytes_sent),
+            );
+            addOperationsDetailField(meta, 'Broker uptime', diagnostic.uptime);
+            addOperationsDetailField(meta, 'Broker version', diagnostic.version);
+            addOperationsDetailField(
+              meta,
+              'Statistics received',
+              diagnostic.updated_at ? formatSeen(diagnostic.updated_at) : null,
+            );
+          }
+          if (details.reason) addOperationsDetailField(meta, 'Failure reason', details.reason);
+          if (diagnostic.message) addOperationsDetailField(meta, 'Hub diagnostic message', diagnostic.message);
+        }
+
+        const sources = [];
+        if (details.source) sources.push(details.source);
+        if (details.health_check_source && details.health_check_source !== details.source) {
+          sources.push(`Health check: ${details.health_check_source}`);
+        }
+        if (Object.keys(diagnostic).length && details.hub_diagnostics_source) {
+          sources.push(`Supplementary details: ${details.hub_diagnostics_source}`);
+        } else if (details.hub_diagnostics_error) {
+          sources.push(`Supplementary details unavailable: ${details.hub_diagnostics_error}`);
+        }
+        if (serviceId === 'nginx' && details.hub_api_via_nginx?.source) {
+          sources.push(details.hub_api_via_nginx.source);
+        }
+        if (sources.length) addDetailField(meta, 'Diagnostic sources', [...new Set(sources)].join('; '));
+        if (details.database) {
+          const databaseLabel = serviceId === 'operations' ? 'Database' : 'Hub database';
+          addOperationsDetailField(
+            meta,
+            `${databaseLabel} status`,
+            operationsStatusLabel('database', details.database.status),
+          );
+          addOperationsDetailField(meta, `${databaseLabel} source`, details.database_source);
+        }
+        if (details.worker_errors?.length) {
+          addOperationsDetailField(meta, 'Worker errors', details.worker_errors.join('; '));
+        }
+        panel.append(meta);
+
+        if (serviceId === 'operations') {
+          renderOperationsWorkers(panel, details.workers);
+        }
+        if (details.hub_diagnostics_error) {
+          panel.append(el('p', details.hub_diagnostics_error, 'notice error'));
+        }
+        if (details.database_error) {
+          panel.append(el('p', details.database_error, 'notice error'));
+        }
+        renderOperationsRuntime(panel, details);
+      }
+
+      function renderOperationsWorkers(panel, workers = {}) {
+        panel.append(el('h5', 'Monitoring workers'));
+        const meta = el('dl', undefined, 'meta');
+        const core = workers.core;
+        if (core) {
+          const state = core.enabled
+            ? `${core.running ? 'Running' : 'Stopped'}${core.stale ? ' (stale)' : ''}`
+            : 'Disabled';
+          addDetailField(meta, 'Core monitor', state);
+          if (core.last_successful_check) {
+            addDetailField(meta, 'Core monitor last successful check', formatSeen(core.last_successful_check));
+          }
+        }
+        for (const [id, worker] of Object.entries(workers.public || {})) {
+          const state = worker.enabled
+            ? `${worker.running ? 'Running' : 'Stopped'}${worker.stale ? ' (stale)' : ''}`
+            : 'Disabled';
+          addDetailField(meta, worker.label || id, `${state}; ${worker.state || 'unknown'}`);
+          if (worker.last_successful_check) {
+            addDetailField(meta, `${worker.label || id} last successful check`, formatSeen(worker.last_successful_check));
+          }
+        }
+        if (meta.childElementCount) panel.append(meta);
+      }
+
+      function renderOperationsRuntime(panel, details) {
+        if (!details.runtime_source && !details.runtime_error) return;
+        panel.append(el('h5', 'Container runtime'));
+        const meta = el('dl', undefined, 'meta');
+        const runtime = details.runtime;
+        if (runtime) {
+          const state = runtime.running === true
+            ? 'Running'
+            : runtime.running === false
+              ? `Not running${runtime.docker_state ? ` (${runtime.docker_state})` : ''}`
+              : runtime.docker_state || 'Unknown';
+          const health = runtime.health_status
+            ? ` (${runtime.health_status})`
+            : '';
+          addDetailField(meta, 'State', `${state}${health}`);
+          addOperationsDetailField(meta, 'Restart count', runtime.restart_count);
+          addOperationsDetailField(
+            meta,
+            'Started at',
+            runtime.started_at ? formatSeen(runtime.started_at) : null,
+          );
+          addOperationsDetailField(meta, 'Container identity', runtime.container_id);
+        } else {
+          addDetailField(meta, 'State', 'Unavailable');
+          if (details.runtime_error) addDetailField(meta, 'Failure reason', details.runtime_error);
+        }
+        addOperationsDetailField(meta, 'Diagnostic source', details.runtime_source);
+        panel.append(meta);
+      }
+
+      async function loadOperationsEvents(page = 1) {
+        const list = document.getElementById('operations-events');
+        list.replaceChildren(el('li', 'Loading recent monitoring events…', 'notice'));
+        const previous = document.getElementById('operations-events-prev');
+        const next = document.getElementById('operations-events-next');
+        previous.hidden = true;
+        next.hidden = true;
+        const query = new URLSearchParams({
+          page: String(page),
+          page_size: String(operationsEventsState.pageSize),
+          order: 'newest',
+        });
+        if (operationsEventsState.snapshotId != null) {
+          query.set('snapshot_id', String(operationsEventsState.snapshotId));
+        }
+        try {
+          const payload = await api(`/api/v1/operations/events?${query}`);
+          const meta = payload.pagination || {};
+          operationsEventsState.page = meta.page || page;
+          operationsEventsState.totalPages = meta.total_pages || 0;
+          if (meta.snapshot_id != null) operationsEventsState.snapshotId = meta.snapshot_id;
+          list.replaceChildren();
+          if (!Array.isArray(payload.events) || !payload.events.length) {
+            list.append(el('li', 'No events yet.', 'notice'));
+          } else {
+            for (const event of payload.events) {
+              const transition = `${event.previous_state || 'n/a'} → ${event.new_state || 'n/a'}`;
+              const reason = event.reason ? ` — ${event.reason}` : '';
+              list.append(el(
+                'li',
+                `${formatSeen(event.occurred_at)}: ${event.component} ${event.event_type} (${transition}, ${event.certainty || 'confirmed'})${reason}`,
+              ));
+            }
+          }
+          previous.hidden = operationsEventsState.page <= 1;
+          next.hidden = operationsEventsState.page >= operationsEventsState.totalPages;
+        } catch (error) {
+          list.replaceChildren(el('p', error.message, 'notice error'));
+        }
+      }
+
       function renderHubStatus(status) {
         const summary = status.summary;
         hubAddresses = status.addresses || {};
@@ -2639,8 +3271,8 @@
         statusLine.className = 'notice';
       }
 
-      function renderComponentDetails(component, details) {
-        const panel = document.getElementById('component-details');
+      function renderComponentDetails(component, details, panelId = 'component-details') {
+        const panel = document.getElementById(panelId);
         panel.replaceChildren();
         const heading = el('h4', `${details.service} details`);
         panel.append(heading);
@@ -2703,11 +3335,12 @@
         }
       }
 
-      function renderComponentLogs(body) {
-        const panel = document.getElementById('component-details');
+      function renderComponentLogs(body, panelId = 'component-details') {
+        const panel = document.getElementById(panelId);
         panel.replaceChildren();
         panel.append(el('h4', `${body.service} logs`));
         panel.append(el('p', `Latest container log lines, up to ${body.line_limit || 15}.`, 'notice'));
+        if (body.source) panel.append(el('p', `Source: ${body.source}`, 'notice'));
         const lines = Array.isArray(body.lines) ? body.lines : [];
         panel.append(el('pre', lines.join('\n') || 'No recent log lines.', 'component-log'));
       }
@@ -2807,7 +3440,7 @@
 
       function setActiveTab(tabName, updateLocation = true) {
         const localRoles = ['admin', 'viewer'].includes(currentRole);
-        const knownTabs = ['hub', 'devices', ...(localRoles ? ['users', 'groups', 'firmware', 'observations', 'espconnect'] : [])];
+        const knownTabs = ['hub', 'devices', ...(localRoles ? ['operations', 'users', 'groups', 'firmware', 'observations', 'espconnect'] : [])];
         const activeTab = knownTabs.includes(tabName) ? tabName : 'hub';
         activeTabName = activeTab;
         for (const name of knownTabs) {
@@ -2820,6 +3453,7 @@
           window.history.replaceState(null, '', `#${activeTab}`);
         }
         if (activeTab === 'hub' || activeTab === 'devices') refreshHubStatus();
+        if (activeTab === 'operations') refreshOperationsStatus();
         if (activeTab === 'devices') refreshDevices();
         if (activeTab === 'users') refreshUsers();
         if (activeTab === 'groups') refreshGroups();
@@ -6224,6 +6858,7 @@
         document.getElementById('admin-panel').hidden = role !== 'admin';
         document.getElementById('tab-observations').hidden = true;
         document.getElementById('tab-button-observations').hidden = !['admin', 'viewer'].includes(role);
+        document.getElementById('tab-button-operations').hidden = !['admin', 'viewer'].includes(role);
         document.getElementById('tab-button-espconnect').hidden = !['admin', 'viewer'].includes(role);
         document.getElementById('tab-button-firmware').hidden = !['admin', 'viewer'].includes(role);
         if (role === 'admin') {
@@ -6248,6 +6883,7 @@
         refreshTimer = window.setInterval(() => {
           refreshHubStatus();
           if (activeTabName === 'observations') refreshObservations({ force: false });
+          else if (activeTabName === 'operations') refreshOperationsStatus();
           else if (activeTabName === 'groups') refreshGroups();
           else if (activeTabName === 'firmware') refreshFirmwareCatalog();
           else refreshDevices();
@@ -6498,6 +7134,25 @@
         select.addEventListener('change', () => renderDevices(allDevices));
       });
       document.getElementById('refresh-hub').addEventListener('click', refreshHubStatus);
+      document.getElementById('refresh-operations').addEventListener('click', refreshOperationsStatus);
+      document.getElementById('operations-events-panel').addEventListener('toggle', () => {
+        const panel = document.getElementById('operations-events-panel');
+        if (panel.open && activeTabName === 'operations') {
+          operationsEventsState.snapshotId = null;
+          operationsEventsState.page = 1;
+          loadOperationsEvents(1);
+        }
+      });
+      document.getElementById('operations-events-prev').addEventListener('click', () => {
+        if (operationsEventsState.page > 1) {
+          loadOperationsEvents(operationsEventsState.page - 1);
+        }
+      });
+      document.getElementById('operations-events-next').addEventListener('click', () => {
+        if (operationsEventsState.page < operationsEventsState.totalPages) {
+          loadOperationsEvents(operationsEventsState.page + 1);
+        }
+      });
       document.getElementById('hub-monitor-events-panel').addEventListener('toggle', () => {
         const panel = document.getElementById('hub-monitor-events-panel');
         if (panel.open) loadMonitoringEvents();
@@ -6617,6 +7272,10 @@
         currentDeploymentAttempt = null;
         authToken.value = '';
         currentRole = '';
+        openOperationsServicePanel = '';
+        const operationsDetailPanel = document.getElementById('operations-service-detail');
+        operationsDetailPanel.hidden = true;
+        operationsDetailPanel.replaceChildren();
         observationViewState.requestId += 1;
         observationViewState.pagination = null;
         observationViewState.items = [];
@@ -6626,6 +7285,7 @@
         document.getElementById('tab-button-users').hidden = true;
         document.getElementById('tab-button-groups').hidden = true;
         document.getElementById('tab-button-firmware').hidden = true;
+        document.getElementById('tab-button-operations').hidden = true;
         document.getElementById('user-controls').hidden = true;
         document.getElementById('firmware-catalog-list').replaceChildren();
         document.getElementById('esp-web-tools-launch').replaceChildren();

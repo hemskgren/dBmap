@@ -1124,6 +1124,8 @@ def _hub_components(mqtt_status: str, edge: dict[str, str]) -> list[dict]:
     dependencies=[Depends(require_policy("hub.logs.read", "hub"))],
 )
 def get_hub_component_logs(component: str) -> dict:
+    if component not in container_logs.HUB_LOG_COMPONENTS:
+        raise HTTPException(status_code=404, detail="unknown Hub component")
     try:
         return container_logs.read_tail(component)
     except container_logs.UnknownComponent:

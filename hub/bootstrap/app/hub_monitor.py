@@ -337,7 +337,6 @@ def cleanup_history(db: Session, now: datetime | None = None) -> dict[str, int]:
 def run_check(
     db: Session,
     *,
-    sample_devices: bool = True,
     include_summary: bool = True,
 ) -> dict[str, Any] | None:
     """Persist one Hub check and optionally return its historical summary."""
@@ -347,23 +346,12 @@ def run_check(
         observed_at: datetime = probe["observed_at"]
         components: dict[str, str] = probe["components"]
         health, availability = assess_states(components)
-        def after_observation(previous, gap):
+        def after_observation(previous, _gap):
             _emit_hub_transitions(
                 db, previous, health=health, availability=availability,
                 observed_at=observed_at,
             )
             _detect_docker_restarts(db, probe["docker"], observed_at)
-            # Device sampling stays on the existing Core cycle and cadence.
-            from app import device_monitor
-
-            if sample_devices or gap is not None:
-                try:
-                    device_monitor.sample_devices(
-                        db, observed_at=observed_at,
-                        hub_gap=(gap.start, gap.end) if gap is not None else None,
-                    )
-                except Exception:
-                    log.exception("device monitor cycle failed")
 
         sample = _store().record_check(
             db, observed_at, states=components, reasons=probe["reasons"],
@@ -377,12 +365,7 @@ def run_check(
         _cycles_since_cleanup += 1
         if _cycles_since_cleanup >= CLEANUP_EVERY_CYCLES:
             try:
-                from app import device_diag, device_monitor
-
                 cleanup_history(db, observed_at)
-                device_monitor.cleanup_history(db, observed_at)
-
-                device_diag.cleanup_history(db, observed_at)
                 db.commit()
             except Exception:
                 log.exception("hub monitor retention cleanup failed")
@@ -729,50 +712,21 @@ def monitoring_status(db: Session) -> dict[str, Any]:
 
 
 def _loop() -> None:
-    from app import device_monitor
-
-    next_hub = next_device = monotonic()
-    hub_check_succeeded = False
+    next_hub = monotonic()
     while not _stop.is_set():
         now = monotonic()
         hub_due = now >= next_hub
-        device_due = settings.device_monitor_enabled and now >= next_device
-        if not hub_due and not device_due:
-            deadline = next_hub
-            if settings.device_monitor_enabled:
-                deadline = min(deadline, next_device)
-            _stop.wait(deadline - now)
+        if not hub_due:
+            _stop.wait(next_hub - now)
             continue
 
-        if hub_due:
-            next_hub = now + settings.hub_monitor_interval_s
-            hub_check_succeeded = False
-        if device_due:
-            next_device = now + settings.device_monitor_interval_s
-
-        if not hub_due and not hub_check_succeeded:
-            continue
+        next_hub = now + settings.hub_monitor_interval_s
 
         db = SessionLocal()
         try:
-            if hub_due:
-                run_check(db, sample_devices=device_due, include_summary=False)
-                hub_check_succeeded = True
-            else:
-                # Fast checks observe device connectivity only. A failed Hub
-                # cycle pauses them until the next successful full check.
-                with _cycle_lock:
-                    observed_at = _utcnow()
-                    if _last_check_at is None or (
-                        observed_at - _last_check_at
-                    ).total_seconds() > settings.hub_monitor_gap_threshold_s:
-                        # Wall time can advance while the scheduler clock is
-                        # paused (for example during host suspend).
-                        continue
-                    device_monitor.sample_devices(db, observed_at=observed_at)
-                    db.commit()
+            run_check(db, include_summary=False)
         except Exception:
-            log.exception("%s monitor cycle failed", "hub" if hub_due else "device")
+            log.exception("hub monitor cycle failed")
             try:
                 db.rollback()
             except Exception as rollback_exc:  # noqa: BLE001

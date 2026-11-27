@@ -106,7 +106,7 @@ services:
       - default
       - firmware-private
     healthcheck:
-      test: ["CMD-SHELL", "SSL_CERT_FILE=/certs/ca.crt wget -q -O /dev/null https://127.0.0.1:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/health >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "SSL_CERT_FILE=/certs/ca.crt wget -q -O /dev/null https://127.0.0.1:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nginx/health >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -183,6 +183,77 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
+
+  operations:
+    profiles:
+      - operations
+    build:
+      context: ./operations
+    platform: linux/amd64
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8443"
+      - --ssl-certfile
+      - /certs/operations.crt
+      - --ssl-keyfile
+      - /certs/operations.key
+      - --forwarded-allow-ips
+      - "*"
+    environment:
+      DBMAP_ADMIN_TOKEN: ${DBMAP_ADMIN_TOKEN:?Set DBMAP_ADMIN_TOKEN in .env}
+      DBMAP_VIEWER_TOKEN: ${DBMAP_VIEWER_TOKEN:?Set DBMAP_VIEWER_TOKEN in .env}
+      DBMAP_OPA_DECISION_URL: ${DBMAP_OPA_DECISION_URL:-https://opa:8181/v1/data/dbmap/authz/allow}
+      DBMAP_OPA_CA_FILE: /certs/ca.crt
+      DBMAP_HUB_ID: ${DBMAP_HUB_ID:-${DBMAP_SITE_ID:-local-01}}
+      DBMAP_DATABASE_URL: sqlite:////data/operations.db
+      DBMAP_DOCKER_SOCKET: ${DBMAP_DOCKER_SOCKET:-/var/run/docker.sock}
+      DBMAP_COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-}
+      DBMAP_HUB_API_HOST: hub-bootstrap
+      DBMAP_HUB_API_PORT: "8443"
+      DBMAP_PUBLIC_BASE_PATH: ${DBMAP_PUBLIC_BASE_PATH:-}
+      DBMAP_NGINX_PROBE_HOST: nginx
+      DBMAP_NGINX_PROBE_PORT: ${DBMAP_HTTPS_PORT:-8443}
+      DBMAP_NGINX_PROBE_NAME: hub.local
+      DBMAP_WEB_PROBE_HOST: dbmap-web
+      DBMAP_WEB_PROBE_PORT: "443"
+      DBMAP_OPA_HOST: opa
+      DBMAP_OPA_PORT: "8181"
+      DBMAP_MQTT_HOST: mosquitto
+      DBMAP_MQTT_PORT: "8883"
+      DBMAP_MQTT_CA_FILE: /certs/ca.crt
+      DBMAP_MQTT_USERNAME: hub-bootstrap
+      DBMAP_MQTT_PASSWORD: ${DBMAP_MQTT_HUB_PASSWORD:?Set DBMAP_MQTT_HUB_PASSWORD in .env}
+      DBMAP_PUBLIC_HUB_URL: ${DBMAP_PUBLIC_HUB_URL:-}
+      DBMAP_PUBLIC_MQTT_HOST: ${DBMAP_PUBLIC_MQTT_HOST:-${DBMAP_ADVERTISED_MQTT_HOST:-hub.local}}
+      DBMAP_PUBLIC_MQTT_PORT: ${DBMAP_PUBLIC_MQTT_PORT:-${DBMAP_ADVERTISED_MQTT_PORT:-8883}}
+      DBMAP_PUBLIC_MQTT_USE_TLS: "true"
+      DBMAP_CORE_MONITOR_ENABLED: ${DBMAP_CORE_MONITOR_ENABLED:-true}
+      DBMAP_CORE_MONITOR_INTERVAL_S: ${DBMAP_CORE_MONITOR_INTERVAL_S:-60}
+      DBMAP_GAP_THRESHOLD_S: ${DBMAP_GAP_THRESHOLD_S:-120}
+      DBMAP_RETENTION_DAYS: ${DBMAP_RETENTION_DAYS:-30}
+      DBMAP_PUBLIC_API_MONITOR_ENABLED: ${DBMAP_PUBLIC_API_MONITOR_ENABLED:-false}
+      DBMAP_PUBLIC_MQTT_MONITOR_ENABLED: ${DBMAP_PUBLIC_MQTT_MONITOR_ENABLED:-false}
+      DBMAP_PUBLIC_MONITOR_INTERVAL_S: ${DBMAP_PUBLIC_MONITOR_INTERVAL_S:-60}
+      DBMAP_PROBE_TIMEOUT_S: ${DBMAP_PROBE_TIMEOUT_S:-2}
+    volumes:
+      - operations-data:/data
+      - ./shared/operations/certs:/certs:ro
+      - ${DBMAP_DOCKER_SOCKET:-/var/run/docker.sock}:${DBMAP_DOCKER_SOCKET:-/var/run/docker.sock}
+    networks:
+      - default
+      - opa-private
+    healthcheck:
+      test: ["CMD", "python", "-c", "import ssl, urllib.request; urllib.request.urlopen('https://localhost:8443/health', context=ssl.create_default_context(cafile='/certs/ca.crt'))"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
 
   firmware-builder:
     profiles:
@@ -262,6 +333,7 @@ services:
 volumes:
   mosquitto-data:
   bootstrap-data:
+  operations-data:
   firmware-catalog:
   firmware-artifacts:
   analysis-data:

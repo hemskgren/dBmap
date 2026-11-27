@@ -9,6 +9,42 @@ import pytest
 INDEX = Path(__file__).resolve().parents[2] / "web" / "index.html"
 
 
+def test_operations_tab_is_separate_and_uses_operations_api() -> None:
+    html = INDEX.read_text()
+    assert 'data-tab="operations"' in html
+    assert 'id="tab-operations"' in html
+    assert "/api/v1/operations/status" in html
+    assert "/api/v1/operations/events" in html
+    assert "Monitoring details" in html
+    assert "Monitored services" in html
+    assert "Recent monitoring events" in html
+    assert "/api/v1/operations/services/" in html
+    assert "Database details" in html
+    assert "Log retrieval is not implemented" not in html
+
+
+def test_operations_details_preserve_hub_fields_and_panel_controls() -> None:
+    html = INDEX.read_text()
+    operations_renderer = html.split(
+        "function renderOperationsServiceDetails(", 1
+    )[1].split("function renderOperationsWorkers(", 1)[0]
+    operations_controls = html.split(
+        "function syncOperationsServiceButtons()", 1
+    )[1].split("async function toggleOperationsServicePanel(", 1)[0]
+
+    assert "Browser route', diagnostic.browser_route" in operations_renderer
+    assert "Profile', diagnostic.profile" in operations_renderer
+    assert "'Hub diagnostic message'" in operations_renderer
+    assert "Operations ${directLabel}; Hub diagnostic ${diagnosticLabel}" in html
+    assert "status += ` (CONNACK ${connection.connack_code})`" in html
+    assert "Supplementary details: ${details.hub_diagnostics_source}" in html
+    assert "? 'Hide details'" in html
+    assert "? 'Hide logs'" in html
+    assert "Hide details" in operations_controls
+    assert "Hide logs" in operations_controls
+    assert "renderComponentLogs(body, 'operations-service-detail')" in html
+
+
 def test_hub_availability_displays_all_periods_for_services() -> None:
     html = INDEX.read_text()
     panel = html.split('<section id="hub-monitor">', 1)[1].split("</section>", 1)[0]

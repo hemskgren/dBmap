@@ -30,8 +30,7 @@ Every `DBMAP_HUB_MONITOR_INTERVAL_S` seconds (default **60**), a background thre
 3. Persists a compact Hub sample **only on state transitions** (and after monitoring gaps), marked with `sample_mode: sparse`. Payload stores `states`, `last_success`, and `reasons` only — Docker inspect is not persisted in new samples; restart detection uses in-memory signatures and events.
 4. On a monitoring gap (more than 120 seconds by default since the previous successful Hub check), records `monitoring_resumed` and inserts an explicit `unobserved` sample so hold attribution excludes Hub-down / PC-off time from availability percentages. Successful Hub checks keep this clock current even when no sample is written.
 5. Records events on state transitions, monitoring gaps, and detected restarts.
-6. Propagates a detected gap to Device Monitor. A device-only check that is due at the same time normally runs in this cycle.
-7. Periodically deletes monitor rows older than retention (default **30** days for Hub samples, configurable **30–90**). A sparse timeline keeps its last boundary before the cutoff so a long-lived state can still be attributed inside the reporting windows.
+6. Periodically deletes monitor rows older than retention (default **30** days for Hub samples, configurable **30–90**). A sparse timeline keeps its last boundary before the cutoff so a long-lived state can still be attributed inside the reporting windows.
 
 The background cycle persists samples and events. Status requests calculate the full availability history on demand.
 
@@ -237,15 +236,17 @@ Online means `last_seen_at` is within `DBMAP_DEVICE_ONLINE_WINDOW_S` (default **
 
 ### D0 — Hub-observed availability
 
-Device Monitor runs every 30 seconds by default on the same background thread. A due full Hub check takes priority. Device-only checks pause after a failed full cycle or when the last successful Hub check is older than the gap threshold. These checks sample connectivity from reported state. They do not run Hub probes or update Hub continuity.
+Device Monitor runs every 30 seconds by default on its own background thread in `hub-bootstrap`. Its schedule and persistent checkpoint are independent of the legacy Hub Monitor, so it continues when that monitor is disabled or its infrastructure probes fail. Device checks sample connectivity from reported state; they do not run Hub probes, depend on Operations, or update Hub continuity.
 
 Each Device Monitor check:
 
 1. For every **active** node that has been seen at least once, compute `available` or `unavailable` from `last_seen_at`.
-2. Persist a sample only on **state transitions** (and when a Hub monitoring gap is detected).
-3. On Hub `monitoring_resumed` gaps, insert an `unobserved` marker so wall-clock time while the Hub was down is excluded from the device availability denominator.
+2. Persist a sample only on **state transitions** (and when a Device Monitor gap is detected).
+3. On a process restart or delayed Device Monitor cycle, insert an `unobserved` marker so time without device sampling is excluded from the availability denominator. A detected gap does not by itself confirm device downtime.
 4. Skip **deactivated** nodes (excluded from further sampling; not counted as downtime).
-5. Prune by retention days and a per-device soft cap on samples/events.
+5. Prune samples, monitor events, and retained device diagnostics by the configured retention days and existing per-device caps.
+
+The Device Monitor checkpoint is committed with its samples/events. On the first cycle after upgrade, an existing Hub Monitor checkpoint seeds Device Monitor continuity when available; subsequent cycles use only the Device Monitor checkpoint. The independent worker also performs retention cleanup if Device Monitor sampling is disabled.
 
 Availability windows (24h / 7d / 30d) reuse the Hub honesty rules: minimum eligible time, `low_coverage`, and `score_ready`.
 

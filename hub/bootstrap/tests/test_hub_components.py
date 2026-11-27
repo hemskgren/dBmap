@@ -33,6 +33,15 @@ def test_decode_docker_logs_keeps_the_last_fifteen_lines() -> None:
     ]
 
 
+def test_decode_docker_logs_supports_thirty_line_operations_tail() -> None:
+    lines = "".join(f"line-{index}\n" for index in range(35))
+    decoded = container_logs.decode_docker_logs(
+        lines.encode(),
+        line_limit=container_logs.OPERATIONS_LOG_TAIL_LINES,
+    )
+    assert decoded == [f"line-{index}" for index in range(5, 35)]
+
+
 def test_read_tail_requests_only_the_named_compose_service(monkeypatch) -> None:
     monkeypatch.setattr(settings, "compose_project", "dbmap")
     container_logs._api_version = None
@@ -150,14 +159,14 @@ def test_hub_status_lists_web_nginx_and_firmware_builder(monkeypatch) -> None:
 
 
 def test_admin_and_viewer_can_read_component_logs(monkeypatch) -> None:
-    def fake_tail(component: str) -> dict:
+    def fake_tail(component: str, line_limit: int = 15) -> dict:
         if component != "web":
             raise container_logs.UnknownComponent(component)
         return {
             "service": "Web",
             "compose_service": "dbmap-web",
             "lines": ["GET /"],
-            "line_limit": 15,
+            "line_limit": line_limit,
         }
 
     monkeypatch.setattr(container_logs, "read_tail", fake_tail)
@@ -174,9 +183,14 @@ def test_admin_and_viewer_can_read_component_logs(monkeypatch) -> None:
         "/api/v1/hub/components/database/logs",
         headers={"Authorization": f"Bearer {settings.admin_token}"},
     )
+    operations = client.get(
+        "/api/v1/hub/components/operations/logs",
+        headers={"Authorization": f"Bearer {settings.admin_token}"},
+    )
 
     assert admin.status_code == 200, admin.text
     assert admin.json()["lines"] == ["GET /"]
     assert viewer.status_code == 200, viewer.text
     assert viewer.json()["lines"] == ["GET /"]
     assert missing.status_code == 404
+    assert operations.status_code == 404
