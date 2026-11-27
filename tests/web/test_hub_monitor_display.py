@@ -19,8 +19,21 @@ def test_operations_tab_is_separate_and_uses_operations_api() -> None:
     assert "Monitored services" in html
     assert "Recent monitoring events" in html
     assert "/api/v1/operations/services/" in html
-    assert "Database details" in html
+    assert "Database details for ${service.name || service.id}" in html
+    assert "? 'Hide DB'" in html
+    assert ": 'DB'" in html
     assert "Log retrieval is not implemented" not in html
+
+
+def test_operations_summary_and_sections_are_compact() -> None:
+    html = INDEX.read_text()
+    assert "#tab-operations .overview-grid.hub-identity { grid-template-columns: repeat(3" in html
+    assert "#tab-operations > section > h3:first-child { margin: 0" in html
+    assert "Operations status loaded." not in html
+    assert "statusLine.hidden = true;" in html
+    assert "rawState === 'healthy' ? 'ok' : rawState" in html
+    assert "`DB: ${String(databaseStatus).replaceAll('_', ' ')}`" in html
+    assert "`component-status ${databaseStatus}`" in html
 
 
 def test_operations_details_preserve_hub_fields_and_panel_controls() -> None:
@@ -45,19 +58,22 @@ def test_operations_details_preserve_hub_fields_and_panel_controls() -> None:
     assert "renderComponentLogs(body, 'operations-service-detail')" in html
 
 
-def test_hub_availability_displays_all_periods_for_services() -> None:
+def test_legacy_hub_monitoring_and_mqtt_failure_controls_are_retired() -> None:
     html = INDEX.read_text()
-    panel = html.split('<section id="hub-monitor">', 1)[1].split("</section>", 1)[0]
-    assert "Hub services availability" in panel
-    assert "Public endpoints</th>" in panel
-    assert "Core Hub availability" not in panel
-    for service in ("hub", "hub-api", "hub-mqtt", "hub-web"):
-        for period in ("24h", "7d", "30d"):
-            assert panel.count(f'id="{service}-availability-{period}"') == 1
-    assert "Observation details" in panel
+    assert 'id="hub-monitor"' not in html
+    assert 'id="hub-monitor-events-panel"' not in html
+    assert "/api/v1/hub/monitoring/events" not in html
+    assert "/api/v1/hub/components/${component}/logs" not in html
+    assert 'id="hub-connection-failures"' not in html
+    assert "/api/v1/hub/components/mosquitto/connection-failures" not in html
+    assert "data-operations-connection-failures-service" in html
+    assert "if (service.id === 'mqtt')" in html
+    assert "/api/v1/operations/services/mosquitto/connection-failures" in html
+    assert "Hide failed connections" in html
+    assert "window_hours || 3" in html
 
 
-def test_hub_availability_uses_short_parenthetical_coverage() -> None:
+def test_operations_availability_uses_short_parenthetical_coverage() -> None:
     node = shutil.which("node")
     if not node:
         pytest.skip("Node is required for JavaScript formatting tests")
@@ -66,7 +82,7 @@ def test_hub_availability_uses_short_parenthetical_coverage() -> None:
         "      function formatAvailabilityWindow(", 1
     )[0]
     formatter = html.split("      function formatHubAvailabilityWindow(", 1)[1].split(
-        "      function addHubWindowDetails(", 1
+        "      const operationsEventsState", 1
     )[0]
     script = (
         f"function formatDurationSeconds({duration}\n"
@@ -86,30 +102,4 @@ def test_hub_availability_uses_short_parenthetical_coverage() -> None:
         }), 'Insufficient data (59s observed)');
         """
     )
-    subprocess.run([node, "-e", script], check=True, timeout=10)
-
-
-def test_public_transition_labels_do_not_confuse_observation_with_recovery() -> None:
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("Node is required for JavaScript formatting tests")
-    html = INDEX.read_text()
-    formatter = html.split("      function formatPublicTransition(", 1)[1].split(
-        "      function renderPublicMonitoring(", 1
-    )[0]
-    script = f"function formatPublicTransition({formatter}\n" + """
-        const assert = require('node:assert/strict');
-        const label = (previous_state, new_state) => formatPublicTransition({previous_state, new_state});
-        assert.equal(label(null, 'ok'), 'Initial observation: Available');
-        assert.equal(label(null, 'offline'), 'Initial observation: Unavailable');
-        assert.equal(label('unknown', 'ok'), 'Available after unobserved period');
-        assert.equal(label('unknown', 'offline'), 'Unavailable after unobserved period');
-        assert.equal(label('offline', 'ok'), 'Recovered');
-        assert.equal(label('ok', 'offline'), 'Became unavailable');
-        assert.equal(label('ok', 'unknown'), 'Observation became unobserved');
-        assert.equal(label(undefined, 'ok'), 'Available');
-        assert.equal(formatPublicTransition({
-          event_type: 'monitoring_resumed', previous_state: 'unknown', new_state: 'ok',
-        }), 'Monitoring resumed: Available');
-    """
     subprocess.run([node, "-e", script], check=True, timeout=10)

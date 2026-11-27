@@ -19,7 +19,6 @@ allow if {
 		"devices.list_summary",
 		"nodes.read_detail",
 		"hub.status.read",
-		"hub.logs.read",
 		"operations.status.read",
 		"operations.events.read",
 		"operations.details.read",

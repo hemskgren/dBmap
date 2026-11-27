@@ -90,14 +90,14 @@ The reset scope is all rows with the approved `hub_id` in `device_monitor_sample
        SELECT * FROM before_reset.device_monitor_events WHERE hub_id = :hub_id;
    ```
 
-6. Resume the corrected Hub. On eligible devices, confirm one initial connectivity sample and `monitoring_started` event. Compare event IDs across stable cycles even if counts are capped. Verify that eligible time accumulates, 24h availability becomes populated at 600 eligible seconds, and Device Monitor diagnostics and Hub Monitor history are still available. Confirm the longer windows follow their existing coverage requirements.
+6. Resume the corrected Hub. On eligible devices, confirm one initial connectivity sample and `monitoring_started` event. Compare event IDs across stable cycles even if counts are capped. Verify that eligible time accumulates, 24h availability becomes populated at 600 eligible seconds, and Device Monitor diagnostics remain available. Infrastructure history is now owned by the optional Operations service.
 
 ## Deployment verification before any reset
 
-- Record the rollout time, Hub identity, Hub and device sample counts, and latest monitoring event IDs. Use `GET /api/v1/hub/status`, `GET /api/v1/hub/monitoring/events`, and node detail and monitoring-event endpoints. Record existing warnings or genuine component outages.
-- Once separately approved, deploy the reviewed Hub build. Use the existing Hub Compose volume and configuration. Verify the configured 60-second Hub probe interval, 120-second continuity threshold, 30-second Device Monitor cadence, and 90-second online window.
+- Record the rollout time, Hub identity, device sample counts, and latest device monitoring event IDs. Use `GET /api/v1/hub/status` for the Hub overview and node detail and monitoring-event endpoints for Device Monitor data. When Operations is enabled, use its status and events APIs for infrastructure history; the retired Hub monitoring-events endpoint is no longer available.
+- Once separately approved, deploy the reviewed Hub build. Use the existing Hub Compose volume and configuration. Verify the configured 30-second Device Monitor cadence, 120-second continuity threshold, and 90-second online window. When Operations is enabled, verify its Core monitor interval and gap threshold separately; Hub infrastructure probes no longer run.
 - Observe at least 12 minutes with stable device reports. After startup, expect no recurring `monitoring_resumed` events during continuous checks, stable sample counts, and rising eligible time. A first inferred gap is possible when the sparse startup fallback reaches back to an old persisted sample.
-- Confirm Hub health and component availability are present on demand, Device Monitor shows a percentage once 600 eligible seconds are retained, and diagnostics still report normally. Review post-rollout event timestamps separately from retained incident data.
+- Confirm Device Monitor shows a percentage once 600 eligible seconds are retained and diagnostics still report normally. When Operations is enabled, confirm infrastructure health and availability are present on demand. Review post-rollout event timestamps separately from retained incident data.
 
 ## One-time Core Hub history reset
 

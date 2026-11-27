@@ -13,7 +13,7 @@ from sqlalchemy import column, func, inspect, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app import core_monitor, probes, public_monitor
+from app import core_monitor, mqtt_connection_failures, probes, public_monitor
 from app.config import settings
 from app.db import get_db
 from app.models import OperationsMonitorEvent
@@ -467,6 +467,15 @@ def service_logs(service: str) -> dict:
             detail=error or "Service logs are unavailable",
         )
     return {**result, "source": "Operations Docker runtime"}
+
+
+@router.get(
+    "/api/v1/operations/services/mosquitto/connection-failures",
+    dependencies=[Depends(require_policy("operations.logs.read", "operations"))],
+)
+def mqtt_connection_failures_summary() -> dict:
+    """Recent MQTT connection failures from the mounted Mosquitto log."""
+    return mqtt_connection_failures.read_recent_failures()
 
 
 @router.get(

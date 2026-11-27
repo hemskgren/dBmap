@@ -523,21 +523,6 @@ def main() -> int:
             parser.error(str(exc))
     try:
         previous = fetch_status(base_url, args.ca, admin_token)
-        if args.output == "text":
-            # Status omits the event list; fetch it on demand like the Hub tab expand.
-            try:
-                events = api_get(
-                    base_url,
-                    args.ca,
-                    admin_token,
-                    "/api/v1/hub/monitoring/events?"
-                    + urllib.parse.urlencode({"limit": 15}),
-                )
-                monitoring = previous.get("monitoring")
-                if isinstance(monitoring, dict) and isinstance(events, dict):
-                    monitoring["recent_events"] = events.get("events") or []
-            except HubApiError:
-                pass
         if args.output == "json":
             print(
                 json.dumps(previous, indent=None if watching else 2, sort_keys=True),

@@ -235,6 +235,104 @@ def test_local_nginx_state_does_not_change_core_availability() -> None:
     assert core_monitor.assess_states(states) == ("healthy", "available")
 
 
+def test_legacy_nginx_sample_keeps_upstream_continuity(monkeypatch) -> None:
+    init_db()
+    previous_at = datetime.now(UTC) - timedelta(seconds=60)
+    observed_at = previous_at + timedelta(seconds=60)
+    states = {
+        "api": "ok",
+        "database": "ok",
+        "nginx": "ok",
+        "web": "ok",
+        "mqtt": "ok",
+        "opa": "ok",
+    }
+    results = {
+        "api": ("ok", None),
+        "database": ("ok", None),
+        "nginx": ("ok", None),
+        "nginx_local": ("ok", None),
+        "web": ("ok", None),
+        "mqtt": ("ok", None),
+        "opa": ("ok", None),
+    }
+    monkeypatch.setattr(core_monitor, "_utcnow", lambda: observed_at)
+    monkeypatch.setattr(core_monitor, "_last_check_at", None)
+    monkeypatch.setattr(core_monitor.settings, "gap_threshold_s", 120)
+    monkeypatch.setattr(core_monitor.settings, "core_monitor_interval_s", 60)
+    monkeypatch.setattr(api_module, "_database_healthy", lambda _db: (True, None))
+    monkeypatch.setattr(api_module, "_self_worker_healthy", lambda: (True, []))
+    probes = {
+        "probe_api": "api",
+        "probe_database": "database",
+        "probe_nginx": "nginx",
+        "probe_nginx_local": "nginx_local",
+        "probe_web": "web",
+        "probe_mqtt_broker": "mqtt",
+        "probe_opa": "opa",
+    }
+    for probe_name, result_name in probes.items():
+        monkeypatch.setattr(
+            core_monitor.probes,
+            probe_name,
+            lambda name=result_name: results[name],
+        )
+    monkeypatch.setattr(core_monitor.probes, "inspect_monitored_runtimes", dict)
+
+    with SessionLocal() as db:
+        db.query(OperationsMonitorEvent).delete()
+        db.query(OperationsMonitorSample).delete()
+        db.query(OperationsMonitorCheckpoint).delete()
+        db.add(
+            OperationsMonitorSample(
+                hub_id=settings.hub_id,
+                observed_at=previous_at,
+                overall_health="healthy",
+                overall_availability="available",
+                components_json=json.dumps({"states": states}),
+                source="operations_monitor",
+            )
+        )
+        db.add(
+            OperationsMonitorCheckpoint(
+                hub_id=settings.hub_id,
+                last_check_at=previous_at.isoformat(),
+            )
+        )
+        db.commit()
+        previous = core_monitor._store().latest_sample(db)
+        assert previous is not None
+        prior_payload = core_monitor._sample_payload(previous)
+        assert prior_payload["states"]["hub_api_via_nginx"] == "ok"
+        assert "nginx" not in prior_payload["states"]
+
+        core_monitor.run_check(db)
+
+        assert not any(
+            event.component == "hub_api_via_nginx" and event.previous_state is None
+            for event in core_monitor._store().recent_events(db, 100)
+        )
+        history = core_monitor._store().history(
+            db, observed_at, settings.retention_days
+        )
+        payloads = {sample.sample_id: core_monitor._sample_payload(sample) for sample in history}
+        points = monitoring_cycle.observations(
+            history,
+            payloads,
+            component_id="hub_api_via_nginx",
+        )
+        window = monitoring_availability.component_window(
+            points,
+            component_id="hub_api_via_nginx",
+            window_start=previous_at,
+            window_end=observed_at,
+            interval_s=60,
+        )
+        assert window["available_seconds"] == 0
+        assert window["unavailable_seconds"] == 0
+        assert 59 <= window["unobserved_seconds"] <= 60
+
+
 def test_runtime_restart_events_use_persisted_signatures() -> None:
     init_db()
     initial = {

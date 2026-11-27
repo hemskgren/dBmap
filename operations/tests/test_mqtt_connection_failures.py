@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
+from app import api as api_module
 from app import mqtt_connection_failures
 from app.config import settings
 from app.main import create_app
@@ -46,6 +47,14 @@ def test_read_recent_failures_from_file(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_connection_failures_endpoint_is_mosquitto_only(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "admin_token", "test-admin")
+    monkeypatch.setattr(settings, "viewer_token", "test-viewer")
+    decisions = []
+    monkeypatch.setattr(
+        api_module,
+        "evaluate",
+        lambda decision: decisions.append(decision) or True,
+    )
     monkeypatch.setattr(
         mqtt_connection_failures,
         "read_recent_failures",
@@ -61,13 +70,19 @@ def test_connection_failures_endpoint_is_mosquitto_only(monkeypatch) -> None:
     )
     client = TestClient(create_app())
     ok = client.get(
-        "/api/v1/hub/components/mosquitto/connection-failures",
-        headers={"Authorization": f"Bearer {settings.admin_token}"},
+        "/api/v1/operations/services/mosquitto/connection-failures",
+        headers={"Authorization": f"Bearer {settings.viewer_token}"},
     )
     other = client.get(
-        "/api/v1/hub/components/nginx/connection-failures",
+        "/api/v1/operations/services/nginx/connection-failures",
         headers={"Authorization": f"Bearer {settings.admin_token}"},
+    )
+    unauthorized = client.get(
+        "/api/v1/operations/services/mosquitto/connection-failures"
     )
     assert ok.status_code == 200, ok.text
     assert ok.json()["lines"] == ["auth fail"]
     assert other.status_code == 404
+    assert unauthorized.status_code == 401
+    assert decisions[0]["action"] == "operations.logs.read"
+    assert decisions[0]["resource"]["type"] == "operations"

@@ -322,23 +322,9 @@ OPERATIONS = {
     },
     ("GET", "/api/v1/hub/status"): {
         "operationId": "getHubStatus",
-        "summary": "Hub mode, addresses, summary, and monitoring",
-        "description": (
-            "Includes current Hub health, historical availability windows, last state change, "
-            "and observation gaps. Recent monitoring events are loaded separately from "
-            "GET /api/v1/hub/monitoring/events. See docs/health-and-availability.md."
-        ),
+        "summary": "Hub mode, addresses, and device summary",
+        "description": "Returns Hub identity, call-home addresses, current component status, and device/observation counts.",
         "response": "HubStatus",
-        "errors": ["401", "403", "503"],
-    },
-    ("GET", "/api/v1/hub/monitoring/events"): {
-        "operationId": "getHubMonitoringEvents",
-        "summary": "Recent Hub monitoring events",
-        "description": (
-            "Newest Hub health and availability events. Intended for on-demand UI expansion; "
-            "default limit is 15."
-        ),
-        "response": "HubMonitoringEvents",
         "errors": ["401", "403", "503"],
     },
     ("GET", "/api/v1/hub/environmental-context"): {
@@ -357,28 +343,6 @@ OPERATIONS = {
         "summary": "On-demand component details",
         "response": "HubComponentDetails",
         "errors": ["401", "403", "404", "503"],
-    },
-    ("GET", "/api/v1/hub/components/{component}/logs"): {
-        "operationId": "getHubComponentLogs",
-        "summary": "Latest container log lines",
-        "description": (
-            "Returns the last 15 lines for an allowlisted Compose service. "
-            "Available to local admin and viewer tokens."
-        ),
-        "response": "HubComponentLogs",
-        "errors": ["401", "403", "404", "503"],
-    },
-    ("GET", "/api/v1/hub/components/{component}/connection-failures"): {
-        "operationId": "getHubComponentConnectionFailures",
-        "summary": "Recent MQTT connection failures",
-        "description": (
-            "Mosquitto only. Returns auth, TLS/CA, and protocol/socket failure lines "
-            "from the host-mounted broker log for the last 3 hours. "
-            "Fail2ban drops never reach Mosquitto and are omitted. "
-            "Available to local admin and viewer tokens."
-        ),
-        "response": "HubComponentConnectionFailures",
-        "errors": ["401", "403", "404"],
     },
     ("POST", "/api/v1/provision"): {
         "operationId": "provisionNode",
@@ -744,7 +708,7 @@ EXTRA_SCHEMAS = {
     },
     "HubComponent": {
         "type": "object",
-        "required": ["id", "name", "status", "logs"],
+        "required": ["id", "name", "status"],
         "properties": {
             "id": {
                 "type": "string",
@@ -760,7 +724,6 @@ EXTRA_SCHEMAS = {
             },
             "name": {"type": "string"},
             "status": {"type": "string"},
-            "logs": {"type": "boolean"},
         },
     },
     "HubSummary": {
@@ -997,7 +960,6 @@ EXTRA_SCHEMAS = {
             "addresses",
             "components",
             "summary",
-            "monitoring",
         ],
         "properties": {
             "mode": {"type": "string", "example": "Local Hub"},
@@ -1008,7 +970,6 @@ EXTRA_SCHEMAS = {
                 "items": {"$ref": "#/components/schemas/HubComponent"},
             },
             "summary": {"$ref": "#/components/schemas/HubSummary"},
-            "monitoring": {"$ref": "#/components/schemas/HubMonitoring"},
         },
     },
     "HubComponentDetails": {
@@ -1018,38 +979,6 @@ EXTRA_SCHEMAS = {
         "properties": {
             "service": {"type": "string"},
             "status": {"type": "string"},
-        },
-    },
-    "HubComponentLogs": {
-        "type": "object",
-        "required": ["service", "compose_service", "lines", "line_limit"],
-        "properties": {
-            "service": {"type": "string"},
-            "compose_service": {"type": "string"},
-            "lines": {"type": "array", "items": {"type": "string"}},
-            "line_limit": {"type": "integer", "example": 15},
-        },
-    },
-    "HubComponentConnectionFailures": {
-        "type": "object",
-        "required": [
-            "service",
-            "compose_service",
-            "window_hours",
-            "source",
-            "lines",
-            "count",
-            "notices",
-        ],
-        "properties": {
-            "service": {"type": "string"},
-            "compose_service": {"type": "string", "example": "mosquitto"},
-            "window_hours": {"type": "integer", "example": 3},
-            "source": {"type": "string", "enum": ["file", "unavailable"]},
-            "path": {"type": "string"},
-            "lines": {"type": "array", "items": {"type": "string"}},
-            "count": {"type": "integer"},
-            "notices": {"type": "array", "items": {"type": "string"}},
         },
     },
 }
@@ -1230,7 +1159,7 @@ def build() -> dict:
         {"name": "Observations", "description": "Persisted Ear observations."},
         {
             "name": "Hub",
-            "description": "Local mode, component details, and container logs.",
+            "description": "Local mode, component diagnostics, and device summary.",
         },
         {"name": "Provisioning", "description": "Device bootstrap-token exchange."},
     ]
@@ -1251,6 +1180,14 @@ def build() -> dict:
         },
     }
     components.setdefault("schemas", {}).update(EXTRA_SCHEMAS)
+    for retired_schema in (
+        "HubMonitoringComponent",
+        "HubAvailabilityWindow",
+        "HubMonitorEvent",
+        "HubMonitoringEvents",
+        "HubMonitoring",
+    ):
+        components["schemas"].pop(retired_schema, None)
 
     for path, methods in schema["paths"].items():
         for method, operation in list(methods.items()):
