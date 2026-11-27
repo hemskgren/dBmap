@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import paho.mqtt.client as mqtt
 
+from app import container_runtime
 from app.config import settings
 
 
@@ -128,42 +129,32 @@ def hub_component_details(component: str) -> tuple[dict | None, str | None]:
     )
 
 
-_RUNTIME_SERVICES = {"operations", "hub-api", "nginx", "web", "mqtt", "opa"}
-
-
 def probe_runtime(service: str) -> tuple[dict | None, str | None]:
-    if service not in _RUNTIME_SERVICES:
+    if service not in container_runtime.RUNTIME_SERVICES:
         raise ValueError("Operations service is not allowlisted for runtime diagnostics")
-    return hub_api_json(
-        f"/api/v1/internal/operations/services/{quote(service, safe='')}/runtime",
-        response_limit=32_768,
-    )
+    try:
+        return container_runtime.inspect_runtime(service), None
+    except (
+        container_runtime.ContainerNotFound,
+        container_runtime.ContainerRuntimeUnavailable,
+    ) as exc:
+        return None, str(exc)
 
 
-def fetch_hub_monitoring_events() -> tuple[list[dict], str | None]:
-    response, error = hub_api_json(
-        "/api/v1/hub/monitoring/events?limit=50",
-        response_limit=262_144,
-    )
-    if response is None:
-        return [], error
-    events = response.get("events")
-    if not isinstance(events, list) or not all(isinstance(item, dict) for item in events):
-        return [], "Hub monitoring events returned an invalid response"
-    return events, None
-
-
-_LOG_SERVICES = {"operations", "hub-api", "nginx", "web", "mqtt", "opa"}
+def inspect_monitored_runtimes() -> dict[str, dict]:
+    return container_runtime.inspect_monitored_runtimes()
 
 
 def fetch_service_logs(service: str) -> tuple[dict | None, str | None]:
-    if service not in _LOG_SERVICES:
+    if service not in container_runtime.RUNTIME_SERVICES:
         raise ValueError("Operations service is not allowlisted for log retrieval")
-    response, error = hub_api_json(
-        f"/api/v1/internal/operations/services/{quote(service, safe='')}/logs",
-        response_limit=1_000_000,
-    )
-    return response, error
+    try:
+        return container_runtime.read_tail(service), None
+    except (
+        container_runtime.ContainerNotFound,
+        container_runtime.ContainerRuntimeUnavailable,
+    ) as exc:
+        return None, str(exc)
 
 
 def probe_nginx() -> tuple[str, str | None]:

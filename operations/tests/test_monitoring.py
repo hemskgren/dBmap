@@ -1,14 +1,15 @@
 import json
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
 
-from app import core_monitor
+from app import api as api_module
+from app import core_monitor, monitoring_availability, monitoring_cycle
 from app.config import settings
 from app.db import SessionLocal, init_db
 from app.models import (
     OperationsMonitorCheckpoint,
     OperationsMonitorEvent,
     OperationsMonitorSample,
+    OperationsRuntimeCheckpoint,
 )
 from app.monitoring_availability import (
     Observation,
@@ -20,7 +21,7 @@ def test_assess_states_distinguishes_reachability_and_mqtt() -> None:
     unavailable = {
         "api": "ok",
         "database": "ok",
-        "nginx": "ok",
+        "hub_api_via_nginx": "ok",
         "web": "ok",
         "mqtt": "offline",
         "opa": "ok",
@@ -30,7 +31,9 @@ def test_assess_states_distinguishes_reachability_and_mqtt() -> None:
         "unavailable",
     )
 
-    reachability_down = dict(unavailable, mqtt="ok", nginx="offline")
+    reachability_down = dict(
+        unavailable, mqtt="ok", hub_api_via_nginx="offline"
+    )
     assert core_monitor.assess_states(reachability_down) == (
         "unhealthy",
         "unavailable",
@@ -92,26 +95,138 @@ def test_core_probe_uses_independent_probe_results(monkeypatch) -> None:
         "probe_opa",
         lambda: ("ok", None),
     )
-    monkeypatch.setattr(
-        core_monitor.probes,
-        "fetch_hub_monitoring_events",
-        lambda: ([], None),
-    )
-
     probe = core_monitor._probe_components()
     states = probe["components"]
     assert states["api"] == "offline"
-    assert states["nginx"] == "ok"
+    assert states["hub_api_via_nginx"] == "ok"
     assert states["nginx_local"] == "ok"
     assert states["web"] == "ok"
     assert states["mqtt"] == "ok"
+
+
+def test_hub_restart_keeps_nginx_local_state_and_availability(monkeypatch) -> None:
+    init_db()
+    start = datetime.now(UTC) - timedelta(seconds=60)
+    recovered = start + timedelta(seconds=60)
+    check_times = [start, recovered]
+    current_time = recovered
+    results = {
+        "api": ("ok", None),
+        "database": ("ok", None),
+        "nginx_end_to_end": ("ok", None),
+        "nginx_local": ("ok", None),
+        "web": ("ok", None),
+        "mqtt": ("ok", None),
+        "opa": ("ok", None),
+    }
+
+    def next_check_time() -> datetime:
+        return check_times.pop(0) if check_times else current_time
+
+    monkeypatch.setattr(core_monitor, "_utcnow", next_check_time)
+    monkeypatch.setattr(core_monitor, "_last_check_at", None)
+    monkeypatch.setattr(core_monitor.settings, "gap_threshold_s", 120)
+    monkeypatch.setattr(core_monitor.settings, "core_monitor_interval_s", 60)
+    monkeypatch.setattr(api_module, "_database_healthy", lambda _db: (True, None))
+    monkeypatch.setattr(api_module, "_self_worker_healthy", lambda: (True, []))
+
+    probes = {
+        "probe_api": "api",
+        "probe_database": "database",
+        "probe_nginx": "nginx_end_to_end",
+        "probe_nginx_local": "nginx_local",
+        "probe_web": "web",
+        "probe_mqtt_broker": "mqtt",
+        "probe_opa": "opa",
+    }
+    for probe_name, result_name in probes.items():
+        monkeypatch.setattr(
+            core_monitor.probes,
+            probe_name,
+            lambda name=result_name: results[name],
+        )
+    monkeypatch.setattr(core_monitor.probes, "inspect_monitored_runtimes", dict)
+
+    with SessionLocal() as db:
+        db.query(OperationsMonitorEvent).delete()
+        db.query(OperationsMonitorSample).delete()
+        db.query(OperationsMonitorCheckpoint).delete()
+        db.query(OperationsRuntimeCheckpoint).delete()
+        db.commit()
+
+        core_monitor.run_check(db)
+        results.update(
+            {
+                "api": ("offline", "Temporary DNS resolution failure"),
+                "database": ("unknown", "Hub diagnostic is unavailable"),
+                "nginx_end_to_end": ("offline", "HTTP 502"),
+            }
+        )
+        core_monitor.run_check(db)
+
+        latest = core_monitor._store().latest_sample(db)
+        assert latest is not None
+        states = json.loads(latest.components_json)["states"]
+        assert states["api"] == "offline"
+        assert states["database"] == "unknown"
+        assert states["hub_api_via_nginx"] == "offline"
+        assert states["nginx_local"] == "ok"
+        assert "nginx" not in states
+        assert latest.overall_availability == "unavailable"
+
+        events = core_monitor._store().recent_events(db, 100)
+        assert any(
+            event.component == "hub_api_via_nginx"
+            and event.new_state == "offline"
+            and event.reason == "HTTP 502"
+            for event in events
+        )
+        assert not any(
+            event.component == "nginx" and event.new_state == "offline"
+            for event in events
+        )
+        assert not any(
+            event.component == "nginx_local" and event.new_state == "offline"
+            for event in events
+        )
+
+        services = {
+            service["id"]: service for service in api_module._service_inventory(db)
+        }
+        assert services["nginx"]["state"] == "ok"
+        assert services["hub-api"]["state"] == "offline"
+        assert services["hub-api"]["api_via_nginx_state"] == "offline"
+        assert services["hub-api"]["database"]["state"] == "unknown"
+
+        history = core_monitor._store().history(db, recovered, settings.retention_days)
+        payloads = {
+            sample.sample_id: monitoring_cycle.sample_payload(
+                sample, core_monitor.COMPONENT_IDS
+            )
+            for sample in history
+        }
+        nginx_points = monitoring_cycle.observations(
+            history,
+            payloads,
+            component_id="nginx_local",
+        )
+        nginx_window = monitoring_availability.component_window(
+            nginx_points,
+            component_id="nginx_local",
+            window_start=start,
+            window_end=recovered,
+            interval_s=60,
+        )
+        assert nginx_window["available_seconds"] == 60
+        assert nginx_window["unavailable_seconds"] == 0
+        assert nginx_window["unobserved_seconds"] == 0
 
 
 def test_local_nginx_state_does_not_change_core_availability() -> None:
     states = {
         "api": "ok",
         "database": "ok",
-        "nginx": "ok",
+        "hub_api_via_nginx": "ok",
         "nginx_local": "offline",
         "web": "ok",
         "mqtt": "ok",
@@ -120,44 +235,54 @@ def test_local_nginx_state_does_not_change_core_availability() -> None:
     assert core_monitor.assess_states(states) == ("healthy", "available")
 
 
-def test_hub_restart_events_are_mirrored_once_with_original_identity(monkeypatch) -> None:
+def test_runtime_restart_events_use_persisted_signatures() -> None:
     init_db()
-    event_id = str(uuid4())
-    occurred_at = "2026-12-01T10:00:00+00:00"
-    observed_at = "2026-12-01T10:00:05+00:00"
-    monkeypatch.setattr(
-        core_monitor.probes,
-        "fetch_hub_monitoring_events",
-        lambda: (
-            [
-                {
-                    "event_id": event_id,
-                    "occurred_at": occurred_at,
-                    "observed_at": observed_at,
-                    "component": "hub-api",
-                    "event_type": "service_restart_detected",
-                    "previous_state": "running",
-                    "new_state": "restart_detected",
-                    "reason": "container restart count changed",
-                    "source": "hub_monitor",
-                    "certainty": "inferred",
-                }
-            ],
-            None,
-        ),
-    )
+    initial = {
+        "hub-api": {
+            "container_id": "abc123abc123",
+            "started_at": "2026-12-01T10:00:00Z",
+            "restart_count": 1,
+        }
+    }
+    restarted = {
+        "hub-api": {
+            "container_id": "abc123abc123",
+            "started_at": "2026-12-01T10:01:00Z",
+            "restart_count": 2,
+        }
+    }
     with SessionLocal() as db:
-        assert core_monitor.sync_restart_events(db) == 1
+        db.query(OperationsMonitorEvent).delete()
+        db.query(OperationsRuntimeCheckpoint).delete()
+        core_monitor._detect_runtime_restarts(
+            db, initial, datetime(2026, 12, 1, 10, 0, tzinfo=UTC)
+        )
         db.commit()
-        assert core_monitor.sync_restart_events(db) == 0
-        event = db.get(OperationsMonitorEvent, event_id)
+    with SessionLocal() as db:
+        core_monitor._detect_runtime_restarts(
+            db, restarted, datetime(2026, 12, 1, 10, 1, tzinfo=UTC)
+        )
+        db.commit()
+        events = db.query(OperationsMonitorEvent).all()
+        assert len(events) == 1
+        event = events[0]
         assert event is not None
-        assert event.occurred_at.replace(tzinfo=UTC).isoformat() == occurred_at
+        assert event.occurred_at.replace(tzinfo=UTC).isoformat() == (
+            "2026-12-01T10:01:00+00:00"
+        )
+        assert event.component == "api"
         assert event.new_state == "restart_detected"
-        assert event.source == "hub_monitor"
+        assert event.reason == (
+            "started_at changed to 2026-12-01T10:01:00Z; restart_count 1 -> 2"
+        )
+        assert event.source == "operations_monitor"
         assert event.certainty == "inferred"
-        db.delete(event)
+    with SessionLocal() as db:
+        core_monitor._detect_runtime_restarts(
+            db, restarted, datetime(2026, 12, 1, 10, 2, tzinfo=UTC)
+        )
         db.commit()
+        assert db.query(OperationsMonitorEvent).count() == 1
 
 
 def test_public_check_persists_sample_and_restart_state(monkeypatch) -> None:
@@ -289,11 +414,7 @@ def test_core_check_persists_sample_event_and_checkpoint(monkeypatch) -> None:
         "probe_opa",
         lambda: ("ok", None),
     )
-    monkeypatch.setattr(
-        core_monitor.probes,
-        "fetch_hub_monitoring_events",
-        lambda: ([], None),
-    )
+    monkeypatch.setattr(core_monitor.probes, "inspect_monitored_runtimes", dict)
     init_db()
     with SessionLocal() as db:
         db.query(OperationsMonitorEvent).delete()

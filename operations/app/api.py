@@ -200,7 +200,9 @@ def _service_inventory(db: Session) -> list[dict]:
                 "name": "Hub database",
                 "state": hub_database_state,
             },
-            "api_via_nginx_state": states.get("nginx", {}).get("state", "unknown"),
+            "api_via_nginx_state": states.get("hub_api_via_nginx", {}).get(
+                "state", "unknown"
+            ),
         },
         {"id": "nginx", "name": "Nginx", "kind": "service"},
         {"id": "web", "name": "Web", "kind": "service"},
@@ -288,7 +290,7 @@ def service_details(service: str) -> dict:
             "database": database,
             "database_source": "Operations",
             "runtime": runtime,
-            "runtime_source": "hub-bootstrap Docker runtime interface",
+            "runtime_source": "Operations Docker runtime",
         }
         if runtime_error:
             result["runtime_error"] = runtime_error
@@ -402,7 +404,7 @@ def service_details(service: str) -> dict:
     if service in {"hub-api", "database", "nginx", "web", "mqtt", "opa"}:
         runtime, runtime_error = probes.probe_runtime(service)
         result["runtime"] = runtime
-        result["runtime_source"] = "hub-bootstrap Docker runtime interface"
+        result["runtime_source"] = "Operations Docker runtime"
         if runtime_error:
             result["runtime_error"] = runtime_error
     return result
@@ -464,7 +466,7 @@ def service_logs(service: str) -> dict:
             status_code=503,
             detail=error or "Service logs are unavailable",
         )
-    return {**result, "source": "hub-bootstrap Docker runtime interface"}
+    return {**result, "source": "Operations Docker runtime"}
 
 
 @router.get(

@@ -80,6 +80,16 @@ class OperationsMonitorCheckpoint(Base):
     last_check_at: Mapped[str] = mapped_column(String(40))
 
 
+class OperationsRuntimeCheckpoint(Base):
+    __tablename__ = "operations_runtime_checkpoints"
+
+    hub_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    service: Mapped[str] = mapped_column(String(32), primary_key=True)
+    container_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    started_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    restart_count: Mapped[int | None] = mapped_column(nullable=True)
+
+
 class PublicMonitorSample(Base):
     __tablename__ = "operations_public_monitor_samples"
     __table_args__ = (

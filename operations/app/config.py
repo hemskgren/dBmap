@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:////data/operations.db"
     admin_token: str = ""
     viewer_token: str = ""
+    docker_socket: str = "/var/run/docker.sock"
+    compose_project: str = ""
 
     hub_id: str = Field(
         default="local-01",

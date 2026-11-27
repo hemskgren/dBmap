@@ -34,7 +34,8 @@ The implementation is in [operations/app/](../operations/app/).
 
 - `core_monitor.py` runs the independent Core Hub polling worker.
 - `public_monitor.py` runs the Public API and Public MQTT workers.
-- `probes.py` implements direct HTTPS and MQTT probe clients.
+- `probes.py` implements direct HTTPS, MQTT, and runtime probes.
+- `container_runtime.py` owns bounded Docker runtime inspection and log tails.
 - `monitoring_cycle.py`, `monitoring_availability.py`, and
   `monitoring_math.py` reuse the tested Hub monitoring algorithms.
 - `models.py` owns the Operations database schema.
@@ -42,20 +43,22 @@ The implementation is in [operations/app/](../operations/app/).
 - `policy.py` provides the existing OPA authorization pattern.
 - `db.py` separates database setup and sessions from domain logic.
 
-Operations has no Docker socket mount. It obtains supplementary Hub service
-diagnostics and allowlisted container runtime/log data through narrow,
-authenticated Hub-bootstrap APIs. Direct network probes remain independent:
-they continue when the runtime bridge or Hub API is unavailable. Operations
-does not receive full Docker inspection data, arbitrary Docker API access,
-container environment variables, or internal filesystem paths.
+Operations mounts the Docker socket and directly owns allowlisted container
+runtime inspection, restart detection, and bounded log tails. It filters by
+Compose service and project, returns selected runtime metadata rather than full
+inspect results, and caps Docker responses at 1,000,000 bytes. Runtime
+checkpoints and inferred restart events are persisted in the Operations
+database. Operations still uses authenticated Hub-bootstrap APIs for
+Hub-owned database and service diagnostics; direct HTTPS probes remain
+independent of those APIs.
 
-The Hub-bootstrap runtime bridge is a temporary lift-and-shift dependency.
-Hub-bootstrap retains the existing Docker socket mount and allowlisted
-Compose-project filtering. A read-only Docker socket mount would not constrain
-Docker API operations; the current socket access is therefore a significant
-security limitation and is not the final least-privilege production design.
-Operations introduces no Docker Socket Proxy or additional privileged
-infrastructure.
+The Docker socket grants broad control over the host Docker engine. A
+read-only bind mount does not make Docker API operations read-only. This direct
+socket model is accepted for current development and standalone deployment,
+but remains a significant security limitation; no socket proxy or additional
+runtime infrastructure is introduced. Hub-bootstrap retains its own socket
+mount for the legacy Hub Monitor and Hub component Logs controls until the
+later infrastructure cutover.
 
 The implementation does not use an external database or native extensions.
 
@@ -90,10 +93,12 @@ owned by `hub-bootstrap` and `bootstrap.db`.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
-| `DBMAP_ADMIN_TOKEN` | Required | Service-to-service authentication to Hub-bootstrap |
+| `DBMAP_ADMIN_TOKEN` | Required | Service-to-service authentication for Hub-owned diagnostics |
 | `DBMAP_HUB_ID` | `local-01` | Logical Hub identity |
-| `DBMAP_HUB_API_HOST` | `hub-bootstrap` | Hub-owned diagnostics/runtime bridge host |
+| `DBMAP_HUB_API_HOST` | `hub-bootstrap` | Hub-owned diagnostics host |
 | `DBMAP_HUB_API_PORT` | `8443` | Hub-bootstrap HTTPS port |
+| `DBMAP_DOCKER_SOCKET` | `/var/run/docker.sock` | Docker Engine Unix socket path |
+| `DBMAP_COMPOSE_PROJECT` | Auto-detected | Compose project filter for runtime access |
 | `DBMAP_PUBLIC_BASE_PATH` | Empty | Public URL prefix used for Nginx health probes |
 | `DBMAP_CORE_MONITOR_ENABLED` | `true` | Enable the Core worker |
 | `DBMAP_CORE_MONITOR_INTERVAL_S` | `60` | Core polling interval |
@@ -126,17 +131,11 @@ Authenticated routes are:
 - `GET /api/v1/operations/services/{service}/logs`
 - `GET /api/v1/operations/events`
 
-Hub-bootstrap exposes the following narrow internal interfaces for Operations:
-
-- `GET /api/v1/internal/operations/services/{service}/runtime`
-- `GET /api/v1/internal/operations/services/{service}/logs`
-
-They allow only `operations`, `hub-api`, `nginx`, `web`, `mqtt`, and `opa`.
-Runtime responses contain a sanitized container identity, running/health
-state, start time, and restart count. The log interface is read-only and
-bounded; it does not expose Docker API operations or full inspection data.
-The existing Hub Details and database diagnostic interfaces remain owned by
-Hub-bootstrap.
+Runtime inspection and log retrieval run directly in Operations and allow only
+`operations`, `hub-api`, `nginx`, `web`, `mqtt`, and `opa`. Runtime responses
+contain a sanitized container identity, running/health state, start time, and
+restart count. Logs are an on-demand tail of at most 30 lines. Hub-owned
+Details and database diagnostic interfaces remain owned by Hub-bootstrap.
 
 `/status` separates Operations process health from Hub monitoring health and
 availability. `/services` returns the logical Monitored Services inventory.
@@ -203,7 +202,7 @@ Example service details result:
     "reason": "HTTP 503",
     "source": "Operations end-to-end probe through Nginx"
   },
-  "runtime_source": "hub-bootstrap Docker runtime interface"
+  "runtime_source": "Operations Docker runtime"
 }
 ```
 
@@ -216,26 +215,26 @@ database diagnostics appear within Operations details.
 
 `GET /api/v1/operations/services/{service}/logs` retrieves an on-demand tail
 for those same allowlisted services. It returns at most 30 lines, is not
-historical log pagination, and explicitly identifies the
-`hub-bootstrap Docker runtime interface` as its source. For example:
+historical log pagination, and identifies `Operations Docker runtime` as its
+source. For example:
 
 ```json
-{"service":"Operations","lines":["Operations service started"],"line_limit":30,"source":"hub-bootstrap Docker runtime interface"}
+{"service":"Operations","lines":["Operations service started"],"line_limit":30,"source":"Operations Docker runtime"}
 ```
 
-The shared Docker log reader caps the response body at 1,000,000 bytes. It
-selects only the newest container belonging to the configured Compose project
-and allowlisted Compose service. Hub MQTT failed-connection parsing remains
-Hub-owned and is not migrated by Operations.
+The Docker reader caps response bodies at 1,000,000 bytes. It selects only the
+newest container belonging to the configured Compose project and allowlisted
+Compose service. Hub MQTT failed-connection parsing remains Hub-owned and is
+not migrated by Operations.
 
 | Monitored service | Direct Details signal | Supplementary diagnostic source | Logs |
 | --- | --- | --- | --- |
-| Operations | Own worker and SQLite status | Hub-bootstrap runtime bridge | Allowlisted 30-line tail |
-| Hub API | Direct HTTPS health | Hub-bootstrap API and database diagnostics; runtime bridge | Allowlisted 30-line tail |
-| Nginx | Nginx-local HTTPS health and separate Hub API-through-Nginx result | Hub-bootstrap Nginx details and runtime bridge | Allowlisted 30-line tail |
-| Web | Direct HTTPS health | Hub-bootstrap Web details and runtime bridge | Allowlisted 30-line tail |
-| MQTT broker | Direct MQTT TLS connection | Hub-bootstrap broker metrics and runtime bridge | Allowlisted 30-line tail |
-| OPA | Direct OPA health | Hub-bootstrap policy health summary and runtime bridge | Allowlisted 30-line tail |
+| Operations | Own worker and SQLite status | Operations Docker runtime | Allowlisted 30-line tail |
+| Hub API | Direct HTTPS health | Hub-bootstrap API and database diagnostics; Operations Docker runtime | Allowlisted 30-line tail |
+| Nginx | Nginx-local HTTPS health and separate Hub API-through-Nginx result | Hub-bootstrap Nginx details; Operations Docker runtime | Allowlisted 30-line tail |
+| Web | Direct HTTPS health | Hub-bootstrap Web details; Operations Docker runtime | Allowlisted 30-line tail |
+| MQTT broker | Direct MQTT TLS connection | Hub-bootstrap broker metrics; Operations Docker runtime | Allowlisted 30-line tail |
+| OPA | Direct OPA health | Hub-bootstrap policy health summary; Operations Docker runtime | Allowlisted 30-line tail |
 | Hub database (under Hub API) | Hub-owned SQLite diagnostic | Hub-bootstrap | Not supported |
 | Operations database (under Operations) | Operations-owned SQLite diagnostic | Operations | Not supported |
 
@@ -269,17 +268,23 @@ Public API and Public MQTT samples have independent workers and checkpoints.
 Core and public MQTT clients use separate unique clean-session client identities.
 
 The existing Core Hub aggregate retains its previous reachability semantics:
-the `nginx` sample is the end-to-end Hub `/health` request through Nginx.
-`nginx_local` is sampled separately and shown in component details, but does
-not alter that aggregate. Nginx serves `GET /api/v1/nginx/health` directly with
-a JSON `200`; the existing `/health` endpoint still proxies to Hub-bootstrap.
+`hub_api_via_nginx` is the end-to-end Hub `/health` request through Nginx and
+continues to affect overall Hub availability. `nginx_local` records Nginx's
+independent local health and drives the Nginx service state and its
+component-availability calculation. Nginx serves
+`GET /api/v1/nginx/health` directly with a JSON `200`; the existing `/health`
+endpoint still proxies to Hub-bootstrap. The Docker healthcheck uses the local
+endpoint so a Hub API restart does not mark the Nginx container unhealthy.
+Existing monitoring rows are not rewritten; new end-to-end samples and events
+use the explicit `hub_api_via_nginx` component identity.
 
-Restart detection remains owned by Hub Monitor. Operations periodically reads
-the latest 50 Hub monitoring events and mirrors `service_restart_detected`
-events, preserving event identity, timestamps, state, source, and inferred
-certainty. Duplicate event IDs are ignored. A detected restart does not prove
-downtime. If more than 50 restart events occur between successful syncs,
-older events may not be mirrored.
+Operations inspects the allowlisted Compose containers during each Core
+monitoring cycle. It persists each service's last-seen start time and restart
+count in `operations_runtime_checkpoints`; a changed runtime signature creates
+an inferred `service_restart_detected` event in the Operations database.
+Initial signatures establish a baseline and do not create events. A detected
+restart does not prove downtime. This path does not read or import Hub Monitor
+events.
 
 ## Database and persistence
 
@@ -288,6 +293,7 @@ Operations owns its independent:
 - `operations_monitor_samples`
 - `operations_monitor_events`
 - `operations_monitor_checkpoints`
+- `operations_runtime_checkpoints`
 - `operations_public_monitor_samples`
 - `operations_public_monitor_events`
 - `operations_public_monitor_checkpoints`
@@ -345,12 +351,12 @@ and events require:
 - `operations.events.read`
 
 Log retrieval requires `operations.logs.read`. Runtime diagnostics require
-`operations.details.read`. When Operations requests delegated diagnostics,
-runtime metadata, restart events, or logs, it uses its configured admin bearer
-token to call the Hub-owned endpoints. Hub-bootstrap continues to enforce
-`hub.status.read` for diagnostics/runtime/event reads and `hub.logs.read` for
-container logs. These internal interfaces expose only allowlisted diagnostics
-and bounded log tails.
+`operations.details.read`. When Operations requests Hub-owned diagnostic
+details, it uses its configured admin bearer token to call the existing Hub
+APIs, which continue to enforce `hub.status.read`. Runtime metadata, restart
+detection, and container logs are read directly by Operations under the
+Operations authorization boundary; Hub's `hub.logs.read` policy remains in
+place for Hub's own Logs controls.
 
 For authorization troubleshooting, distinguish API responses: HTTP 401 means
 the bearer token was not accepted by Operations; HTTP 403 means authentication
@@ -384,20 +390,26 @@ Passwords, bearer tokens, private keys, and sensitive configuration values are
 not logged. Probe failures use short bounded reasons.
 
 Compose retains the project's Docker `json-file` rotation settings for the
-container logs used by Operations. Operations does not mount the socket;
-hub-bootstrap remains the runtime/log access owner during this side-by-side
-stage.
+container logs used by Operations. Operations and hub-bootstrap both retain
+Docker socket access during this side-by-side stage: Operations owns the new
+runtime diagnostics, while hub-bootstrap still needs the socket for legacy Hub
+Monitor restart diagnostics and Hub component Logs controls, including the
+optional Firmware Builder container tail.
 
 ## Known limitations
 
-- Hub database details, delegated service diagnostics, runtime metadata,
-  restart-event mirroring, and logs depend on authenticated Hub-bootstrap APIs.
-  If Hub-bootstrap is unavailable, those details are unavailable; direct
-  Operations probes continue.
-- Hub-bootstrap retains Docker socket access, which is not suitable as a final
-  least-privilege production architecture.
-- Restart event mirroring reads a bounded latest-50 event list and can miss
-  older events if the feed advances by more than 50 events between syncs.
+- Hub database details and supplementary service diagnostics depend on
+  authenticated Hub-bootstrap APIs. If Hub-bootstrap is unavailable, those
+  details are unavailable; direct Operations probes and Docker runtime reads
+  continue.
+- Operations and hub-bootstrap have direct Docker socket access, which is not
+  suitable as a final least-privilege production architecture.
+- Hub-bootstrap still requires its socket for legacy infrastructure monitoring
+  and Hub component Logs; its removal is deferred until those consumers are
+  retired or migrated. The Firmware tab's build status and job logs use the
+  Firmware Builder API and dedicated build logs, not Docker runtime logs. The
+  separate Hub component Logs control can still tail the Firmware Builder
+  container.
 - Public API/Public MQTT monitoring is optional and disabled by default.
 - Public and Core workers have independent schedules and need comparison rather
   than exact timestamp equality.

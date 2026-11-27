@@ -5,7 +5,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 from typing import Any
-from uuid import UUID
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
@@ -16,6 +16,7 @@ from app.models import (
     OperationsMonitorCheckpoint,
     OperationsMonitorEvent,
     OperationsMonitorSample,
+    OperationsRuntimeCheckpoint,
 )
 from app.monitoring_availability import (
     COMPONENT_UNAVAILABLE_STATES,
@@ -27,15 +28,28 @@ from app.monitoring_math import ensure_aware
 
 log = logging.getLogger("operations.core-monitor")
 
-COMPONENT_IDS = ("api", "database", "nginx", "nginx_local", "web", "mqtt", "opa")
-COMPONENT_WINDOW_IDS = ("api", "nginx", "nginx_local", "mqtt", "web")
-REACHABILITY_COMPONENTS = ("api", "database", "nginx", "web")
+COMPONENT_IDS = (
+    "api",
+    "database",
+    "hub_api_via_nginx",
+    "nginx_local",
+    "web",
+    "mqtt",
+    "opa",
+)
+COMPONENT_WINDOW_IDS = (
+    "api",
+    "hub_api_via_nginx",
+    "nginx_local",
+    "mqtt",
+    "web",
+)
+REACHABILITY_COMPONENTS = ("api", "database", "hub_api_via_nginx", "web")
 
 _thread: threading.Thread | None = None
 _stop = threading.Event()
 _cycle_lock = threading.Lock()
 _last_check_at: datetime | None = None
-_last_runtime_signatures: dict[str, tuple[Any, ...]] = {}
 _last_successful_cycle_at: datetime | None = None
 _cycles_since_cleanup = 0
 
@@ -122,11 +136,11 @@ def _probe_components() -> dict[str, Any]:
         reasons["database"] = database_reason
 
     nginx_state, nginx_reason = probes.probe_nginx()
-    states["nginx"] = nginx_state
+    states["hub_api_via_nginx"] = nginx_state
     if nginx_state == "ok":
-        last_success["nginx"] = observed_at.isoformat()
+        last_success["hub_api_via_nginx"] = observed_at.isoformat()
     elif nginx_reason:
-        reasons["nginx"] = nginx_reason
+        reasons["hub_api_via_nginx"] = nginx_reason
 
     nginx_local_state, nginx_local_reason = probes.probe_nginx_local()
     states["nginx_local"] = nginx_local_state
@@ -234,8 +248,11 @@ def run_check(db: Session, *, include_summary: bool = False) -> dict[str, Any] |
     )
     _last_check_at = observed_at
     _last_successful_cycle_at = observed_at
-    db.commit()
-    sync_restart_events(db)
+    _detect_runtime_restarts(
+        db,
+        probes.inspect_monitored_runtimes(),
+        observed_at,
+    )
     db.commit()
     if include_summary:
         return build_status(db)
@@ -250,70 +267,72 @@ def cleanup_history(db: Session, now: datetime | None = None) -> dict:
     )
 
 
-def sync_restart_events(db: Session) -> int:
-    events, error = probes.fetch_hub_monitoring_events()
-    if error:
-        log.warning("Hub restart event sync unavailable: %s", error)
-        return 0
-
-    synced = 0
-    for event in events:
-        if event.get("event_type") != "service_restart_detected":
+def _detect_runtime_restarts(
+    db: Session,
+    runtimes: dict[str, dict],
+    observed_at: datetime,
+) -> None:
+    component_names = {"hub-api": "api", "mqtt": "mqtt"}
+    for service, info in runtimes.items():
+        if not isinstance(info, dict) or info.get("error"):
             continue
-        try:
-            event_id = str(UUID(str(event["event_id"])))
-            occurred_at = datetime.fromisoformat(event["occurred_at"])
-            observed_at = datetime.fromisoformat(event["observed_at"])
-            if (
-                occurred_at.tzinfo is None
-                or occurred_at.utcoffset() is None
-                or observed_at.tzinfo is None
-                or observed_at.utcoffset() is None
-            ):
-                raise ValueError("timestamps must include timezone")
-            component = event["component"]
-            event_type = event["event_type"]
-            previous_state = event.get("previous_state")
-            new_state = event.get("new_state")
-            reason = event.get("reason")
-            source = event.get("source")
-            certainty = event.get("certainty")
-            if (
-                not isinstance(component, str)
-                or len(component) > 32
-                or not isinstance(event_type, str)
-                or len(event_type) > 64
-                or (previous_state is not None and len(previous_state) > 32)
-                or (new_state is not None and len(new_state) > 32)
-                or (reason is not None and len(reason) > 256)
-                or not isinstance(source, str)
-                or len(source) > 32
-                or certainty not in {"confirmed", "inferred"}
-            ):
-                raise ValueError("event fields are invalid")
-        except (KeyError, TypeError, ValueError):
-            log.warning("Skipped invalid Hub restart event during synchronization")
+        started_at = info.get("started_at")
+        restart_count = info.get("restart_count")
+        if not isinstance(started_at, str):
+            started_at = None
+        if not isinstance(restart_count, int):
+            restart_count = None
+        if started_at is None and restart_count is None:
             continue
 
-        if db.get(OperationsMonitorEvent, event_id) is not None:
-            continue
-        db.add(
-            OperationsMonitorEvent(
-                event_id=event_id,
-                hub_id=settings.hub_id,
-                occurred_at=occurred_at.astimezone(UTC),
-                observed_at=observed_at.astimezone(UTC),
-                component=component,
-                event_type=event_type,
-                previous_state=previous_state,
-                new_state=new_state,
-                reason=reason,
-                source=source,
-                certainty=certainty,
-            )
+        checkpoint = db.get(
+            OperationsRuntimeCheckpoint,
+            {"hub_id": settings.hub_id, "service": service},
         )
-        synced += 1
-    return synced
+        if checkpoint is None:
+            db.add(
+                OperationsRuntimeCheckpoint(
+                    hub_id=settings.hub_id,
+                    service=service,
+                    container_id=info.get("container_id"),
+                    started_at=started_at,
+                    restart_count=restart_count,
+                )
+            )
+            continue
+
+        previous_started_at = checkpoint.started_at
+        previous_restart_count = checkpoint.restart_count
+        if (
+            previous_started_at != started_at
+            or previous_restart_count != restart_count
+        ):
+            reason_parts = []
+            if previous_started_at != started_at and started_at:
+                reason_parts.append(f"started_at changed to {started_at}")
+            if previous_restart_count != restart_count and restart_count is not None:
+                reason_parts.append(
+                    f"restart_count {previous_restart_count} -> {restart_count}"
+                )
+            db.add(
+                OperationsMonitorEvent(
+                    event_id=str(uuid4()),
+                    hub_id=settings.hub_id,
+                    occurred_at=observed_at,
+                    observed_at=observed_at,
+                    component=component_names.get(service, service),
+                    event_type="service_restart_detected",
+                    previous_state="running",
+                    new_state="restart_detected",
+                    reason="; ".join(reason_parts)
+                    or "container runtime signature changed",
+                    source="operations_monitor",
+                    certainty="inferred",
+                )
+            )
+        checkpoint.container_id = info.get("container_id")
+        checkpoint.started_at = started_at
+        checkpoint.restart_count = restart_count
 
 
 def build_status(db: Session) -> dict[str, Any]:
@@ -388,7 +407,7 @@ def build_status(db: Session) -> dict[str, Any]:
             "name": {
                 "api": "Hub API",
                 "database": "Database",
-                "nginx": "Hub API via Nginx",
+                "hub_api_via_nginx": "Hub API via Nginx",
                 "nginx_local": "Nginx",
                 "web": "Web",
                 "mqtt": "MQTT broker",

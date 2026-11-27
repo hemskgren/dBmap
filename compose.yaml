@@ -106,7 +106,7 @@ services:
       - default
       - firmware-private
     healthcheck:
-      test: ["CMD-SHELL", "SSL_CERT_FILE=/certs/ca.crt wget -q -O /dev/null https://127.0.0.1:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/health >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "SSL_CERT_FILE=/certs/ca.crt wget -q -O /dev/null https://127.0.0.1:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/api/v1/nginx/health >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -212,6 +212,8 @@ services:
       DBMAP_OPA_CA_FILE: /certs/ca.crt
       DBMAP_HUB_ID: ${DBMAP_HUB_ID:-${DBMAP_SITE_ID:-local-01}}
       DBMAP_DATABASE_URL: sqlite:////data/operations.db
+      DBMAP_DOCKER_SOCKET: ${DBMAP_DOCKER_SOCKET:-/var/run/docker.sock}
+      DBMAP_COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-}
       DBMAP_HUB_API_HOST: hub-bootstrap
       DBMAP_HUB_API_PORT: "8443"
       DBMAP_PUBLIC_BASE_PATH: ${DBMAP_PUBLIC_BASE_PATH:-}
@@ -242,6 +244,7 @@ services:
     volumes:
       - operations-data:/data
       - ./shared/operations/certs:/certs:ro
+      - ${DBMAP_DOCKER_SOCKET:-/var/run/docker.sock}:${DBMAP_DOCKER_SOCKET:-/var/run/docker.sock}
     networks:
       - default
       - opa-private

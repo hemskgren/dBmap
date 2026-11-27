@@ -1136,55 +1136,6 @@ def get_hub_component_logs(component: str) -> dict:
         raise HTTPException(status_code=503, detail=str(exc)) from None
 
 
-_OPERATIONS_RUNTIME_TARGETS = {
-    "operations": "operations",
-    "hub-api": "hub-api",
-    "nginx": "nginx",
-    "web": "web",
-    "mqtt": "mosquitto",
-    "opa": "opa",
-}
-
-
-@router.get(
-    "/api/v1/internal/operations/services/{service}/runtime",
-    dependencies=[Depends(require_policy("hub.status.read", "hub"))],
-)
-def get_operations_service_runtime(service: str) -> dict:
-    component = _OPERATIONS_RUNTIME_TARGETS.get(service)
-    if component is None:
-        raise HTTPException(status_code=404, detail="unknown Operations service")
-    try:
-        return container_logs.inspect_runtime(component)
-    except container_logs.UnknownComponent:
-        raise HTTPException(status_code=404, detail="unknown Operations service") from None
-    except container_logs.ContainerNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
-    except container_logs.ContainerLogsUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from None
-
-
-@router.get(
-    "/api/v1/internal/operations/services/{service}/logs",
-    dependencies=[Depends(require_policy("hub.logs.read", "hub"))],
-)
-def get_operations_service_logs(service: str) -> dict:
-    component = _OPERATIONS_RUNTIME_TARGETS.get(service)
-    if component is None:
-        raise HTTPException(status_code=404, detail="unknown Operations service")
-    try:
-        return container_logs.read_tail(
-            component,
-            line_limit=container_logs.OPERATIONS_LOG_TAIL_LINES,
-        )
-    except container_logs.UnknownComponent:
-        raise HTTPException(status_code=404, detail="unknown Operations service") from None
-    except container_logs.ContainerNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
-    except container_logs.ContainerLogsUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from None
-
-
 @router.get(
     "/api/v1/hub/components/{component}/connection-failures",
     dependencies=[Depends(require_policy("hub.logs.read", "hub"))],

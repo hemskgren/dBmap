@@ -71,7 +71,7 @@ def test_mqtt_details_include_tls_protocol_and_connack_result(monkeypatch) -> No
     assert details["connack_name"] == "Success"
 
 
-def test_operations_details_and_logs_use_direct_api_and_report_delegated_sources(
+def test_operations_details_and_logs_use_operations_owned_diagnostics(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(api_module.settings, "admin_token", "a" * 32)
@@ -139,7 +139,7 @@ def test_operations_details_and_logs_use_direct_api_and_report_delegated_sources
     assert result["hub_api_via_nginx"]["status"] == "offline"
     assert logs.status_code == 200
     assert logs.json()["line_limit"] == 30
-    assert logs.json()["source"] == "hub-bootstrap Docker runtime interface"
+    assert logs.json()["source"] == "Operations Docker runtime"
     assert unauthorized.status_code == 401
     assert unsupported_logs.status_code == 404
 
@@ -161,7 +161,7 @@ def test_operations_service_details_include_owned_database_diagnostics(monkeypat
     assert result["database_source"] == "Operations"
     assert result["database"]["engine"] == "sqlite"
     assert "file_path" not in result["database"]
-    assert result["runtime_source"] == "hub-bootstrap Docker runtime interface"
+    assert result["runtime_source"] == "Operations Docker runtime"
 
 
 def test_hub_api_details_include_hub_owned_database_diagnostics(monkeypatch) -> None:
