@@ -1,4 +1,3 @@
-import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -10,17 +9,23 @@ settings.database_url = "sqlite:///" + str(Path("/tmp/dbmap-bootstrap-test.db"))
 settings.admin_token = "test-admin"
 settings.viewer_token = "test-viewer"
 settings.mqtt_enabled = False
-settings.hub_monitor_enabled = False
 settings.device_monitor_enabled = True
 settings.hub_id = "local-test"
-settings.hub_monitor_interval_s = 60
+settings.device_monitor_gap_threshold_s = 120
 settings.device_online_window_s = 90
 settings.device_monitor_retention_days = 90
 settings.device_monitor_max_samples_per_device = 500
 settings.device_monitor_max_events_per_device = 500
 
-from app import device_monitor, hub_monitor, service
-from app.db import SessionLocal, engine, init_db
+from app import db as db_module
+from app import device_monitor, service
+from app.db import (
+    LEGACY_MONITOR_TABLES,
+    SessionLocal,
+    cleanup_legacy_monitor_tables,
+    engine,
+    init_db,
+)
 from app.main import create_app
 from app.models import (
     Base,
@@ -28,13 +33,12 @@ from app.models import (
     DeviceMonitorCheckpoint,
     DeviceMonitorEvent,
     DeviceMonitorSample,
-    HubMonitorCheckpoint,
     Node,
     ReportedState,
 )
 from app.monitoring_math import ensure_aware
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import create_engine, func, inspect, select, text
 
 
 def _utcnow() -> datetime:
@@ -44,9 +48,212 @@ def _utcnow() -> datetime:
 def _reset_db() -> None:
     Base.metadata.drop_all(bind=engine)
     init_db()
-    hub_monitor._cycles_since_cleanup = 0
     device_monitor._cycles_since_cleanup = 0
     device_monitor._last_check_at = None
+
+
+def test_new_schema_does_not_create_legacy_monitor_tables(
+    tmp_path, monkeypatch
+) -> None:
+    new_engine = create_engine(f"sqlite:///{tmp_path / 'bootstrap.db'}")
+    try:
+        monkeypatch.setattr(db_module, "engine", new_engine)
+        db_module.init_db()
+        assert cleanup_legacy_monitor_tables(force=True) == ()
+        tables = set(inspect(new_engine).get_table_names())
+        assert "device_monitor_checkpoints" in tables
+        assert not {
+            "hub_monitor_samples",
+            "hub_monitor_events",
+            "hub_monitor_checkpoints",
+            "public_monitor_samples",
+            "public_monitor_events",
+            "public_monitor_checkpoints",
+            "public_monitor_transitions",
+        } & tables
+    finally:
+        new_engine.dispose()
+
+
+def test_legacy_monitor_upgrade_drops_only_allowlisted_tables() -> None:
+    _reset_db()
+    expected_tables = {
+        "hub_monitor_samples",
+        "hub_monitor_events",
+        "hub_monitor_checkpoints",
+        "public_monitor_samples",
+        "public_monitor_events",
+        "public_monitor_checkpoints",
+        "public_monitor_transitions",
+    }
+    assert set(LEGACY_MONITOR_TABLES) == expected_tables
+    db = SessionLocal()
+    try:
+        for table in sorted(expected_tables):
+            db.execute(text(f'DROP TABLE IF EXISTS "{table}"'))
+        db.commit()
+        for table in sorted(expected_tables):
+            if table == "hub_monitor_checkpoints":
+                db.execute(
+                    text(
+                        "CREATE TABLE hub_monitor_checkpoints "
+                        "(hub_id VARCHAR(64) PRIMARY KEY, last_check_at VARCHAR(40) NOT NULL)"
+                    )
+                )
+                db.execute(
+                    text(
+                        "INSERT INTO hub_monitor_checkpoints (hub_id, last_check_at) "
+                        "VALUES (:hub_id, :last_check_at)"
+                    ),
+                    {
+                        "hub_id": settings.hub_id,
+                        "last_check_at": _utcnow().isoformat(),
+                    },
+                )
+                db.execute(
+                    text(
+                        "INSERT INTO hub_monitor_checkpoints (hub_id, last_check_at) "
+                        "VALUES ('retired-hub', 'invalid')"
+                    )
+                )
+            else:
+                db.execute(
+                    text(f'CREATE TABLE "{table}" (id INTEGER PRIMARY KEY, hub_id TEXT)')
+                )
+            index_name = f"legacy_cleanup_idx_{table}"
+            db.execute(
+                text(f'CREATE INDEX "{index_name}" ON "{table}" (hub_id)')
+            )
+        db.execute(text("DROP TABLE IF EXISTS unrelated_archive"))
+        db.execute(text("CREATE TABLE unrelated_archive (id INTEGER PRIMARY KEY)"))
+        db.execute(text("INSERT INTO unrelated_archive (id) VALUES (7)"))
+
+        observed_at = _utcnow()
+        db.execute(
+            text(
+                "INSERT INTO device_monitor_samples "
+                "(sample_id, hub_id, node_id, observed_at, overall_availability, "
+                "overall_health, source) "
+                "VALUES ('sample-kept', :hub_id, 'OUTKEEP', :observed_at, "
+                "'available', 'unknown', 'hub_observed')"
+            ),
+            {"hub_id": settings.hub_id, "observed_at": observed_at.isoformat()},
+        )
+        db.execute(
+            text(
+                "INSERT INTO device_diag_state "
+                "(node_id, hub_id, last_diag_json, has_diag_evidence, last_health, "
+                "pending_ota_json, updated_at) "
+                "VALUES ('OUTKEEP', :hub_id, '{}', 0, 'unknown', '{}', :updated_at)"
+            ),
+            {"hub_id": settings.hub_id, "updated_at": observed_at.isoformat()},
+        )
+        db.execute(
+            text(
+                "INSERT INTO observations "
+                "(observation_id, node_id, sequence_number, event_time_utc, "
+                "received_time_utc, payload_json) "
+                "VALUES ('observation-kept', 'OUTKEEP', 1, :event_time, "
+                ":received_time, '{}')"
+            ),
+            {
+                "event_time": observed_at.isoformat(),
+                "received_time": observed_at.isoformat(),
+            },
+        )
+        db.commit()
+
+        init_db()
+
+        tables = set(inspect(engine).get_table_names())
+        assert not expected_tables & tables
+        assert "unrelated_archive" in tables
+        assert {
+            "device_monitor_samples",
+            "device_monitor_events",
+            "device_monitor_checkpoints",
+            "device_diag_state",
+            "device_diag_events",
+            "observations",
+        } <= tables
+        assert db.scalar(
+            text(
+                "SELECT COUNT(*) FROM device_monitor_samples "
+                "WHERE sample_id = 'sample-kept'"
+            )
+        ) == 1
+        assert db.scalar(
+            text("SELECT COUNT(*) FROM device_diag_state WHERE node_id = 'OUTKEEP'")
+        ) == 1
+        assert db.scalar(
+            text(
+                "SELECT COUNT(*) FROM observations "
+                "WHERE observation_id = 'observation-kept'"
+            )
+        ) == 1
+        assert db.scalar(text("SELECT COUNT(*) FROM unrelated_archive WHERE id = 7")) == 1
+        assert db.scalar(
+            text(
+                "SELECT last_check_at FROM device_monitor_checkpoints "
+                "WHERE hub_id = :hub_id"
+            ),
+            {"hub_id": settings.hub_id},
+        )
+        remaining_indexes = {
+            name
+            for name in (
+                f"legacy_cleanup_idx_{table}" for table in expected_tables
+            )
+            if db.scalar(
+                text("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=:name"),
+                {"name": name},
+            )
+        }
+        assert remaining_indexes == set()
+        assert cleanup_legacy_monitor_tables(force=True) == ()
+    finally:
+        db.close()
+
+
+def test_legacy_checkpoint_cleanup_waits_for_device_checkpoint() -> None:
+    _reset_db()
+    db = SessionLocal()
+    try:
+        db.execute(text("DROP TABLE IF EXISTS hub_monitor_checkpoints"))
+        db.execute(text("DROP TABLE IF EXISTS hub_monitor_samples"))
+        db.commit()
+        db.execute(
+            text(
+                "CREATE TABLE hub_monitor_checkpoints "
+                "(hub_id VARCHAR(64) PRIMARY KEY, last_check_at VARCHAR(40) NOT NULL)"
+            )
+        )
+        db.execute(
+            text(
+                "CREATE TABLE hub_monitor_samples "
+                "(id INTEGER PRIMARY KEY, hub_id VARCHAR(64))"
+            )
+        )
+        db.commit()
+
+        init_db()
+
+        assert inspect(engine).has_table("hub_monitor_checkpoints")
+        assert not inspect(engine).has_table("hub_monitor_samples")
+
+        now = _utcnow()
+        _add_active_node(db, "OUTNEWCHECKPOINT", last_seen=now)
+        device_monitor.run_monitor_cycle(db, observed_at=now)
+
+        assert not inspect(engine).has_table("hub_monitor_checkpoints")
+        assert db.scalar(
+            select(DeviceMonitorCheckpoint.last_check_at)
+        ) == now.isoformat()
+    finally:
+        if inspect(engine).has_table("hub_monitor_checkpoints"):
+            db.execute(text("DROP TABLE IF EXISTS hub_monitor_checkpoints"))
+            db.commit()
+        db.close()
 
 
 def _add_active_node(
@@ -348,6 +555,8 @@ def test_device_checkpoint_marks_restart_gap_as_unobserved(
     _reset_db()
     db = SessionLocal()
     try:
+        db.execute(text("DROP TABLE IF EXISTS hub_monitor_checkpoints"))
+        db.commit()
         first_at = _utcnow()
         _add_active_node(db, "OUTRESTART", last_seen=first_at)
         first = device_monitor.run_monitor_cycle(db, observed_at=first_at)
@@ -413,13 +622,26 @@ def test_device_checkpoint_seeds_from_legacy_hub_checkpoint() -> None:
         _add_active_node(db, "OUTLEGACY", last_seen=first_at)
         device_monitor.sample_devices(db, observed_at=first_at)
         db.commit()
-        db.add(
-            HubMonitorCheckpoint(
-                hub_id=settings.hub_id,
-                last_check_at=first_at.isoformat(),
+        db.execute(
+            text(
+                "CREATE TABLE hub_monitor_checkpoints "
+                "(hub_id VARCHAR(64) PRIMARY KEY, last_check_at VARCHAR(40) NOT NULL)"
             )
         )
+        db.execute(
+            text(
+                "INSERT INTO hub_monitor_checkpoints (hub_id, last_check_at) "
+                "VALUES (:hub_id, :last_check_at)"
+            ),
+            {"hub_id": settings.hub_id, "last_check_at": first_at.isoformat()},
+        )
         db.commit()
+        init_db()
+        assert not inspect(engine).has_table("hub_monitor_checkpoints")
+        assert db.scalar(
+            select(DeviceMonitorCheckpoint.last_check_at)
+        ) == first_at.isoformat()
+
         resumed_at = first_at + timedelta(seconds=15)
         reported = db.get(ReportedState, "OUTLEGACY")
         assert reported is not None
@@ -437,14 +659,13 @@ def test_device_checkpoint_seeds_from_legacy_hub_checkpoint() -> None:
             .order_by(DeviceMonitorSample.observed_at)
         ).all() == ["available", "unobserved", "available"]
     finally:
+        db.execute(text("DROP TABLE IF EXISTS hub_monitor_checkpoints"))
+        db.commit()
         db.close()
 
 
-def test_device_worker_keeps_cadence_with_legacy_monitor_disabled(
-    monkeypatch,
-) -> None:
+def test_device_worker_uses_device_monitor_interval(monkeypatch) -> None:
     _reset_db()
-    monkeypatch.setattr(settings, "hub_monitor_enabled", False)
     monkeypatch.setattr(settings, "device_monitor_interval_s", 30)
     db = SessionLocal()
     start_at = _utcnow()
@@ -492,9 +713,7 @@ def test_device_worker_keeps_cadence_with_legacy_monitor_disabled(
         db.close()
 
 
-def test_device_worker_start_is_idempotent_when_hub_monitor_is_disabled(
-    monkeypatch,
-) -> None:
+def test_device_worker_start_is_idempotent(monkeypatch) -> None:
     class FakeThread:
         starts = 0
 
@@ -511,7 +730,6 @@ def test_device_worker_start_is_idempotent_when_hub_monitor_is_disabled(
             self.started = True
             self.starts += 1
 
-    monkeypatch.setattr(settings, "hub_monitor_enabled", False)
     monkeypatch.setattr(device_monitor.threading, "Thread", FakeThread)
     monkeypatch.setattr(device_monitor, "_thread", None)
 
@@ -521,34 +739,6 @@ def test_device_worker_start_is_idempotent_when_hub_monitor_is_disabled(
     assert first is second
     assert first.name == "device-monitor"
     assert first.starts == 1
-
-
-def test_hub_lifespan_starts_only_device_monitor_for_monitoring(
-    monkeypatch,
-) -> None:
-    from app import main, public_monitor
-
-    started: list[str] = []
-    monkeypatch.setattr(
-        main,
-        "start_device_monitor_thread",
-        lambda: started.append("device"),
-    )
-    monkeypatch.setattr(main, "start_weather_worker", lambda: None)
-
-    def legacy_worker_must_not_start(*_args, **_kwargs):
-        raise AssertionError("legacy infrastructure monitoring must not start")
-
-    monkeypatch.setattr(hub_monitor, "start_monitor_thread", legacy_worker_must_not_start)
-    monkeypatch.setattr(public_monitor, "start", legacy_worker_must_not_start)
-
-    async def run_lifespan() -> None:
-        async with main._lifespan(None):
-            pass
-
-    asyncio.run(run_lifespan())
-
-    assert started == ["device"]
 
 
 def test_device_cycle_commit_failure_preserves_previous_checkpoint(monkeypatch) -> None:

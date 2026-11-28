@@ -449,7 +449,7 @@ Boot order (both products):
 
 There is no platform connectivity supervisor. Wi-Fi and MQTT each keep their own timers. Nothing checks that a "connected" MQTT session is still delivering application traffic.
 
-Hub availability is not an MQTT ping. `mqtt_listener.py` calls `apply_reported` for `hello`, `keepalive`, `health`, and `status`. Observation ingest does not update `last_seen_at`. `device_monitor.sample_devices` marks `unavailable` and records `heartbeat_overdue` when `last_seen_at` is older than `DBMAP_DEVICE_ONLINE_WINDOW_S` (default 90 s). The sample clock is the Hub monitor cycle (`hub_monitor_interval_s`, default 60 s). One cycle stamps every device with the same `observed_at`.
+Hub availability is not an MQTT ping. `mqtt_listener.py` calls `apply_reported` for `hello`, `keepalive`, `health`, and `status`. Observation ingest does not update `last_seen_at`. `device_monitor.sample_devices` marks `unavailable` and records `heartbeat_overdue` when `last_seen_at` is older than `DBMAP_DEVICE_ONLINE_WINDOW_S` (default 90 s). The sample clock is the Device Monitor cycle (`device_monitor_interval_s`, default 30 s). One cycle stamps every device with the same `observed_at`.
 
 ---
 
@@ -579,7 +579,7 @@ UART disconnect detail exists (`reason`, `failures`, `armed`, `in_flight`, `neti
 
 ### F12. Hub `heartbeat_overdue` is a database row, not a container log line
 
-`_record_event` in `device_monitor.py` inserts `DeviceMonitorEvent` and does not log. `run_cycle` in `hub_monitor.py` logs exceptions, not each device transition. Absence of a matching `hub-bootstrap` log line is what this code does. It does not show that the Hub ignored the device. The UI event is the record. Broker logs are a separate file (`mosquitto_log_path`) and were not treated as evidence here.
+`_record_event` in `device_monitor.py` inserts `DeviceMonitorEvent` and does not log each transition. The legacy `hub_monitor.py` implementation has been removed. Absence of a matching `hub-bootstrap` log line does not show that the Hub ignored the device; the Device Monitor event is the record. Broker logs are a separate file (`mosquitto_log_path`) and are not evidence of whether Hub persisted that event.
 
 Identical timestamps across devices are also what this code does. `sample_devices` uses one `observed_at` for the whole cycle. Two nodes that cross the 90 s window between polls share that stamp even when their last keepalives differed.
 
@@ -850,4 +850,4 @@ Regression already in tree to keep green: `firmware/platform/node_common/test_ho
 | Ear publish gate | `firmware/products/dbmap/ear/ear_observation/ear_observation.c` (`sp_mqtt_is_connected`) |
 | Hub window and event | `hub/bootstrap/app/device_monitor.py` — `_emit_transition`, `_record_event`, `sample_devices` |
 | Hub last-seen | `hub/bootstrap/app/service.py` — `apply_reported`; `hub/bootstrap/app/mqtt_listener.py` — `_on_message` |
-| Window defaults | `hub/bootstrap/app/config.py` — `device_online_window_s`, `hub_monitor_interval_s` |
+| Window defaults | `hub/bootstrap/app/config.py` — `device_online_window_s`, `device_monitor_interval_s` |

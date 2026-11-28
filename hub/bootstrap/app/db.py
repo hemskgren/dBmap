@@ -1,10 +1,26 @@
+import logging
 from collections.abc import Generator
+from datetime import UTC, datetime
 
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
 from app.models import Base
+
+log = logging.getLogger("hub-bootstrap.db")
+
+LEGACY_MONITOR_CHECKPOINT_TABLE = "hub_monitor_checkpoints"
+LEGACY_MONITOR_TABLES = (
+    "hub_monitor_samples",
+    "hub_monitor_events",
+    LEGACY_MONITOR_CHECKPOINT_TABLE,
+    "public_monitor_samples",
+    "public_monitor_events",
+    "public_monitor_checkpoints",
+    "public_monitor_transitions",
+)
 
 connect_args = {}
 if settings.database_url.startswith("sqlite"):
@@ -12,6 +28,7 @@ if settings.database_url.startswith("sqlite"):
 
 engine = create_engine(settings.database_url, connect_args=connect_args)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+_legacy_monitor_cleanup_pending = False
 
 
 def init_db() -> None:
@@ -42,6 +59,130 @@ def init_db() -> None:
     _migrate_device_diag_pending_ota()
     _migrate_node_chip_identity()
     _migrate_observations_report_identity()
+    cleanup_legacy_monitor_tables(force=True)
+
+
+def _valid_monitor_checkpoint(value: object, now: datetime) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        checkpoint_at = datetime.fromisoformat(value)
+    except (ValueError, OverflowError):
+        return False
+    return checkpoint_at.utcoffset() is not None and checkpoint_at <= now
+
+
+def _migrate_legacy_monitor_checkpoint(
+    connection: Connection, tables: set[str], now: datetime
+) -> bool:
+    if LEGACY_MONITOR_CHECKPOINT_TABLE not in tables:
+        return True
+    if "device_monitor_checkpoints" not in tables:
+        log.warning(
+            "retaining %s: device_monitor_checkpoints table is missing",
+            LEGACY_MONITOR_CHECKPOINT_TABLE,
+        )
+        return False
+
+    device_value = connection.execute(
+        text(
+            "SELECT last_check_at FROM device_monitor_checkpoints "
+            "WHERE hub_id = :hub_id"
+        ),
+        {"hub_id": settings.hub_id},
+    ).scalar_one_or_none()
+    if _valid_monitor_checkpoint(device_value, now):
+        return True
+
+    legacy_columns = {
+        column["name"]
+        for column in inspect(connection).get_columns(LEGACY_MONITOR_CHECKPOINT_TABLE)
+    }
+    if not {"hub_id", "last_check_at"} <= legacy_columns:
+        log.warning(
+            "retaining %s: expected hub_id and last_check_at columns",
+            LEGACY_MONITOR_CHECKPOINT_TABLE,
+        )
+        return False
+
+    legacy_value = connection.execute(
+        text(
+            "SELECT last_check_at FROM hub_monitor_checkpoints "
+            "WHERE hub_id = :hub_id"
+        ),
+        {"hub_id": settings.hub_id},
+    ).scalar_one_or_none()
+    if not _valid_monitor_checkpoint(legacy_value, now):
+        log.info(
+            "retaining %s until Device Monitor commits a valid checkpoint for hub_id=%s",
+            LEGACY_MONITOR_CHECKPOINT_TABLE,
+            settings.hub_id,
+        )
+        return False
+
+    connection.execute(
+        text(
+            "INSERT INTO device_monitor_checkpoints (hub_id, last_check_at) "
+            "VALUES (:hub_id, :last_check_at) "
+            "ON CONFLICT(hub_id) DO UPDATE "
+            "SET last_check_at = excluded.last_check_at"
+        ),
+        {"hub_id": settings.hub_id, "last_check_at": legacy_value},
+    )
+    return True
+
+
+def cleanup_legacy_monitor_tables(
+    bind: Engine | None = None, *, force: bool = False
+) -> tuple[str, ...]:
+    """Drop only allowlisted retired monitoring tables after checkpoint handoff."""
+    global _legacy_monitor_cleanup_pending
+    target = bind if bind is not None else engine
+    is_runtime_engine = target is engine
+    if is_runtime_engine and not force and not _legacy_monitor_cleanup_pending:
+        return ()
+    if target.dialect.name != "sqlite":
+        raise RuntimeError("legacy monitoring cleanup supports SQLite only")
+
+    with target.connect() as connection:
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        try:
+            tables = set(inspect(connection).get_table_names())
+            existing = [name for name in LEGACY_MONITOR_TABLES if name in tables]
+            if not existing:
+                connection.commit()
+                if is_runtime_engine:
+                    _legacy_monitor_cleanup_pending = False
+                return ()
+
+            checkpoint_ready = _migrate_legacy_monitor_checkpoint(
+                connection, tables, datetime.now(UTC)
+            )
+            dropped = tuple(
+                name
+                for name in existing
+                if name != LEGACY_MONITOR_CHECKPOINT_TABLE or checkpoint_ready
+            )
+            quote = connection.dialect.identifier_preparer.quote
+            for name in dropped:
+                connection.exec_driver_sql(f"DROP TABLE {quote(name)}")
+            connection.commit()
+
+            if is_runtime_engine:
+                _legacy_monitor_cleanup_pending = (
+                    LEGACY_MONITOR_CHECKPOINT_TABLE in existing
+                    and not checkpoint_ready
+                )
+            if dropped:
+                log.info("removed legacy monitoring tables: %s", ", ".join(dropped))
+            return dropped
+        except Exception:
+            connection.rollback()
+            raise
+
+
+def legacy_monitor_cleanup_pending() -> bool:
+    return _legacy_monitor_cleanup_pending
 
 
 def _migrate_observations_report_identity() -> None:

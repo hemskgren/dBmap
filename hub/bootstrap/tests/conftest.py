@@ -16,7 +16,6 @@ def pytest_configure(config: pytest.Config) -> None:
     patch.setattr(settings, "mqtt_enabled", False)
     patch.setattr(settings, "mqtt_password", "")
     patch.setattr(settings, "mqtt_admin_password", "")
-    patch.setattr(settings, "public_mqtt_monitor_enabled", False)
 
     def reject_live_mqtt(*_args, **_kwargs):
         raise AssertionError("Hub unit tests cannot connect to an MQTT broker")
@@ -50,9 +49,8 @@ def use_test_policy(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def disable_hub_monitor_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+def disable_device_monitor_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     # Keep unit tests deterministic; monitor cycles are exercised explicitly.
-    monkeypatch.setattr(settings, "hub_monitor_enabled", False)
     from app import main
 
     monkeypatch.setattr(main, "start_device_monitor_thread", lambda: None)

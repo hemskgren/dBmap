@@ -23,8 +23,6 @@ settings.weather_cache_ttl_s = 900.0
 settings.weather_live_max_age_hours = 6.0
 settings.weather_forecast_base_url = "https://forecast.test/v1/forecast"
 settings.weather_archive_base_url = "https://archive.test/v1/archive"
-settings.hub_monitor_enabled = False
-
 from app import policy, regional_environment
 from app.db import SessionLocal, engine, init_db
 from app.main import create_app

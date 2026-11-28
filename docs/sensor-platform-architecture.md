@@ -38,9 +38,9 @@ flowchart TB
   products --> Enterprise
 ```
 
-**Implemented today (verified):** local Hub monolith (MQTT, HTTPS API, web UI, OPA), Ear/Output firmware sharing `node_common`, Observation protocol v1 ingest and persistence, admin/viewer bearer auth, optional Compose profiles (`analysis`, `firmware-build`).
+**Implemented today (verified):** local Hub service (MQTT, HTTPS API, web UI, OPA), Ear/Output firmware sharing `node_common`, Observation protocol v1 ingest and persistence, admin/viewer bearer auth, and optional Compose-profile services for Operations, Analysis, and firmware builds.
 
-**Not implemented:** N.O.S.E., MON/Modbus, Community sharing services, Enterprise tenancy, ordinary-user OIDC login, Hub-persisted Event/Track entities.
+**Not implemented:** N.O.S.E., MON/Modbus, Community sharing services, Enterprise tenancy, ordinary-user OIDC login, Hub-persisted Event/Track entities, or standalone Observation and Devices containers.
 
 ---
 
@@ -80,7 +80,19 @@ flowchart TB
 
 The platform Observation envelope must eventually admit non-acoustic products **without** requiring L0/L1/L2. Until that pluggability work lands, current Ear payloads remain acoustic as deployed.
 
-### 2.4 Responsibility matrix (target ownership)
+### 2.4 Current services and planned extraction
+
+| Capability | Current implementation | Planned boundary |
+| --- | --- | --- |
+| Devices and Observation | Device management, Observation ingest, persistence, and Device Monitor run in `hub-bootstrap` | Standalone Devices and Observation containers are not implemented |
+| Event and Track analysis | Derived findings and correlation workflows in `scripts/hub_event_track.py`; not Hub-persisted entities | Dedicated Hub Event/Track services remain future work |
+| Analysis | Optional `analysis` Compose profile provides the Analysis API and scratch persistence for map/analysis workflows | Does not own Observation ingest or durable Event/Track history |
+| Infrastructure monitoring | Optional `operations` Compose profile owns infrastructure/public monitoring and runtime diagnostics | Hub remains functional when Operations is absent |
+
+These are the current deployment boundaries; repository directories and API
+names do not imply that planned standalone services already exist.
+
+### 2.5 Responsibility matrix (target ownership)
 
 | Concern | Platform | dBmap | N.O.S.E. / MON |
 | --- | --- | --- | --- |

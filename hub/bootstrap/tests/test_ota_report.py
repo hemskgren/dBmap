@@ -7,7 +7,6 @@ settings.database_url = "sqlite:///" + str(Path("/tmp/dbmap-ota-report-test.db")
 settings.admin_token = "test-admin"
 settings.viewer_token = "test-viewer"
 settings.mqtt_enabled = False
-settings.hub_monitor_enabled = False
 settings.device_monitor_enabled = True
 settings.device_diag_enabled = True
 settings.hub_id = "local-test"
