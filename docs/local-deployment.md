@@ -33,11 +33,11 @@ Hardware in this repo today: ESP32-based Ear and Output firmware (shared `node_c
 
 | Area | Working | To do |
 | --- | --- | --- |
-| Hub stack | Compose: Mosquitto TLS, Nginx HTTPS, Hub API, web UI, OPA, SQLite | Regional Hub, planned maintenance windows |
+| Hub stack | Compose: Mosquitto TLS, Nginx HTTPS, Hub API, web UI, OPA, SQLite; optional Operations and Analysis services | Regional Hub, planned maintenance windows |
 | Security | Per-device MQTT logins, local CA, bearer admin/viewer tokens, optional host fail2ban | Device flash encryption / secure boot, mTLS, automated cert rotation |
 | Ear | Wi-Fi, provision, MQTT hello/health/keepalive, mic path / reported levels, Hub observation ingest | On-device DSP/classification product path, cross-Ear event/track engine |
 | Output | Provision, MQTT, relay on/off timed, HTTPS/file audio play/stop, Hub command API | Hub “rules” that choose Outputs by map area automatically; richer media library UX |
-| Ops UI | Devices, observations, groups, firmware catalog, map popup, health/availability | Fuller product analytics |
+| Ops UI | Devices, Observations, groups, firmware catalog, map popup, Device health/availability; optional Operations infrastructure monitoring | Hub-persisted Event/Track services and fuller product analytics |
 | Simulator | Laptop `SIM-EAR-*` observation and scenario tools | Same as tracker/eval gaps above |
 
 ## Bring-up
@@ -108,7 +108,7 @@ API gateway failures return JSON `{"detail":"Hub temporarily unavailable"}`; the
 
 Open `https://hub.local:${DBMAP_HTTPS_PORT:-8443}${DBMAP_PUBLIC_BASE_PATH:-}/` with the admin or viewer token.
 
-- **Hub** tab: Hub identity, device call-home addresses, and MQTT failed-connection diagnostics.
+- **Hub** tab: Hub identity and device call-home addresses.
 - **Operations** tab (when enabled): infrastructure monitoring, service Details, and container Logs. See [Operations](./operations.md).
 - **Devices** / **Groups** / **Observations** / firmware and USB tools: day-to-day site ops.
 - **Map**: opens from the signed-in Hub window; needs installation coordinates on devices.
@@ -158,7 +158,7 @@ Older lab boards that used plaintext MQTT need erase + reflash onto the current 
 All `scripts/hub_*.py` tools read Hub address and `DBMAP_ADMIN_TOKEN` from `.env` (optional `--hub-host`, `--hub-port`, `--base-path`, `--ca`).
 
 ```bash
-uv run python scripts/hub_summary.py list          # Hub / component snapshot
+uv run python scripts/hub_summary.py list          # Hub overview / component snapshot (not Operations history)
 uv run python scripts/hub_admin.py list            # Nodes (summary table)
 uv run python scripts/hub_admin.py list --detail   # Summary + reported state + Hub installation
 uv run python scripts/map_demo_helicopter.py upload  # Temporary Helicopter map layers (Analysis scratch; needs COMPOSE_PROFILES=analysis)
@@ -188,7 +188,7 @@ Rare local reset. **`wipe-device-data` is not simulator-only** — it removes **
 
 **Deletes:** observations, nodes, node credentials, installation metadata, desired/reported state, bootstrap tokens, registration/deployment rows, device ownership, device monitor/diag samples and events.
 
-**Keeps:** local users/tokens in `.env`, firmware catalog, TLS material, Mosquitto DynSec (re-provision devices afterward), Hub monitor history tables that are not in the wipe list.
+**Keeps:** local users/tokens in `.env`, firmware catalog, TLS material, and Mosquitto DynSec (re-provision devices afterward). The device-data wipe does not manage legacy monitoring tables; the Hub schema-upgrade migration removes its allowlisted historical tables.
 
 ```bash
 uv run python scripts/hub_observations_db.py wipe-device-data --yes
@@ -210,17 +210,26 @@ Start with Ear A:
 ## Layout and tests
 
 ```text
-hub/bootstrap          Local Hub API and Device Monitor (legacy infrastructure monitor inactive)
-analysis/              Optional Analysis API (Compose profile `analysis`)
+hub/bootstrap          Hub API, device management, Observation ingest, Device Monitor
+operations/            Optional infrastructure monitoring / diagnostics API
+analysis/              Optional Analysis API and scratch storage (profile `analysis`)
 mqtt                   Mosquitto + Dynamic Security
-web                    Hub UI (+ /map)
+nginx/                 HTTPS gateway and API routing
+web                    Hub UI (+ /map and optional Operations views)
+policy/                OPA authorization policy
 firmware/              Ear / Output + shared client
 firmware-builder/      Optional ESP-IDF builder profile
 simulator/ear          Laptop Ear simulators
-scripts/               Ops CLIs (`lib/` = shared helpers)
+scripts/               Hub, Operations, and analysis CLIs (`lib/` = shared helpers)
 docs/                  This guide and related docs
 compose.yaml           Local Hub stack
 ```
+
+Observation ingest/persistence remains in Hub-bootstrap. Event/Track analysis
+is derived by `hub_event_track.py`; it is not a standalone service or Hub-owned
+Event/Track database. Analysis and Operations are optional profiles.
+Standalone Observation and Devices containers are planned extractions, not
+implemented services.
 
 ```bash
 # Repo root: lint scripts/, simulator/, tests/, and other first-party Python

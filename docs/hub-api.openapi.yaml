@@ -48,7 +48,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -132,7 +132,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -177,7 +177,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -223,7 +223,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -281,7 +281,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -345,7 +345,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -410,7 +410,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -493,7 +493,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -550,7 +550,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -620,7 +620,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -677,7 +677,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -735,7 +735,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -771,7 +771,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -807,7 +807,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -864,7 +864,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -911,7 +911,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -952,7 +952,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1005,7 +1005,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1070,7 +1070,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1141,7 +1141,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1187,7 +1187,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1239,7 +1239,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1300,7 +1300,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1364,7 +1364,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1428,7 +1428,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1484,7 +1484,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1536,7 +1536,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1605,7 +1605,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1638,7 +1638,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1694,7 +1694,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1740,7 +1740,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1806,7 +1806,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1842,7 +1842,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1894,7 +1894,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1940,7 +1940,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -1998,7 +1998,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -2050,7 +2050,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -2097,7 +2097,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -2160,7 +2160,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -2218,7 +2218,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -2276,7 +2276,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -2335,7 +2335,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -2393,7 +2393,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -2457,7 +2457,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -2505,7 +2505,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -2630,7 +2630,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -2756,7 +2756,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -2805,7 +2805,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -2858,7 +2858,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:
@@ -2898,7 +2898,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
         "503":
-          description: "OPA, MQTT, or the Docker engine is unavailable."
+          description: "OPA, MQTT, or a required Hub dependency is unavailable."
           content:
             application/json:
               schema:

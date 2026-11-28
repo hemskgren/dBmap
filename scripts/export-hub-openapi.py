@@ -25,7 +25,6 @@ settings.database_url = "sqlite://"
 settings.admin_token = "test-admin"
 settings.viewer_token = "test-viewer"
 settings.mqtt_enabled = False
-settings.hub_monitor_enabled = False
 
 from app.main import create_app
 
@@ -412,7 +411,7 @@ ERROR_RESPONSES = {
     "409": "The request conflicts with current Hub state.",
     "413": "Firmware ZIP or metadata exceeds the upload size limit.",
     "422": "Request body or query failed validation.",
-    "503": "OPA, MQTT, or the Docker engine is unavailable.",
+    "503": "OPA, MQTT, or a required Hub dependency is unavailable.",
 }
 
 EXTRA_SCHEMAS = {
@@ -761,197 +760,6 @@ EXTRA_SCHEMAS = {
             },
         },
     },
-    "HubMonitoringComponent": {
-        "type": "object",
-        "properties": {
-            "id": {"type": "string"},
-            "name": {"type": "string"},
-            "state": {"type": "string"},
-            "last_success_at": {
-                "type": "string",
-                "format": "date-time",
-                "nullable": True,
-            },
-            "reason": {"type": "string", "nullable": True},
-            "docker": {
-                "type": "object",
-                "additionalProperties": True,
-                "nullable": True,
-            },
-        },
-    },
-    "HubAvailabilityWindow": {
-        "type": "object",
-        "properties": {
-            "percent": {"type": "number", "nullable": True},
-            "state_summary": {"type": "string"},
-            "eligible_seconds": {"type": "integer"},
-            "available_seconds": {"type": "integer"},
-            "unavailable_seconds": {"type": "integer"},
-            "unobserved_seconds": {"type": "integer"},
-            "not_running_seconds": {
-                "type": "integer",
-                "description": (
-                    "Seconds the Hub monitor was not running inside this window. "
-                    "A stopped Hub container and a powered-off computer are both "
-                    "recorded this way and are excluded from the percentage."
-                ),
-            },
-            "sample_count": {"type": "integer"},
-            "insufficient_data": {"type": "boolean"},
-            "low_coverage": {"type": "boolean"},
-            "score_ready": {
-                "type": "boolean",
-                "description": (
-                    "False for multi-day windows until at least half the window has been "
-                    "observed. UIs should not show a bare window percentage until ready."
-                ),
-            },
-            "reason": {"type": "string", "nullable": True},
-            "basis": {"type": "string"},
-        },
-    },
-    "HubMonitorEvent": {
-        "type": "object",
-        "properties": {
-            "event_id": {"type": "string"},
-            "occurred_at": {"type": "string", "format": "date-time"},
-            "observed_at": {"type": "string", "format": "date-time"},
-            "component": {"type": "string"},
-            "event_type": {"type": "string"},
-            "previous_state": {"type": "string", "nullable": True},
-            "new_state": {"type": "string", "nullable": True},
-            "reason": {"type": "string", "nullable": True},
-            "source": {"type": "string"},
-            "certainty": {"type": "string", "enum": ["confirmed", "inferred"]},
-        },
-    },
-    "HubMonitoringEvents": {
-        "type": "object",
-        "required": ["events", "limit", "count"],
-        "properties": {
-            "events": {
-                "type": "array",
-                "items": {"$ref": "#/components/schemas/HubMonitorEvent"},
-            },
-            "limit": {"type": "integer", "example": 15},
-            "count": {"type": "integer"},
-        },
-    },
-    "HubMonitoring": {
-        "type": "object",
-        "description": "Local Hub health and availability, with optional informational public checks. See docs/health-and-availability.md.",
-        "properties": {
-            "health": {
-                "type": "object",
-                "properties": {
-                    "state": {"type": "string"},
-                    "score": {"type": "integer", "nullable": True},
-                    "score_definition": {
-                        "type": "object",
-                        "additionalProperties": True,
-                    },
-                    "reason": {
-                        "type": "string",
-                        "nullable": True,
-                        "description": "Plain-language cause when health is not healthy.",
-                    },
-                    "components": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/components/schemas/HubMonitoringComponent"
-                        },
-                    },
-                    "calculated_at": {"type": "string", "format": "date-time"},
-                    "notes": {"type": "string"},
-                },
-            },
-            "availability": {
-                "type": "object",
-                "description": (
-                    "Core Hub availability plus independent MQTT/API/Web windows. "
-                    "Firmware Builder is excluded. See docs/health-and-availability.md."
-                ),
-                "properties": {
-                    "current_state": {"type": "string"},
-                    "label": {
-                        "type": "string",
-                        "example": "Core Hub availability",
-                    },
-                    "definition": {"type": "string"},
-                    "windows": {
-                        "type": "object",
-                        "additionalProperties": {
-                            "$ref": "#/components/schemas/HubAvailabilityWindow"
-                        },
-                    },
-                    "components": {
-                        "type": "object",
-                        "description": "Independent MQTT, API, and Web availability windows.",
-                        "additionalProperties": {
-                            "type": "object",
-                            "properties": {
-                                "label": {"type": "string"},
-                                "windows": {
-                                    "type": "object",
-                                    "additionalProperties": {
-                                        "$ref": "#/components/schemas/HubAvailabilityWindow"
-                                    },
-                                },
-                            },
-                        },
-                    },
-                    "insufficient_data": {"type": "boolean"},
-                    "gaps": {
-                        "type": "array",
-                        "items": {"type": "object", "additionalProperties": True},
-                    },
-                    "retention_days": {"type": "integer"},
-                    "interval_seconds": {"type": "number"},
-                    "notes": {"type": "string"},
-                },
-            },
-            "last_checks": {"type": "object", "additionalProperties": True},
-            "public_components": {
-                "type": "object",
-                "description": "Enabled public checks from the Hub's network. Keys are public_api and public_mqtt.",
-                "additionalProperties": {
-                    "type": "object",
-                    "properties": {
-                        "label": {"type": "string"},
-                        "state": {"type": "string", "enum": ["ok", "offline", "unknown"]},
-                        "reason": {"type": "string", "nullable": True},
-                        "checked_at": {"type": "string", "format": "date-time", "nullable": True},
-                        "last_success_at": {"type": "string", "format": "date-time", "nullable": True},
-                        "interval_seconds": {"type": "integer", "example": 60},
-                        "windows": {
-                            "type": "object",
-                            "additionalProperties": {"$ref": "#/components/schemas/HubAvailabilityWindow"},
-                        },
-                        "recent_events": {
-                            "type": "array",
-                            "items": {"$ref": "#/components/schemas/HubMonitorEvent"},
-                        },
-                    },
-                },
-            },
-            "last_state_change": {
-                "type": "object",
-                "additionalProperties": True,
-                "nullable": True,
-            },
-            "recent_events": {
-                "type": "array",
-                "items": {"$ref": "#/components/schemas/HubMonitorEvent"},
-                "description": "Empty on status responses; use GET /api/v1/hub/monitoring/events.",
-            },
-            "events_endpoint": {
-                "type": "string",
-                "example": "/api/v1/hub/monitoring/events",
-            },
-            "sample_count": {"type": "integer"},
-        },
-    },
     "HubStatus": {
         "type": "object",
         "required": [
@@ -1180,15 +988,6 @@ def build() -> dict:
         },
     }
     components.setdefault("schemas", {}).update(EXTRA_SCHEMAS)
-    for retired_schema in (
-        "HubMonitoringComponent",
-        "HubAvailabilityWindow",
-        "HubMonitorEvent",
-        "HubMonitoringEvents",
-        "HubMonitoring",
-    ):
-        components["schemas"].pop(retired_schema, None)
-
     for path, methods in schema["paths"].items():
         for method, operation in list(methods.items()):
             if method.startswith("x-"):

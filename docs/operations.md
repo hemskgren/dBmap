@@ -38,7 +38,7 @@ The implementation is in [operations/app/](../operations/app/).
 - `probes.py` implements direct HTTPS, MQTT, and runtime probes.
 - `container_runtime.py` owns bounded Docker runtime inspection and log tails.
 - `monitoring_cycle.py`, `monitoring_availability.py`, and
-  `monitoring_math.py` reuse the tested Hub monitoring algorithms.
+  `monitoring_math.py` implement Operations-owned monitoring calculations.
 - `models.py` owns the Operations database schema.
 - `api.py` implements authenticated API routes.
 - `policy.py` provides the existing OPA authorization pattern.
@@ -88,10 +88,11 @@ Viewer access is allowed for `operations.status.read`,
 The deployed policy must include the same rules as
 [`policy/authz.rego`](../policy/authz.rego).
 
-Operations uses a dedicated `operations-data` volume. Legacy Hub and Public
-monitoring tables remain in `bootstrap.db` for rollback, but their workers are
-disabled and do not append samples or events. No history is migrated or
-deleted.
+Operations uses a dedicated `operations-data` volume. Hub-bootstrap does not
+run infrastructure monitoring and does not access the Operations database.
+New installations do not create pre-cutover Hub/Public monitoring tables.
+Existing installations remove the allowlisted tables during Hub schema
+initialization, after preserving Device Monitor checkpoint continuity.
 
 ### Configuration
 
@@ -278,8 +279,7 @@ Unobserved time is excluded from availability denominators. Operations stopped
 or the whole host stopped is not automatically classified as confirmed Hub
 downtime.
 
-Core reachability, MQTT, and OPA rules reuse the existing Hub monitoring
-calculations:
+Operations calculates Core reachability, MQTT, and OPA availability:
 
 - Reachability failure is unhealthy/unavailable.
 - MQTT failure with reachability intact is degraded/unavailable for Core Hub
@@ -312,8 +312,8 @@ monitoring cycle. It persists each service's last-seen start time and restart
 count in `operations_runtime_checkpoints`; a changed runtime signature creates
 an inferred `service_restart_detected` event in the Operations database.
 Initial signatures establish a baseline and do not create events. A detected
-restart does not prove downtime. This path does not read or import Hub Monitor
-events.
+restart does not prove downtime. This path does not read or import historical
+Hub Monitor samples or events.
 
 ## Database and persistence
 
@@ -335,6 +335,47 @@ appearing as confirmed coverage.
 Core cleanup runs every ten cycles. Public cleanup runs every ten minutes per
 worker. Rows outside the retention window are pruned, with the existing sparse
 carry-in boundary retained where applicable.
+
+Pre-cutover Hub infrastructure history is separate from the tables above.
+Older `bootstrap.db` files can contain:
+
+| Historical table | Purpose | Historical indexes |
+| --- | --- | --- |
+| `hub_monitor_samples` | Hub infrastructure samples | `ix_hub_monitor_samples_hub_id`, `ix_hub_monitor_samples_observed_at`, `ix_hub_monitor_samples_hub_observed` |
+| `hub_monitor_events` | Hub infrastructure events | `ix_hub_monitor_events_hub_id`, `ix_hub_monitor_events_occurred_at`, `ix_hub_monitor_events_hub_occurred` |
+| `hub_monitor_checkpoints` | Last Hub infrastructure check | Primary key on `hub_id` |
+| `public_monitor_samples` | Public API/MQTT samples | `ix_public_monitor_samples_hub_id`, `ix_public_monitor_samples_observed_at`, `ix_public_monitor_samples_scope_observed` |
+| `public_monitor_events` | Public API/MQTT events | `ix_public_monitor_events_hub_id`, `ix_public_monitor_events_occurred_at`, `ix_public_monitor_events_scope_occurred` |
+| `public_monitor_checkpoints` | Per-component public check checkpoints | Composite primary key on `(hub_id, component)` |
+
+These tables are absent from Hub ORM metadata, so new installations do not
+create them. Existing installations are cleaned by an idempotent allowlisted
+migration during Hub database initialization. It also removes
+`public_monitor_transitions` if present. SQLite drops indexes owned by those
+tables with them; no index or table outside the seven-name allowlist is touched.
+
+Before removing `hub_monitor_checkpoints`, the migration checks for a valid
+Device Monitor checkpoint for the configured Hub ID. If it is missing or
+invalid but that Hub's legacy value is valid, it copies the value first. A
+valid Device checkpoint is never overwritten; legacy values for other Hub IDs
+are not needed by this installation. If continuity cannot yet be verified,
+the migration removes the other legacy tables but retains
+`hub_monitor_checkpoints`; after Device Monitor commits its first valid
+checkpoint, it retries and removes the remaining table. Thus a disabled Device
+Monitor may leave that one legacy checkpoint table until it is enabled.
+
+The legacy checkpoint read in the Device Monitor cycle has been removed. The
+handoff is performed before the worker starts; when startup cannot establish a
+valid checkpoint, the worker uses its normal first-cycle baseline and the
+checkpoint table remains until that baseline is committed.
+
+Before deploying this migration to an existing installation, schedule Hub
+maintenance and make a protected, verified SQLite backup. The migration runs
+automatically on Hub startup; do not start or recreate Hub against a production
+database until the reviewed deployment window. Verify the migration logs and
+Hub/Device Monitor APIs afterward. Preserve all `device_monitor_*`,
+`device_diag_*`, Observation, node, and unrelated tables. No live database was
+used to implement or test this migration.
 
 ## Pagination
 
@@ -425,6 +466,113 @@ allowlisted container log tails. Firmware Builder build status and complete
 build logs continue through its dedicated API and are not part of Operations
 monitoring.
 
+## Operations CLI
+
+[`scripts/hub_operations.py`](../scripts/hub_operations.py) is the read-only
+Operations monitoring and diagnostics CLI. It follows the shared Hub CLI
+configuration, TLS, CA, and bearer-token conventions and calls only
+`/api/v1/operations/*`. It does not fall back to Hub endpoints. Its text output
+is a concise summary; details and JSON output retain the diagnostic fields
+returned by Operations.
+
+Run from the repository root:
+
+```bash
+uv run python scripts/hub_operations.py status
+uv run python scripts/hub_operations.py status --watch --interval-seconds 30
+uv run python scripts/hub_operations.py status --output json
+uv run python scripts/hub_operations.py services
+uv run python scripts/hub_operations.py details mqtt
+uv run python scripts/hub_operations.py logs nginx
+uv run python scripts/hub_operations.py events --page-size 50
+uv run python scripts/hub_operations.py events --page 2 --page-size 50 --snapshot-id 123
+uv run python scripts/hub_operations.py failed-connections
+```
+
+Connection settings come from the project `.env` and the established CLI
+options (`--hub-host`, `--hub-port`, `--base-path`, and `--ca`). `--output
+json` is available on every command. Status watch emits successive JSON
+objects as newline-delimited JSON.
+
+Events and services use the Hub pagination names and bounds: `page` (1),
+`page_size` (200, max 500), `order` (`newest` or `oldest`), and
+`snapshot_id`. Events also accept timezone-aware ISO-8601 `--start` and `--end`.
+Each collection result includes `result_complete`; text output states whether
+the response contains the full collection. For multi-page event history, use
+the first page's snapshot ID with later page requests to keep the view frozen.
+The CLI does not fetch hidden extra pages.
+
+`failed-connections` uses the existing API defaults without overriding them:
+the server's three-hour time window and maximum of 200 log lines. `logs`
+displays the API's bounded 30-line tail.
+
+Errors are distinguished: HTTP 503 reports that optional Operations is
+disabled or unavailable; 401/403 reports authentication or authorization
+failure; transport and TLS errors report a connection failure. Other HTTP
+errors are surfaced without trying Hub endpoints.
+
+Representative text output (values vary by Hub and time):
+
+```text
+$ uv run python scripts/hub_operations.py status
+Operations: healthy (own health: healthy)
+Database: ok
+Core Hub health: degraded (score: 70)
+  Reason: Policy engine is offline
+Core Hub availability: degraded
+  Core Hub coverage
+    24h: 98.50%, state=degraded, eligible=30000s, available=29550s, unavailable=450s, unobserved=400s (low coverage)
+  Components
+    MQTT broker: ok; last success=2026-11-28 00:55:00 CET
+Monitoring workers
+  Core: enabled=True, running=True, stale=False, last success=2026-11-28 00:55:00 CET
+```
+
+```text
+$ uv run python scripts/hub_operations.py services
+Services: 6 returned of 6 (page 1/1, complete=true)
+  operations: healthy — Operations
+  hub-api: ok — Hub API
+    Hub database: ok
+  nginx: ok — Nginx
+```
+
+```text
+$ uv run python scripts/hub_operations.py details mqtt
+MQTT broker details
+{
+  "instance": "mqtt",
+  "reason": null,
+  "service": "MQTT broker",
+  "status": "ok",
+  "source": "Operations direct probe"
+}
+```
+
+```text
+$ uv run python scripts/hub_operations.py logs nginx
+Nginx logs (limit: 30 lines)
+nginx started
+```
+
+```text
+$ uv run python scripts/hub_operations.py events --page-size 1
+Events: 1 returned of 42 (page 1/42, order=newest, complete=false, snapshot=123)
+  Partial history; pass the snapshot ID with --snapshot-id when requesting another page.
+  2026-11-28 00:54:00 CET mqtt/state_changed ok → offline — broker unavailable [id=event-123, source=operations_monitor, certainty=confirmed]; observed=2026-11-28 00:54:00 CET
+```
+
+```text
+$ uv run python scripts/hub_operations.py failed-connections
+MQTT broker failed connections: 1 in the last 3 hours (source: file)
+  28/Nov/2026 00:51:00: Client connection from 192.0.2.20 failed: not authorised
+  Note: Host fail2ban (if enabled for MQTT) drops banned clients before Mosquitto, so those attempts never appear in this list.
+```
+
+[`scripts/hub_summary.py`](../scripts/hub_summary.py) remains the Hub overview
+CLI for Hub-owned component status and device/Observation aggregates. It does
+not report Operations availability or event history.
+
 ## Known limitations
 
 - Local manual verification observed temporary Hub API unavailability during
@@ -440,15 +588,12 @@ monitoring.
 - Public API/Public MQTT monitoring is optional and disabled by default.
 - Public and Core workers have independent schedules and need comparison rather
   than exact timestamp equality.
-- The legacy Hub monitor code and tables remain available for rollback, but the
-  Hub and Public workers are not started.
-- The Hub tab no longer displays legacy infrastructure monitoring, component
-  Details, Logs, or MQTT failed-connection diagnostics. Operations remains
-  optional, so the diagnostics control is available only when it is enabled.
-- `hub_summary.py` is intentionally not migrated: it continues to read the
-  Hub overview/service status but no longer fetches legacy monitoring events.
-  Its output does not include Operations health or availability until the
-  deferred CLI migration.
+- An existing installation can temporarily retain only
+  `hub_monitor_checkpoints` if the Device Monitor checkpoint is not yet valid;
+  startup migration retries after the first successful Device Monitor cycle.
+- Infrastructure status, details, logs, and MQTT failed-connection diagnostics
+  are available only when optional Operations is enabled. Hub-owned status and
+  component diagnostics remain available without Operations.
 
 ## Local deployment and verification
 
@@ -553,26 +698,9 @@ MQTT failures are available at
 enabled. The status response no longer includes legacy Hub monitoring history.
 These changes do not affect Device Monitor APIs or Firmware Builder APIs/logs.
 
-### Rollback
+### Historical database cleanup
 
-The cutover makes no database schema changes and preserves the legacy Hub and
-Public monitoring tables. To roll back:
-
-1. In the deployment checkout, switch to the verified pre-cutover checkpoint:
-
-   ```bash
-   git switch --detach 558f2d6b7d62e21fa95876004f31caa03fe66440
-   ```
-
-2. Remove `operations` from `.env`'s `COMPOSE_PROFILES`, preserving any other
-   profiles in use. Restore the prior `DBMAP_HUB_MONITOR_ENABLED` and Public
-   monitor settings if they were explicitly overridden.
-3. Redeploy the usual Hub services so the checkpoint restores the Hub Monitor
-   worker and Hub Docker socket mount:
-
-   ```bash
-   docker compose up -d --build hub-bootstrap nginx opa dbmap-web mosquitto
-   ```
-
-No history conversion or table cleanup is needed. Operations data remains in
-its separate volume.
+Hub startup removes the allowlisted legacy tables after preserving the active
+Device Monitor checkpoint when possible, as described above. No legacy history
+is imported into Operations. Recover historical rows only by restoring a
+pre-migration backup; Operations keeps its own independent history.

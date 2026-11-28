@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 from app.config import settings
@@ -8,75 +7,9 @@ settings.admin_token = "test-admin"
 settings.viewer_token = "test-viewer"
 settings.mqtt_enabled = False
 
-from app import container_logs, edge_status
+from app import edge_status, service
 from app.main import create_app
 from fastapi.testclient import TestClient
-
-
-def _frame(text: str, stream: int = 1) -> bytes:
-    payload = text.encode()
-    return bytes([stream, 0, 0, 0]) + len(payload).to_bytes(4, "big") + payload
-
-
-def test_decode_docker_logs_reads_multiplexed_frames_and_plain_text() -> None:
-    assert container_logs.decode_docker_logs(
-        _frame("one\n") + _frame("two\n", stream=2)
-    ) == ["one", "two"]
-    assert container_logs.decode_docker_logs(b"plain line\n") == ["plain line"]
-    assert container_logs.decode_docker_logs(b"") == []
-
-
-def test_decode_docker_logs_keeps_the_last_fifteen_lines() -> None:
-    lines = "".join(f"line-{index}\n" for index in range(17))
-    assert container_logs.decode_docker_logs(lines.encode()) == [
-        f"line-{index}" for index in range(2, 17)
-    ]
-
-
-def test_decode_docker_logs_supports_thirty_line_operations_tail() -> None:
-    lines = "".join(f"line-{index}\n" for index in range(35))
-    decoded = container_logs.decode_docker_logs(
-        lines.encode(),
-        line_limit=container_logs.OPERATIONS_LOG_TAIL_LINES,
-    )
-    assert decoded == [f"line-{index}" for index in range(5, 35)]
-
-
-def test_read_tail_requests_only_the_named_compose_service(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "compose_project", "dbmap")
-    container_logs._api_version = None
-    calls: list[str] = []
-
-    def fake_request(method: str, path: str) -> tuple[int, bytes]:
-        calls.append(path)
-        if path == "/version":
-            return 200, b'{"ApiVersion":"1.47"}'
-        if path.startswith("/v1.47/containers/json?"):
-            body = [{"Id": "abc123abc123", "State": "running", "Created": 2}]
-            return 200, json.dumps(body).encode()
-        if path.startswith("/v1.47/containers/abc123abc123/logs?"):
-            return 200, _frame("nginx: ready\n")
-        raise AssertionError(path)
-
-    monkeypatch.setattr(container_logs, "_request", fake_request)
-    result = container_logs.read_tail("nginx")
-
-    assert result["service"] == "Nginx"
-    assert result["compose_service"] == "nginx"
-    assert result["lines"] == ["nginx: ready"]
-    assert result["line_limit"] == 15
-    listed = calls[1]
-    assert "com.docker.compose.service%3Dnginx" in listed
-    assert "com.docker.compose.project%3Ddbmap" in listed
-    assert calls[2].endswith("tail=15")
-
-
-def test_read_tail_rejects_components_without_a_container() -> None:
-    try:
-        container_logs.read_tail("database")
-    except container_logs.UnknownComponent:
-        return
-    raise AssertionError("database logs should be rejected before contacting Docker")
 
 
 def test_probe_reads_the_health_body_before_closing() -> None:
@@ -151,6 +84,78 @@ def test_hub_status_lists_web_nginx_and_firmware_builder(monkeypatch) -> None:
     assert components["Hub API"]["id"] == "hub-api"
     assert components["Policy engine"]["id"] == "opa"
     assert components["MQTT broker"]["id"] == "mosquitto"
+
+
+def test_hub_status_uses_observation_aggregates_not_capped_list(monkeypatch) -> None:
+    calls = {"list": 0, "count": 0, "latest": 0}
+    original_list = service.list_observations
+    original_count = service.count_observations
+    original_latest = service.latest_observation_received_at
+
+    def counting_list(*args, **kwargs):
+        calls["list"] += 1
+        return original_list(*args, **kwargs)
+
+    def counting_count(*args, **kwargs):
+        calls["count"] += 1
+        return original_count(*args, **kwargs)
+
+    def counting_latest(*args, **kwargs):
+        calls["latest"] += 1
+        return original_latest(*args, **kwargs)
+
+    monkeypatch.setattr(service, "list_observations", counting_list)
+    monkeypatch.setattr(service, "count_observations", counting_count)
+    monkeypatch.setattr(service, "latest_observation_received_at", counting_latest)
+    monkeypatch.setattr(
+        edge_status,
+        "statuses",
+        lambda: {
+            "nginx": "online",
+            "web": "online",
+            "firmware-builder": "unavailable",
+        },
+    )
+
+    response = TestClient(create_app()).get(
+        "/api/v1/hub/status",
+        headers={"Authorization": f"Bearer {settings.admin_token}"},
+    )
+
+    assert response.status_code == 200, response.text
+    summary = response.json()["summary"]
+    assert "observation_count" in summary
+    assert "latest_observation_at" in summary
+    assert "observation_limit" not in summary
+    assert calls == {"list": 0, "count": 1, "latest": 1}
+
+
+def test_hub_component_details_remain_available_to_operations(monkeypatch) -> None:
+    monkeypatch.setattr(
+        edge_status,
+        "detail",
+        lambda component: (
+            {"service": "Nginx", "status": "online"}
+            if component == "nginx"
+            else None
+        ),
+    )
+    client = TestClient(create_app())
+
+    nginx = client.get(
+        "/api/v1/hub/components/nginx/details",
+        headers={"Authorization": f"Bearer {settings.admin_token}"},
+    )
+    database = client.get(
+        "/api/v1/hub/components/database/details",
+        headers={"Authorization": f"Bearer {settings.admin_token}"},
+    )
+
+    assert nginx.status_code == 200
+    assert nginx.json() == {"service": "Nginx", "status": "online"}
+    assert database.status_code == 200
+    assert database.json()["status"] == "online"
+    assert database.json()["engine"] == "sqlite"
 
 
 def test_hub_mqtt_connection_failures_endpoint_is_retired() -> None:

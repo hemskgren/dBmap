@@ -1,6 +1,12 @@
 # Monitoring history recovery
 
-This procedure is for a separately approved maintenance window after the monitoring fix has been deployed and verified. The release needs no history migration. Decide separately whether to reset Device Monitor history and whether to reset Hub Monitor history.
+This document records historical incident evidence and the existing Device
+Monitor reset procedure. The Hub/Public infrastructure monitoring
+implementation has since been removed. Do not use the historical Hub reset
+instructions. The Hub schema-upgrade migration now removes the allowlisted
+Hub/Public tables while preserving a valid Device Monitor checkpoint. Before
+deploying to an existing installation, make a protected backup and review the
+migration procedure in [Operations](./operations.md#database-and-persistence).
 
 ## November 21 incident
 
@@ -23,11 +29,15 @@ Using the existing Hub availability calculator at the snapshot cutoff produced t
 | Remove 594 short markers | 84,184 / 2,215 | 602,438 / 2,361 | 2,101,319 / 124,873 | 99.99% |
 | Remove all 609 explicit markers | 86,330 / 69 | 604,583 / 216 | 2,103,464 / 122,727 | 99.99% |
 
-Retain Hub history and let the incident age out if clean rolling periods are sufficient. A selective correction needs independent continuity evidence for each interval it would change, plus a verified list of marker and matching event IDs. A timestamp range, unchanged state, or the duration pattern alone cannot supply that evidence. If an immediate clean Hub baseline is required, request separate approval to reset only `hub_monitor_samples` and `hub_monitor_events` for `local-01`. A clean reset discards legitimate Hub outage, component, and restart history as well. The first percentage requires 600 eligible seconds, and 7d and 30d score readiness require half-window coverage.
+These counts and comparisons are a historical snapshot, not a current database
+inventory. Do not selectively edit or reset these rows based on the
+counterfactuals. Operations owns current infrastructure monitoring and does
+not import this history. Retain existing data unless a separate, reviewed
+cleanup is approved.
 
 ## Approved Device Monitor reset
 
-The reset scope is all rows with the approved `hub_id` in `device_monitor_samples` and `device_monitor_events`, including any retained rows for devices that are no longer active. Device diagnostics, reported and desired state, device configuration and identity, observations, and Hub Monitor history are outside the reset.
+The reset scope is all rows with the approved `hub_id` in `device_monitor_samples` and `device_monitor_events`, including any retained rows for devices that are no longer active. Device diagnostics, reported and desired state, device configuration and identity, and observations are outside the reset. Retired Hub/Public infrastructure tables are handled separately by the schema-upgrade migration.
 
 1. Confirm the installation and Hub ID with `GET /api/v1/hub/status`. Schedule downtime and stop the `hub-bootstrap` writer with `docker compose stop hub-bootstrap`. Confirm the service is stopped and no other writer has the volume open. The SQLite database is `/data/bootstrap.db` in the `bootstrap-data` volume. For backup and reset, mount this same volume using a one-off `docker compose run --rm --no-deps` Hub container with its entrypoint overridden to the approved SQLite client. Keep the Hub stopped through validation.
 2. Create a consistent backup in a protected, host-mounted backup directory using SQLite's backup API. For example, in the maintenance container with that directory mounted at `/monitor-backup`, run the following Python. Use a new path and keep the backup access restricted because it contains the whole Hub database.
@@ -95,40 +105,6 @@ The reset scope is all rows with the approved `hub_id` in `device_monitor_sample
 ## Deployment verification before any reset
 
 - Record the rollout time, Hub identity, device sample counts, and latest device monitoring event IDs. Use `GET /api/v1/hub/status` for the Hub overview and node detail and monitoring-event endpoints for Device Monitor data. When Operations is enabled, use its status and events APIs for infrastructure history; the retired Hub monitoring-events endpoint is no longer available.
-- Once separately approved, deploy the reviewed Hub build. Use the existing Hub Compose volume and configuration. Verify the configured 30-second Device Monitor cadence, 120-second continuity threshold, and 90-second online window. When Operations is enabled, verify its Core monitor interval and gap threshold separately; Hub infrastructure probes no longer run.
+- Once separately approved, deploy the reviewed Hub build. Use the existing Hub Compose volume and configuration. Verify the configured 30-second Device Monitor cadence, `DBMAP_DEVICE_MONITOR_GAP_THRESHOLD_S` continuity threshold, and 90-second online window. When Operations is enabled, verify its Core monitor interval and gap threshold separately; Hub infrastructure probes no longer run.
 - Observe at least 12 minutes with stable device reports. After startup, expect no recurring `monitoring_resumed` events during continuous checks, stable sample counts, and rising eligible time. A first inferred gap is possible when the sparse startup fallback reaches back to an old persisted sample.
 - Confirm Device Monitor shows a percentage once 600 eligible seconds are retained and diagnostics still report normally. When Operations is enabled, confirm infrastructure health and availability are present on demand. Review post-rollout event timestamps separately from retained incident data.
-
-## One-time Core Hub history reset
-
-Use this procedure only for a separately approved clean Hub services baseline. First verify the deployed Core checkpoint across a controlled restart. With the Hub writer stopped, read the current checkpoint and newest Core sample. After restart, confirm that the observation gap starts at the checkpoint and that the checkpoint advances with the first committed check. A gap shorter than the normal event threshold may have a sample marker without a resume event.
-
-For the reset, stop only the `hub-bootstrap` writer and use the protected, integrity-checked SQLite Backup API procedure above with a fresh filename. Preview the following counts for the approved Hub ID, including the checkpoint. Verify them again in the write transaction.
-
-```sql
-PRAGMA foreign_keys = ON;
-BEGIN IMMEDIATE;
-SELECT COUNT(*) FROM hub_monitor_samples WHERE hub_id = :hub_id;
-SELECT COUNT(*) FROM hub_monitor_events WHERE hub_id = :hub_id;
-SELECT COUNT(*) FROM hub_monitor_checkpoints WHERE hub_id = :hub_id;
-SELECT last_check_at FROM hub_monitor_checkpoints WHERE hub_id = :hub_id;
-```
-
-After reviewing the preview, delete only those rows in the same transaction. Clearing the checkpoint with the history prevents an observation from the previous baseline from carrying into the new one.
-
-```sql
-DELETE FROM hub_monitor_events WHERE hub_id = :hub_id;
-SELECT changes() AS events_deleted;
-DELETE FROM hub_monitor_samples WHERE hub_id = :hub_id;
-SELECT changes() AS samples_deleted;
-DELETE FROM hub_monitor_checkpoints WHERE hub_id = :hub_id;
-SELECT changes() AS checkpoints_deleted;
-SELECT COUNT(*) FROM hub_monitor_events WHERE hub_id = :hub_id;
-SELECT COUNT(*) FROM hub_monitor_samples WHERE hub_id = :hub_id;
-SELECT COUNT(*) FROM hub_monitor_checkpoints WHERE hub_id = :hub_id;
-PRAGMA foreign_key_check;
-```
-
-Commit only when deletion counts match the preview, scoped counts are zero, and foreign-key checks pass. Roll back on any discrepancy. The `public_monitor_*` tables, Device Monitor history, diagnostics, and unrelated tables stay outside the transaction.
-
-Resume the same Hub build. Verify through the API that initial Core history begins at the first new check, the checkpoint advances, and stable states write no extra samples or events. Observe Core, API, MQTT, Web, public endpoints and Device Monitor for at least 15 minutes. Confirm that the fresh 24h Core service windows report percentages once they have 600 eligible seconds. Verify the earlier public and device event IDs are still present. If verification passes and deletion was approved, delete only the new temporary backup after confirming its path and checksum. Retain it if verification fails.

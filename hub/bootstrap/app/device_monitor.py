@@ -17,16 +17,20 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import device_diag
 from app.config import settings
-from app.db import SessionLocal
+from app.db import (
+    SessionLocal,
+    cleanup_legacy_monitor_tables,
+    legacy_monitor_cleanup_pending,
+)
 from app.models import (
     DeviceMonitorCheckpoint,
     DeviceMonitorEvent,
     DeviceMonitorSample,
-    HubMonitorCheckpoint,
     Node,
     ReportedState,
 )
@@ -388,25 +392,12 @@ def run_monitor_cycle(
         checkpoint_at = _checkpoint_datetime(checkpoint_value, now)
 
         if checkpoint is None:
-            legacy_checkpoint = db.get(HubMonitorCheckpoint, settings.hub_id)
-            legacy_value = (
-                legacy_checkpoint.last_check_at
-                if legacy_checkpoint is not None
-                else None
+            checkpoint_value = now.isoformat()
+            checkpoint_at = now
+            checkpoint = DeviceMonitorCheckpoint(
+                hub_id=settings.hub_id,
+                last_check_at=checkpoint_value,
             )
-            legacy_at = _checkpoint_datetime(legacy_value, now)
-            if legacy_at is not None:
-                checkpoint_value = legacy_value
-                checkpoint_at = legacy_at
-                checkpoint = DeviceMonitorCheckpoint(
-                    hub_id=settings.hub_id,
-                    last_check_at=legacy_value,
-                )
-            else:
-                checkpoint = DeviceMonitorCheckpoint(
-                    hub_id=settings.hub_id,
-                    last_check_at=now.isoformat(),
-                )
             db.add(checkpoint)
 
         gap = plan_gap(
@@ -414,7 +405,7 @@ def run_monitor_cycle(
             anchor_at=checkpoint_at,
             previous_check_at=_last_check_at,
             persisted_checkpoint=checkpoint_value,
-            threshold=timedelta(seconds=settings.hub_monitor_gap_threshold_s),
+            threshold=timedelta(seconds=settings.device_monitor_gap_threshold_s),
         )
         result = sample_devices(
             db,
@@ -425,6 +416,13 @@ def run_monitor_cycle(
             checkpoint.last_check_at = now.isoformat()
             db.commit()
             _last_check_at = now
+            if legacy_monitor_cleanup_pending():
+                try:
+                    cleanup_legacy_monitor_tables()
+                except SQLAlchemyError:
+                    log.exception(
+                        "legacy monitoring table cleanup failed after checkpoint commit"
+                    )
 
     _cycles_since_cleanup += 1
     if _cycles_since_cleanup >= CLEANUP_EVERY_CYCLES:
@@ -740,7 +738,6 @@ def build_monitoring_summary(db: Session, node_id: str) -> dict[str, Any]:
             "max_events_per_device": settings.device_monitor_max_events_per_device,
             "diag_max_events_per_device": settings.device_diag_max_events_per_device,
             "diag_rssi_degraded_dbm": settings.device_diag_rssi_degraded_dbm,
-            "hub_monitor_interval_seconds": settings.hub_monitor_interval_s,
             "device_monitor_interval_seconds": settings.device_monitor_interval_s,
         },
         "notes": notes,

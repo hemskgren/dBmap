@@ -8,7 +8,6 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    PrimaryKeyConstraint,
     String,
     Text,
     UniqueConstraint,
@@ -453,100 +452,6 @@ class RegionalEnvironmentalContext(Base):
     precipitation_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
     availability: Mapped[str] = mapped_column(String(16), default="ok")
     source_mode: Mapped[str] = mapped_column(String(16))
-
-
-class _MonitorSample:
-    sample_id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid4())
-    )
-    hub_id: Mapped[str] = mapped_column(String(64), index=True)
-    observed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, index=True
-    )
-    overall_availability: Mapped[str] = mapped_column(String(16))
-    overall_health: Mapped[str] = mapped_column(String(16))
-    components_json: Mapped[str] = mapped_column(Text, default="{}")
-    source: Mapped[str] = mapped_column(String(32), default="local_monitor")
-
-
-class _MonitorEvent:
-    event_id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid4())
-    )
-    hub_id: Mapped[str] = mapped_column(String(64), index=True)
-    occurred_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, index=True
-    )
-    observed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow
-    )
-    component: Mapped[str] = mapped_column(String(32))
-    event_type: Mapped[str] = mapped_column(String(64))
-    previous_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    new_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    source: Mapped[str] = mapped_column(String(32), default="local_monitor")
-    certainty: Mapped[str] = mapped_column(String(16), default="confirmed")
-
-
-class _MonitorCheckpoint:
-    hub_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    last_check_at: Mapped[str] = mapped_column(String(40))
-
-
-def _monitor_sample_args(index_name: str, *scope: str):
-    return (
-        Index(index_name, "hub_id", *scope, "observed_at"),
-        CheckConstraint(
-            "overall_availability IN "
-            "('available', 'degraded', 'unavailable', 'unobserved')"
-        ),
-        CheckConstraint(
-            "overall_health IN ('healthy', 'degraded', 'unhealthy', 'unknown')"
-        ),
-    )
-
-
-class HubMonitorSample(_MonitorSample, Base):
-    __tablename__ = "hub_monitor_samples"
-    __table_args__ = _monitor_sample_args("ix_hub_monitor_samples_hub_observed")
-
-
-class PublicMonitorSample(_MonitorSample, Base):
-    __tablename__ = "public_monitor_samples"
-    __table_args__ = _monitor_sample_args("ix_public_monitor_samples_scope_observed", "component")
-
-    component: Mapped[str] = mapped_column(String(32))
-
-
-def _monitor_event_args(index_name: str, *scope: str):
-    return (
-        Index(index_name, "hub_id", *scope, "occurred_at"),
-        CheckConstraint("certainty IN ('confirmed', 'inferred')"),
-    )
-
-
-class HubMonitorEvent(_MonitorEvent, Base):
-    __tablename__ = "hub_monitor_events"
-    __table_args__ = _monitor_event_args("ix_hub_monitor_events_hub_occurred")
-
-
-class PublicMonitorEvent(_MonitorEvent, Base):
-    __tablename__ = "public_monitor_events"
-    __table_args__ = _monitor_event_args(
-        "ix_public_monitor_events_scope_occurred", "component"
-    )
-
-
-class HubMonitorCheckpoint(_MonitorCheckpoint, Base):
-    __tablename__ = "hub_monitor_checkpoints"
-
-
-class PublicMonitorCheckpoint(_MonitorCheckpoint, Base):
-    __tablename__ = "public_monitor_checkpoints"
-    __table_args__ = (PrimaryKeyConstraint("hub_id", "component"),)
-
-    component: Mapped[str] = mapped_column(String(32), primary_key=True)
 
 
 class DeviceMonitorCheckpoint(Base):

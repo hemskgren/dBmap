@@ -1,18 +1,22 @@
-# Health and Availability (Local Hub)
+# Health and Availability
 
-Phase 1 monitoring for the Local Hub, plus device **availability** (D0) and
-device **health** from optional on-device diagnostics (D1 firmware / D2 Hub).
-Planned reboots, leaderboards, and Regional Hub synchronization remain later work.
+Historical reference for the retired Hub infrastructure monitor and current
+Device Monitor behavior: device **availability** (D0) and device **health**
+from optional on-device diagnostics (D1 firmware / D2 Hub). Current
+infrastructure monitoring behavior is documented in [Operations](./operations.md).
 
 > **Current ownership:** optional Operations is the sole active owner of
 > infrastructure health, availability, public endpoint monitoring, and
-> container diagnostics. The legacy Hub/Public infrastructure workers are no
-> longer started; their code and database tables are retained for rollback and
-> historical reference only. The Hub tab no longer displays this legacy
-> monitoring. Device Monitor remains active in `hub-bootstrap` and does not
-> depend on Operations. See [Operations](./operations.md).
+> container diagnostics. The legacy Hub/Public workers, models, and helpers
+> have been removed. New installations do not create their tables. Existing
+> installations remove the allowlisted legacy tables during Hub schema
+> initialization after the Device Monitor checkpoint handoff; only the legacy
+> checkpoint table can remain temporarily if continuity is not yet verified.
+> Device Monitor remains active in `hub-bootstrap` and does not depend on
+> Operations. See
+> [Operations](./operations.md).
 
-## Concepts
+## Historical Hub monitoring concepts
 
 Health and Availability are independent.
 
@@ -29,12 +33,13 @@ A working web session does **not** prove that MQTT or device communication is av
 
 The browser talks HTTPS to Nginx → Web / API. Device traffic uses MQTT (Mosquitto). Those paths are independent. Stopping Mosquitto disconnects devices while an already-loaded Hub tab can keep working until the next API call that depends on MQTT-backed data.
 
-## Legacy Hub Monitor (disabled; retained for rollback)
+## Retired Hub Monitor (historical reference)
 
-The following describes the retained pre-cutover implementation, not an active
-worker. The Hub/Public monitor code and tables remain available for rollback;
-Hub-bootstrap does not start these workers and does not write new infrastructure
-monitor samples or events.
+The following describes the pre-cutover implementation, not current behavior.
+Its workers and application code have been removed. Existing databases can
+contain the historical tables until Hub schema initialization removes them.
+The checkpoint table may be retained temporarily if the Device Monitor
+continuity handoff cannot yet be verified.
 
 Before cutover, every `DBMAP_HUB_MONITOR_INTERVAL_S` seconds (default **60**),
 a background thread inside `hub-bootstrap` ran a monitor cycle that:
@@ -154,26 +159,14 @@ A detected `service_restart_detected` event (Docker `StartedAt` / `RestartCount`
 
 A future Regional Hub can observe Local Hub reachability externally and provide a more authoritative view. Phase 1 only prepares local event/summary shapes for that later sync.
 
-## Legacy monitoring persistence (Hub)
+## Historical monitoring data cleanup
 
-SQLite tables (same database as the Hub):
-
-- `hub_monitor_samples` — compact periodic snapshots
-- `hub_monitor_events` — state transitions and diagnostic events
-
-Retention cleanup deletes only those tables. Device, observation, ownership, and other application data are untouched. Secrets and raw logs are not stored in monitoring history.
-
-Useful Hub event types:
-
-- `state_changed` — per-component probe state (for example MQTT `ok` → `offline`)
-- `health_changed` — overall Hub health (`healthy` / `degraded` / `unhealthy`)
-- `availability_changed` — overall Core Hub availability sample state
-- `monitoring_resumed` — unobserved gap closed
-- `service_restart_detected` — inferred from Docker runtime signature; not an outage duration
-
-Each event carries UTC `occurred_at` and `observed_at`, component id, previous/new state, short reason, source (`local_monitor`), and certainty (`confirmed` or `inferred`).
-
-`state_changed` and `health_changed` / `availability_changed` describe different layers. A health score field of `0` is not the same as a component state of `offline`; UI labels should keep those distinct.
+Older Hub databases may contain pre-cutover Hub and Public Monitor history.
+Hub startup removes those legacy tables and their owned indexes using the
+allowlisted migration described in
+[Operations](./operations.md#database-and-persistence). The legacy Hub
+checkpoint is transferred to Device Monitor only when needed to preserve its
+continuity; no history is imported into Operations.
 
 ## Retired legacy monitoring API and UI
 
@@ -211,53 +204,36 @@ The prior Hub UI and CLI fetched event history separately from
 The prior Hub tab and `scripts/hub_summary.py` used those shared calculations.
 The active infrastructure monitoring implementation is now Operations.
 
-## Legacy Hub monitor configuration
+## Retired Hub monitor configuration
 
-The old Hub worker configuration is inert after cutover. The gap-threshold
-setting remains in Hub configuration for the existing Device Monitor continuity
-semantics.
+These Hub infrastructure settings are no longer read. Device Monitor has its
+own continuity threshold setting; existing deployments should use
+`DBMAP_DEVICE_MONITOR_GAP_THRESHOLD_S`. The old Hub-named threshold is not an
+alias.
 
 | Variable | Former default | Notes |
 | --- | --- | --- |
 | `DBMAP_HUB_MONITOR_ENABLED` | `true` | No longer starts a worker |
 | `DBMAP_HUB_MONITOR_INTERVAL_S` | `60` | No longer schedules infrastructure probes |
-| `DBMAP_HUB_MONITOR_GAP_THRESHOLD_S` | `120` | Still used by Device Monitor for its existing gap threshold |
+| `DBMAP_HUB_MONITOR_GAP_THRESHOLD_S` | `120` | Retired; does not configure Device Monitor |
 | `DBMAP_HUB_MONITOR_RETENTION_DAYS` | `30` | No longer prunes legacy infrastructure samples |
 
 ### Public API and Public MQTT
 
-These checks previously ran from the Hub process and persisted in Hub-owned
-tables. They are now owned by Operations, where they remain optional and
-disabled by default. See [Operations configuration](./operations.md#configuration).
+Public API and MQTT probes are now configured and run by Operations, remain
+optional, and are disabled by default. Their current configuration, persistence,
+and network vantage point are documented in
+[Operations](./operations.md#configuration). Existing Hub `public_monitor_*`
+tables are removed by the Hub startup cleanup; Operations starts its own
+history without importing the old rows.
 
-- Public API appends `/health` to `DBMAP_PUBLIC_HUB_URL`, verifies the configured hostname with the existing CA, and requires a successful response identifying `hub-bootstrap`. It sends no API credentials.
-- Public MQTT uses `DBMAP_PUBLIC_MQTT_HOST`, `DBMAP_PUBLIC_MQTT_PORT`, the existing MQTT CA and regular Hub login, and verified TLS. It requires a successful MQTT 3.1.1 CONNACK for a unique, clean client session. It disconnects without subscribing, publishing, or reconnecting. DynSec client-ID restrictions or rejected credentials can block this check and are surfaced as failure reasons.
+## Monitoring history boundaries
 
-Public probes use the same sparse observation store as Core Hub. The separate
-`public_monitor_samples`, `public_monitor_events` and
-`public_monitor_checkpoints` tables mirror the `hub_monitor_*` tables.
-Public checkpoints are keyed by Hub and component, so a completed API check
-cannot advance MQTT coverage. A stable cycle updates only its checkpoint.
-Both families retain the last sparse boundary before the cutoff, and use
-committed observations to exclude gaps and restart downtime. A short restart
-with an unchanged state creates gap boundaries without a resume event.
-A delayed public probe stays on its own worker.
-
-Upgrades create the new public tables empty. The former
-`public_monitor_transitions` table, if present, stays intact and is unused by
-the new build. Public availability accumulates from the first new observation.
-Core and Device Monitor history carry through the upgrade.
-
-These results describe reachability from the Hub's network. Router NAT loopback and split DNS can make the result differ from what an internet client sees. The probes use the Hub resolver and do not compare DNS answers to an independently measured WAN address. Use an off-LAN client to validate externally visible reachability.
-
-## Legacy monitoring limitations
-
-For a separately approved history reset, see [Monitoring history recovery](monitoring-history-recovery.md).
-
-- Local monitoring cannot prove external client reachability beyond the Hub’s own probes.
-- Complete Hub outages appear as unobserved gaps after recovery, not as precisely timed downtime.
-- Hub API and database status in the legacy component list remain tautological for a successful status request; the monitoring section is the historical/current assessment surface.
-- Device-to-Hub correlation of MQTT disconnects with Hub-observed MQTT outages is **not implemented** yet. Timestamps and distinguishable event sources are preserved so a later phase can match them without treating same-minute events as proven causation.
+Operations history starts at its own cutover and does not include pre-cutover
+Hub or Public Monitor history. Device-to-Hub correlation of MQTT disconnects
+with Hub-observed MQTT outages is **not implemented**; timestamps and distinct
+event sources are preserved for possible future correlation without treating
+same-minute events as proven causation.
 
 ---
 
@@ -275,7 +251,7 @@ Online means `last_seen_at` is within `DBMAP_DEVICE_ONLINE_WINDOW_S` (default **
 
 ### D0 — Hub-observed availability
 
-Device Monitor runs every 30 seconds by default on its own background thread in `hub-bootstrap`. Its schedule and persistent checkpoint are independent of the legacy Hub Monitor, so it continues when that monitor is disabled or its infrastructure probes fail. Device checks sample connectivity from reported state; they do not run Hub probes, depend on Operations, or update Hub continuity.
+Device Monitor runs every 30 seconds by default on its own background thread in `hub-bootstrap`. Its schedule and persistent checkpoint are independent of Operations. Device checks sample connectivity from reported state; they do not run infrastructure probes, depend on Operations, or update Operations continuity.
 
 Each Device Monitor check:
 
@@ -285,7 +261,14 @@ Each Device Monitor check:
 4. Skip **deactivated** nodes (excluded from further sampling; not counted as downtime).
 5. Prune samples, monitor events, and retained device diagnostics by the configured retention days and existing per-device caps.
 
-The Device Monitor checkpoint is committed with its samples/events. On the first cycle after upgrade, an existing Hub Monitor checkpoint seeds Device Monitor continuity when available; subsequent cycles use only the Device Monitor checkpoint. The independent worker also performs retention cleanup if Device Monitor sampling is disabled.
+The Device Monitor checkpoint is committed with its samples/events. During
+schema initialization, a valid existing `hub_monitor_checkpoints` value is
+transferred to `device_monitor_checkpoints` before the legacy table is removed.
+If there is no valid Device Monitor checkpoint to verify at startup, the old
+checkpoint table is retained until the first successful Device Monitor cycle
+commits its baseline; cleanup is retried then. Device Monitor runtime no longer
+reads the legacy table. The worker also performs retention cleanup if Device
+Monitor sampling is disabled.
 
 Availability windows (24h / 7d / 30d) reuse the Hub honesty rules: minimum eligible time, `low_coverage`, and `score_ready`.
 
